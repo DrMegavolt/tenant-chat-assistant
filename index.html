@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tenant Chat Assistant Prototype</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="demo-site" id="demoSite">
+        <div class="demo-header">
+          <div>
+            <p class="eyebrow">Embedded assistant prototype</p>
+            <h1 id="siteName">Apex Home Services</h1>
+          </div>
+          <label class="tenant-picker">
+            <span>Preview company</span>
+            <select id="tenantSelect">
+              <option value="apex">Company A: no pricing, phone-first</option>
+              <option value="clearview">Company B: fixed pricing + booking</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="content-grid">
+          <section class="service-copy">
+            <h2 id="headline">Fast help for HVAC, electrical, and home repairs.</h2>
+            <p id="description">
+              This page stands in for a customer website. The same chat widget can be
+              embedded here, but its policies, knowledge, and allowed actions change
+              by company.
+            </p>
+          </section>
+
+          <aside class="company-panel">
+            <h2>Configured behavior</h2>
+            <dl id="configSummary"></dl>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div
+      id="tenant-chat"
+      data-company-id="apex"
+      aria-live="polite"
+    ></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
