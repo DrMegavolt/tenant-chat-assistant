@@ -1,9 +1,13 @@
 const state = {
   tenantId: "apex",
+  sessionId: getSessionId(),
   tenantConfigs: {},
   isOpen: true,
   messages: [],
-  isWaiting: false
+  isWaiting: false,
+  seenServerMessageIds: new Set(),
+  proactiveTimer: null,
+  proactiveNudgeShown: false
 };
 
 const API_BASE_URL = window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
@@ -25,10 +29,14 @@ async function init() {
   await loadTenants();
   renderTenantPage();
   resetConversation();
+  window.setInterval(syncSessionMessages, 2500);
 
   document.querySelector("#tenantSelect").addEventListener("change", (event) => {
     state.tenantId = event.target.value;
     document.querySelector("#tenant-chat").dataset.companyId = state.tenantId;
+    state.sessionId = getSessionId(state.tenantId);
+    state.seenServerMessageIds.clear();
+    state.proactiveNudgeShown = false;
     renderTenantPage();
     resetConversation();
   });
@@ -98,6 +106,8 @@ function renderTenantPage() {
     <div><dt>Knowledge</dt><dd>${config.address}<br>${config.phone}<br>${config.hours}</dd></div>
     <div><dt>Pricing</dt><dd>${config.pricingPolicy === "never" ? "Never reveal pricing; route to phone." : "Allowed to quote fixed approved prices."}</dd></div>
     <div><dt>Booking</dt><dd>${config.bookingEnabled ? "Allowed after service and slot confirmation." : "Disabled; route to phone team."}</dd></div>
+    <div><dt>Lead capture</dt><dd>${config.leadCaptureEnabled ? "Enabled; backend creates follow-up leads." : "Disabled for this company."}</dd></div>
+    <div><dt>Proactive</dt><dd>${config.proactiveLeadCapture ? "Enabled; politely offers callback after intent." : "Disabled."}</dd></div>
     <div><dt>Service groups</dt><dd>${config.services.join(", ")}</dd></div>
   `;
 
@@ -107,11 +117,12 @@ function renderTenantPage() {
 
 function resetConversation() {
   state.messages = [];
+  clearProactiveTimer();
   document.querySelector("#messages").innerHTML = "";
   const config = tenant();
   addMessage(
     "assistant",
-    `Hi, I’m the ${config.assistantName}. I can answer questions about ${config.name}, check whether a ZIP code is served, and ${config.bookingEnabled ? "help find appointment slots." : `connect you with the team at ${config.phone}.`}`
+    `Hi, I’m the ${config.assistantName}. I can answer questions about ${config.name}, check whether a ZIP code is served, ${config.bookingEnabled ? "help find appointment slots" : `connect you with the team at ${config.phone}`}, and create a follow-up lead.`
   );
 }
 
@@ -132,11 +143,11 @@ function renderQuickActions() {
   });
 }
 
-function addMessage(role, text) {
-  state.messages.push({ role, text });
+function addMessage(role, text, options = {}) {
+  state.messages.push({ role, text, source: options.source || role });
   const messages = document.querySelector("#messages");
   const bubble = document.createElement("div");
-  bubble.className = `message ${role}`;
+  bubble.className = `message ${role} ${options.source || ""}`;
   bubble.textContent = text;
   messages.append(bubble);
   messages.scrollTop = messages.scrollHeight;
@@ -154,6 +165,7 @@ function addToolCall(name, payload, result) {
 async function handleUserMessage(rawText) {
   if (state.isWaiting) return;
   const text = rawText.trim();
+  clearProactiveTimer();
   addMessage("user", text);
   setWaiting(true);
 
@@ -163,9 +175,11 @@ async function handleUserMessage(rawText) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tenantId: state.tenantId,
+        sessionId: state.sessionId,
         messages: state.messages.map((message) => ({
           role: message.role,
-          content: message.text
+          content: message.text,
+          source: message.source
         }))
       })
     });
@@ -179,6 +193,7 @@ async function handleUserMessage(rawText) {
       addToolCall(event.name, event.arguments, event.result);
     }
     addMessage("assistant", payload.reply);
+    scheduleProactiveNudge();
   } catch (error) {
     addMessage(
       "assistant",
@@ -191,6 +206,69 @@ async function handleUserMessage(rawText) {
 
 function apiUrl(path) {
   return `${API_BASE_URL}${path}`;
+}
+
+function getSessionId(tenantId = "apex") {
+  const key = `tenant-chat-session-id:${tenantId}`;
+  const existing = window.sessionStorage.getItem(key);
+  if (existing) return existing;
+  const value = `web-${tenantId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  window.sessionStorage.setItem(key, value);
+  return value;
+}
+
+async function syncSessionMessages() {
+  if (!state.sessionId) return;
+  try {
+    const response = await fetch(
+      apiUrl(`/api/chat/session?sessionId=${encodeURIComponent(state.sessionId)}`)
+    );
+    if (!response.ok) return;
+    const payload = await response.json();
+    const session = payload.session;
+    if (!session) return;
+    for (const message of session.messages || []) {
+      if (message.source !== "admin" || state.seenServerMessageIds.has(message.id)) {
+        continue;
+      }
+      state.seenServerMessageIds.add(message.id);
+      addMessage("assistant", message.content, { source: "admin" });
+    }
+  } catch (error) {
+    // Polling is best-effort for the prototype.
+  }
+}
+
+function scheduleProactiveNudge() {
+  const config = tenant();
+  if (!config.proactiveLeadCapture || state.proactiveNudgeShown || hasContactInfo()) {
+    return;
+  }
+  const userMessageCount = state.messages.filter((message) => message.role === "user").length;
+  if (userMessageCount === 0) return;
+  clearProactiveTimer();
+  state.proactiveTimer = window.setTimeout(() => {
+    if (state.isWaiting || state.proactiveNudgeShown || hasContactInfo()) return;
+    state.proactiveNudgeShown = true;
+    addMessage(
+      "assistant",
+      "If it helps, I can have the team follow up. Send your name and phone or email, and I’ll create a callback request.",
+      { source: "proactive" }
+    );
+  }, 12000);
+}
+
+function clearProactiveTimer() {
+  if (state.proactiveTimer) {
+    window.clearTimeout(state.proactiveTimer);
+    state.proactiveTimer = null;
+  }
+}
+
+function hasContactInfo() {
+  const text = state.messages.map((message) => message.text).join("\n");
+  return /[\w.+-]+@[\w.-]+\.\w+/.test(text) ||
+    /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/.test(text);
 }
 
 function setWaiting(isWaiting) {

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat Admin</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="admin-body">
+    <main class="admin-shell">
+      <header class="admin-header">
+        <div>
+          <p class="eyebrow">Live operations</p>
+          <h1>Chat Admin</h1>
+        </div>
+        <a class="admin-link" href="/">Open website demo</a>
+      </header>
+
+      <section class="admin-stats" id="adminStats"></section>
+
+      <section class="admin-layout">
+        <aside class="admin-sidebar">
+          <div class="admin-panel-header">
+            <h2>Live & Archived Chats</h2>
+            <span id="lastUpdated">-</span>
+          </div>
+          <div class="session-list" id="sessionList"></div>
+        </aside>
+
+        <section class="admin-detail" id="sessionDetail">
+          <div class="empty-state">
+            <h2>No chat selected</h2>
+            <p>Open the website demo and send a message to create a live session.</p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="admin.js"></script>
+  </body>
+</html>

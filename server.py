@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parent
+CHATS_DIR = ROOT / "chats"
 HOST = os.environ.get("CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CHAT_PORT", "8000"))
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1")
@@ -46,6 +47,8 @@ TENANTS: Dict[str, TenantConfig] = {
         "hours": "Mon-Fri 8:00 AM-6:00 PM, Sat 9:00 AM-2:00 PM",
         "pricingPolicy": "never",
         "bookingEnabled": False,
+        "leadCaptureEnabled": True,
+        "proactiveLeadCapture": True,
         "services": ["HVAC", "Electrical", "Plumbing"],
         "serviceZips": ["98101", "98102", "98103", "98104", "98105"],
         "prices": {},
@@ -55,6 +58,7 @@ TENANTS: Dict[str, TenantConfig] = {
             "Do you serve 98103?",
             "How much is HVAC repair?",
             "Can I book electrical?",
+            "Have someone call me",
         ],
         "site": {
             "headline": "Reliable home service with a dispatcher on every request.",
@@ -73,6 +77,8 @@ TENANTS: Dict[str, TenantConfig] = {
         "hours": "Daily 7:00 AM-7:00 PM",
         "pricingPolicy": "fixed",
         "bookingEnabled": True,
+        "leadCaptureEnabled": True,
+        "proactiveLeadCapture": True,
         "services": ["Window Cleaning", "HVAC", "Electrical"],
         "serviceZips": ["97035", "97201", "97202", "97203", "97204", "97205"],
         "prices": {
@@ -98,6 +104,7 @@ TENANTS: Dict[str, TenantConfig] = {
             "Do you serve 97205?",
             "Book HVAC",
             "Electrical availability",
+            "Request a follow-up",
         ],
         "site": {
             "headline": "Book property care with clear prices and live availability.",
@@ -111,6 +118,9 @@ TENANTS: Dict[str, TenantConfig] = {
 
 
 SESSIONS: Dict[str, Dict[str, Any]] = {}
+LEADS: List[Dict[str, Any]] = []
+MESSAGE_COUNTER = 0
+ARCHIVE_AFTER_SECONDS = 300
 
 
 TOOLS: List[Dict[str, Any]] = [
@@ -171,6 +181,43 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "create_lead",
+            "description": (
+                "Create a sales or service follow-up lead after collecting enough "
+                "contact and request details from the user."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_name": {"type": "string"},
+                    "customer_phone_or_email": {"type": "string"},
+                    "service": {
+                        "type": "string",
+                        "description": "Configured service category or best available description.",
+                    },
+                    "address_or_zip": {"type": "string"},
+                    "urgency": {
+                        "type": "string",
+                        "description": "One of emergency, today, this_week, flexible, or unknown.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Short summary of what the customer needs.",
+                    },
+                },
+                "required": [
+                    "customer_name",
+                    "customer_phone_or_email",
+                    "service",
+                    "summary",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "handoff_to_human",
             "description": "Create a human handoff when the assistant is not allowed to answer or act.",
             "parameters": {
@@ -197,6 +244,8 @@ def public_tenant_config(tenant: TenantConfig) -> TenantConfig:
         "hours",
         "pricingPolicy",
         "bookingEnabled",
+        "leadCaptureEnabled",
+        "proactiveLeadCapture",
         "services",
         "quickActions",
         "site",
@@ -213,6 +262,273 @@ def normalize_service(tenant: TenantConfig, raw_service: str) -> Optional[str]:
     return None
 
 
+def normalize_slot_text(value: str) -> str:
+    normalized = value.strip().lower()
+    replacements = {
+        "monday": "mon",
+        "tuesday": "tue",
+        "wednesday": "wed",
+        "thursday": "thu",
+        "friday": "fri",
+        "saturday": "sat",
+        "sunday": "sun",
+        "january": "jan",
+        "february": "feb",
+        "march": "mar",
+        "april": "apr",
+        "june": "jun",
+        "july": "jul",
+        "august": "aug",
+        "september": "sep",
+        "sept": "sep",
+        "october": "oct",
+        "november": "nov",
+        "december": "dec",
+    }
+    for source, target in replacements.items():
+        normalized = re.sub(rf"\b{source}\b", target, normalized)
+    normalized = re.sub(r"\bat\b", " ", normalized)
+    normalized = re.sub(r"[,]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
+def find_matching_slot(requested_slot: str, available_slots: List[str]) -> Optional[str]:
+    requested = normalize_slot_text(requested_slot)
+    for slot in available_slots:
+        if normalize_slot_text(slot) == requested:
+            return slot
+    return None
+
+
+def now_seconds() -> int:
+    return int(time.time())
+
+
+def safe_file_stem(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", value)
+    return cleaned[:120] or "chat"
+
+
+def next_message_id() -> str:
+    global MESSAGE_COUNTER
+    MESSAGE_COUNTER += 1
+    return f"msg-{MESSAGE_COUNTER}"
+
+
+def ensure_session(tenant_id: str, session_id: str) -> Dict[str, Any]:
+    tenant = TENANTS[tenant_id]
+    if session_id not in SESSIONS:
+        timestamp = now_seconds()
+        SESSIONS[session_id] = {
+            "sessionId": session_id,
+            "tenantId": tenant_id,
+            "tenantName": tenant["name"],
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
+            "messages": [],
+            "toolEvents": [],
+            "adminNotes": [],
+            "status": "active",
+            "outcome": "active",
+        }
+    session = SESSIONS[session_id]
+    session["tenantId"] = tenant_id
+    session["tenantName"] = tenant["name"]
+    session["updatedAt"] = now_seconds()
+    update_session_status(session)
+    return session
+
+
+def set_session_messages(session: Dict[str, Any], messages: List[Dict[str, str]]) -> None:
+    existing_admin_messages = [
+        message for message in session.get("messages", []) if message.get("source") == "admin"
+    ]
+    normalized_messages = []
+    timestamp = now_seconds()
+    for message in messages:
+        normalized_messages.append(
+            {
+                "id": next_message_id(),
+                "role": message["role"],
+                "content": message["content"],
+                "source": message.get("source", "visitor" if message["role"] == "user" else "assistant"),
+                "createdAt": timestamp,
+            }
+        )
+    session["messages"] = merge_admin_messages(normalized_messages, existing_admin_messages)
+    session["updatedAt"] = timestamp
+    update_session_status(session)
+    persist_session(session)
+
+
+def merge_admin_messages(
+    messages: List[Dict[str, Any]], admin_messages: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    merged = list(messages)
+    known = {(message["role"], message["content"], message.get("source")) for message in merged}
+    for message in admin_messages:
+        key = (message["role"], message["content"], message.get("source"))
+        if key not in known:
+            merged.append(message)
+    return sorted(merged, key=lambda item: item.get("createdAt", 0))
+
+
+def append_session_message(
+    session: Dict[str, Any],
+    role: str,
+    content: str,
+    source: str,
+) -> Dict[str, Any]:
+    message = {
+        "id": next_message_id(),
+        "role": role,
+        "content": content,
+        "source": source,
+        "createdAt": now_seconds(),
+    }
+    session.setdefault("messages", []).append(message)
+    session["updatedAt"] = message["createdAt"]
+    update_session_status(session)
+    persist_session(session)
+    return message
+
+
+def append_tool_events(session: Dict[str, Any], events: List[Dict[str, Any]]) -> None:
+    timestamp = now_seconds()
+    stored_events = session.setdefault("toolEvents", [])
+    for event in events:
+        stored_events.append(
+            {
+                "id": f"tool-{len(stored_events) + 1}",
+                "name": event["name"],
+                "arguments": event.get("arguments", {}),
+                "result": event.get("result", {}),
+                "createdAt": timestamp,
+            }
+        )
+    if events:
+        session["updatedAt"] = timestamp
+    update_session_status(session)
+    persist_session(session)
+
+
+def leads_for_session(session_id: str) -> List[Dict[str, Any]]:
+    return [lead for lead in LEADS if lead.get("sessionId") == session_id]
+
+
+def infer_outcome(session: Dict[str, Any]) -> str:
+    tool_events = session.get("toolEvents", [])
+    messages = session.get("messages", [])
+    if any(
+        event.get("name") == "book_appointment"
+        and event.get("result", {}).get("status") == "confirmed"
+        for event in tool_events
+    ):
+        return "booked"
+    if leads_for_session(session["sessionId"]):
+        return "lead"
+    if any(
+        event.get("name") == "handoff_to_human"
+        and event.get("result", {}).get("status") == "created"
+        for event in tool_events
+    ):
+        return "handoff"
+    if not any(message.get("role") == "user" for message in messages):
+        return "empty"
+    user_messages = [
+        message.get("content", "").lower()
+        for message in messages[-4:]
+        if message.get("role") == "user"
+    ]
+    if any(
+        re.search(r"\b(thanks|thank you|that'?s all|no thanks|all set|done)\b", message)
+        for message in user_messages
+    ):
+        return "completed"
+    if now_seconds() - session.get("updatedAt", 0) >= ARCHIVE_AFTER_SECONDS:
+        return "abandoned"
+    return "active"
+
+
+def update_session_status(session: Dict[str, Any]) -> None:
+    outcome = infer_outcome(session)
+    session["outcome"] = outcome
+    session["status"] = "active" if outcome == "active" else "archived"
+
+
+def persist_session(session: Dict[str, Any]) -> None:
+    CHATS_DIR.mkdir(exist_ok=True)
+    update_session_status(session)
+    payload = {
+        "schemaVersion": 1,
+        "savedAt": now_seconds(),
+        "session": session,
+        "leads": leads_for_session(session["sessionId"]),
+    }
+    file_path = CHATS_DIR / f"{safe_file_stem(session['sessionId'])}.json"
+    tmp_path = file_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(file_path)
+
+
+def persist_session_id(session_id: str) -> None:
+    session = SESSIONS.get(session_id)
+    if session:
+        persist_session(session)
+
+
+def load_saved_chats() -> None:
+    CHATS_DIR.mkdir(exist_ok=True)
+    for file_path in CHATS_DIR.glob("*.json"):
+        try:
+            payload = json.loads(file_path.read_text(encoding="utf-8"))
+            session = payload.get("session")
+            if not isinstance(session, dict) or not session.get("sessionId"):
+                continue
+            SESSIONS[session["sessionId"]] = session
+            for lead in payload.get("leads", []):
+                if isinstance(lead, dict) and not any(
+                    existing.get("leadId") == lead.get("leadId") for existing in LEADS
+                ):
+                    LEADS.append(lead)
+        except (OSError, json.JSONDecodeError):
+            continue
+    for session in SESSIONS.values():
+        update_session_status(session)
+
+
+def session_summary(session: Dict[str, Any]) -> Dict[str, Any]:
+    previous_status = (session.get("status"), session.get("outcome"))
+    update_session_status(session)
+    if previous_status != (session.get("status"), session.get("outcome")):
+        persist_session(session)
+    messages = session.get("messages", [])
+    last_message = messages[-1] if messages else None
+    return {
+        "sessionId": session["sessionId"],
+        "tenantId": session["tenantId"],
+        "tenantName": session["tenantName"],
+        "createdAt": session["createdAt"],
+        "updatedAt": session["updatedAt"],
+        "active": now_seconds() - session["updatedAt"] < ARCHIVE_AFTER_SECONDS,
+        "status": session.get("status", "active"),
+        "outcome": session.get("outcome", "active"),
+        "messageCount": len(messages),
+        "toolEventCount": len(session.get("toolEvents", [])),
+        "leadCount": len(leads_for_session(session["sessionId"])),
+        "lastMessage": last_message,
+    }
+
+
+def session_detail(session: Dict[str, Any]) -> Dict[str, Any]:
+    detail = dict(session_summary(session))
+    detail["messages"] = session.get("messages", [])
+    detail["toolEvents"] = session.get("toolEvents", [])
+    detail["leads"] = leads_for_session(session["sessionId"])
+    return detail
+
+
 def build_system_prompt(tenant: TenantConfig) -> str:
     price_lines = "\n".join(
         f"- {service}: {price}" for service, price in tenant.get("prices", {}).items()
@@ -222,7 +538,8 @@ def build_system_prompt(tenant: TenantConfig) -> str:
 
     booking_line = (
         "Booking through chat is allowed. Always call get_availability before offering slots. "
-        "Call book_appointment only after the user explicitly confirms a specific slot."
+        "Call book_appointment only after the user explicitly confirms a specific slot. "
+        "When booking, pass the exact slot string returned by get_availability."
         if tenant["bookingEnabled"]
         else (
             "Booking through chat is not allowed. Do not call get_availability or "
@@ -233,9 +550,30 @@ def build_system_prompt(tenant: TenantConfig) -> str:
     pricing_line = (
         "Pricing through chat is forbidden. Never provide prices, estimates, ranges, "
         "or guesses. For any pricing question, provide the phone number and say the "
-        "team can help by phone."
+        "team can help by phone. Offer to create a lead if the user wants a callback."
         if tenant["pricingPolicy"] == "never"
         else "Pricing through chat is allowed only for the approved prices listed below."
+    )
+
+    lead_line = (
+        "Lead capture is enabled. Before calling create_lead, collect customer name, "
+        "a valid email or complete 10 digit US phone number with area code, service, "
+        "and a short request summary. Ask one concise follow-up for missing required "
+        "fields. If the user gives a partial phone number, ask specifically for the "
+        "area code or a complete phone number. Create a lead when the user asks for a "
+        "callback, quote follow-up, human contact, or when booking/pricing policy "
+        "prevents completing the request in chat. If create_lead returns invalid_contact, "
+        "ask for a complete phone number with area code or an email."
+        if tenant.get("leadCaptureEnabled")
+        else "Lead capture is disabled. Do not call create_lead."
+    )
+    proactive_line = (
+        "Proactive lead capture is enabled. When the user shows buying intent, asks about "
+        "service area, pricing, availability, or seems likely to leave without booking, politely "
+        "offer a callback or text follow-up. Do not pressure the user, do not imply consent, "
+        "and do not say the company can call unless the user provides a phone or email."
+        if tenant.get("proactiveLeadCapture")
+        else "Proactive lead capture is disabled. Only ask for contact details when needed to complete the user's request."
     )
 
     return f"""
@@ -250,6 +588,8 @@ Business facts:
 Policy:
 - {pricing_line}
 - {booking_line}
+- {lead_line}
+- {proactive_line}
 - For service-area questions, call check_service_area with the ZIP code.
 - If a user requests a human, asks for an exception, or needs something outside policy, call handoff_to_human.
 - Keep replies concise, helpful, and specific to this company.
@@ -259,7 +599,12 @@ Approved prices:
 """.strip()
 
 
-def call_llm(messages: List[Dict[str, Any]], tenant: TenantConfig) -> Tuple[str, List[Dict[str, Any]]]:
+def call_llm(
+    messages: List[Dict[str, Any]],
+    tenant_id: str,
+    session_id: str,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    tenant = TENANTS[tenant_id]
     agent_messages: List[Dict[str, Any]] = [
         {"role": "system", "content": build_system_prompt(tenant)}
     ]
@@ -291,7 +636,7 @@ def call_llm(messages: List[Dict[str, Any]], tenant: TenantConfig) -> Tuple[str,
             except json.JSONDecodeError:
                 args = {}
 
-            result = execute_tool(tenant, name, args)
+            result = execute_tool(tenant_id, session_id, tenant, name, args)
             tool_events.append({"name": name, "arguments": args, "result": result})
             agent_messages.append(
                 {
@@ -323,7 +668,13 @@ def post_openai_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def execute_tool(tenant: TenantConfig, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def execute_tool(
+    tenant_id: str,
+    session_id: str,
+    tenant: TenantConfig,
+    name: str,
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
     if name == "check_service_area":
         zip_code = str(args.get("zip", "")).strip()
         return {
@@ -347,14 +698,68 @@ def execute_tool(tenant: TenantConfig, name: str, args: Dict[str, Any]) -> Dict[
         slot = str(args.get("slot", "")).strip()
         if not service:
             return {"error": "unknown_service", "allowed_services": tenant["services"]}
-        if slot not in tenant["availability"].get(service, []):
-            return {"error": "slot_unavailable", "service": service, "slot": slot}
+        available_slots = tenant["availability"].get(service, [])
+        matched_slot = find_matching_slot(slot, available_slots)
+        if not matched_slot:
+            return {
+                "error": "slot_unavailable",
+                "service": service,
+                "slot": slot,
+                "availableSlots": available_slots,
+            }
         confirmation_id = f"BK-{int(time.time())}"
         return {
             "status": "confirmed",
             "confirmationId": confirmation_id,
             "service": service,
-            "slot": slot,
+            "slot": matched_slot,
+        }
+
+    if name == "create_lead":
+        if not tenant.get("leadCaptureEnabled"):
+            return {"error": "lead_capture_disabled", "phone": tenant["phone"]}
+
+        customer_name = clean_text(args.get("customer_name", ""))
+        contact = normalize_contact(args.get("customer_phone_or_email", ""))
+        service = clean_text(args.get("service", ""))
+        summary = clean_text(args.get("summary", ""))
+        missing_fields = [
+            field
+            for field, value in {
+                "customer_name": customer_name,
+                "customer_phone_or_email": contact,
+                "service": service,
+                "summary": summary,
+            }.items()
+            if not value
+        ]
+        if missing_fields:
+            return {"error": "missing_required_fields", "missingFields": missing_fields}
+        if not is_valid_contact(contact):
+            return {
+                "error": "invalid_contact",
+                "field": "customer_phone_or_email",
+                "message": "Provide a valid email or a complete 10 digit US phone number with area code.",
+            }
+
+        lead = {
+            "leadId": f"LD-{int(time.time())}-{len(LEADS) + 1}",
+            "tenantId": tenant_id,
+            "tenantName": tenant["name"],
+            "sessionId": session_id,
+            "customerName": customer_name,
+            "contact": contact,
+            "service": service,
+            "addressOrZip": clean_text(args.get("address_or_zip", "")),
+            "urgency": clean_text(args.get("urgency", "unknown")) or "unknown",
+            "summary": summary,
+            "createdAt": int(time.time()),
+        }
+        LEADS.append(lead)
+        return {
+            "status": "created",
+            "leadId": lead["leadId"],
+            "phone": tenant["phone"],
         }
 
     if name == "handoff_to_human":
@@ -368,21 +773,70 @@ def execute_tool(tenant: TenantConfig, name: str, args: Dict[str, Any]) -> Dict[
     return {"error": "unknown_tool", "name": name}
 
 
+def clean_text(value: Any) -> str:
+    return str(value or "").strip()[:500]
+
+
+def normalize_contact(value: Any) -> str:
+    contact = clean_text(value)
+    if "@" in contact:
+        return contact
+    digits = re.sub(r"\D", "", contact)
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+    return contact
+
+
+def is_valid_contact(contact: str) -> bool:
+    if re.fullmatch(r"[\w.+-]+@[\w.-]+\.\w+", contact):
+        return True
+    digits = re.sub(r"\D", "", contact)
+    return len(digits) == 10 or (len(digits) == 11 and digits.startswith("1"))
+
+
 def fallback_response(
-    tenant: TenantConfig, messages: List[Dict[str, Any]]
+    tenant_id: str,
+    session_id: str,
+    tenant: TenantConfig,
+    messages: List[Dict[str, Any]],
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Rule fallback keeps the prototype usable if localhost:1234 is offline."""
     text = ""
+    user_texts: List[str] = []
     for message in reversed(messages):
         if message.get("role") == "user":
             text = str(message.get("content", "")).lower()
             break
+    for message in messages:
+        if message.get("role") == "user":
+            user_texts.append(str(message.get("content", "")))
+
+    joined_user_text = "\n".join(user_texts)
 
     tool_events: List[Dict[str, Any]] = []
+    if wants_lead(text):
+        lead_args, missing_fields = extract_lead_args(tenant, joined_user_text)
+        if missing_fields:
+            return (
+                "I can create a follow-up lead. Please send "
+                + readable_missing_fields(missing_fields)
+                + ".",
+                tool_events,
+            )
+        result = execute_tool(tenant_id, session_id, tenant, "create_lead", lead_args)
+        tool_events.append({"name": "create_lead", "arguments": lead_args, "result": result})
+        return (
+            f"I created lead {result['leadId']}. The {tenant['name']} team can follow up at "
+            f"{lead_args['customer_phone_or_email']}.",
+            tool_events,
+        )
+
     zip_match = re.search(r"\b\d{5}\b", text)
     if zip_match:
         args = {"zip": zip_match.group(0)}
-        result = execute_tool(tenant, "check_service_area", args)
+        result = execute_tool(tenant_id, session_id, tenant, "check_service_area", args)
         tool_events.append({"name": "check_service_area", "arguments": args, "result": result})
         if result["served"]:
             return (
@@ -414,7 +868,9 @@ def fallback_response(
         if tenant["pricingPolicy"] == "never":
             return (
                 f"{tenant['name']} does not provide pricing through chat. "
-                f"Please call {tenant['phone']} and the team can help with an estimate.",
+                f"Please call {tenant['phone']} and the team can help with an estimate. "
+                "I can also create a follow-up lead if you send your name, phone or email, "
+                "service, and address or ZIP.",
                 tool_events,
             )
         lines = "\n".join(
@@ -426,7 +882,8 @@ def fallback_response(
         if not tenant["bookingEnabled"]:
             return (
                 f"{tenant['name']} does not allow booking through chat. "
-                f"Please call {tenant['phone']} to schedule.",
+                f"Please call {tenant['phone']} to schedule. I can also create a follow-up "
+                "lead if you send your name, phone or email, service, and address or ZIP.",
                 tool_events,
             )
         service = normalize_service(tenant, text)
@@ -436,7 +893,7 @@ def fallback_response(
                 tool_events,
             )
         args = {"service": service}
-        result = execute_tool(tenant, "get_availability", args)
+        result = execute_tool(tenant_id, session_id, tenant, "get_availability", args)
         tool_events.append({"name": "get_availability", "arguments": args, "result": result})
         slots = result.get("slots", [])
         return (
@@ -448,9 +905,93 @@ def fallback_response(
 
     return (
         f"I can help with hours, contact info, service ZIP codes, "
-        f"{'approved prices, and appointment slots' if tenant['bookingEnabled'] else 'and routing you to the team'}.",
+        f"{'approved prices, appointment slots, and follow-up leads' if tenant['bookingEnabled'] else 'and creating a follow-up lead for the team'}.",
         tool_events,
     )
+
+
+def wants_lead(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(call me|contact me|follow[- ]?up|lead|quote request|request a quote|"
+            r"someone call|human|person|reach out|email me)\b",
+            text,
+        )
+    )
+
+
+def extract_lead_args(tenant: TenantConfig, text: str) -> Tuple[Dict[str, str], List[str]]:
+    contact = extract_contact(text)
+    customer_name = extract_name(text)
+    service = normalize_service(tenant, text) or extract_service_description(text)
+    zip_match = re.search(r"\b\d{5}\b", text)
+    address_or_zip = zip_match.group(0) if zip_match else ""
+    summary = text.strip()[:300]
+    args = {
+        "customer_name": customer_name,
+        "customer_phone_or_email": contact,
+        "service": service,
+        "address_or_zip": address_or_zip,
+        "urgency": extract_urgency(text),
+        "summary": summary,
+    }
+    missing = [
+        field
+        for field in ["customer_name", "customer_phone_or_email", "service", "summary"]
+        if not args[field]
+    ]
+    if contact and not is_valid_contact(contact):
+        missing.append("valid_customer_phone_or_email")
+    return args, missing
+
+
+def extract_contact(text: str) -> str:
+    email_match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", text)
+    if email_match:
+        return email_match.group(0)
+    phone_match = re.search(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}", text)
+    if phone_match:
+        return normalize_contact(phone_match.group(0))
+    partial_phone_match = re.search(r"\b\d{3}[\s.-]?\d{4}\b", text)
+    return partial_phone_match.group(0) if partial_phone_match else ""
+
+
+def extract_name(text: str) -> str:
+    name_match = re.search(
+        r"\b(?:my name is|name is|i am|i'm)\s+([A-Za-z]+(?:\s+[A-Za-z]+){0,2})",
+        text,
+        re.IGNORECASE,
+    )
+    return name_match.group(1).strip() if name_match else ""
+
+
+def extract_service_description(text: str) -> str:
+    service_match = re.search(r"\b(?:for|need|about)\s+([A-Za-z][A-Za-z ]{2,40})", text)
+    return service_match.group(1).strip() if service_match else ""
+
+
+def extract_urgency(text: str) -> str:
+    lowered = text.lower()
+    if re.search(r"\b(emergency|urgent|asap|immediately)\b", lowered):
+        return "emergency"
+    if re.search(r"\b(today|tonight)\b", lowered):
+        return "today"
+    if re.search(r"\b(this week|week)\b", lowered):
+        return "this_week"
+    if re.search(r"\b(flexible|any time|whenever)\b", lowered):
+        return "flexible"
+    return "unknown"
+
+
+def readable_missing_fields(fields: List[str]) -> str:
+    labels = {
+        "customer_name": "your name",
+        "customer_phone_or_email": "a phone number or email",
+        "valid_customer_phone_or_email": "a complete 10 digit phone number with area code or an email",
+        "service": "the service you need",
+        "summary": "a short note about the request",
+    }
+    return ", ".join(labels.get(field, field) for field in fields)
 
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -473,11 +1014,54 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json(payload)
             return
 
+        if parsed.path == "/api/leads":
+            params = urllib.parse.parse_qs(parsed.query)
+            tenant_filter = params.get("tenantId", [None])[0]
+            leads = [
+                lead
+                for lead in LEADS
+                if tenant_filter is None or lead["tenantId"] == tenant_filter
+            ]
+            self.send_json({"leads": leads})
+            return
+
+        if parsed.path == "/api/admin/chats":
+            sessions = sorted(
+                (session_summary(session) for session in SESSIONS.values()),
+                key=lambda item: item["updatedAt"],
+                reverse=True,
+            )
+            self.send_json({"sessions": sessions})
+            return
+
+        if parsed.path.startswith("/api/admin/chats/"):
+            session_id = urllib.parse.unquote(parsed.path.split("/")[-1])
+            session = SESSIONS.get(session_id)
+            if not session:
+                self.send_json({"error": "session_not_found"}, status=404)
+                return
+            self.send_json({"session": session_detail(session)})
+            return
+
+        if parsed.path == "/api/chat/session":
+            params = urllib.parse.parse_qs(parsed.query)
+            session_id = params.get("sessionId", [""])[0]
+            session = SESSIONS.get(session_id)
+            if not session:
+                self.send_json({"session": None})
+                return
+            self.send_json({"session": session_detail(session)})
+            return
+
         path = "/index.html" if parsed.path == "/" else parsed.path
         self.serve_static(path)
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/admin/chats/") and parsed.path.endswith("/messages"):
+            self.handle_admin_message(parsed.path)
+            return
+
         if parsed.path != "/api/chat":
             self.send_error(404)
             return
@@ -486,16 +1070,20 @@ class ChatHandler(BaseHTTPRequestHandler):
             request = self.read_json()
             tenant_id = request.get("tenantId", "apex")
             tenant = TENANTS[tenant_id]
+            session_id = clean_text(request.get("sessionId", "")) or f"session-{int(time.time())}"
             messages = sanitize_messages(request.get("messages", []))
         except (KeyError, ValueError, json.JSONDecodeError):
             self.send_json({"error": "invalid_request"}, status=400)
             return
 
+        session = ensure_session(tenant_id, session_id)
+        set_session_messages(session, messages)
+
         try:
-            reply, tool_events = call_llm(messages, tenant)
+            reply, tool_events = call_llm(messages, tenant_id, session_id)
             mode = "llm"
         except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as error:
-            reply, tool_events = fallback_response(tenant, messages)
+            reply, tool_events = fallback_response(tenant_id, session_id, tenant, messages)
             mode = "fallback"
             tool_events.append(
                 {
@@ -505,7 +1093,27 @@ class ChatHandler(BaseHTTPRequestHandler):
                 }
             )
 
+        append_tool_events(session, tool_events)
+        append_session_message(session, "assistant", reply, "assistant")
         self.send_json({"reply": reply, "toolEvents": tool_events, "mode": mode})
+
+    def handle_admin_message(self, path: str) -> None:
+        session_id = urllib.parse.unquote(path.removeprefix("/api/admin/chats/").removesuffix("/messages"))
+        session = SESSIONS.get(session_id)
+        if not session:
+            self.send_json({"error": "session_not_found"}, status=404)
+            return
+        try:
+            request = self.read_json()
+            content = clean_text(request.get("content", ""))
+        except (ValueError, json.JSONDecodeError):
+            self.send_json({"error": "invalid_request"}, status=400)
+            return
+        if not content:
+            self.send_json({"error": "message_required"}, status=400)
+            return
+        message = append_session_message(session, "assistant", content, "admin")
+        self.send_json({"message": message, "session": session_detail(session)})
 
     def serve_static(self, path: str) -> None:
         clean_path = urllib.parse.unquote(path).lstrip("/")
@@ -550,14 +1158,23 @@ def sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     for message in messages[-24:]:
         role = message.get("role")
         content = message.get("content")
+        source = message.get("source")
         if role in {"user", "assistant"} and isinstance(content, str):
-            cleaned.append({"role": role, "content": content[:4000]})
+            cleaned.append(
+                {
+                    "role": role,
+                    "content": content[:4000],
+                    "source": source if source in {"user", "assistant", "admin", "proactive"} else role,
+                }
+            )
     return cleaned
 
 
 def main() -> None:
+    load_saved_chats()
     server = ThreadingHTTPServer((HOST, PORT), ChatHandler)
     print(f"Serving tenant chat prototype at http://{HOST}:{PORT}")
+    print(f"Persisting chat archives in {CHATS_DIR}")
     print(f"Calling OpenAI-compatible chat API at {LLM_BASE_URL}/chat/completions")
     server.serve_forever()
 
