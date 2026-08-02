@@ -517,6 +517,116 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: web
+  namespace: llm-chat
+  labels:
+    app: web
+    app.kubernetes.io/name: web
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: tenant-chat
+    tenantchat.openai.com/exposure: public-entrypoint
+spec:
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# The operator console. No ingress routes to it and no NetworkPolicy admits an
+# in-cluster caller, so reaching it means `kubectl port-forward`. It stays that
+# way until SEC-001 puts authentication in front of the admin routes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-admin
+  namespace: llm-chat
+  labels:
+    app: web
+    app.kubernetes.io/name: web-admin
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: tenant-chat
+    tenantchat.openai.com/exposure: internal
+spec:
+  selector:
+    app: web
+  ports:
+    - name: admin-http
+      port: 8081
+      targetPort: admin-http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: llm-chat
+  labels:
+    app: web
+    app.kubernetes.io/name: web
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+        app.kubernetes.io/name: web
+        app.kubernetes.io/instance: llm-chat
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      containers:
+        - name: web
+          image: registry.example.invalid/tenantchat/web@sha256:REPLACE_WITH_WEB_DIGEST
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 8081
+              name: admin-http
+          env:
+            # Visitor routes and admin routes are separate backend listeners, so
+            # a proxy rule cannot publish an admin route by pointing at the
+            # wrong port.
+            - name: CHAT_BACKEND_ORIGIN
+              value: http://chat-backend:8000
+            - name: CHAT_ADMIN_ORIGIN
+              value: http://chat-admin:8004
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 20m
+            limits:
+              memory: 128Mi
+              cpu: 500m
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          volumeMounts:
+            # The rendered site configuration and nginx's temporary paths are
+            # the only things the container writes.
+            - name: rendered-config
+              mountPath: /etc/nginx/conf.d
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: rendered-config
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: chat-backend
   namespace: llm-chat
   labels:
@@ -525,7 +635,7 @@ metadata:
     app.kubernetes.io/instance: llm-chat
     app.kubernetes.io/component: backend
     app.kubernetes.io/part-of: tenant-chat
-    tenantchat.openai.com/exposure: public-entrypoint
+    tenantchat.openai.com/exposure: internal
 spec:
   selector:
     app: chat-backend

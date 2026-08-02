@@ -1,11 +1,19 @@
 # Container image build and release evidence
 
-The repository builds five application images from one hashed `uv.lock`:
-`prototype`, `api`, `embedding`, `ingestion`, and `financing`. The API image is
-also the migration image, so a migration and its serving release cannot acquire
-different Python dependencies. Build stages use digest-pinned Python and uv
-images; final stages contain the virtual environment and application only, run
-as numeric user/group `10001:10001`, and do not contain uv or pip build steps.
+The repository builds six application images. Five come from one hashed
+`uv.lock` — `prototype`, `api`, `embedding`, `ingestion`, and `financing` — and
+the API image is also the migration image, so a migration and its serving
+release cannot acquire different Python dependencies. Build stages use
+digest-pinned Python and uv images; final stages contain the virtual environment
+and application only, run as numeric user/group `10001:10001`, and do not
+contain uv or pip build steps.
+
+The sixth, `web`, is the nginx gateway built from `frontend/Dockerfile`. It
+carries no Python: its content is `frontend/public/` plus the configuration in
+`frontend/nginx/`. Its smoke asserts the two document roots stay separate and
+that a malformed upstream origin stops the container instead of rendering a
+configuration that rewrites every proxied request. See
+[ADR-0006](../adr/0006-frontend-delivery.md).
 
 The embedding runtime pins Qwen3-Embedding-0.6B to commit
 `97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, uses the CPU-only PyTorch index,
@@ -39,7 +47,7 @@ To verify one image while iterating:
 ./scripts/smoke_images.sh api
 ```
 
-CI performs the same build and smoke in a five-image matrix. It uploads the
+CI performs the same build and smoke in a six-image matrix. It uploads the
 metadata, inspect output, health response, and Trivy JSON for each image and
 fails on fixed HIGH or CRITICAL findings. A separate filesystem scan covers the
 locked dependencies and repository inputs.

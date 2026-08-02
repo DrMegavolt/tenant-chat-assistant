@@ -46,7 +46,9 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
 
     assert {
         "allow-dns-egress",
-        "allow-public-ingress-to-chat",
+        "allow-public-ingress-to-web",
+        "allow-web-to-chat",
+        "allow-web-egress",
         "allow-prometheus-chat-metrics",
         "allow-prometheus-embedding-metrics",
         "allow-prometheus-ingestion-metrics",
@@ -68,7 +70,8 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
     } <= names
 
 
-def test_only_chat_is_marked_as_the_public_service() -> None:
+def test_only_the_web_gateway_is_marked_as_the_public_service() -> None:
+    """The backend stopped being internet-facing when nginx took over the edge."""
     documents = load_documents("k8s/app.yaml")
     services = [document for document in documents if document["kind"] == "Service"]
     public = [
@@ -78,8 +81,25 @@ def test_only_chat_is_marked_as_the_public_service() -> None:
         == "public-entrypoint"
     ]
 
-    assert public == ["chat-backend"]
+    assert public == ["web"]
     assert all(document["spec"].get("type", "ClusterIP") == "ClusterIP" for document in services)
+
+
+def test_the_ingress_controller_can_only_reach_the_web_gateway() -> None:
+    policies = load_documents("k8s/network-policies.yaml")
+    ingress_callers = {
+        document["metadata"]["name"]: document["spec"]["podSelector"]["matchLabels"]
+        for document in policies
+        if document["kind"] == "NetworkPolicy"
+        and any(
+            source.get("namespaceSelector", {}).get("matchLabels", {})
+            == {"kubernetes.io/metadata.name": "ingress"}
+            for rule in document["spec"].get("ingress", [])
+            for source in rule["from"]
+        )
+    }
+
+    assert ingress_callers == {"allow-public-ingress-to-web": {"app": "web"}}
 
 
 def test_workloads_use_distinct_internal_secret_refs() -> None:

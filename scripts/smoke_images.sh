@@ -16,7 +16,7 @@ SMOKE_DB_USER="smoke_owner"
 SMOKE_DB_PASSWORD="image-smoke-test-only"
 SMOKE_DB_NAME="tenantchat_smoke"
 
-ALL_IMAGES=(prototype api embedding ingestion financing)
+ALL_IMAGES=(prototype api embedding ingestion financing web)
 if (( $# )); then
   IMAGES=("$@")
 else
@@ -52,7 +52,7 @@ trap 'exit 143' TERM
 health_path() {
   case "$1" in
     prototype) echo "/api/tenants" ;;
-    api) echo "/healthz" ;;
+    api|web) echo "/healthz" ;;
     *) echo "/health" ;;
   esac
 }
@@ -64,6 +64,7 @@ container_port() {
     ingestion) echo 8002 ;;
     financing) echo 8003 ;;
     api) echo 8004 ;;
+    web) echo 8080 ;;
   esac
 }
 
@@ -99,7 +100,7 @@ start_smoke_database() {
 
 mkdir -p "$OUTPUT_DIR"
 for image in "${IMAGES[@]}"; do
-  case "$image" in prototype|api|embedding|ingestion|financing) ;; *)
+  case "$image" in prototype|api|embedding|ingestion|financing|web) ;; *)
     echo "unknown image '$image'; choose: ${ALL_IMAGES[*]}" >&2
     exit 2
   esac
@@ -136,6 +137,22 @@ for image in "${IMAGES[@]}"; do
       ;;
     ingestion|financing)
       docker run --rm --entrypoint python "$tag" -c 'import app; assert app.app'
+      ;;
+    web)
+      # The public document root is the boundary: an admin asset present here is
+      # an admin console published to the internet.
+      docker run --rm --entrypoint sh "$tag" -c \
+        '! ls /srv/public | grep -q "^admin" && test -f /srv/public/embed.js && test -f /srv/admin/admin.html'
+      # A malformed upstream must stop the container, not render a config that
+      # rewrites or drops every proxied request.
+      if docker run --rm --env "CHAT_BACKEND_ORIGIN=http://backend/path" "$tag" >/dev/null 2>&1; then
+        echo "$tag accepted an upstream origin carrying a path" >&2
+        exit 1
+      fi
+      # Resolvable but closed: nginx resolves proxy_pass hosts at startup, and
+      # this smoke has no backend to point at.
+      run_args+=(--env "CHAT_BACKEND_ORIGIN=http://127.0.0.1:9"
+                 --env "CHAT_ADMIN_ORIGIN=http://127.0.0.1:9")
       ;;
   esac
 

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "vite",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -19,6 +20,7 @@
     "globals": "16.3.0",
     "jsdom": "26.1.0",
     "prettier": "3.6.2",
+    "vite": "7.3.6",
     "vitest": "3.2.7"
   }
 }

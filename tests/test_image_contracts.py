@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
+from scripts import verify_image_contracts
 from scripts.verify_image_contracts import (
     DOCKERFILES,
     POSTGRES_FIXTURES,
@@ -21,15 +23,36 @@ from scripts.verify_image_contracts import (
 from scripts.verify_release_manifest import REQUIRED_WORKLOADS, validate_manifest
 
 
-def test_all_five_deployable_images_are_covered() -> None:
-    assert len(DOCKERFILES) == 5
+def test_every_deployable_image_is_covered() -> None:
+    assert len(DOCKERFILES) == 6
     assert all(path.is_file() for path in DOCKERFILES)
+    assert ROOT / "frontend/Dockerfile" in DOCKERFILES
 
 
 def test_dockerfiles_are_locked_and_non_root() -> None:
     errors: list[str] = []
     verify_dockerfiles(errors)
     assert errors == []
+
+
+def test_an_unpinned_base_image_is_rejected(tmp_path: Path) -> None:
+    """Guards the check above: it now accepts any ARG count, not exactly two."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# syntax=docker/dockerfile:1.7@sha256:" + "a" * 64 + "\n"
+        'ARG NGINX_IMAGE="nginx:1.29.8-alpine"\n'
+        "FROM ${NGINX_IMAGE}\nUSER 10001:10001\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+    with (
+        patch.object(verify_image_contracts, "ROOT", tmp_path),
+        patch.object(verify_image_contracts, "DOCKERFILES", (dockerfile,)),
+        patch.object(verify_image_contracts, "PYTHON_DOCKERFILES", ()),
+    ):
+        verify_dockerfiles(errors)
+
+    assert any("exact digest" in error for error in errors)
 
 
 def test_kubernetes_uses_images_as_immutable_artifacts() -> None:

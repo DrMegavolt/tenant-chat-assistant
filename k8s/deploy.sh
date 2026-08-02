@@ -68,8 +68,9 @@ kubectl apply -f "$ROOT_DIR/k8s/kibana-setup-job.yaml"
 kubectl -n "$NS" wait --for=condition=complete job/configure-kibana-system-user --timeout=300s
 
 kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
-kubectl -n "$NS" rollout restart deploy/chat-backend deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
+kubectl -n "$NS" rollout restart deploy/web deploy/chat-backend deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
 kubectl -n "$NS" rollout status deploy/chat-backend --timeout=180s
+kubectl -n "$NS" rollout status deploy/web --timeout=180s
 kubectl -n "$NS" rollout status deploy/embedding-service --timeout=900s
 kubectl -n "$NS" rollout status deploy/ingestion-service --timeout=300s
 kubectl -n "$NS" rollout status deploy/financing-agent --timeout=300s

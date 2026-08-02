@@ -9,13 +9,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCKERFILES = (
+# Images whose contents come from the Python lockfile.
+PYTHON_DOCKERFILES = (
     ROOT / "Dockerfile",
     ROOT / "services/api/Dockerfile",
     ROOT / "services/embedding/Dockerfile",
     ROOT / "services/ingestion/Dockerfile",
     ROOT / "services/financing-agent/Dockerfile",
 )
+WEB_DOCKERFILE = ROOT / "frontend/Dockerfile"
+DOCKERFILES = (*PYTHON_DOCKERFILES, WEB_DOCKERFILE)
 # Entrypoint modules copied as loose files rather than installed from the lock.
 # The API is absent on purpose: it ships as a built wheel in the image venv.
 RUNTIME_ENTRYPOINTS = {
@@ -37,9 +40,14 @@ K8S_FILES = tuple(sorted((ROOT / "k8s").glob("*.yaml")))
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 POSTGRES_IMAGE = re.compile(r"postgres:\d[\w.\-]*(?:@sha256:[0-9a-f]{64})?")
 RELEASE_CONTRACT = re.compile(
-    r"registry\.example\.invalid/tenantchat/(?:prototype|api|embedding|ingestion|financing)"
+    r"registry\.example\.invalid/tenantchat/(?:prototype|api|embedding|ingestion|financing|web)"
     r"@sha256:REPLACE_WITH_[A-Z]+_DIGEST$"
 )
+WEB_SITE_TEMPLATE = ROOT / "frontend/nginx/site.conf.template"
+# The visitor API surface the public listener may forward, which has to stay
+# equal to `_PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS` minus the static routes in
+# server.py; `tests/test_web_gateway.py` asserts that equality directly.
+PUBLIC_PROXY_PATHS = frozenset({"/api/tenants", "/api/chat", "/api/chat/session", "/api/book"})
 
 
 def verify_dockerfiles(errors: list[str]) -> None:
@@ -51,9 +59,9 @@ def verify_dockerfiles(errors: list[str]) -> None:
         if DIGEST.search(syntax) is None:
             errors.append(f"{label}: Dockerfile frontend must use an exact digest")
         image_args = re.findall(r'^ARG\s+\w+_IMAGE="([^"]+)"', text, re.MULTILINE)
-        if len(image_args) != 2 or any(DIGEST.search(image) is None for image in image_args):
+        if not image_args or any(DIGEST.search(image) is None for image in image_args):
             errors.append(f"{label}: every base/tool image ARG must end in an exact digest")
-        if "uv sync --frozen" not in text:
+        if path in PYTHON_DOCKERFILES and "uv sync --frozen" not in text:
             errors.append(f"{label}: dependency installation must consume uv.lock with --frozen")
         if re.search(r"\bpip(?:3)?\s+install\b", text):
             errors.append(f"{label}: runtime/build pip install is forbidden")
@@ -125,6 +133,82 @@ def verify_runtime_modules(errors: list[str]) -> None:
     for required in API_RUNTIME_FILES:
         if required not in api_copied:
             errors.append(f"{api.relative_to(ROOT)}: final stage must copy {required}")
+
+
+def web_document_roots() -> dict[str, set[str]]:
+    """Return the build-context paths each nginx document root is built from."""
+    roots: dict[str, set[str]] = {}
+    instructions = re.sub(r"\\\n\s*", " ", WEB_DOCKERFILE.read_text(encoding="utf-8"))
+    for line in instructions.splitlines():
+        arguments = [argument for argument in line.split() if not argument.startswith("--")]
+        if not arguments or arguments[0] != "COPY" or not arguments[-1].startswith("/srv/"):
+            continue
+        root = "/" + "/".join(arguments[-1].split("/")[1:3])
+        roots.setdefault(root, set()).update(arguments[1:-1])
+    return roots
+
+
+def web_server_blocks() -> dict[int, str]:
+    """Return the rendered site's `server { ... }` bodies keyed by listen port."""
+    text = WEB_SITE_TEMPLATE.read_text(encoding="utf-8")
+    blocks: dict[int, str] = {}
+    for start in (match.end() for match in re.finditer(r"^server\s*\{", text, re.MULTILINE)):
+        depth = 1
+        index = start
+        while depth and index < len(text):
+            depth += {"{": 1, "}": -1}.get(text[index], 0)
+            index += 1
+        body = text[start : index - 1]
+        listen = re.search(r"^\s*listen\s+(\d+)\s*;", body, re.MULTILINE)
+        if listen is not None:
+            blocks[int(listen.group(1))] = body
+    return blocks
+
+
+def proxied_locations(block: str) -> set[str]:
+    """Return the exact-match locations in one server block that proxy upstream."""
+    return {
+        match.group(1)
+        for match in re.finditer(r"location\s+=?\s*(\S+)\s*\{[^}]*proxy_pass", block, re.DOTALL)
+    }
+
+
+def verify_web_gateway(errors: list[str]) -> None:
+    """Require the public listener to carry no admin asset and no admin route.
+
+    Two roots and two listeners are the whole isolation argument: if the public
+    root ever receives the full `frontend/public/` tree, or the public server
+    block grows an admin location, the operator console becomes internet-facing
+    with nothing else in the deployment to stop it.
+    """
+    dockerfile = str(WEB_DOCKERFILE.relative_to(ROOT))
+    template = str(WEB_SITE_TEMPLATE.relative_to(ROOT))
+    roots = web_document_roots()
+    if set(roots) != {"/srv/public", "/srv/admin"}:
+        errors.append(f"{dockerfile}: expected exactly a public and an admin document root")
+        return
+    for source in sorted(roots["/srv/public"]):
+        if Path(source).name.startswith("admin") or source.rstrip("/") == "frontend/public":
+            errors.append(f"{dockerfile}: public root must not receive {source}")
+    public_sources = {
+        "frontend/public/index.html",
+        "frontend/public/app.js",
+        "frontend/public/embed.js",
+        "frontend/public/styles.css",
+        "frontend/public/widget/",
+    }
+    for source in sorted(public_sources - roots["/srv/public"]):
+        errors.append(f"{dockerfile}: public root is missing {source}")
+
+    blocks = web_server_blocks()
+    if set(blocks) != {8080, 8081}:
+        errors.append(f"{template}: expected a public 8080 and an admin 8081 listener")
+        return
+    difference = proxied_locations(blocks[8080]) ^ set(PUBLIC_PROXY_PATHS)
+    if difference:
+        errors.append(f"{template}: public listener proxies {', '.join(sorted(difference))}")
+    if "location /api/ {" not in blocks[8080] or "return 404" not in blocks[8080]:
+        errors.append(f"{template}: public listener must reject unlisted /api/ paths")
 
 
 def verify_pinned_postgres_images(errors: list[str]) -> None:
@@ -210,6 +294,7 @@ def main() -> int:
     errors: list[str] = []
     verify_dockerfiles(errors)
     verify_runtime_modules(errors)
+    verify_web_gateway(errors)
     verify_pinned_postgres_images(errors)
     verify_model_cache(errors)
     verify_manifests(errors)

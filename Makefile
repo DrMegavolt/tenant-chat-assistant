@@ -11,8 +11,8 @@ UV_RUN := uv run --frozen
 NPM := npm --prefix frontend
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
-	test-migrations test-repositories test-database migrate js-install js-lint js-format \
-	js-format-check js-test js-test-cov deployment-security check api up up-all down \
+	test-migrations test-repositories test-database migrate dev js-install js-lint js-format \
+	js-format-check js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check arch-validate arch-build clean
 
@@ -69,6 +69,9 @@ frontend/node_modules/.package-lock.json: frontend/package.json frontend/package
 
 js-install: frontend/node_modules/.package-lock.json ## Install exact frontend development dependencies
 
+dev: frontend/node_modules/.package-lock.json ## Serve the frontend with hot reload against a local backend
+	$(NPM) run dev
+
 js-lint: frontend/node_modules/.package-lock.json ## Lint frontend JavaScript
 	$(NPM) run lint
 
@@ -115,6 +118,9 @@ up: ## Start local dependencies (Postgres, Elasticsearch)
 
 up-all: ## Start dependencies plus the optional embedding service
 	docker compose --profile embedding up -d --wait
+
+web: ## Serve the frontend from the deployed nginx image on http://127.0.0.1:8080
+	docker compose --profile web up -d --build --wait web
 
 down: ## Stop local dependencies, preserving volumes
 	docker compose down

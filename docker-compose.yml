@@ -2,6 +2,7 @@
 #
 #     make up        # Postgres + Elasticsearch (fast)
 #     make up-all    # also the embedding service and Kibana
+#     make web       # the frontend behind nginx, as deployed
 #
 # Every credential is required from the environment with `:?`, so a missing value
 # fails immediately with a named variable instead of starting a service on a
@@ -89,6 +90,39 @@ services:
       timeout: 10s
       retries: 20
       start_period: 120s
+
+  # Optional: `make web`. The same image Kubernetes serves the site from, so a
+  # broken proxy rule, cache header, or CSP shows up locally rather than after a
+  # deploy. Hot-reload development is `make dev` instead; this is the deployed
+  # shape, and its assets are baked into the image at build time.
+  web:
+    profiles: ["web"]
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    environment:
+      # The backend runs on the host, not in compose: `python3 server.py`, or
+      # `make api` for services/api on 8080. Outside APP_ENV=production the
+      # prototype serves admin routes on its single port, so both origins point
+      # at the same place here; Kubernetes splits them across 8000 and 8004.
+      CHAT_BACKEND_ORIGIN: ${CHAT_BACKEND_ORIGIN:-http://host.docker.internal:8000}
+      CHAT_ADMIN_ORIGIN: ${CHAT_ADMIN_ORIGIN:-http://host.docker.internal:8000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+      # The console listener stays on loopback: it is unauthenticated until
+      # SEC-001 lands, and nothing on the local network should reach it.
+      - "127.0.0.1:${WEB_ADMIN_PORT:-8081}:8081"
+    healthcheck:
+      # 127.0.0.1, not localhost: the listener is IPv4 and localhost resolves to
+      # ::1 first inside the container.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
 
 # Kibana is deliberately absent. Kibana 8 refuses to start when configured with
 # the `elastic` superuser, so a local instance needs the `kibana_system` account

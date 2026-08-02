@@ -29,17 +29,18 @@ spec:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
 ---
-# Only the ingress controller is a public caller. There is intentionally no
+# The web gateway is the only pod the ingress controller may reach, and nothing
+# outside the namespace reaches the backend at all. There is intentionally no
 # LoadBalancer service for Kibana, financing, ingestion, embedding, or data stores.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-public-ingress-to-chat
+  name: allow-public-ingress-to-web
   namespace: llm-chat
 spec:
   podSelector:
     matchLabels:
-      app: chat-backend
+      app: web
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -50,7 +51,27 @@ spec:
             matchLabels:
               app.kubernetes.io/name: traefik
       ports:
+        # 8081 is absent on purpose: the console listener is not routable.
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-to-chat
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
         - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8004 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -243,6 +264,25 @@ spec:
 ---
 # Workload egress is split by caller so adding a dependency to one service cannot
 # silently grant the same reachability to every pod in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: chat-backend
+      ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8004 }
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -18,6 +18,7 @@ REQUIRED_WORKLOADS = frozenset(
         ("Deployment", "ingestion-service"),
         ("Deployment", "financing-agent"),
         ("Deployment", "chat-backend"),
+        ("Deployment", "web"),
     }
 )
 

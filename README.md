@@ -9,6 +9,7 @@ before `server.py` is retired.
 
 ```bash
 make api      # services/api on http://127.0.0.1:8080
+make dev      # frontend with hot reload on http://127.0.0.1:5173
 make setup    # install locked Python and frontend development dependencies
 make check    # complete Python + JavaScript quality gate with coverage
 make test-database # isolated PostgreSQL migrations and repository concurrency
@@ -19,23 +20,49 @@ and deterministic fake API responses; Python unit and API contract tests use
 in-memory stores and fakes. Coverage reports are written below `coverage/`, and
 JUnit test results below `artifacts/test-results/`.
 
-Run the prototype locally:
+Run the prototype backend locally:
 
 ```bash
 python3 server.py
 ```
 
-Then open:
+Then serve the frontend against it. For frontend work, use the dev server: it
+hot-reloads `frontend/public/` and proxies `/api` to the backend on port 8000,
+so the browser stays same-origin exactly as it is behind nginx.
 
-```text
-http://127.0.0.1:8000
+```bash
+make dev
 ```
 
-Admin dashboard:
+```text
+http://127.0.0.1:5173            the demo site
+http://127.0.0.1:5173/admin.html the operator console
+```
+
+Point the proxy somewhere else — `services/api`, or a port-forwarded cluster —
+with `CHAT_DEV_BACKEND_ORIGIN`:
+
+```bash
+CHAT_DEV_BACKEND_ORIGIN=http://127.0.0.1:8080 make dev
+```
+
+To exercise the deployed shape instead — the nginx image, its cache and security
+headers, and its public route allowlist — run the gateway from docker compose
+against the same backend:
+
+```bash
+make web
+```
 
 ```text
-http://127.0.0.1:8000/admin.html
+http://127.0.0.1:8080            the demo site
+http://127.0.0.1:8081            the operator console, bound to loopback only
 ```
+
+`server.py` still serves `frontend/public/` on port 8000 for convenience, but
+the prototype image no longer contains those files: in a deployment the `web`
+image serves them and proxies the API back to the chat backend. See
+[ADR-0006](docs/adr/0006-frontend-delivery.md).
 
 Chat archives are saved as JSON files locally in:
 
@@ -142,16 +169,25 @@ The placeholder-only examples, safe local provisioning workflow, production
 secret-manager path, and mandatory rotation warning are in
 [`k8s/README.md`](k8s/README.md). The deploy script fails before changing
 workloads when a required resource or key is missing and never displays values.
-It also requires a rendered application manifest whose five release image
+It also requires a rendered application manifest whose six release image
 contracts have been replaced with registry digests. See
 [`docs/runbooks/container-images.md`](docs/runbooks/container-images.md) for the
 locked build, non-root smoke, metadata, and scanning workflow.
 
+The deployed site is the `web` Service, which serves the assets and proxies the
+visitor API to the backend:
+
+```bash
+kubectl -n llm-chat port-forward svc/web 18080:80
+kubectl -n llm-chat port-forward svc/web-admin 18081:8081   # operator console
+```
+
+To point a locally served frontend at a port-forwarded backend instead, forward
+the API itself and configure the API base with one of these options:
+
 ```bash
 kubectl -n llm-chat port-forward svc/chat-backend 18080:8000
 ```
-
-Then configure the frontend API base with one of these options:
 
 ```html
 <script>
@@ -198,8 +234,9 @@ Example embed shape:
 
 Everything the browser loads lives under `frontend/`, which is a self-contained
 npm project: `frontend/public/` is served as-is, `frontend/tests/` holds the
-Vitest suite, and ESLint, Prettier, and Vitest are configured beside them. The
-`make js-*` targets drive it; nothing at the repository root is an npm package.
+Vitest suite, and ESLint, Prettier, Vite, and Vitest are configured beside them.
+The `make dev` and `make js-*` targets drive it; nothing at the repository root
+is an npm package.
 
 ```text
 frontend/public/
@@ -207,7 +244,13 @@ frontend/public/
   embed.js                             the entry a customer site includes
   app.js                               the demo page, which embeds the widget
   widget/                              the widget itself; no host-page coupling
+frontend/nginx/                        the gateway that serves all of it
+frontend/Dockerfile                    the `web` image
+frontend/vite.config.js                the hot-reloading dev server
 ```
+
+There is no build step. The dev server and the nginx image serve the same
+unbundled ES modules, so what hot-reloads locally is byte-for-byte what ships.
 
 The widget renders into a shadow root, so an embedding page can neither style
 its internals nor collide with its element ids, and its own styles never escape.

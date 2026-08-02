@@ -1159,6 +1159,18 @@ values are logged, never published. Run it with `make api`.
   - Widget asset versions can roll forward/back without breaking existing embeds.
 - Verification:
   - External route and TLS scan tests pass in a staging environment.
+- Progress: the widget hosting and route separation landed ahead of this task.
+  A sixth image, `web` (`frontend/Dockerfile`), serves `frontend/public/` from
+  nginx and is now the public entrypoint in Kubernetes and docker compose; the
+  chat backend is no longer reachable from the ingress controller. The public
+  listener forwards only the four visitor API paths and answers every other
+  `/api/` path `404`; the operator console is a second listener with its own
+  document root that no ingress and no NetworkPolicy admits. A restrictive CSP
+  and security headers ship with it. See ADR-0006. Still outstanding here:
+  domain-based HTTPS ingress with automated certificates, HTTP-to-HTTPS
+  redirection, and content-hashed asset URLs so widget versions can roll forward
+  and back independently — the gateway currently revalidates assets on a short
+  `max-age` instead.
 - Completion notes: _Pending._
 
 ### DEP-004 — High availability and autoscaling
