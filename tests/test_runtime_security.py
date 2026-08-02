@@ -53,6 +53,19 @@ def test_production_names_every_missing_value_without_echoing_values(
     assert "do-not-log-this-value" not in message
 
 
+def test_production_rejects_placeholder_embedded_in_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://tenantchat:REPLACE_WITH_GENERATED_POSTGRES_PASSWORD@postgres/tenantchat",
+    )
+
+    with pytest.raises(RuntimeConfigurationError, match="DATABASE_URL"):
+        require_production_environment(("DATABASE_URL",))
+
+
 def test_production_provider_requires_key_endpoint_and_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

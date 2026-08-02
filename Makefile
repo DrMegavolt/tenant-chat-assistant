@@ -75,7 +75,7 @@ js-test-cov: node_modules/.package-lock.json ## Run frontend tests with coverage
 	npm run test:coverage
 
 deployment-security: ## Scan rendered non-Secret Kubernetes manifests and runtime refs
-	$(UV_RUN) python scripts/verify-deployment-security.py
+	$(UV_RUN) python scripts/verify_deployment_security.py
 
 check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov \
 	deployment-security ## Full local and CI quality gate

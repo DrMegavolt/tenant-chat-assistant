@@ -122,6 +122,48 @@ def test_composite_foreign_keys_reject_cross_tenant_records(
 
 
 @pytest.mark.integration
+def test_assigned_handoff_can_be_cancelled_without_erasing_assignment(
+    migration_database_url: str,
+) -> None:
+    """Cancellation preserves which staff principal held the abandoned handoff."""
+    upgrade_head(migration_database_url)
+    session_id = uuid.uuid4()
+    handoff_id = uuid.uuid4()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s)",
+            ("tenant-a", "Tenant A"),
+        )
+        connection.execute(
+            "INSERT INTO chat_sessions (id, tenant_id) VALUES (%s, %s)",
+            (session_id, "tenant-a"),
+        )
+        connection.execute(
+            """
+            INSERT INTO handoffs
+                (id, tenant_id, chat_session_id, status, reason,
+                 assigned_principal_id, assigned_at)
+            VALUES (%s, %s, %s, 'assigned', %s, %s, now())
+            """,
+            (handoff_id, "tenant-a", session_id, "visitor requested staff", "staff-1"),
+        )
+        connection.execute(
+            "UPDATE handoffs SET status = 'cancelled', updated_at = now() WHERE id = %s",
+            (handoff_id,),
+        )
+        row = connection.execute(
+            "SELECT status, assigned_principal_id, assigned_at FROM handoffs WHERE id = %s",
+            (handoff_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == "cancelled"
+    assert row[1] == "staff-1"
+    assert row[2] is not None
+
+
+@pytest.mark.integration
 def test_downgrade_to_base_and_restore_head(migration_database_url: str) -> None:
     """Development downgrade removes revision-owned objects and can be upgraded again."""
     config = alembic_config(migration_database_url)

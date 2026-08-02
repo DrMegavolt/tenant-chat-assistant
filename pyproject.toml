@@ -120,7 +120,7 @@ show_error_codes = true
 # Named per converted service rather than as `services`: the sibling directories
 # still hold excluded prototype scripts, and mypy errors on a directory with
 # nothing to check.
-files = ["packages", "services/api", "tests"]
+files = ["packages", "services/api", "scripts", "tests", "runtime_security.py"]
 exclude = ["architecture/"]
 # `tenantchat` is a PEP 420 namespace package under a src layout, so mypy cannot
 # infer where the package root starts. Without these it derives two module names

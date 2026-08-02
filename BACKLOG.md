@@ -396,8 +396,8 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
   `services/api/pyproject.toml`, `tests/migrations/`, `.github/workflows/ci.yml`,
   `k8s/api-migration-job.yaml`, `docs/runbooks/database-migrations.md`,
   `Makefile`, `.env.example`, `README.md`, `pyproject.toml`, and `uv.lock`.
-  Verified: `make test-migrations` (5 passed on disposable PostgreSQL 16) and
-  `make check` (264 passed; lock, lint, format, and mypy strict clean).
+  Verified: `make test-migrations` (6 passed on disposable PostgreSQL 16) and
+  `make check` (283 passed; lock, lint, format, and mypy strict clean).
   Follow-ups: `DATA-002` implements repositories; `DATA-003` owns transactional
   booking and slot/idempotency semantics; `DEP-001` supplies the immutable image
   digest used by the migration Job.
@@ -451,7 +451,7 @@ values are logged, never published. Run it with `make api`.
 - Status: `Todo`
 - Priority: `P0`
 - Type: `Data/backend`
-- Depends on: `DATA-001`, `API-001`
+- Depends on: `DATA-001`, `API-001` slice 1
 - Likely areas: backend repositories/services, `server.py` replacement modules
 - Scope:
   - Remove process-global sessions, leads, bookings, counters, and Postgres-as-snapshot behavior.
@@ -597,9 +597,11 @@ values are logged, never published. Run it with `make api`.
   chat-backend and financing-agent; hardened the Kibana setup job against command-
   line credential exposure; added placeholder-only examples and the documented
   local MicroK8s/out-of-band production secret-source contract in `k8s/README.md`;
-  and integrated `scripts/verify-deployment-security.py` into `make check` and CI.
-  Verification: `make check` (270 tests plus lock, lint, format, mypy, and deployment
-  security scan) passed. The committed `REPLACE_WITH_*` and `.invalid` values are
+  and integrated `scripts/verify_deployment_security.py` into `make check` and CI.
+  The gate has negative regression tests for literal credentials, private endpoints,
+  camelCase secret keys, and literal sensitive environment values. Verification:
+  `make check` (283 tests plus lock, lint, format, mypy, and deployment security
+  scan) passed. The committed `REPLACE_WITH_*` and `.invalid` values are
   examples, not live credentials/endpoints. No live Secret was read or rotated;
   any external credential matching an earlier repository placeholder must still be
   rotated before public deployment. Production secret-controller automation remains
@@ -773,7 +775,7 @@ values are logged, never published. Run it with `make api`.
 - Status: `Todo`
 - Priority: `P1`
 - Type: `Architecture/agent platform`
-- Depends on: `QA-001`, `API-001`, `DATA-002`
+- Depends on: `QA-001`, `API-001` slice 1, `DATA-002`
 - Likely areas: backend orchestration package, agent runtime adapters, architecture decision records, `architecture/likec4/`
 - Scope:
   - Define a framework-neutral `AgentRuntime` protocol with typed turn input, structured output, tool events, usage, cancellation, and error semantics.
@@ -1450,14 +1452,18 @@ This sequence reduces merge conflicts and prevents agents from building features
 
 ### Wave 2 — Core backend conversion
 
-Run these mostly sequentially because they substantially overlap the current `server.py`:
+Run these mostly sequentially because they substantially overlap the current `server.py`.
+`API-001` slice 1 is the stable API foundation for the first step; completing
+`API-001` slice 2 is a cutover step after the repository and runtime boundaries
+exist, not a prerequisite for them.
 
-1. `API-001`
-2. `DATA-002`
-3. `SEC-001` and `SEC-002`
-4. `SEC-003`
-5. `DATA-003`
-6. `PRIV-001`
+1. `DATA-002`
+2. `ARCH-001`
+3. `API-001` slice 2
+4. `SEC-001` and `SEC-002`
+5. `SEC-003`
+6. `DATA-003`
+7. `PRIV-001`
 
 ### Wave 3 — Parallel platform tracks
 

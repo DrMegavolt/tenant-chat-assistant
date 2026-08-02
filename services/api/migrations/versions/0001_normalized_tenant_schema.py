@@ -220,7 +220,7 @@ def upgrade() -> None:
             CONSTRAINT ck_handoffs_assignment_consistent CHECK
                 ((assigned_principal_id IS NULL) = (assigned_at IS NULL)),
             CONSTRAINT ck_handoffs_assigned_state CHECK
-                (assigned_at IS NULL OR status IN ('assigned', 'resolved')),
+                (assigned_at IS NULL OR status IN ('assigned', 'resolved', 'cancelled')),
             CONSTRAINT ck_handoffs_resolved_state CHECK
                 ((status = 'resolved') = (resolved_at IS NOT NULL)),
             CONSTRAINT ck_handoffs_time_order CHECK

@@ -29,7 +29,7 @@ file, or commit anything under `.local/`:
 
 ```bash
 kubectl create namespace llm-chat --dry-run=client -o yaml | kubectl apply -f -
-for name in elastic-credentials postgres-credentials kibana-credentials llm-provider-credentials; do
+for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials; do
   kubectl -n llm-chat create secret generic "$name" \
     --from-env-file=".local/k8s/$name.env.example" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -50,6 +50,12 @@ For a production environment, replace the manual `.local/` source with an
 external secret controller or a GitOps secret-encryption mechanism.  Keep the
 same Secret/ConfigMap names and keys so workloads retain the fail-closed contract.
 Never store cleartext production values in Git.
+
+`postgres-migration-credentials` contains the schema-owner URL used only by the
+one-shot `k8s/api-migration-job.yaml` release step. `deploy.sh` verifies that the
+resource exists but does not run the migration Job; the release pipeline must
+replace its image placeholder with the release digest and apply it before API
+rollout, following `docs/runbooks/database-migrations.md`.
 
 The endpoint and placeholder credentials that existed in repository history must
 be treated as exposed examples.  They were not verified as live values here.

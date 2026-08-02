@@ -36,6 +36,17 @@ spec:
               netrc_path=/tmp/elasticsearch.netrc
               payload_path=/tmp/kibana-password.json
               trap 'rm -f "$netrc_path" "$payload_path"' EXIT
+              valid_credential() {
+                case "$1" in
+                  ''|*[!a-zA-Z0-9_-]*) return 1 ;;
+                esac
+              }
+              if ! valid_credential "$ELASTIC_USERNAME" ||
+                 ! valid_credential "$ELASTIC_PASSWORD" ||
+                 ! valid_credential "$KIBANA_PASSWORD"; then
+                echo "credential format must use only letters, digits, underscore, or hyphen" >&2
+                exit 1
+              fi
               printf 'machine elasticsearch login %s password %s\n' \
                 "$ELASTIC_USERNAME" "$ELASTIC_PASSWORD" >"$netrc_path"
               printf '{"password":"%s"}' "$KIBANA_PASSWORD" >"$payload_path"

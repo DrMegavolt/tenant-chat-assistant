@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="llm-chat"
 OTEL_OPERATOR_VERSION="v0.116.0"
 
-"$ROOT_DIR/scripts/verify-deployment-security.py"
+"$ROOT_DIR/scripts/verify_deployment_security.py"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -28,6 +28,7 @@ require_key secret postgres-credentials username
 require_key secret postgres-credentials password
 require_key secret postgres-credentials database
 require_key secret postgres-credentials databaseUrl
+require_key secret postgres-migration-credentials databaseUrl
 require_key secret kibana-credentials username
 require_key secret kibana-credentials password
 require_key secret llm-provider-credentials apiKey

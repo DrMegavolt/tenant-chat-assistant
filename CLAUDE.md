@@ -14,10 +14,11 @@ make test      # tests only
 make help      # everything else
 ```
 
-`make check` is the single complete local quality gate and is what CI runs. It
-uses fake browser API responses, so it needs no LLM, database, search service,
-embedding model, or Kubernetes cluster. Run it before proposing a change is
-complete.
+`make check` is the hermetic local quality gate and is what CI's quality job
+runs. It uses fake browser API responses, so it needs no LLM, database, search
+service, embedding model, or Kubernetes cluster. Migration, architecture,
+container/security, and secret-history checks are separate CI jobs; run the
+relevant local equivalents before proposing a change is complete.
 
 Never invoke `pip` or a bare `python`. Everything goes through
 `uv run --frozen`, so a hand-modified environment cannot change what is verified.

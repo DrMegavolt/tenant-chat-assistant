@@ -126,6 +126,7 @@ resources in `llm-chat` from an out-of-band source:
 
 - `elastic-credentials`: `username`, `password`
 - `postgres-credentials`: `username`, `password`, `database`, `databaseUrl`
+- `postgres-migration-credentials`: schema-owner `databaseUrl` for the release Job
 - `kibana-credentials`: `username`, `password`
 - `llm-provider-credentials`: `apiKey`
 - `llm-runtime` ConfigMap: `baseUrl`, `model`, `timeoutSeconds`

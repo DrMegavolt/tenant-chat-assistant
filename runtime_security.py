@@ -26,7 +26,7 @@ def is_production() -> bool:
 
 
 def _is_placeholder(value: str) -> bool:
-    return value.startswith(_PLACEHOLDER_PREFIXES) or ".invalid" in value
+    return any(marker in value for marker in _PLACEHOLDER_PREFIXES) or ".invalid" in value
 
 
 def require_production_environment(names: tuple[str, ...]) -> None:

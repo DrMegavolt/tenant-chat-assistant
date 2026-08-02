@@ -22,9 +22,6 @@ PRIVATE_ENDPOINT = re.compile(
     re.IGNORECASE,
 )
 CREDENTIAL_DATABASE_URL = re.compile(r"postgres(?:ql)?://[^\s/:]+:[^\s@/]+@", re.IGNORECASE)
-SENSITIVE_ENV_NAME = re.compile(
-    r"(?:PASSWORD|PASSWD|API_KEY|TOKEN|SECRET|DATABASE_URL)$", re.IGNORECASE
-)
 SECRET_DATA_KEY = re.compile(
     r"^\s{2,}(?:password|passwd|apiKey|token|secret|databaseUrl):\s*\S+",
     re.IGNORECASE | re.MULTILINE,
@@ -33,6 +30,19 @@ SECRET_DATA_KEY = re.compile(
 
 class VerificationError(RuntimeError):
     """One or more deployment security invariants failed."""
+
+
+def is_sensitive_key(name: str) -> bool:
+    """Recognize shell-style and camelCase credential-bearing names."""
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    return normalized.endswith(("password", "passwd", "apikey", "token", "secret")) or (
+        "database" in normalized and normalized.endswith("url")
+    )
+
+
+def is_obvious_placeholder(value: str) -> bool:
+    """Allow empty local values and unmistakably inert example values."""
+    return not value or "REPLACE_WITH_" in value or "replace-with-" in value or ".invalid" in value
 
 
 def yaml_documents(text: str) -> list[str]:
@@ -135,7 +145,7 @@ def _scan_source_documents(errors: list[str], documents: list[tuple[Path, str]])
         lines = document.splitlines()
         for line in lines:
             env_match = re.match(r"^\s*- name:\s*([A-Z0-9_]+)\s*$", line)
-            if not env_match or not SENSITIVE_ENV_NAME.search(env_match.group(1)):
+            if not env_match or not is_sensitive_key(env_match.group(1)):
                 continue
             block = _env_block(document, env_match.group(1))
             if re.search(r"^\s+value:\s*", block, re.MULTILINE):
@@ -145,17 +155,60 @@ def _scan_source_documents(errors: list[str], documents: list[tuple[Path, str]])
 
 
 def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -> None:
-    for workload in ("chat-backend", "financing-agent"):
+    workload_documents: dict[str, str] = {}
+    for workload in ("chat-backend", "financing-agent", "ingestion-service"):
         found = _document_for(documents, "Deployment", workload)
         if found is None:
             errors.append(f"Deployment/{workload}: missing from deployment input")
             continue
         _, document = found
-        if "- name: APP_ENV\n              value: production" not in document:
+        workload_documents[workload] = document
+        app_env = _env_block(document, "APP_ENV")
+        if not re.search(r"^\s*value:\s*production\s*$", app_env, re.MULTILINE):
             errors.append(f"Deployment/{workload}: APP_ENV must select fail-closed production mode")
+
+    chat = workload_documents.get("chat-backend")
+    if chat is not None:
         _require_env_ref(
             errors,
-            document,
+            chat,
+            "chat-backend",
+            "DATABASE_URL",
+            "secretKeyRef",
+            "postgres-credentials",
+            "databaseUrl",
+        )
+
+    for workload in ("financing-agent", "ingestion-service"):
+        dependency_document = workload_documents.get(workload)
+        if dependency_document is None:
+            continue
+        _require_env_ref(
+            errors,
+            dependency_document,
+            workload,
+            "ES_USERNAME",
+            "secretKeyRef",
+            "elastic-credentials",
+            "username",
+        )
+        _require_env_ref(
+            errors,
+            dependency_document,
+            workload,
+            "ES_PASSWORD",
+            "secretKeyRef",
+            "elastic-credentials",
+            "password",
+        )
+
+    for workload in ("chat-backend", "financing-agent"):
+        llm_document = workload_documents.get(workload)
+        if llm_document is None:
+            continue
+        _require_env_ref(
+            errors,
+            llm_document,
             workload,
             "LLM_BASE_URL",
             "configMapKeyRef",
@@ -164,7 +217,7 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
         )
         _require_env_ref(
             errors,
-            document,
+            llm_document,
             workload,
             "LLM_MODEL",
             "configMapKeyRef",
@@ -173,7 +226,7 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
         )
         _require_env_ref(
             errors,
-            document,
+            llm_document,
             workload,
             "LLM_API_KEY",
             "secretKeyRef",
@@ -182,7 +235,7 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
         )
         _require_env_ref(
             errors,
-            document,
+            llm_document,
             workload,
             "LLM_TIMEOUT_SECONDS",
             "configMapKeyRef",
@@ -202,11 +255,11 @@ def _check_examples(errors: list[str]) -> None:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            if (
-                SENSITIVE_ENV_NAME.search(key)
-                and not value.startswith("REPLACE_WITH_")
-                and (key.lower().replace("_", "") != "databaseurl" or "REPLACE_WITH_" not in value)
-            ):
+            if CREDENTIAL_DATABASE_URL.search(value) and not is_obvious_placeholder(value):
+                errors.append(
+                    f"{path.relative_to(ROOT)}: {key} contains a database URL with credentials"
+                )
+            if is_sensitive_key(key) and not is_obvious_placeholder(value):
                 errors.append(f"{path.relative_to(ROOT)}: {key} is not an obvious placeholder")
         if "llm-runtime" in path.name and ".invalid" not in text:
             errors.append(f"{path.relative_to(ROOT)}: example endpoint must use .invalid")
