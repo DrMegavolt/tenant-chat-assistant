@@ -6,7 +6,8 @@ SHELL := /bin/bash
 # uv.lock does not match pyproject.toml rather than resolving something new.
 UV_RUN := uv run --frozen
 
-.PHONY: help setup lock lock-check lint format format-check typecheck test test-cov check \
+.PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
+	js-install js-lint js-format js-format-check js-test js-test-cov check \
 	api up up-all down down-clean logs ps arch-validate arch-build clean
 
 help: ## Show available targets
@@ -15,6 +16,7 @@ help: ## Show available targets
 
 setup: ## Create the virtualenv from the lockfile and seed .env
 	uv sync --frozen
+	npm ci
 	@test -f .env || { cp .env.example .env; echo "created .env from .env.example"; }
 
 lock: ## Re-resolve dependencies and update uv.lock
@@ -39,9 +41,32 @@ test: ## Run the test suite
 	$(UV_RUN) pytest
 
 test-cov: ## Run tests with a coverage report
-	$(UV_RUN) pytest --cov --cov-report=term-missing --cov-report=xml
+	$(UV_RUN) pytest --cov --cov-report=term-missing \
+		--cov-report=xml:coverage/python/coverage.xml \
+		--cov-report=html:coverage/python/html \
+		--junitxml=artifacts/test-results/python.xml
 
-check: lock-check lint format-check typecheck test ## Full local quality gate (what CI runs)
+node_modules/.package-lock.json: package.json package-lock.json
+	npm ci
+
+js-install: node_modules/.package-lock.json ## Install exact frontend development dependencies
+
+js-lint: node_modules/.package-lock.json ## Lint frontend JavaScript
+	npm run lint
+
+js-format: node_modules/.package-lock.json ## Apply frontend JavaScript formatting
+	npm run format
+
+js-format-check: node_modules/.package-lock.json ## Fail if frontend JavaScript is unformatted
+	npm run format:check
+
+js-test: node_modules/.package-lock.json ## Run frontend JavaScript tests
+	npm test
+
+js-test-cov: node_modules/.package-lock.json ## Run frontend tests with coverage reports
+	npm run test:coverage
+
+check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
 
@@ -74,5 +99,5 @@ arch-build: ## Regenerate architecture diagrams
 	npm --prefix architecture/likec4 run export:png
 
 clean: ## Remove caches and build artifacts
-	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage coverage.xml htmlcov
+	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage coverage.xml coverage htmlcov artifacts
 	find . -type d -name __pycache__ -not -path './.venv/*' -prune -exec rm -rf {} +

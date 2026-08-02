@@ -17,7 +17,9 @@ build/
 .ruff_cache/
 .coverage
 coverage.xml
+coverage/
 htmlcov/
+artifacts/
 
 # Task-local agent prompts and review output.
 work/

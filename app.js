@@ -371,8 +371,10 @@ function clearProactiveTimer() {
 
 function hasContactInfo() {
   const text = state.messages.map((message) => message.text).join("\n");
-  return /[\w.+-]+@[\w.-]+\.\w+/.test(text) ||
-    /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/.test(text);
+  return (
+    /[\w.+-]+@[\w.-]+\.\w+/.test(text) ||
+    /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/.test(text)
+  );
 }
 
 function toTitle(text) {

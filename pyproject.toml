@@ -14,6 +14,10 @@ dev = [
     "pytest-cov==6.0.0",
     "ruff==0.8.6",
     "mypy==1.14.1",
+    # Characterization tests import the prototype ingestion and retrieval
+    # modules, then replace every outbound request with a deterministic fake.
+    "prometheus-client==0.21.1",
+    "requests==2.32.3",
     # Starlette's TestClient transport. Dev-only: nothing in the services calls
     # out over HTTP with it.
     "httpx==0.28.1",

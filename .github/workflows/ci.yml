@@ -30,32 +30,100 @@ jobs:
       - name: Install Python
         run: uv python install
 
-      # Individually stepped so a failure names itself in the UI. Together these
-      # are exactly `make check`, which is what runs locally — with coverage
-      # substituted for the plain test run.
-      - name: Verify lockfile is current
-        run: make lock-check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Lint
-        run: make lint
-
-      - name: Check formatting
-        run: make format-check
-
-      - name: Type check
-        run: make typecheck
-
-      - name: Test
-        run: make test-cov
+      # This is intentionally the same single command contributors run locally.
+      # Browser and Python tests use fakes and require no service containers.
+      - name: Run complete quality gate
+        run: make check
 
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.xml
-          retention-days: 14
+          path: coverage/
+          retention-days: 30
           if-no-files-found: error
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: artifacts/test-results/
+          retention-days: 30
+          if-no-files-found: error
+
+  security:
+    name: Dependency and container scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build prototype image for scanning
+        run: docker build --tag tenant-chat-ci:${{ github.sha }} .
+
+      # Pinned to the immutable, known-safe v0.35.0 release. Older mutable tags
+      # were affected by the March 2026 Trivy action supply-chain incident.
+      - name: Create dependency vulnerability report
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: json
+          output: trivy-dependencies.json
+          exit-code: 0
+
+      - name: Block high-severity dependency findings
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          skip-setup-trivy: true
+
+      - name: Create container vulnerability report
+        if: always()
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: tenant-chat-ci:${{ github.sha }}
+          scanners: vuln
+          format: json
+          output: trivy-container.json
+          exit-code: 0
+          skip-setup-trivy: true
+
+      - name: Block high-severity container findings
+        if: always()
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: tenant-chat-ci:${{ github.sha }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          skip-setup-trivy: true
+
+      - name: Upload vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnerability-reports
+          path: trivy-*.json
+          retention-days: 30
+          if-no-files-found: warn
 
   architecture:
     name: Architecture model

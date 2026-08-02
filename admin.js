@@ -232,15 +232,18 @@ function renderSidePanel(session) {
   if (!session.toolEvents?.length) {
     tools.append(emptyCopy("No tools called yet."));
   } else {
-    session.toolEvents.slice().reverse().forEach((event) => {
-      const item = document.createElement("div");
-      item.className = "admin-tool";
-      item.innerHTML = `
+    session.toolEvents
+      .slice()
+      .reverse()
+      .forEach((event) => {
+        const item = document.createElement("div");
+        item.className = "admin-tool";
+        item.innerHTML = `
         <strong>${escapeHtml(event.name)}</strong>
         <code>${escapeHtml(JSON.stringify(event.result))}</code>
       `;
-      tools.append(item);
-    });
+        tools.append(item);
+      });
   }
 
   side.append(bookings);

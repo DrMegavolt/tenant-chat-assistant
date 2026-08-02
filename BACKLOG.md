@@ -149,7 +149,7 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 
 ### P0 production exposure blockers
 
-- [ ] `QA-001` — Foundational automated test harness and CI — `P0`
+- [x] `QA-001` — Foundational automated test harness and CI — `P0`
 - [ ] `DATA-001` — Normalized schema and migration framework — `P0`
 - [ ] `API-001` — Production API runtime and typed contracts — `P0` — _slice 1 of 2 complete_
 - [ ] `DATA-002` — Server-authoritative repositories and concurrency control — `P0`
@@ -325,7 +325,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 ### QA-001 — Foundational automated test harness and CI
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Quality`
 - Depends on: None
@@ -342,7 +342,28 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
   - Test output and coverage artifacts are retained by CI.
 - Verification:
   - Run the documented full quality-gate command twice from a clean checkout.
-- Completion notes: _Pending._
+- Completion notes: Added a locked Vitest/jsdom frontend harness with ESLint,
+  Prettier, V8 coverage, and six offline widget characterizations; added seven
+  offline prototype characterizations for fallback routing, ingestion chunking,
+  and tenant/domain/active retrieval filters. Existing core/API tests cover
+  tenant policy, tool validation, and current contracts with in-memory fakes.
+  `make check` is the documented local/CI gate for Python and JavaScript and
+  writes Python XML/HTML plus frontend Cobertura/HTML/summary coverage under
+  `coverage/`. CI runs on pull requests, uploads JUnit test results, coverage,
+  and vulnerability reports for 30 days, and blocks on actionable high/critical
+  filesystem or container findings using a known-safe SHA-pinned Trivy action;
+  no external service or configured secret is required. Changed: `package.json`,
+  `package-lock.json`, `eslint.config.js`, `.prettierrc.json`,
+  `vitest.config.js`, `frontend/tests/widget.test.js`,
+  `tests/test_prototype_characterization.py`, `pyproject.toml`, `uv.lock`,
+  `Makefile`, `.github/workflows/ci.yml`, `.gitignore`, `README.md`,
+  `CLAUDE.md`, plus formatting-only updates to `app.js` and `admin.js`.
+  Verified `make check` twice after removing dependency directories and cleaning
+  generated artifacts: 271 Python tests (99% covered source) and six widget
+  tests (86.21% statements) passed both times; `npm audit --audit-level=high`
+  reported zero vulnerabilities. Follow-ups: `QA-002` through `QA-005` deepen
+  integration, isolation, E2E, and failure coverage; `DEP-001` replaces the
+  scanned prototype image and `DEP-006` owns release scanning/provenance.
 
 ### DATA-001 — Normalized schema and migration framework
 

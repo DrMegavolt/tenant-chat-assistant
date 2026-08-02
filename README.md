@@ -9,8 +9,14 @@ before `server.py` is retired.
 
 ```bash
 make api      # services/api on http://127.0.0.1:8080
-make check    # lint, types, and tests
+make setup    # install locked Python and frontend development dependencies
+make check    # complete Python + JavaScript quality gate with coverage
 ```
+
+`make check` runs without live services. Frontend tests use a DOM environment
+and deterministic fake API responses; Python unit and API contract tests use
+in-memory stores and fakes. Coverage reports are written below `coverage/`, and
+JUnit test results below `artifacts/test-results/`.
 
 Run the prototype locally:
 

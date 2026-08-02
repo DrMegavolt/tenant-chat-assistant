@@ -7,14 +7,17 @@ leads, and escalates to a human.
 ## Commands
 
 ```bash
-make setup     # sync the venv from uv.lock, seed .env
-make check     # full quality gate: lock-check, lint, format, mypy, tests
+make setup     # sync Python and frontend dependencies, seed .env
+make check     # full quality gate: Python + JavaScript lint, format, types, tests, coverage
 make up        # Postgres + Elasticsearch via docker compose
 make test      # tests only
 make help      # everything else
 ```
 
-`make check` is what CI runs. Run it before proposing a change is complete.
+`make check` is the single complete local quality gate and is what CI runs. It
+uses fake browser API responses, so it needs no LLM, database, search service,
+embedding model, or Kubernetes cluster. Run it before proposing a change is
+complete.
 
 Never invoke `pip` or a bare `python`. Everything goes through
 `uv run --frozen`, so a hand-modified environment cannot change what is verified.
