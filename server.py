@@ -23,19 +23,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from runtime_security import (
+    load_openai_compatible_settings,
+    openai_request_headers,
+    require_production_environment,
+)
+
 
 ROOT = Path(__file__).resolve().parent
 CHATS_DIR = Path(os.environ.get("CHATS_DIR", ROOT / "chats"))
 HOST = os.environ.get("CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CHAT_PORT", "8000"))
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1")
-LLM_MODEL = os.environ.get("LLM_MODEL", "local-model")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_TIMEOUT_SECONDS = int(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
+LLM_SETTINGS = load_openai_compatible_settings(local_base_url="http://localhost:1234/v1")
+LLM_BASE_URL = LLM_SETTINGS.base_url
+LLM_MODEL = LLM_SETTINGS.model
+LLM_API_KEY = LLM_SETTINGS.api_key
+LLM_TIMEOUT_SECONDS = LLM_SETTINGS.timeout_seconds
 FINANCING_AGENT_URL = os.environ.get("FINANCING_AGENT_URL", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DATABASE_INIT_RETRIES = int(os.environ.get("DATABASE_INIT_RETRIES", "30"))
 MAX_TOOL_ROUNDS = 4
+
+require_production_environment(("DATABASE_URL",))
 
 
 TenantConfig = Dict[str, Any]
@@ -859,10 +868,7 @@ def post_openai_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
     request = urllib.request.Request(
         f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            **({"Authorization": f"Bearer {LLM_API_KEY}"} if LLM_API_KEY else {}),
-        },
+        headers=openai_request_headers(LLM_API_KEY),
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
@@ -1395,14 +1401,14 @@ class ChatHandler(BaseHTTPRequestHandler):
             else:
                 reply, tool_events = call_llm(messages, tenant_id, session_id)
                 mode = "llm"
-        except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as error:
+        except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError):
             reply, tool_events = fallback_response(tenant_id, session_id, tenant, messages)
             mode = "fallback"
             tool_events.append(
                 {
                     "name": "llm_error",
-                    "arguments": {"baseUrl": LLM_BASE_URL, "model": LLM_MODEL},
-                    "result": {"message": str(error)},
+                    "arguments": {},
+                    "result": {"message": "The configured model dependency was unavailable."},
                 }
             )
 
@@ -1541,7 +1547,7 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), ChatHandler)
     print(f"Serving tenant chat prototype at http://{HOST}:{PORT}")
     print(f"Persisting chat archives in {storage_description()}")
-    print(f"Calling OpenAI-compatible chat API at {LLM_BASE_URL}/chat/completions")
+    print("OpenAI-compatible chat provider configured")
     server.serve_forever()
 
 

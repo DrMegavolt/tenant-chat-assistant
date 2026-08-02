@@ -356,6 +356,8 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: APP_ENV
+              value: production
             - name: ELASTICSEARCH_URL
               value: http://elasticsearch:9200
             - name: ES_USERNAME
@@ -444,6 +446,8 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: APP_ENV
+              value: production
             - name: ELASTICSEARCH_URL
               value: http://elasticsearch:9200
             - name: ES_USERNAME
@@ -461,11 +465,25 @@ spec:
             - name: KNOWLEDGE_INDEX
               value: tenant-knowledge-chunks
             - name: LLM_BASE_URL
-              value: http://192.168.1.66:1234/v1
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-runtime
+                  key: baseUrl
             - name: LLM_MODEL
-              value: qwen3.6-35b-a3b-mtp@q4_k_s
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-runtime
+                  key: model
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-provider-credentials
+                  key: apiKey
             - name: LLM_TIMEOUT_SECONDS
-              value: "120"
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-runtime
+                  key: timeoutSeconds
           readinessProbe:
             httpGet:
               path: /health
@@ -540,6 +558,8 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: APP_ENV
+              value: production
             - name: OTEL_SERVICE_NAME
               value: chat-backend
             - name: CHAT_HOST
@@ -554,11 +574,25 @@ spec:
             - name: DATABASE_INIT_RETRIES
               value: "60"
             - name: LLM_BASE_URL
-              value: http://192.168.1.66:1234/v1
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-runtime
+                  key: baseUrl
             - name: LLM_MODEL
-              value: qwen3.6-35b-a3b-mtp@q4_k_s
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-runtime
+                  key: model
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-provider-credentials
+                  key: apiKey
             - name: LLM_TIMEOUT_SECONDS
-              value: "120"
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-runtime
+                  key: timeoutSeconds
             - name: FINANCING_AGENT_URL
               value: http://financing-agent:8003
           readinessProbe:

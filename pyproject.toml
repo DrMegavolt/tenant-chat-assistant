@@ -44,6 +44,7 @@ tenantchat-api = { workspace = true }
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["packages", "services", "tests"]
+pythonpath = ["."]
 addopts = [
     "--strict-markers",
     "--strict-config",

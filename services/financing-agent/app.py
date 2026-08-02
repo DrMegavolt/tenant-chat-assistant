@@ -9,16 +9,26 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from runtime_security import (
+    load_openai_compatible_settings,
+    openai_request_headers,
+    require_production_environment,
+)
+
 
 ES_URL = os.environ.get("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 ES_USERNAME = os.environ.get("ES_USERNAME", "")
 ES_PASSWORD = os.environ.get("ES_PASSWORD", "")
 EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "http://embedding-service:8001")
 INDEX_NAME = os.environ.get("KNOWLEDGE_INDEX", "tenant-knowledge-chunks")
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "local-model")
-LLM_TIMEOUT_SECONDS = int(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
+LLM_SETTINGS = load_openai_compatible_settings(local_base_url="")
+LLM_BASE_URL = LLM_SETTINGS.base_url
+LLM_MODEL = LLM_SETTINGS.model
+LLM_API_KEY = LLM_SETTINGS.api_key
+LLM_TIMEOUT_SECONDS = LLM_SETTINGS.timeout_seconds
 TOP_K = int(os.environ.get("TOP_K", "6"))
+
+require_production_environment(("ES_USERNAME", "ES_PASSWORD"))
 
 app = FastAPI(title="Financing RAG Agent")
 
@@ -117,6 +127,7 @@ def call_llm(query: str, chunks: List[Dict[str, Any]]) -> Optional[str]:
     response = requests.post(
         f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
         json=payload,
+        headers=openai_request_headers(LLM_API_KEY),
         timeout=LLM_TIMEOUT_SECONDS,
     )
     response.raise_for_status()

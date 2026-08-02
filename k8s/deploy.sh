@@ -5,14 +5,35 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="llm-chat"
 OTEL_OPERATOR_VERSION="v0.116.0"
 
+"$ROOT_DIR/scripts/verify-deployment-security.py"
+
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
-for required_secret in elastic-credentials postgres-credentials kibana-credentials; do
-  if ! kubectl -n "$NS" get secret "$required_secret" >/dev/null 2>&1; then
-    echo "missing required Secret $NS/$required_secret; create it out of band before deploy" >&2
+require_key() {
+  local resource_type="$1"
+  local resource_name="$2"
+  local key="$3"
+  local template
+  template="{{if index .data \"$key\"}}present{{end}}"
+  if ! kubectl -n "$NS" get "$resource_type" "$resource_name" \
+    -o "go-template=$template" 2>/dev/null | grep -qx present; then
+    echo "missing required $resource_type key $NS/$resource_name:$key; provision it out of band before deploy" >&2
     exit 1
   fi
-done
+}
+
+require_key secret elastic-credentials username
+require_key secret elastic-credentials password
+require_key secret postgres-credentials username
+require_key secret postgres-credentials password
+require_key secret postgres-credentials database
+require_key secret postgres-credentials databaseUrl
+require_key secret kibana-credentials username
+require_key secret kibana-credentials password
+require_key secret llm-provider-credentials apiKey
+require_key configmap llm-runtime baseUrl
+require_key configmap llm-runtime model
+require_key configmap llm-runtime timeoutSeconds
 
 kubectl apply -f "https://github.com/open-telemetry/opentelemetry-operator/releases/download/${OTEL_OPERATOR_VERSION}/opentelemetry-operator.yaml"
 kubectl -n opentelemetry-operator-system rollout status deploy/opentelemetry-operator-controller-manager --timeout=240s
@@ -24,6 +45,7 @@ kubectl apply -f "$ROOT_DIR/k8s/app.yaml"
 
 kubectl -n "$NS" create configmap chat-backend-code \
   --from-file=server.py="$ROOT_DIR/server.py" \
+  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
   --from-file=requirements.txt="$ROOT_DIR/requirements.txt" \
   --from-file=index.html="$ROOT_DIR/index.html" \
   --from-file=app.js="$ROOT_DIR/app.js" \
@@ -39,11 +61,13 @@ kubectl -n "$NS" create configmap embedding-service-code \
 
 kubectl -n "$NS" create configmap ingestion-service-code \
   --from-file=app.py="$ROOT_DIR/services/ingestion/app.py" \
+  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
   --from-file=requirements.txt="$ROOT_DIR/services/ingestion/requirements.txt" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n "$NS" create configmap financing-agent-code \
   --from-file=app.py="$ROOT_DIR/services/financing-agent/app.py" \
+  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
   --from-file=requirements.txt="$ROOT_DIR/services/financing-agent/requirements.txt" \
   --dry-run=client -o yaml | kubectl apply -f -
 

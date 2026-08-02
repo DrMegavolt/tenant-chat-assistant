@@ -158,7 +158,7 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 - [ ] `SEC-002` — Secure visitor sessions and tenant binding — `P0`
 - [ ] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
 - [ ] `SEC-004` — Service authentication and Kubernetes network boundaries — `P0`
-- [ ] `SEC-005` — Secret management and credential removal — `P0`
+- [x] `SEC-005` — Secret management and credential removal — `P0`
 - [ ] `PRIV-001` — PII classification, consent, retention, export, and deletion — `P0`
 - [ ] `DEP-001` — Immutable, reproducible application images — `P0`
 
@@ -574,7 +574,7 @@ values are logged, never published. Run it with `make api`.
 
 ### SEC-005 — Secret management and credential removal
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Infrastructure security`
 - Depends on: None
@@ -591,7 +591,20 @@ values are logged, never published. Run it with `make api`.
   - Missing required production secrets cause an immediate, clear startup failure.
 - Verification:
   - Render deployment manifests and scan the rendered non-Secret output for sensitive values.
-- Completion notes: _Pending._
+- Completion notes: Removed the tracked private LLM endpoint/model and replaced all
+  sensitive runtime values with required Secret/ConfigMap refs in `k8s/app.yaml`;
+  added shared fail-closed production configuration and bearer authentication for
+  chat-backend and financing-agent; hardened the Kibana setup job against command-
+  line credential exposure; added placeholder-only examples and the documented
+  local MicroK8s/out-of-band production secret-source contract in `k8s/README.md`;
+  and integrated `scripts/verify-deployment-security.py` into `make check` and CI.
+  Verification: `make check` (270 tests plus lock, lint, format, mypy, and deployment
+  security scan) passed. The committed `REPLACE_WITH_*` and `.invalid` values are
+  examples, not live credentials/endpoints. No live Secret was read or rotated;
+  any external credential matching an earlier repository placeholder must still be
+  rotated before public deployment. Production secret-controller automation remains
+  an environment-specific deployment choice, while the workload reference contract
+  remains fail-closed.
 
 ### PRIV-001 — PII classification, consent, retention, export, and deletion
 

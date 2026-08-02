@@ -120,16 +120,20 @@ the JSONB-snapshot prototype or attempting a downgrade.
 
 The frontend only needs the chat backend API. For Kubernetes local testing:
 
-`k8s/app.yaml` deliberately contains no credential values. Before running
-`k8s/deploy.sh`, provision these Secrets in `llm-chat` through your local secret
-manager or an out-of-band `kubectl create secret` command:
+`k8s/app.yaml` deliberately contains no credential values or private model
+endpoint. Before running `k8s/deploy.sh`, provision the documented runtime
+resources in `llm-chat` from an out-of-band source:
 
 - `elastic-credentials`: `username`, `password`
 - `postgres-credentials`: `username`, `password`, `database`, `databaseUrl`
 - `kibana-credentials`: `username`, `password`
+- `llm-provider-credentials`: `apiKey`
+- `llm-runtime` ConfigMap: `baseUrl`, `model`, `timeoutSeconds`
 
-The deploy script fails before changing workloads when any required Secret is
-missing. Never render Secret values into a tracked file.
+The placeholder-only examples, safe local provisioning workflow, production
+secret-manager path, and mandatory rotation warning are in
+[`k8s/README.md`](k8s/README.md). The deploy script fails before changing
+workloads when a required resource or key is missing and never displays values.
 
 ```bash
 kubectl -n llm-chat port-forward svc/chat-backend 18080:8000

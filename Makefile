@@ -8,7 +8,8 @@ UV_RUN := uv run --frozen
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations migrate js-install js-lint js-format js-format-check js-test \
-	js-test-cov check api up up-all down down-clean logs ps arch-validate arch-build clean
+	js-test-cov deployment-security check api up up-all down down-clean logs ps \
+	arch-validate arch-build clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -73,7 +74,11 @@ js-test: node_modules/.package-lock.json ## Run frontend JavaScript tests
 js-test-cov: node_modules/.package-lock.json ## Run frontend tests with coverage reports
 	npm run test:coverage
 
-check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov ## Full local and CI quality gate
+deployment-security: ## Scan rendered non-Secret Kubernetes manifests and runtime refs
+	$(UV_RUN) python scripts/verify-deployment-security.py
+
+check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov \
+	deployment-security ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
 

@@ -12,6 +12,8 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from runtime_security import require_production_environment
+
 
 ES_URL = os.environ.get("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 ES_USERNAME = os.environ.get("ES_USERNAME", "")
@@ -21,6 +23,8 @@ INDEX_NAME = os.environ.get("KNOWLEDGE_INDEX", "tenant-knowledge-chunks")
 DOCS_PATH = Path(os.environ.get("DOCS_PATH", "/data/docs"))
 CHUNK_TOKENS = int(os.environ.get("CHUNK_TOKENS", "650"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "120"))
+
+require_production_environment(("ES_USERNAME", "ES_PASSWORD"))
 
 app = FastAPI(title="Knowledge Ingestion Service")
 

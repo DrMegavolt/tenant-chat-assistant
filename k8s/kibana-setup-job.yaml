@@ -12,6 +12,11 @@ spec:
         - name: configure-kibana
           image: curlimages/curl:8.11.1
           env:
+            - name: ELASTIC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
             - name: ELASTIC_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -26,10 +31,19 @@ spec:
             - sh
             - -c
             - |
-              until curl -sf -u "elastic:${ELASTIC_PASSWORD}" http://elasticsearch:9200/_cluster/health >/dev/null; do
+              set -eu
+              umask 077
+              netrc_path=/tmp/elasticsearch.netrc
+              payload_path=/tmp/kibana-password.json
+              trap 'rm -f "$netrc_path" "$payload_path"' EXIT
+              printf 'machine elasticsearch login %s password %s\n' \
+                "$ELASTIC_USERNAME" "$ELASTIC_PASSWORD" >"$netrc_path"
+              printf '{"password":"%s"}' "$KIBANA_PASSWORD" >"$payload_path"
+              until curl -sf --netrc-file "$netrc_path" \
+                http://elasticsearch:9200/_cluster/health >/dev/null; do
                 sleep 5
               done
-              curl -sf -u "elastic:${ELASTIC_PASSWORD}" \
+              curl -sf --netrc-file "$netrc_path" \
                 -H 'Content-Type: application/json' \
                 -X POST http://elasticsearch:9200/_security/user/kibana_system/_password \
-                -d "{\"password\":\"${KIBANA_PASSWORD}\"}"
+                --data-binary "@$payload_path"
