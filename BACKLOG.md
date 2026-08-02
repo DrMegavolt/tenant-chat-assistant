@@ -124,13 +124,19 @@ A non-documentation task is `Done` only when:
 
 Required: every `P0` task in this document. Until Gate A passes, expose the project only on a trusted development network.
 
-### Gate B — Production RAG and business workflow demo
+### Gate B — Full RAG showcase
 
-Required: Gate A plus `ARCH-001`, `RAG-001` through `RAG-008`, `AGENT-001`, `FEAT-002` through `FEAT-005`, `OBS-001` through `OBS-003`, and `REL-001` through `REL-003`.
+Required: Gate A plus `ARCH-001`, `AI-001`, `AGENT-001`, `REL-001`,
+`REL-003`, `RAG-001` through `RAG-008`, `FEAT-001`, `FEAT-011`,
+`OBS-001`, `OBS-002`, `QA-002`, and `QA-003`. The target demonstration is a
+visible, tenant-safe document lifecycle: upload, parse, chunk, embed, index,
+retrieve, rerank, answer with authorized citations, abstain on weak evidence,
+and publish comparable evaluation results.
 
 ### Gate C — Operational production candidate
 
-Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, and completed runbooks.
+Required: Gate B plus `DEP-002` through `DEP-006`, `QA-004`, `QA-005`, the
+remaining production business workflows, and completed runbooks.
 
 ## Backlog index
 
@@ -162,17 +168,12 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 - [ ] `PRIV-001` — PII classification, consent, retention, export, and deletion — `P0`
 - [x] `DEP-001` — Immutable, reproducible application images — `Done`
 
-### P1 production core
+### P1 demo-critical RAG path
 
-- [ ] `REL-001` — Resilient dependency clients — `P1`
-- [ ] `REL-002` — Dependency-aware health, graceful startup, and shutdown — `P1`
-- [ ] `REL-003` — Durable background jobs and retry handling — `P1`
-- [ ] `OBS-001` — Structured logging and request correlation — `P1`
-- [ ] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
-- [ ] `OBS-003` — Dashboards, SLOs, and alerts as code — `P1`
 - [ ] `ARCH-001` — Agent runtime boundary and LangGraph adoption — `P1`
 - [ ] `AI-001` — Provider and model abstraction — `P1`
-- [ ] `AI-002` — Model safety, quotas, and cost controls — `P1`
+- [ ] `REL-001` — Resilient dependency clients — `P1`
+- [ ] `REL-003` — Durable background jobs and retry handling — `P1`
 - [ ] `RAG-001` — Versioned knowledge content model — `P1`
 - [ ] `RAG-002` — Secure asynchronous ingestion lifecycle — `P1`
 - [ ] `RAG-003` — Production document parsing and chunking — `P1`
@@ -182,15 +183,26 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 - [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
 - [ ] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
-- [ ] `DEP-002` — Kubernetes workload hardening — `P1`
-- [ ] `DEP-003` — TLS ingress and production widget hosting — `P1`
-- [ ] `DEP-004` — High availability and autoscaling — `P1`
-- [ ] `DEP-005` — Backup, restore, and disaster-recovery drill — `P1`
-- [ ] `DEP-006` — Release pipeline, scanning, and provenance — `P1`
+- [ ] `OBS-001` — Structured logging and request correlation — `P1`
+- [ ] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
 - [ ] `QA-002` — API and database integration tests — `P1`
 - [ ] `QA-003` — Tenant-isolation and security regression tests — `P1`
+
+### P1 supporting production work
+
+- [ ] `REL-002` — Dependency-aware health, graceful startup, and shutdown — `P1`
+- [ ] `OBS-003` — Dashboards, SLOs, and alerts as code — `P1`
+- [ ] `AI-002` — Model safety, quotas, and cost controls — `P1`
 - [ ] `QA-004` — End-to-end business workflow tests — `P1`
 - [ ] `QA-005` — Load, soak, and failure-injection tests — `P1`
+
+### P2 deferred Kubernetes and release operations
+
+- [ ] `DEP-002` — Kubernetes workload hardening — `P2`
+- [ ] `DEP-003` — TLS ingress and production widget hosting — `P2`
+- [ ] `DEP-004` — High availability and autoscaling — `P2`
+- [ ] `DEP-005` — Backup, restore, and disaster-recovery drill — `P2`
+- [ ] `DEP-006` — Release pipeline, scanning, and provenance — `P2`
 
 ## Feature and workflow task list
 
@@ -713,7 +725,7 @@ values are logged, never published. Run it with `make api`.
   signing, and provenance remain `DEP-006`; network policy and service auth
   remain `SEC-004`.
 
-## P1 production core task details
+## Prioritized platform task details
 
 ### REL-001 — Resilient dependency clients
 
@@ -1080,7 +1092,7 @@ values are logged, never published. Run it with `make api`.
 ### DEP-002 — Kubernetes workload hardening
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Infrastructure`
 - Depends on: `DEP-001`, `SEC-004`, `REL-002`
 - Likely areas: `k8s/`
@@ -1099,7 +1111,7 @@ values are logged, never published. Run it with `make api`.
 ### DEP-003 — TLS ingress and production widget hosting
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Infrastructure/frontend`
 - Depends on: `SEC-003`, `DEP-002`
 - Likely areas: ingress/certificate manifests, frontend build/hosting, CSP configuration
@@ -1118,7 +1130,7 @@ values are logged, never published. Run it with `make api`.
 ### DEP-004 — High availability and autoscaling
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Infrastructure/reliability`
 - Depends on: `DATA-002`, `REL-002`, `DEP-002`
 - Likely areas: deployments, HPA, PDB, topology rules, database/search architecture docs
@@ -1137,7 +1149,7 @@ values are logged, never published. Run it with `make api`.
 ### DEP-005 — Backup, restore, and disaster-recovery drill
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Operations/data`
 - Depends on: `DATA-001`, `RAG-001`, `DEP-002`
 - Likely areas: backup jobs, encrypted storage configuration, runbooks
@@ -1156,7 +1168,7 @@ values are logged, never published. Run it with `make api`.
 ### DEP-006 — Release pipeline, scanning, and provenance
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Delivery/security`
 - Depends on: `QA-001`, `DEP-001`, `DEP-002`
 - Likely areas: CI/CD workflows, registry configuration, deployment overlays
@@ -1433,7 +1445,7 @@ values are logged, never published. Run it with `make api`.
 - Status: `Todo`
 - Priority: `P1`
 - Type: `Feature/RAG UX`
-- Depends on: `RAG-005`, `FEAT-010`
+- Depends on: `RAG-005`, `SEC-002`
 - Likely areas: widget citation components, authorized source API/viewer
 - Scope:
   - Render compact citations beside supported answers.
@@ -1512,7 +1524,7 @@ This sequence reduces merge conflicts and prevents agents from building features
 - Agent D: `DEP-001`
 - `SEC-004` can run in parallel if no active agent is editing the same Kubernetes sections.
 
-### Wave 2 — Core backend conversion
+### Wave 2 — RAG-enabling backend conversion
 
 Run these mostly sequentially because they substantially overlap the current `server.py`.
 `API-001` slice 1 is the stable API foundation for the first step; completing
@@ -1523,27 +1535,40 @@ exist, not a prerequisite for them.
 2. `ARCH-001`
 3. `API-001` slice 2
 4. `SEC-001` and `SEC-002`
-5. `SEC-003`
-6. `DATA-003`
-7. `PRIV-001`
+5. Start `SEC-003`, `DATA-003`, and `PRIV-001` as a parallel safety lane. They
+   remain required before public exposure, but they must not delay a trusted-
+   network RAG vertical slice unless their contracts overlap the active work.
 
-### Wave 3 — Parallel platform tracks
+### Wave 3 — Full ingestion and RAG vertical slice
 
-- RAG track: `RAG-001` → `RAG-002` → `RAG-003` → `RAG-004` → `RAG-005` → `RAG-007` → `RAG-008`
-- Agent track: `ARCH-001` → `AI-001` → `AGENT-001` → `RAG-006`
-- Reliability track: `REL-001` → `REL-002` and `REL-003`
-- Infrastructure track: `DEP-002` → `DEP-003` and `DEP-004` → `DEP-005` and `DEP-006`
-- Observability track: `OBS-001` → `OBS-002` → `OBS-003`
+- Content lane: start `RAG-001` and `REL-003` in parallel, then implement
+  `RAG-002` → `RAG-003`.
+- Runtime lane: `AI-001` → `REL-001`, while `AGENT-001` starts after
+  `ARCH-001`, `AI-001`, and `DATA-002`.
+- Retrieval convergence: `RAG-004` → `RAG-005`.
+- Visible demo workflows: start `FEAT-001` after `RAG-002`; start `FEAT-011`
+  after `RAG-005` and `SEC-002` so the demo visibly proves upload-to-answer and
+  authorized source inspection.
+- Quality and safety: run `RAG-007`, `RAG-006`, and finally `RAG-008`; grow
+  `QA-002`, `QA-003`, `OBS-001`, and `OBS-002` alongside the vertical slice.
+- Demonstrate two tenants, document version replacement, failed-job retry,
+  prompt-injection quarantine, hybrid retrieval, reranking, abstention,
+  citations, and comparable evaluation reports before expanding the platform.
 
-### Wave 4 — Business workflows
+### Wave 4 — Business workflows and product polish
 
-- `FEAT-001`, `FEAT-002`, `FEAT-003`, `FEAT-005`, and `FEAT-006` can be developed in parallel after their dependencies.
+- `FEAT-002`, `FEAT-003`, `FEAT-005`, and `FEAT-006` can be developed in
+  parallel after their dependencies and the RAG showcase.
 - Implement `FEAT-010` before `FEAT-004` so handoff uses the durable real-time transport.
-- Implement `FEAT-011` after the citation contract is stable.
 
-### Wave 5 — Validation and product maturity
+### Wave 5 — Deferred Kubernetes and operational hardening
 
-- `QA-002` and `QA-003` should grow continuously, then become release gates.
+- Use the existing `DEP-001` images and `SEC-004` network baseline for local or
+  trusted-network demonstrations. Do not spend the RAG milestone on additional
+  cluster features.
+- After the RAG showcase is complete, run `DEP-002` → `DEP-003` and `DEP-004`
+  → `DEP-005` and `DEP-006` for an operational production candidate.
+- `QA-002` and `QA-003` grow continuously and are RAG showcase release gates.
 - Complete `QA-004` after core business workflows.
 - Complete `QA-005` after HA and resilience work.
 - Finish the `P2` feature tasks based on demo narrative and user feedback.
