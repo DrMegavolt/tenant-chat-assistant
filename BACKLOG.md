@@ -1532,7 +1532,8 @@ Run these mostly sequentially because they substantially overlap the current `se
 exist, not a prerequisite for them.
 
 1. `DATA-002`
-2. `ARCH-001`
+2. Start `ARCH-001` and `REL-003` in parallel. The durable job/outbox track has
+   no remaining API or Kubernetes dependency and directly enables ingestion.
 3. `API-001` slice 2
 4. `SEC-001` and `SEC-002`
 5. Start `SEC-003`, `DATA-003`, and `PRIV-001` as a parallel safety lane. They
@@ -1541,8 +1542,8 @@ exist, not a prerequisite for them.
 
 ### Wave 3 — Full ingestion and RAG vertical slice
 
-- Content lane: start `RAG-001` and `REL-003` in parallel, then implement
-  `RAG-002` → `RAG-003`.
+- Content lane: implement `RAG-001`, then use the already-started `REL-003`
+  foundation to implement `RAG-002` → `RAG-003`.
 - Runtime lane: `AI-001` → `REL-001`, while `AGENT-001` starts after
   `ARCH-001`, `AI-001`, and `DATA-002`.
 - Retrieval convergence: `RAG-004` → `RAG-005`.
