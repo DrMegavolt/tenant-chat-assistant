@@ -6,6 +6,9 @@
 **/.ruff_cache
 architecture/likec4/node_modules
 architecture/likec4/dist
+frontend/node_modules
+frontend/tests
+coverage
 artifacts
 chats
 .env

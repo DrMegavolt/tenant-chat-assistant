@@ -31,6 +31,7 @@ chats/*.json
 
 # Node
 node_modules/
+frontend/node_modules/
 architecture/likec4/node_modules/
 
 # Generated architecture site. Rebuildable from the model via `make arch-build`;

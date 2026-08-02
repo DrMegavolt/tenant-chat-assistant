@@ -38,6 +38,7 @@ from runtime_security import (
 
 
 ROOT = Path(__file__).resolve().parent
+STATIC_ROOT = ROOT / "frontend" / "public"
 CHATS_DIR = Path(os.environ.get("CHATS_DIR", ROOT / "chats"))
 HOST = os.environ.get("CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CHAT_PORT", "8000"))
@@ -1494,8 +1495,8 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def serve_static(self, path: str) -> None:
         clean_path = urllib.parse.unquote(path).lstrip("/")
-        file_path = (ROOT / clean_path).resolve()
-        if ROOT not in file_path.parents and file_path != ROOT:
+        file_path = (STATIC_ROOT / clean_path).resolve()
+        if STATIC_ROOT not in file_path.parents and file_path != STATIC_ROOT:
             self.send_error(403)
             return
         if not file_path.is_file():

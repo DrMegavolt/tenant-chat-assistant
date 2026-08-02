@@ -6,6 +6,10 @@ SHELL := /bin/bash
 # uv.lock does not match pyproject.toml rather than resolving something new.
 UV_RUN := uv run --frozen
 
+# The frontend is a self-contained npm project; nothing at the repository root
+# is an npm package.
+NPM := npm --prefix frontend
+
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations test-repositories test-database migrate js-install js-lint js-format \
 	js-format-check js-test js-test-cov deployment-security check api up up-all down \
@@ -18,7 +22,7 @@ help: ## Show available targets
 
 setup: ## Create the virtualenv from the lockfile and seed .env
 	uv sync --frozen
-	npm ci
+	$(NPM) ci
 	@test -f .env || { cp .env.example .env; echo "created .env from .env.example"; }
 
 lock: ## Re-resolve dependencies and update uv.lock
@@ -60,25 +64,25 @@ migrate: ## Upgrade with the schema-owner URL (never the application URL)
 	@test -n "$${DATABASE_MIGRATION_URL}" || { echo "DATABASE_MIGRATION_URL is required"; exit 2; }
 	$(UV_RUN) alembic upgrade head
 
-node_modules/.package-lock.json: package.json package-lock.json
-	npm ci
+frontend/node_modules/.package-lock.json: frontend/package.json frontend/package-lock.json
+	$(NPM) ci
 
-js-install: node_modules/.package-lock.json ## Install exact frontend development dependencies
+js-install: frontend/node_modules/.package-lock.json ## Install exact frontend development dependencies
 
-js-lint: node_modules/.package-lock.json ## Lint frontend JavaScript
-	npm run lint
+js-lint: frontend/node_modules/.package-lock.json ## Lint frontend JavaScript
+	$(NPM) run lint
 
-js-format: node_modules/.package-lock.json ## Apply frontend JavaScript formatting
-	npm run format
+js-format: frontend/node_modules/.package-lock.json ## Apply frontend JavaScript formatting
+	$(NPM) run format
 
-js-format-check: node_modules/.package-lock.json ## Fail if frontend JavaScript is unformatted
-	npm run format:check
+js-format-check: frontend/node_modules/.package-lock.json ## Fail if frontend JavaScript is unformatted
+	$(NPM) run format:check
 
-js-test: node_modules/.package-lock.json ## Run frontend JavaScript tests
-	npm test
+js-test: frontend/node_modules/.package-lock.json ## Run frontend JavaScript tests
+	$(NPM) test
 
-js-test-cov: node_modules/.package-lock.json ## Run frontend tests with coverage reports
-	npm run test:coverage
+js-test-cov: frontend/node_modules/.package-lock.json ## Run frontend tests with coverage reports
+	$(NPM) run test:coverage
 
 deployment-security: ## Scan rendered non-Secret Kubernetes manifests and runtime refs
 	$(UV_RUN) python scripts/verify_deployment_security.py

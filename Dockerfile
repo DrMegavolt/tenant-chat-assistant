@@ -34,7 +34,8 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     CHAT_PORT=8000 \
     CHATS_DIR=/var/lib/tenantchat/chats
 COPY --from=builder /app/.venv /app/.venv
-COPY --chown=10001:10001 server.py runtime_security.py internal_auth.py index.html app.js admin.html admin.js styles.css README.md ./
+COPY --chown=10001:10001 server.py runtime_security.py internal_auth.py README.md ./
+COPY --chown=10001:10001 frontend/public/ ./frontend/public/
 
 USER 10001:10001
 EXPOSE 8000 8004

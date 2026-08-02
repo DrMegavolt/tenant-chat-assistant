@@ -3,10 +3,10 @@ import globals from "globals";
 
 export default [
   {
-    ignores: ["coverage/", "node_modules/", "architecture/likec4/"]
+    ignores: ["node_modules/"]
   },
   {
-    files: ["app.js", "admin.js", "frontend/tests/**/*.js", "vitest.config.js"],
+    files: ["public/**/*.js", "tests/**/*.js", "*.config.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",

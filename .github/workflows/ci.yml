@@ -34,7 +34,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       # This is intentionally the same single command contributors run locally.
       # Browser and Python tests use fakes and require no service containers.

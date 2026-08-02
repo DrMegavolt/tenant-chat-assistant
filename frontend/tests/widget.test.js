@@ -65,7 +65,7 @@ function jsonResponse(body, { ok = true, status = 200 } = {}) {
 async function loadWidget(fetchImplementation) {
   vi.stubGlobal("fetch", vi.fn(fetchImplementation));
   vi.spyOn(window, "setInterval").mockReturnValue(1);
-  await import("../../app.js");
+  await import("../public/app.js");
   await vi.waitFor(() => {
     expect(document.querySelector("#chatCompany")?.textContent).not.toBe("");
   });
@@ -131,7 +131,7 @@ describe("widget initialization", () => {
     );
     vi.spyOn(window, "setInterval").mockReturnValue(1);
 
-    await import("../../app.js");
+    await import("../public/app.js");
     await vi.waitFor(() => expect(document.querySelector(".backend-error")).not.toBeNull());
 
     expect(document.querySelector("#tenant-chat").textContent).toBe("");
