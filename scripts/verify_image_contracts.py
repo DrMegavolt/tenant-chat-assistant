@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -15,8 +16,26 @@ DOCKERFILES = (
     ROOT / "services/ingestion/Dockerfile",
     ROOT / "services/financing-agent/Dockerfile",
 )
+# Entrypoint modules copied as loose files rather than installed from the lock.
+# The API is absent on purpose: it ships as a built wheel in the image venv.
+RUNTIME_ENTRYPOINTS = {
+    ROOT / "Dockerfile": ROOT / "server.py",
+    ROOT / "services/embedding/Dockerfile": ROOT / "services/embedding/app.py",
+    ROOT / "services/ingestion/Dockerfile": ROOT / "services/ingestion/app.py",
+    ROOT / "services/financing-agent/Dockerfile": ROOT / "services/financing-agent/app.py",
+}
+# The migration Job runs `alembic upgrade head` from the API image itself, so
+# the schema tooling has to be in the image the API serves traffic from.
+API_RUNTIME_FILES = ("alembic.ini", "services/api/migrations/")
+POSTGRES_FIXTURES = (
+    ROOT / "tests/migrations/conftest.py",
+    ROOT / "tests/repositories/conftest.py",
+    ROOT / "scripts/smoke_images.sh",
+    ROOT / "docker-compose.yml",
+)
 K8S_FILES = tuple(sorted((ROOT / "k8s").glob("*.yaml")))
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
+POSTGRES_IMAGE = re.compile(r"postgres:\d[\w.\-]*(?:@sha256:[0-9a-f]{64})?")
 RELEASE_CONTRACT = re.compile(
     r"registry\.example\.invalid/tenantchat/(?:prototype|api|embedding|ingestion|financing)"
     r"@sha256:REPLACE_WITH_[A-Z]+_DIGEST$"
@@ -40,6 +59,115 @@ def verify_dockerfiles(errors: list[str]) -> None:
             errors.append(f"{label}: runtime/build pip install is forbidden")
         if "USER 10001:10001" not in text:
             errors.append(f"{label}: final runtime must select numeric non-root uid/gid 10001")
+
+
+def runtime_copy_sources(dockerfile: Path) -> set[str]:
+    """Return the build-context paths the final stage copies into the image.
+
+    Stage-to-stage copies are excluded: they carry the built virtualenv rather
+    than repository source.
+    """
+    final_stage = re.split(r"^FROM .*$", dockerfile.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    instructions = re.sub(r"\\\n\s*", " ", final_stage[-1])
+    sources: set[str] = set()
+    for line in instructions.splitlines():
+        arguments = line.split()
+        if not arguments or arguments[0] != "COPY":
+            continue
+        if any(argument.startswith("--from=") for argument in arguments):
+            continue
+        sources.update(argument for argument in arguments[1:-1] if not argument.startswith("--"))
+    return sources
+
+
+def local_module_dependencies(entrypoint: Path) -> set[str]:
+    """Return every repository-root module reachable from an entrypoint's imports."""
+    required: set[str] = set()
+    pending = [entrypoint]
+    visited = {entrypoint}
+    while pending:
+        tree = ast.parse(pending.pop().read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
+                imported = [node.module]
+            else:
+                continue
+            for name in imported:
+                module = ROOT / f"{name.split('.')[0]}.py"
+                if module.is_file() and module not in visited:
+                    visited.add(module)
+                    required.add(module.name)
+                    pending.append(module)
+    return required
+
+
+def verify_runtime_modules(errors: list[str]) -> None:
+    """Require each image to carry every repository module its entrypoint imports.
+
+    The service entrypoints import `internal_auth`, which in turn imports
+    `runtime_security`. An image that copies only the entrypoint builds and scans
+    clean, then fails at container start with `ModuleNotFoundError`.
+    """
+    for dockerfile, entrypoint in RUNTIME_ENTRYPOINTS.items():
+        label = dockerfile.relative_to(ROOT)
+        copied = runtime_copy_sources(dockerfile)
+        source = str(entrypoint.relative_to(ROOT))
+        if source not in copied:
+            errors.append(f"{label}: final stage must copy its entrypoint {source}")
+        for module in sorted(local_module_dependencies(entrypoint)):
+            if module not in copied:
+                errors.append(f"{label}: final stage is missing imported module {module}")
+
+    api = ROOT / "services/api/Dockerfile"
+    api_copied = runtime_copy_sources(api)
+    for required in API_RUNTIME_FILES:
+        if required not in api_copied:
+            errors.append(f"{api.relative_to(ROOT)}: final stage must copy {required}")
+
+
+def verify_pinned_postgres_images(errors: list[str]) -> None:
+    """Require every disposable PostgreSQL to be the one reviewed server build.
+
+    Migrations, repository specifications, the API image smoke, and local
+    development all assert behavior that depends on server version and collation,
+    so a floating tag in any one of them tests a different database.
+    """
+    references: set[str] = set()
+    for path in POSTGRES_FIXTURES:
+        found = POSTGRES_IMAGE.findall(path.read_text(encoding="utf-8"))
+        label = path.relative_to(ROOT)
+        if not found:
+            errors.append(f"{label}: expected a pinned PostgreSQL image reference")
+        references.update(found)
+    unpinned = sorted(image for image in references if DIGEST.search(image) is None)
+    if unpinned:
+        errors.append(f"PostgreSQL images must be digest-pinned: {', '.join(unpinned)}")
+    elif len(references) > 1:
+        errors.append(f"PostgreSQL images must all match: {', '.join(sorted(references))}")
+
+
+def verify_model_cache(errors: list[str]) -> None:
+    """Require every model-weight mount to land on the image's own HF_HOME.
+
+    The embedding image runs as uid 10001, which cannot write `/root`; a mount at
+    the wrong path leaves the cache unwritable and re-downloads weights forever.
+    """
+    dockerfile = (ROOT / "services/embedding/Dockerfile").read_text(encoding="utf-8")
+    match = re.search(r"HF_HOME=(\S+)", dockerfile)
+    if match is None:
+        errors.append("services/embedding/Dockerfile: HF_HOME must be set for the runtime user")
+        return
+    hf_home = match.group(1)
+    if hf_home.startswith("/root"):
+        errors.append("services/embedding/Dockerfile: HF_HOME must be writable by uid 10001")
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    if f"huggingface-cache:{hf_home}" not in compose:
+        errors.append(f"docker-compose.yml: model cache must mount at {hf_home}")
+    manifest = (ROOT / "k8s/app.yaml").read_text(encoding="utf-8")
+    if f"mountPath: {hf_home}" not in manifest:
+        errors.append(f"k8s/app.yaml: model cache must mount at {hf_home}")
 
 
 def verify_manifests(errors: list[str]) -> None:
@@ -81,6 +209,9 @@ def main() -> int:
     """Run all checks and report every violation in one pass."""
     errors: list[str] = []
     verify_dockerfiles(errors)
+    verify_runtime_modules(errors)
+    verify_pinned_postgres_images(errors)
+    verify_model_cache(errors)
     verify_manifests(errors)
     verify_model(errors)
     if errors:

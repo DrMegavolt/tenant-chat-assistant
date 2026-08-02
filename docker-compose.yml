@@ -79,8 +79,10 @@ services:
     ports:
       - "${EMBEDDING_PORT:-8001}:8001"
     volumes:
-      # Cache weights across container rebuilds.
-      - huggingface-cache:/root/.cache/huggingface
+      # Cache weights across container rebuilds. The path must track HF_HOME in
+      # services/embedding/Dockerfile: the image runs as uid 10001, which cannot
+      # write /root, so a mount there silently re-downloads the model every run.
+      - huggingface-cache:/home/tenantchat/.cache/huggingface
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request as r; r.urlopen('http://localhost:8001/health')\""]
       interval: 15s

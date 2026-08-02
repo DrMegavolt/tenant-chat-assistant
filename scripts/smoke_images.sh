@@ -5,6 +5,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${IMAGE_OUTPUT_DIR:-$ROOT_DIR/artifacts/images}"
 IMAGE_PREFIX="${IMAGE_PREFIX:-tenantchat-local}"
 VCS_REF="${IMAGE_VCS_REF:-$(git -C "$ROOT_DIR" rev-parse HEAD)}"
+# The same pinned server the migration and repository suites use, so a passing
+# smoke cannot mean "worked against whatever the floating 16 tag resolves to".
+POSTGRES_IMAGE="${SMOKE_POSTGRES_IMAGE:-postgres:16.11-alpine3.23@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2}"
+
+# Nothing to protect: this account only ever exists inside a throwaway container
+# on a network that publishes no database port. Fixed rather than generated so
+# reproducing a failed run never requires echoing the value.
+SMOKE_DB_USER="smoke_owner"
+SMOKE_DB_PASSWORD="image-smoke-test-only"
+SMOKE_DB_NAME="tenantchat_smoke"
+
 ALL_IMAGES=(prototype api embedding ingestion financing)
 if (( $# )); then
   IMAGES=("$@")
@@ -13,12 +24,30 @@ else
 fi
 
 container=""
+database_container=""
+network=""
+database_url=""
+
 cleanup() {
   if [[ -n "$container" ]]; then
     docker rm --force "$container" >/dev/null 2>&1 || true
+    container=""
   fi
+  if [[ -n "$database_container" ]]; then
+    docker rm --force "$database_container" >/dev/null 2>&1 || true
+    database_container=""
+  fi
+  if [[ -n "$network" ]]; then
+    docker network rm "$network" >/dev/null 2>&1 || true
+    network=""
+  fi
+  database_url=""
 }
 trap cleanup EXIT
+# Signal traps terminate explicitly; returning from an INT/TERM handler would
+# otherwise let Bash resume the interrupted smoke after its resources vanished.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 health_path() {
   case "$1" in
@@ -38,6 +67,36 @@ container_port() {
   esac
 }
 
+# Give the API image the database it now requires: an isolated network with no
+# published database port, so nothing outside this smoke can reach the server
+# and the API resolves it by container name.
+start_smoke_database() {
+  local image="$1"
+  network="tenantchat-smoke-net-$image-$$"
+  database_container="tenantchat-smoke-db-$image-$$"
+
+  docker network create "$network" >/dev/null
+  docker run --detach --name "$database_container" --network "$network" \
+    --env "POSTGRES_USER=$SMOKE_DB_USER" \
+    --env "POSTGRES_PASSWORD=$SMOKE_DB_PASSWORD" \
+    --env "POSTGRES_DB=$SMOKE_DB_NAME" \
+    --env "POSTGRES_INITDB_ARGS=--locale=C --encoding=UTF8" \
+    "$POSTGRES_IMAGE" >/dev/null
+  database_url="postgresql+psycopg://$SMOKE_DB_USER:$SMOKE_DB_PASSWORD@$database_container:5432/$SMOKE_DB_NAME"
+
+  local _attempt
+  for _attempt in {1..60}; do
+    if docker exec "$database_container" \
+      pg_isready --username "$SMOKE_DB_USER" --dbname "$SMOKE_DB_NAME" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "smoke database never became ready" >&2
+  docker logs "$database_container" >&2
+  exit 1
+}
+
 mkdir -p "$OUTPUT_DIR"
 for image in "${IMAGES[@]}"; do
   case "$image" in prototype|api|embedding|ingestion|financing) ;; *)
@@ -51,6 +110,10 @@ for image in "${IMAGES[@]}"; do
     exit 1
   fi
 
+  port="$(container_port "$image")"
+  container="tenantchat-smoke-$image-$$"
+  run_args=(--detach --rm --name "$container" --publish "127.0.0.1::$port")
+
   case "$image" in
     prototype)
       docker run --rm --entrypoint python "$tag" -c \
@@ -58,7 +121,14 @@ for image in "${IMAGES[@]}"; do
       ;;
     api)
       docker run --rm --entrypoint sh "$tag" -c \
-        'python -c "import psycopg; from tenantchat.api.app import create_app; assert create_app()" && alembic --version'
+        'python -c "import psycopg, tenantchat.api.app" && alembic --version'
+      start_smoke_database "$image"
+      # Schema first, exactly as k8s/api-migration-job.yaml does it: the API
+      # writes tenant seeds during startup and cannot create its own tables.
+      docker run --rm --network "$network" \
+        --env "DATABASE_MIGRATION_URL=$database_url" \
+        --entrypoint alembic "$tag" upgrade head
+      run_args+=(--network "$network" --env "DATABASE_URL=$database_url")
       ;;
     embedding)
       docker run --rm --entrypoint python "$tag" -c \
@@ -69,9 +139,7 @@ for image in "${IMAGES[@]}"; do
       ;;
   esac
 
-  port="$(container_port "$image")"
-  container="tenantchat-smoke-$image-$$"
-  docker run --detach --rm --name "$container" --publish "127.0.0.1::$port" "$tag" >/dev/null
+  docker run "${run_args[@]}" "$tag" >/dev/null
   host_port="$(docker port "$container" "$port/tcp" | awk -F: 'NR == 1 {print $NF}')"
   ready=false
   for _attempt in {1..60}; do
@@ -84,9 +152,11 @@ for image in "${IMAGES[@]}"; do
   done
   if [[ "$ready" != true ]]; then
     docker logs "$container" >&2
+    if [[ -n "$database_container" ]]; then
+      docker logs "$database_container" >&2
+    fi
     exit 1
   fi
   cleanup
-  container=""
   echo "smoke passed: $tag"
 done

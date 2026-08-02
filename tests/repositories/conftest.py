@@ -24,7 +24,7 @@ def psycopg_url(sqlalchemy_url: str) -> str:
 @pytest.fixture(scope="session")
 def postgres_server_url() -> Iterator[str]:
     with PostgresContainer(
-        "postgres:16-alpine",
+        "postgres:16.11-alpine3.23@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2",
         username="repository_owner",
         password="repository-test-only",
         dbname="postgres",
