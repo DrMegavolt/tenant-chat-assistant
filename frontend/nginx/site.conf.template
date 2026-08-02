@@ -1,26 +1,48 @@
-# Public site and operator console are separate listeners with separate document
-# roots. The public root contains no admin asset and the public listener proxies
-# no admin route, so the two cannot be exposed by one mistake: reaching the
-# console requires reaching a different port that no ingress publishes.
+# Single-origin gateway: one public listener, one browser origin.
 #
-# `${CHAT_BACKEND_ORIGIN}` and `${CHAT_ADMIN_ORIGIN}` are substituted at
-# container start by frontend/nginx/entrypoint.sh.
+# The public frontend is served from /srv/public.  Admin pages live under
+# /admin/ from a physically separate /srv/admin root.  Admin/API routes proxy
+# to the Python admin listener; visitor API routes proxy to the Python public
+# listener.  Unknown API paths fail closed (404 at the edge).
+#
+# Authentication uses an oauth2-proxy-style sidecar reachable via
+# ${AUTH_PROXY_ORIGIN}.  The `auth_request` directive checks every protected
+# location; browser page requests that fail auth are redirected to the proxy
+# login flow, while API requests receive a plain 401.  The proxy injects
+# X-Auth-Request identity headers. auth_request_set captures them for the
+# parent request, nginx maps provider groups to application roles, and the
+# resulting identity is forwarded to Python with a shared internal gateway
+# token. Any client-supplied copies are overwritten. Python re-checks the
+# gateway token and role independently.
+#
+# `${CHAT_BACKEND_ORIGIN}` (visitor API) and `${CHAT_ADMIN_ORIGIN}` (admin API)
+# are substituted at container start by frontend/nginx/entrypoint.sh.
+# `${AUTH_PROXY_ORIGIN}` is the oauth2-proxy internal endpoint. Browser-facing
+# OAuth paths stay relative to this gateway so internal Kubernetes DNS names
+# never appear in redirects.
 
+# ---------------------------------------------------------------------------
+# Widget CORS: tightly allowlisted origins for cross-origin embed calls.
+# Never `*`; never includes admin origins.  Credential-free requests only.
+# The map entries are generated at container start from WIDGET_ALLOWED_ORIGINS.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Server: single public listener
+# ---------------------------------------------------------------------------
 server {
     listen 8080;
     server_name _;
-    root /srv/public;
-    index index.html;
 
+    # --- Security headers (applied to all responses) ------------------------
     add_header Cache-Control $asset_cache_control always;
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy no-referrer always;
     add_header X-Frame-Options DENY always;
     # `unsafe-inline` covers styles only: the widget writes its shadow-root
-    # stylesheet as a <style> element (frontend/public/widget/widget.js), which
-    # CSP treats as inline however the element was created.
-    add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
+    # stylesheet as a <style> element.
+    add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" always;
 
+    # --- Proxy defaults -----------------------------------------------------
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -28,85 +50,179 @@ server {
     proxy_set_header X-Request-Id $request_id;
     proxy_connect_timeout 5s;
     proxy_send_timeout 30s;
-    # A turn that calls tools runs several model round trips; cutting it short
-    # would drop a reply the backend has already committed to the transcript.
+    # A turn that calls tools runs several model round trips.
     proxy_read_timeout 180s;
 
+    # --- Auth subrequest location (oauth2-proxy /oauth2/auth) ---------------
+    # auth_request calls this internal location.  The proxy validates the
+    # session cookie and returns 202 with identity headers, or 401.
+    location = /_auth {
+        internal;
+        proxy_pass ${AUTH_PROXY_ORIGIN}/oauth2/auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header X-Original-URL $scheme://$host$request_uri;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # --- Login redirect for browser requests (HTML clients) -----------------
+    location @auth_login {
+        return 302 /oauth2/start?rd=$scheme://$host$request_uri;
+    }
+
+    # --- API 401 handler (no redirect for API clients) -----------------------
+    location @api_unauthorized {
+        default_type application/json;
+        return 401 '{"error":"unauthorized"}';
+    }
+
+    # --- Health check --------------------------------------------------------
     location = /healthz {
         access_log off;
         default_type text/plain;
         return 200 "ok\n";
     }
 
-    # The visitor API surface, mirroring `_PUBLIC_GET_PATHS` and
-    # `_PUBLIC_POST_PATHS` in server.py. Exact matches only, so a new backend
-    # route is unreachable from the internet until it is listed here.
+    # --- Visitor API: proxy to Python public listener ------------------------
+    # Exact matches only, mirroring _PUBLIC_GET_PATHS and _PUBLIC_POST_PATHS
+    # in server.py.  A new backend route is unreachable from the internet
+    # until it is listed here.
+# Each exact visitor route owns its CORS response. Exact matches preserve the
+# fail-closed API contract; a broader regex location would silently publish a
+# newly similar backend path.
     location = /api/tenants {
+        if ($request_method = OPTIONS) {
+            add_header Vary Origin always;
+            add_header Access-Control-Allow-Origin $widget_cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $widget_cors_origin always;
+        add_header Vary Origin always;
         proxy_pass ${CHAT_BACKEND_ORIGIN};
     }
 
     location = /api/chat {
+        if ($request_method = OPTIONS) {
+            add_header Vary Origin always;
+            add_header Access-Control-Allow-Origin $widget_cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $widget_cors_origin always;
+        add_header Vary Origin always;
         proxy_pass ${CHAT_BACKEND_ORIGIN};
     }
 
     location = /api/chat/session {
+        if ($request_method = OPTIONS) {
+            add_header Vary Origin always;
+            add_header Access-Control-Allow-Origin $widget_cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $widget_cors_origin always;
+        add_header Vary Origin always;
         proxy_pass ${CHAT_BACKEND_ORIGIN};
     }
 
     location = /api/book {
+        if ($request_method = OPTIONS) {
+            add_header Vary Origin always;
+            add_header Access-Control-Allow-Origin $widget_cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $widget_cors_origin always;
+        add_header Vary Origin always;
         proxy_pass ${CHAT_BACKEND_ORIGIN};
     }
 
-    location /api/ {
-        return 404;
-    }
-
-    location / {
-        try_files $uri $uri/ =404;
-    }
-}
-
-# No ingress publishes this listener; reaching it means a port-forward or an
-# explicitly allowed in-cluster caller. Authentication in front of the console
-# is SEC-001, and belongs on the backend rather than here.
-server {
-    listen 8081;
-    server_name _;
-    root /srv/admin;
-    index admin.html;
-
-    add_header Cache-Control "no-store" always;
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer always;
-    add_header X-Frame-Options DENY always;
-    add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
-
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Request-Id $request_id;
-    proxy_connect_timeout 5s;
-    proxy_send_timeout 30s;
-    proxy_read_timeout 60s;
-
-    location = /healthz {
-        access_log off;
-        default_type text/plain;
-        return 200 "ok\n";
-    }
-
+    # --- Admin API: proxy to Python admin listener (auth-gated) --------------
+    # Every admin API path requires authentication.  Python additionally
+    # enforces role-based authorization.  Identity headers from the auth
+    # subrequest are forwarded; client-supplied copies are overwritten.
     location /api/admin/ {
+        auth_request /_auth;
+        auth_request_set $auth_email $upstream_http_x_auth_request_email;
+        auth_request_set $auth_user $upstream_http_x_auth_request_user;
+        auth_request_set $auth_groups $upstream_http_x_auth_request_groups;
+        auth_request_set $auth_cookie $upstream_http_set_cookie;
+        error_page 401 = @api_unauthorized;
+        add_header Set-Cookie $auth_cookie always;
+        # Overwrite any client-supplied identity headers with the values
+        # captured from the auth subrequest.  $upstream_http_* are available
+        # in the parent request after auth_request completes.
+        proxy_set_header X-Auth-Email $auth_email;
+        proxy_set_header X-Auth-Role $auth_role;
+        proxy_set_header X-Auth-Subject $auth_user;
+        proxy_set_header X-TenantChat-Gateway-Token ${ADMIN_GATEWAY_TOKEN};
         proxy_pass ${CHAT_ADMIN_ORIGIN};
     }
 
     location = /api/leads {
+        auth_request /_auth;
+        auth_request_set $auth_email $upstream_http_x_auth_request_email;
+        auth_request_set $auth_user $upstream_http_x_auth_request_user;
+        auth_request_set $auth_groups $upstream_http_x_auth_request_groups;
+        auth_request_set $auth_cookie $upstream_http_set_cookie;
+        error_page 401 = @api_unauthorized;
+        add_header Set-Cookie $auth_cookie always;
+        proxy_set_header X-Auth-Email $auth_email;
+        proxy_set_header X-Auth-Role $auth_role;
+        proxy_set_header X-Auth-Subject $auth_user;
+        proxy_set_header X-TenantChat-Gateway-Token ${ADMIN_GATEWAY_TOKEN};
         proxy_pass ${CHAT_ADMIN_ORIGIN};
     }
 
+    # Browser-visible OAuth start/callback/logout endpoints remain on the
+    # gateway origin and are proxied internally to oauth2-proxy.
+    location /oauth2/ {
+        proxy_pass ${AUTH_PROXY_ORIGIN};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # --- Catch-all: unknown API paths fail closed ---------------------------
     location /api/ {
         return 404;
     }
+
+    # --- Admin redirect: /admin -> /admin/ -----------------------------------
+    location = /admin {
+        return 302 /admin/;
+    }
+
+    # --- Admin frontend: separate document root, auth-gated -----------------
+    # Browser pages under /admin/ require authentication.  A 401 redirects
+    # the browser to the login flow.  Static assets (JS/CSS) under /admin/
+    # are also auth-gated so an unauthenticated browser cannot load them.
+    location /admin/ {
+        auth_request /_auth;
+        auth_request_set $auth_cookie $upstream_http_set_cookie;
+        error_page 401 = @auth_login;
+        add_header Set-Cookie $auth_cookie always;
+        alias /srv/admin/;
+        index admin.html;
+        try_files $uri $uri/ /admin/admin.html;
+    }
+
+    # --- Public frontend: default root ---------------------------------------
+    root /srv/public;
+    index index.html;
 
     location / {
         try_files $uri $uri/ =404;

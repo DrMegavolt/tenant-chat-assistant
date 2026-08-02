@@ -29,6 +29,19 @@ require_key() {
   fi
 }
 
+require_present_key() {
+  local resource_type="$1"
+  local resource_name="$2"
+  local key="$3"
+  local template
+  template="{{range \$data_key, \$data_value := .data}}{{if eq \$data_key \"$key\"}}present{{end}}{{end}}"
+  if ! kubectl -n "$NS" get "$resource_type" "$resource_name" \
+    -o "go-template=$template" 2>/dev/null | grep -qx present; then
+    echo "missing required $resource_type key $NS/$resource_name:$key; provision it out of band before deploy" >&2
+    exit 1
+  fi
+}
+
 require_key secret elastic-credentials username
 require_key secret elastic-credentials password
 require_key secret postgres-credentials username
@@ -46,6 +59,17 @@ require_key secret financing-to-embedding-credentials token
 require_key configmap llm-runtime baseUrl
 require_key configmap llm-runtime model
 require_key configmap llm-runtime timeoutSeconds
+
+# OIDC authentication secrets for oauth2-proxy (SEC-001 single-origin gateway).
+require_key secret oidc-credentials clientId
+require_key secret oidc-credentials clientSecret
+require_key secret oidc-credentials issuerUrl
+require_key secret oidc-credentials cookieSecret
+require_present_key configmap widget-cors-origins origins
+
+# Admin CSRF secret used by Python to validate double-submit tokens.
+require_key secret admin-csrf-secret secret
+require_key secret admin-gateway-credentials token
 
 # The OpenTelemetry operator is a cluster prerequisite managed by platform
 # automation. Fetching a mutable remote manifest during an application deploy
@@ -68,9 +92,15 @@ kubectl apply -f "$ROOT_DIR/k8s/kibana-setup-job.yaml"
 kubectl -n "$NS" wait --for=condition=complete job/configure-kibana-system-user --timeout=300s
 
 kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
-kubectl -n "$NS" rollout restart deploy/web deploy/chat-backend deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
+kubectl -n "$NS" rollout restart deploy/web deploy/oauth2-proxy deploy/chat-backend deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
+kubectl -n "$NS" rollout status deploy/oauth2-proxy --timeout=180s
 kubectl -n "$NS" rollout status deploy/chat-backend --timeout=180s
 kubectl -n "$NS" rollout status deploy/web --timeout=180s
+# These names belonged to the former split-port gateway. Applying the new
+# manifests does not prune renamed resources, so remove them only after the
+# authenticated single-origin gateway is ready.
+kubectl -n "$NS" delete svc/web-admin --ignore-not-found=true
+kubectl -n "$NS" delete networkpolicy/allow-public-ingress-to-chat --ignore-not-found=true
 kubectl -n "$NS" rollout status deploy/embedding-service --timeout=900s
 kubectl -n "$NS" rollout status deploy/ingestion-service --timeout=300s
 kubectl -n "$NS" rollout status deploy/financing-agent --timeout=300s

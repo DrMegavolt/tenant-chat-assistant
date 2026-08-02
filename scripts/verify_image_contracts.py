@@ -43,11 +43,20 @@ RELEASE_CONTRACT = re.compile(
     r"registry\.example\.invalid/tenantchat/(?:prototype|api|embedding|ingestion|financing|web)"
     r"@sha256:REPLACE_WITH_[A-Z]+_DIGEST$"
 )
+OAUTH2_PROXY_CONTRACT = re.compile(
+    r"quay\.io/oauth2-proxy/oauth2-proxy:v[\d.]+@sha256:REPLACE_WITH_[A-Z0-9_]+_DIGEST$"
+)
 WEB_SITE_TEMPLATE = ROOT / "frontend/nginx/site.conf.template"
 # The visitor API surface the public listener may forward, which has to stay
 # equal to `_PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS` minus the static routes in
 # server.py; `tests/test_web_gateway.py` asserts that equality directly.
+# The visitor API surface the public listener may forward, which has to stay
+# equal to `_PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS` minus the static routes in
+# server.py; `tests/test_web_gateway.py` asserts that equality directly.
 PUBLIC_PROXY_PATHS = frozenset({"/api/tenants", "/api/chat", "/api/chat/session", "/api/book"})
+# Admin API paths that proxy to the admin listener (auth-gated).
+ADMIN_PROXY_PATHS = frozenset({"/api/admin/", "/api/leads"})
+AUTH_PROXY_PATHS = frozenset({"/_auth", "/oauth2/"})
 
 
 def verify_dockerfiles(errors: list[str]) -> None:
@@ -165,21 +174,34 @@ def web_server_blocks() -> dict[int, str]:
     return blocks
 
 
+def location_bodies(block: str) -> dict[str, str]:
+    """Return location bodies using brace balancing, including nested `if`s."""
+    bodies: dict[str, str] = {}
+    pattern = re.compile(r"location\s+(?:=\s*)?(\S+)\s*\{")
+    for match in pattern.finditer(block):
+        depth = 1
+        index = match.end()
+        while depth and index < len(block):
+            depth += {"{": 1, "}": -1}.get(block[index], 0)
+            index += 1
+        if depth == 0:
+            bodies[match.group(1)] = block[match.end() : index - 1]
+    return bodies
+
+
 def proxied_locations(block: str) -> set[str]:
-    """Return the exact-match locations in one server block that proxy upstream."""
-    return {
-        match.group(1)
-        for match in re.finditer(r"location\s+=?\s*(\S+)\s*\{[^}]*proxy_pass", block, re.DOTALL)
-    }
+    """Return locations whose complete body proxies upstream."""
+    return {path for path, body in location_bodies(block).items() if "proxy_pass" in body}
 
 
 def verify_web_gateway(errors: list[str]) -> None:
-    """Require the public listener to carry no admin asset and no admin route.
+    """Require the single public listener to isolate admin from public.
 
-    Two roots and two listeners are the whole isolation argument: if the public
-    root ever receives the full `frontend/public/` tree, or the public server
-    block grows an admin location, the operator console becomes internet-facing
-    with nothing else in the deployment to stop it.
+    Two document roots and one listener are the whole isolation argument: if
+    the public root ever receives the full `frontend/public/` tree, or the
+    single server block grows an unauthenticated admin location, the operator
+    console becomes internet-facing with nothing else in the deployment to
+    stop it.  Admin routes must be auth-gated; unknown API paths must 404.
     """
     dockerfile = str(WEB_DOCKERFILE.relative_to(ROOT))
     template = str(WEB_SITE_TEMPLATE.relative_to(ROOT))
@@ -201,14 +223,60 @@ def verify_web_gateway(errors: list[str]) -> None:
         errors.append(f"{dockerfile}: public root is missing {source}")
 
     blocks = web_server_blocks()
-    if set(blocks) != {8080, 8081}:
-        errors.append(f"{template}: expected a public 8080 and an admin 8081 listener")
+    if set(blocks) != {8080}:
+        errors.append(f"{template}: expected a single 8080 listener")
         return
-    difference = proxied_locations(blocks[8080]) ^ set(PUBLIC_PROXY_PATHS)
-    if difference:
-        errors.append(f"{template}: public listener proxies {', '.join(sorted(difference))}")
-    if "location /api/ {" not in blocks[8080] or "return 404" not in blocks[8080]:
-        errors.append(f"{template}: public listener must reject unlisted /api/ paths")
+    block = blocks[8080]
+    locations = location_bodies(block)
+    # Public visitor API paths must proxy upstream.
+    all_proxy = proxied_locations(block)
+    public_proxy = all_proxy & set(PUBLIC_PROXY_PATHS)
+    missing_public = set(PUBLIC_PROXY_PATHS) - public_proxy
+    if missing_public:
+        missing = ", ".join(sorted(missing_public))
+        errors.append(f"{template}: public listener missing proxy for {missing}")
+    # Admin API paths must also proxy upstream (auth-gated, checked below).
+    if "/api/admin/" not in all_proxy:
+        errors.append(f"{template}: admin API route /api/admin/ is not proxied")
+    if "/api/leads" not in all_proxy:
+        errors.append(f"{template}: admin route /api/leads is not proxied")
+    unexpected = all_proxy - set(PUBLIC_PROXY_PATHS | ADMIN_PROXY_PATHS | AUTH_PROXY_PATHS)
+    if unexpected:
+        errors.append(f"{template}: unexpected proxied locations {', '.join(sorted(unexpected))}")
+    # Unknown /api/ paths must fail closed.
+    if "location /api/ {" not in block or "return 404" not in block:
+        errors.append(f"{template}: listener must reject unlisted /api/ paths")
+    # Admin location must be auth-gated.
+    admin_block = locations.get("/admin/", "")
+    if "auth_request" not in admin_block:
+        errors.append(f"{template}: admin location must use auth_request")
+    # Admin API must be auth-gated.
+    admin_api_block = locations.get("/api/admin/", "")
+    if "auth_request" not in admin_api_block:
+        errors.append(f"{template}: admin API location must use auth_request")
+    for directive in (
+        "auth_request_set $auth_email $upstream_http_x_auth_request_email",
+        "auth_request_set $auth_user $upstream_http_x_auth_request_user",
+        "auth_request_set $auth_groups $upstream_http_x_auth_request_groups",
+        "proxy_set_header X-TenantChat-Gateway-Token",
+    ):
+        if directive not in admin_api_block:
+            errors.append(f"{template}: admin API is missing {directive}")
+    for path in PUBLIC_PROXY_PATHS:
+        public_body = locations.get(path, "")
+        if "Access-Control-Allow-Origin $widget_cors_origin" not in public_body:
+            errors.append(f"{template}: {path} is missing allowlisted CORS responses")
+        if "$request_method = OPTIONS" not in public_body:
+            errors.append(f"{template}: {path} is missing CORS preflight handling")
+    for path in ADMIN_PROXY_PATHS:
+        if "Access-Control-Allow-Origin" in locations.get(path, ""):
+            errors.append(f"{template}: admin route {path} must not emit CORS permission")
+    # Widget CORS must not be wildcard.
+    if "Access-Control-Allow-Origin *" in block:
+        errors.append(f"{template}: must not use wildcard CORS")
+    # Vary: Origin must be present for cache correctness.
+    if "Vary Origin" not in block:
+        errors.append(f"{template}: must emit Vary: Origin for CORS cache correctness")
 
 
 def verify_pinned_postgres_images(errors: list[str]) -> None:
@@ -262,7 +330,9 @@ def verify_manifests(errors: list[str]) -> None:
         for line in text.splitlines():
             match = re.match(r"^\s*image:\s*(\S+)\s*$", line)
             if match and not (
-                DIGEST.search(match.group(1)) or RELEASE_CONTRACT.fullmatch(match.group(1))
+                DIGEST.search(match.group(1))
+                or RELEASE_CONTRACT.fullmatch(match.group(1))
+                or OAUTH2_PROXY_CONTRACT.fullmatch(match.group(1))
             ):
                 errors.append(f"{label}: mutable or invalid image reference {match.group(1)!r}")
         if re.search(r"\bpip(?:3)?\s+install\b", text):

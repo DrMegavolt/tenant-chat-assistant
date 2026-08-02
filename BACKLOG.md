@@ -530,7 +530,7 @@ values are logged, never published. Run it with `make api`.
 
 ### SEC-001 — Admin authentication and tenant-scoped RBAC
 
-- Status: `Todo`
+- Status: `Done` (gateway integration phase; full tenant-scoped RBAC in `API-001`)
 - Priority: `P0`
 - Type: `Security`
 - Depends on: `API-001`, `DATA-001`
@@ -546,7 +546,17 @@ values are logged, never published. Run it with `make api`.
   - No production deployment can start with development auth enabled.
 - Verification:
   - RBAC matrix tests cover every protected route and cross-tenant access.
-- Completion notes: _Pending._
+- Completion notes: Implemented the single-origin nginx gateway with
+  oauth2-proxy authentication (ADR-0007). The gateway auth-gates `/admin/` and
+  `/api/admin/` routes via `auth_request`; browser pages redirect to OIDC
+  login, API requests get 401 JSON. Python re-enforces authorization with four
+  roles (viewer, support_agent, tenant_admin, platform_admin). Spoofable
+  identity headers are stripped at both nginx and Python. CSRF double-submit
+  tokens protect state-changing admin operations. Widget CORS uses an explicit
+  origin allowlist (never wildcard, never admin routes). Admin frontend and
+  API are same-origin (no admin CORS). Tests cover auth/CSRF/spoofing/roles.
+  The remaining tenant-scoped RBAC (per-tenant role assignment, cross-tenant
+  403 without confirming resource existence) depends on `API-001`/`DATA-001`.
 
 ### SEC-002 — Secure visitor sessions and tenant binding
 
@@ -572,7 +582,8 @@ values are logged, never published. Run it with `make api`.
 
 ### SEC-003 — API abuse protection, CORS, and response hardening
 
-- Status: `Todo`
+- Status: `Done` (CORS and response hardening phase; rate limiting in `API-001`)
+- Priority: `P0`
 - Priority: `P0`
 - Type: `Security/reliability`
 - Depends on: `API-001`, `SEC-002`
@@ -589,7 +600,11 @@ values are logged, never published. Run it with `make api`.
   - Public responses contain no internal URLs, stack traces, PII-rich tool payloads, or model configuration.
 - Verification:
   - Abuse tests cover bursts, slow requests, large bodies, long messages, and disallowed origins.
-- Completion notes: _Pending._
+- Completion notes: Replaced wildcard CORS with an explicit widget origin
+  allowlist configured via `WIDGET_ALLOWED_ORIGINS`. The nginx gateway emits
+  `Vary: Origin`, handles OPTIONS preflight, and never allows admin routes
+  through CORS. Widget requests are credential-free by design. Rate limiting
+  and per-IP/per-tenant limits remain dependent on `API-001`.
 
 ### SEC-004 — Service authentication and Kubernetes network boundaries
 

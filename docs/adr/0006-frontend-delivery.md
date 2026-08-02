@@ -1,7 +1,8 @@
 # 0006 — nginx serves the frontend; the backend serves only the API
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0007 (single-origin gateway with OIDC auth)
 - **Date:** 2026-08-02
+- **Superseded by:** `ADR-0007`
 - **Affects:** `DEP-003`, `SEC-003`, `API-001`, `DEP-001`
 
 ## Context

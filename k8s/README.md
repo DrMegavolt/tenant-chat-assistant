@@ -36,13 +36,16 @@ file, or commit anything under `.local/`:
 
 ```bash
 kubectl create namespace llm-chat --dry-run=client -o yaml | kubectl apply -f -
-for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials; do
+for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials; do
   kubectl -n llm-chat create secret generic "$name" \
     --from-env-file=".local/k8s/$name.env.example" \
     --dry-run=client -o yaml | kubectl apply -f -
 done
 kubectl -n llm-chat create configmap llm-runtime \
   --from-env-file=.local/k8s/llm-runtime.env.example \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n llm-chat create configmap widget-cors-origins \
+  --from-env-file=.local/k8s/widget-cors-origins.env.example \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
@@ -70,14 +73,32 @@ same Secret/ConfigMap names and keys so workloads retain the fail-closed contrac
 Never store cleartext production values in Git.
 
 `k8s/network-policies.yaml` makes `llm-chat` ingress and egress default-deny.
-Only Traefik in the `ingress` namespace can reach the visitor-only chat listener
-on port 8000. Admin routes and chat metrics use the separate internal port 8004;
-Prometheus in `observability` can reach only that port and each other workload's
-own metrics/listen port. Internal data/API flows are explicit per workload.
-Kibana is ClusterIP-only. External model traffic is limited to public HTTPS or
-port 1234 on the private LAN because standard NetworkPolicy cannot bind an
-`ipBlock` to `LLM_BASE_URL`. Use an egress proxy or FQDN-aware policy engine in
-production if provider destinations need tighter binding.
+Only Traefik in the `ingress` namespace can reach the single web gateway listener
+on port 8080. The separate admin port (8081) is gone: admin pages and admin API
+are served under `/admin/` and `/api/admin/` on the same port, auth-gated by an
+oauth2-proxy sidecar (see ADR-0007). The web gateway can reach the chat backend
+(ports 8000 and 8004) and oauth2-proxy (port 4180). Prometheus in `observability`
+can reach chat metrics on port 8004 and each other workload's own metrics port.
+Internal data/API flows are explicit per workload. Kibana is ClusterIP-only.
+External model traffic is limited to public HTTPS or port 1234 on the private LAN
+because standard NetworkPolicy cannot bind an `ipBlock` to `LLM_BASE_URL`. Use an
+egress proxy or FQDN-aware policy engine in production if provider destinations
+need tighter binding.
+
+Before deployment, provision these additional resources out of band:
+- Secret `oidc-credentials` with keys `clientId`, `clientSecret`, `issuerUrl`,
+  `cookieSecret` for the oauth2-proxy OIDC configuration.
+- Secret `admin-csrf-secret` with key `secret` for Python CSRF token validation.
+- Secret `admin-gateway-credentials` with key `token`, shared only by nginx and
+  the Python admin listener to authenticate their internal hop.
+- ConfigMap `widget-cors-origins` with key `origins` listing the comma-separated
+  origins allowed to make cross-origin widget API calls (empty for same-origin
+  only).
+
+The OIDC provider must include one of `viewer`, `support_agent`,
+`tenant_admin`, or `platform_admin` in its `groups` claim. Users without a
+recognized group fail closed at the Python authorization boundary. Register
+`https://<gateway-host>/oauth2/callback` as the provider callback URL.
 
 Run `make network-policy-smoke` only against the local MicroK8s test cluster. It
 creates four uniquely named disposable namespaces, applies the production

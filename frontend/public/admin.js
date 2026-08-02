@@ -16,6 +16,10 @@ async function initAdmin() {
 async function refreshAdmin() {
   const viewState = captureViewState();
   const response = await fetch(adminApiUrl("/api/admin/chats"));
+  if (response.status === 401) {
+    redirectToLogin();
+    return;
+  }
   if (!response.ok) return;
   const payload = await response.json();
   adminState.sessions = payload.sessions || [];
@@ -259,11 +263,22 @@ function renderSidePanel(session) {
 }
 
 async function sendAdminMessage(sessionId, content) {
-  await fetch(adminApiUrl(`/api/admin/chats/${encodeURIComponent(sessionId)}/messages`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content })
-  });
+  const csrfToken = await getCsrfToken();
+  const response = await fetch(
+    adminApiUrl(`/api/admin/chats/${encodeURIComponent(sessionId)}/messages`),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken
+      },
+      body: JSON.stringify({ content })
+    }
+  );
+  if (response.status === 401) {
+    redirectToLogin();
+    return;
+  }
   await refreshAdmin();
 }
 
@@ -369,6 +384,30 @@ function resolveAdminApiBaseUrl() {
     return configured.trim().replace(/\/+$/, "");
   }
   return window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+}
+
+let cachedCsrfToken = null;
+
+async function getCsrfToken() {
+  if (cachedCsrfToken) return cachedCsrfToken;
+  const response = await fetch(adminApiUrl("/api/admin/csrf-token"));
+  if (response.status === 401) {
+    redirectToLogin();
+    return "";
+  }
+  if (response.ok) {
+    const payload = await response.json();
+    cachedCsrfToken = payload.csrfToken || "";
+  }
+  return cachedCsrfToken || "";
+}
+
+function redirectToLogin() {
+  // In production the gateway redirects unauthenticated browser requests to
+  // the OIDC login flow.  In development there is no auth proxy, so we show
+  // a message instead of looping.
+  if (window.location.protocol === "file:") return;
+  window.location.href = "/admin/";
 }
 
 function escapeHtml(value) {

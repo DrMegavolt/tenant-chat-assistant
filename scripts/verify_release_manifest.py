@@ -19,6 +19,7 @@ REQUIRED_WORKLOADS = frozenset(
         ("Deployment", "financing-agent"),
         ("Deployment", "chat-backend"),
         ("Deployment", "web"),
+        ("Deployment", "oauth2-proxy"),
     }
 )
 

@@ -71,11 +71,10 @@ create_client() {
 }
 
 create_server web 8080
-kubectl -n "$target_ns" expose pod web \
-  --name=web-admin --port=8081 --target-port=8081 >/dev/null
 create_server chat-backend 8000
 kubectl -n "$target_ns" expose pod chat-backend \
   --name=chat-admin --port=8004 --target-port=8004 >/dev/null
+create_server oauth2-proxy 4180
 create_server financing-agent 8003
 create_server embedding-service 8001
 create_server ingestion-service 8002
@@ -84,6 +83,7 @@ create_server elasticsearch 9200
 create_server kibana 5601
 
 create_client "$target_ns" web-client web
+create_client "$target_ns" oauth2-client oauth2-proxy
 create_client "$target_ns" chat-client chat-backend
 create_client "$target_ns" financing-client financing-agent
 create_client "$target_ns" ingestion-client ingestion-service
@@ -161,6 +161,7 @@ expect_denied_pod_port() {
 expect_allowed "$ingress_ns" traefik web 8080
 expect_allowed "$target_ns" web chat-backend 8000
 expect_allowed "$target_ns" web chat-admin 8004
+expect_allowed "$target_ns" web oauth2-proxy 4180
 expect_allowed "$observability_ns" prometheus chat-admin 8004
 expect_allowed "$observability_ns" prometheus embedding-service 8001
 expect_allowed "$observability_ns" prometheus ingestion-service 8002
@@ -178,12 +179,11 @@ expect_allowed "$target_ns" configure-kibana-system-user elasticsearch 9200
 
 for service_port in \
   web:8080 chat-backend:8000 financing-agent:8003 embedding-service:8001 \
-  ingestion-service:8002 postgres:5432 elasticsearch:9200; do
+  ingestion-service:8002 postgres:5432 elasticsearch:9200 oauth2-proxy:4180; do
   expect_denied "$attacker_ns" attacker "${service_port%:*}" "${service_port#*:}"
   expect_denied "$target_ns" random-client "${service_port%:*}" "${service_port#*:}"
 done
 expect_denied "$ingress_ns" traefik chat-backend 8000
-expect_denied "$ingress_ns" traefik web-admin 8081
 expect_denied "$target_ns" web postgres 5432
 expect_denied "$target_ns" web financing-agent 8003
 expect_denied "$target_ns" chat-backend ingestion-service 8002

@@ -534,28 +534,29 @@ spec:
       port: 80
       targetPort: http
 ---
-# The operator console. No ingress routes to it and no NetworkPolicy admits an
-# in-cluster caller, so reaching it means `kubectl port-forward`. It stays that
-# way until SEC-001 puts authentication in front of the admin routes.
+# oauth2-proxy: OIDC authentication sidecar for the single-origin gateway.
+# The gateway auth-gates admin routes (/admin/ and /api/admin/) through this
+# service. It validates the OIDC session cookie and returns X-Auth-Request
+# identity headers; nginx maps provider groups to roles before forwarding.
 apiVersion: v1
 kind: Service
 metadata:
-  name: web-admin
+  name: oauth2-proxy
   namespace: llm-chat
   labels:
-    app: web
-    app.kubernetes.io/name: web-admin
+    app: oauth2-proxy
+    app.kubernetes.io/name: oauth2-proxy
     app.kubernetes.io/instance: llm-chat
-    app.kubernetes.io/component: frontend
+    app.kubernetes.io/component: auth
     app.kubernetes.io/part-of: tenant-chat
     tenantchat.openai.com/exposure: internal
 spec:
   selector:
-    app: web
+    app: oauth2-proxy
   ports:
-    - name: admin-http
-      port: 8081
-      targetPort: admin-http
+    - name: http
+      port: 4180
+      targetPort: 4180
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -588,16 +589,30 @@ spec:
           ports:
             - containerPort: 8080
               name: http
-            - containerPort: 8081
-              name: admin-http
           env:
-            # Visitor routes and admin routes are separate backend listeners, so
-            # a proxy rule cannot publish an admin route by pointing at the
-            # wrong port.
+            # Visitor API routes proxy to the public listener; admin API
+            # routes proxy to the admin listener.  Both are same-origin
+            # through the single gateway listener.
             - name: CHAT_BACKEND_ORIGIN
               value: http://chat-backend:8000
             - name: CHAT_ADMIN_ORIGIN
               value: http://chat-admin:8004
+            # oauth2-proxy auth-check and browser OAuth endpoints. Browser
+            # redirects remain relative to the gateway's public origin.
+            - name: AUTH_PROXY_ORIGIN
+              value: http://oauth2-proxy:4180
+            - name: ADMIN_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: admin-gateway-credentials
+                  key: token
+            # Cross-origin widget CORS allowlist (comma-separated origins).
+            # Empty means same-origin only; never wildcard.
+            - name: WIDGET_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: widget-cors-origins
+                  key: origins
           resources:
             requests:
               memory: 32Mi
@@ -623,6 +638,101 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {}
+---
+# oauth2-proxy validates OIDC session cookies and injects identity headers.
+# Configured via environment variables referencing OIDC provider secrets.
+# See docs/adr/0007-single-origin-gateway.md for the full auth flow.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: llm-chat
+  labels:
+    app: oauth2-proxy
+    app.kubernetes.io/name: oauth2-proxy
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: auth
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+        app.kubernetes.io/name: oauth2-proxy
+        app.kubernetes.io/instance: llm-chat
+        app.kubernetes.io/component: auth
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.2@sha256:REPLACE_WITH_OAUTH2_PROXY_DIGEST
+          ports:
+            - containerPort: 4180
+              name: http
+          env:
+            - name: OAUTH2_PROXY_HTTP_ADDRESS
+              value: "0.0.0.0:4180"
+            - name: OAUTH2_PROXY_COOKIE_SECURE
+              value: "true"
+            - name: OAUTH2_PROXY_COOKIE_HTTPONLY
+              value: "true"
+            - name: OAUTH2_PROXY_COOKIE_SAMESITE
+              # Lax permits the top-level redirect back from the external IdP
+              # while still withholding the session on cross-site subrequests.
+              value: "lax"
+            - name: OAUTH2_PROXY_SET_XAUTHREQUEST
+              value: "true"
+            - name: OAUTH2_PROXY_REVERSE_PROXY
+              value: "true"
+            - name: OAUTH2_PROXY_EMAIL_DOMAINS
+              value: "*"
+            - name: OAUTH2_PROXY_SCOPE
+              value: "openid profile email groups"
+            - name: OAUTH2_PROXY_UPSTREAMS
+              value: "static://202"
+            - name: OAUTH2_PROXY_SKIP_PROVIDER_BUTTON
+              value: "true"
+            # OIDC provider configuration — provisioned from secrets out of band.
+            - name: OAUTH2_PROXY_PROVIDER
+              value: "oidc"
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-credentials
+                  key: clientId
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-credentials
+                  key: clientSecret
+            - name: OAUTH2_PROXY_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-credentials
+                  key: issuerUrl
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oidc-credentials
+                  key: cookieSecret
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 20m
+            limits:
+              memory: 128Mi
+              cpu: 250m
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
 ---
 apiVersion: v1
 kind: Service
@@ -745,6 +855,16 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: chat-to-financing-credentials
+                  key: token
+            - name: ADMIN_CSRF_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-csrf-secret
+                  key: secret
+            - name: ADMIN_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: admin-gateway-credentials
                   key: token
           readinessProbe:
             httpGet:

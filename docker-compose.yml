@@ -108,13 +108,16 @@ services:
       # at the same place here; Kubernetes splits them across 8000 and 8004.
       CHAT_BACKEND_ORIGIN: ${CHAT_BACKEND_ORIGIN:-http://host.docker.internal:8000}
       CHAT_ADMIN_ORIGIN: ${CHAT_ADMIN_ORIGIN:-http://host.docker.internal:8000}
+      # In local compose there is no oauth2-proxy sidecar; point at the backend
+      # which serves a dev auth mode.  The gateway health check (nginx -t)
+      # requires these to be valid URLs.
+      AUTH_PROXY_ORIGIN: ${AUTH_PROXY_ORIGIN:-http://host.docker.internal:8000}
+      ADMIN_GATEWAY_TOKEN: ${ADMIN_GATEWAY_TOKEN:?set ADMIN_GATEWAY_TOKEN in .env}
+      WIDGET_ALLOWED_ORIGINS: ${WIDGET_ALLOWED_ORIGINS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "${WEB_PORT:-8080}:8080"
-      # The console listener stays on loopback: it is unauthenticated until
-      # SEC-001 lands, and nothing on the local network should reach it.
-      - "127.0.0.1:${WEB_ADMIN_PORT:-8081}:8081"
     healthcheck:
       # 127.0.0.1, not localhost: the listener is IPv4 and localhost resolves to
       # ::1 first inside the container.

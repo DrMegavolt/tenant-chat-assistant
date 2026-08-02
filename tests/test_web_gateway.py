@@ -14,7 +14,9 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from scripts.verify_image_contracts import (
+    ADMIN_PROXY_PATHS,
     PUBLIC_PROXY_PATHS,
+    location_bodies,
     proxied_locations,
     verify_web_gateway,
     web_document_roots,
@@ -51,7 +53,12 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
         path for path in _PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS if path.startswith("/api/")
     }
 
-    assert proxied_locations(web_server_blocks()[8080]) == backend_api == set(PUBLIC_PROXY_PATHS)
+    all_proxy = proxied_locations(web_server_blocks()[8080])
+    # The public paths must all be proxied.
+    assert backend_api <= all_proxy
+    assert set(PUBLIC_PROXY_PATHS) <= all_proxy
+    # Admin paths are also proxied (auth-gated), so the total set is larger.
+    assert all_proxy >= backend_api | set(ADMIN_PROXY_PATHS)
 
 
 def test_public_listener_serves_every_module_the_widget_imports() -> None:
@@ -62,42 +69,86 @@ def test_public_listener_serves_every_module_the_widget_imports() -> None:
     assert "frontend/public/embed.js" in public_root
 
 
-def test_the_console_is_unreachable_from_the_public_listener() -> None:
+def test_single_listener_has_no_separate_admin_port() -> None:
+    """The separate admin listener (8081) is gone; admin is under /admin/."""
     blocks = web_server_blocks()
 
-    assert "admin" not in blocks[8080]
-    assert not any(source.startswith("admin") for source in web_document_roots()["/srv/public"])
-    assert "/api/admin/" in proxied_locations(blocks[8081])
+    assert set(blocks) == {8080}
+    # No separate listen 8081 directive.
+    assert "listen 8081" not in blocks[8080]
+    assert 8081 not in blocks
 
 
-def test_no_kubernetes_route_publishes_the_console_listener() -> None:
-    """Port 8081 must stay reachable only through an explicit port-forward."""
+def test_admin_routes_are_auth_gated() -> None:
+    """Admin locations must use auth_request."""
+    block = web_server_blocks()[8080]
+
+    locations = location_bodies(block)
+    admin_section = locations["/admin/"]
+    assert "auth_request" in admin_section
+
+    admin_api_section = locations["/api/admin/"]
+    assert "auth_request" in admin_api_section
+
+
+def test_spoofable_identity_headers_are_handled() -> None:
+    """Identity must come from oauth2-proxy over an authenticated internal hop."""
+    admin_api = location_bodies(web_server_blocks()[8080])["/api/admin/"]
+    assert "$upstream_http_x_auth_request_email" in admin_api
+    assert "$upstream_http_x_auth_request_user" in admin_api
+    assert "$upstream_http_x_auth_request_groups" in admin_api
+    assert "X-TenantChat-Gateway-Token" in admin_api
+
+
+def test_widget_cors_is_not_wildcard() -> None:
+    """Widget CORS must never be wildcard."""
+    block = web_server_blocks()[8080]
+    assert "Access-Control-Allow-Origin *" not in block
+    assert "Vary Origin" in block
+    locations = location_bodies(block)
+    for path in PUBLIC_PROXY_PATHS:
+        assert "Access-Control-Allow-Origin $widget_cors_origin" in locations[path]
+    for path in ADMIN_PROXY_PATHS:
+        assert "Access-Control-Allow-Origin" not in locations[path]
+
+
+def test_no_kubernetes_route_publishes_a_separate_admin_service() -> None:
+    """Port 8081 is gone; there is no web-admin Service."""
     documents = load_documents("k8s/app.yaml")
     services = [document for document in documents if document["kind"] == "Service"]
-    admin = next(document for document in services if document["metadata"]["name"] == "web-admin")
+    service_names = [document["metadata"]["name"] for document in services]
 
-    assert admin["metadata"]["labels"]["tenantchat.openai.com/exposure"] == "internal"
-    assert admin["spec"].get("type", "ClusterIP") == "ClusterIP"
+    assert "web-admin" not in service_names
+    assert "oauth2-proxy" in service_names
+
+    public = next(document for document in services if document["metadata"]["name"] == "web")
+    assert public["metadata"]["labels"]["tenantchat.openai.com/exposure"] == "public-entrypoint"
 
     policies = load_documents("k8s/network-policies.yaml")
-    public = next(
+    ingress_policy = next(
         document
         for document in policies
         if document["metadata"]["name"] == "allow-public-ingress-to-web"
     )
 
-    assert public["spec"]["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8080}]
+    assert ingress_policy["spec"]["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8080}]
 
 
-def test_the_gateway_reaches_the_backend_and_nothing_else() -> None:
+def test_the_gateway_reaches_the_backend_and_auth_proxy() -> None:
     policies = load_documents("k8s/network-policies.yaml")
     egress = next(
         document for document in policies if document["metadata"]["name"] == "allow-web-egress"
     )["spec"]["egress"]
 
-    assert len(egress) == 1
-    assert egress[0]["to"] == [{"podSelector": {"matchLabels": {"app": "chat-backend"}}}]
-    assert egress[0]["ports"] == [
+    assert len(egress) == 2
+    backend_egress = next(
+        e for e in egress if e["to"][0]["podSelector"]["matchLabels"] == {"app": "chat-backend"}
+    )
+    assert backend_egress["ports"] == [
         {"protocol": "TCP", "port": 8000},
         {"protocol": "TCP", "port": 8004},
     ]
+    proxy_egress = next(
+        e for e in egress if e["to"][0]["podSelector"]["matchLabels"] == {"app": "oauth2-proxy"}
+    )
+    assert proxy_egress["ports"] == [{"protocol": "TCP", "port": 4180}]

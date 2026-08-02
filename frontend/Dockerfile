@@ -20,14 +20,16 @@ COPY frontend/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY frontend/nginx/site.conf.template /etc/nginx/templates/site.conf.template
 COPY --chmod=0555 frontend/nginx/entrypoint.sh /usr/local/bin/tenantchat-web
 
-# Two roots, not one root with denied paths: the public listener cannot serve
-# admin.html or admin.js because neither file exists inside /srv/public.
+# Two roots, not one root with denied paths: the public root contains no
+# admin asset and the admin root is served only under /admin/ behind auth.
+# The single listener serves both audiences from one port, with the admin
+# root reachable only through the /admin/ location prefix.
 COPY frontend/public/ /srv/admin/
 COPY frontend/public/index.html frontend/public/app.js frontend/public/embed.js \
      frontend/public/styles.css /srv/public/
 COPY frontend/public/widget/ /srv/public/widget/
 
 USER 10001:10001
-EXPOSE 8080 8081
+EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/tenantchat-web"]
 CMD ["nginx", "-g", "daemon off;"]

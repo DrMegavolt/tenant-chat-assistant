@@ -145,14 +145,21 @@ for image in "${IMAGES[@]}"; do
         '! ls /srv/public | grep -q "^admin" && test -f /srv/public/embed.js && test -f /srv/admin/admin.html'
       # A malformed upstream must stop the container, not render a config that
       # rewrites or drops every proxied request.
-      if docker run --rm --env "CHAT_BACKEND_ORIGIN=http://backend/path" "$tag" >/dev/null 2>&1; then
+      if docker run --rm \
+        --env "ADMIN_GATEWAY_TOKEN=smoke-only-gateway-token-1234567890" \
+        --env "CHAT_BACKEND_ORIGIN=http://backend/path" \
+        "$tag" >/dev/null 2>&1; then
         echo "$tag accepted an upstream origin carrying a path" >&2
         exit 1
       fi
       # Resolvable but closed: nginx resolves proxy_pass hosts at startup, and
-      # this smoke has no backend to point at.
+      # this smoke has no backend to point at.  The auth proxy must also be
+      # resolvable for the auth_request directive.
       run_args+=(--env "CHAT_BACKEND_ORIGIN=http://127.0.0.1:9"
-                 --env "CHAT_ADMIN_ORIGIN=http://127.0.0.1:9")
+                 --env "CHAT_ADMIN_ORIGIN=http://127.0.0.1:9"
+                 --env "AUTH_PROXY_ORIGIN=http://127.0.0.1:9"
+                 --env "ADMIN_GATEWAY_TOKEN=smoke-only-gateway-token-1234567890"
+                 --env "WIDGET_ALLOWED_ORIGINS=")
       ;;
   esac
 

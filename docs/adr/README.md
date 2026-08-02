@@ -14,7 +14,8 @@ Consequences, Alternatives considered.
 | [0003](0003-retrieval-store.md) | Elasticsearch as the retrieval store | Accepted |
 | [0004](0004-model-provider.md) | Local OpenAI-compatible model provider by default | Accepted |
 | [0005](0005-conversation-persistence.md) | Tenant-qualified append-only conversation persistence | Accepted |
-| [0006](0006-frontend-delivery.md) | nginx serves the frontend; the backend serves only the API | Accepted |
+| [0006](0006-frontend-delivery.md) | nginx serves the frontend; the backend serves only the API | Superseded by 0007 |
+| [0007](0007-single-origin-gateway.md) | Single-origin nginx gateway with OIDC auth | Accepted |
 
 ## Relationship to BACKLOG.md
 

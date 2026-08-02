@@ -48,6 +48,7 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
         "allow-dns-egress",
         "allow-public-ingress-to-web",
         "allow-web-to-chat",
+        "allow-web-to-oauth2-proxy",
         "allow-web-egress",
         "allow-prometheus-chat-metrics",
         "allow-prometheus-embedding-metrics",
@@ -67,6 +68,7 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
         "allow-migration-egress",
         "allow-application-telemetry-egress",
         "allow-model-provider-egress",
+        "allow-oauth2-proxy-egress",
     } <= names
 
 
@@ -83,6 +85,10 @@ def test_only_the_web_gateway_is_marked_as_the_public_service() -> None:
 
     assert public == ["web"]
     assert all(document["spec"].get("type", "ClusterIP") == "ClusterIP" for document in services)
+    # oauth2-proxy exists as an internal service.
+    service_names = [document["metadata"]["name"] for document in services]
+    assert "oauth2-proxy" in service_names
+    assert "web-admin" not in service_names
 
 
 def test_the_ingress_controller_can_only_reach_the_web_gateway() -> None:

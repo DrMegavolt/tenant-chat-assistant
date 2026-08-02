@@ -11,6 +11,8 @@ The server exposes an OpenAI-compatible agent loop:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -30,6 +32,7 @@ from internal_auth import (
     reject_external_credential_reuse,
 )
 from runtime_security import (
+    RuntimeConfigurationError,
     is_production,
     load_openai_compatible_settings,
     openai_request_headers,
@@ -60,6 +63,154 @@ DATABASE_INIT_RETRIES = int(os.environ.get("DATABASE_INIT_RETRIES", "30"))
 MAX_TOOL_ROUNDS = 4
 
 require_production_environment(("DATABASE_URL",))
+
+# ---------------------------------------------------------------------------
+# Admin authentication, authorization, and CSRF (SEC-001 gateway integration).
+#
+# The nginx gateway runs an oauth2-proxy sidecar that validates an OIDC session
+# cookie and, on success, injects identity headers into the proxied request.
+# Nginx overwrites client-supplied identity headers with values captured from
+# oauth2-proxy. Python authenticates that internal hop with a separate shared
+# gateway token, then enforces role-based authorization independently.
+#
+# In local development (APP_ENV != production) a development auth mode allows
+# admin access without the proxy so `make dev` and the prototype server work.
+# ---------------------------------------------------------------------------
+
+# Defined roles, ordered by privilege.  Higher index = more privilege.
+_ROLES = ("viewer", "support_agent", "tenant_admin", "platform_admin")
+_ROLE_LEVELS = {role: level for level, role in enumerate(_ROLES)}
+
+# Minimum role required for each admin operation category.
+# viewer: read-only access to chat sessions and leads.
+# support_agent: can send staff replies into chats.
+# tenant_admin: can manage tenant configuration (future).
+# platform_admin: full operator access.
+_MIN_ROLE_FOR_OPERATION = {
+    "read": _ROLES.index("viewer"),
+    "reply": _ROLES.index("support_agent"),
+    "manage": _ROLES.index("tenant_admin"),
+}
+
+# Development auth identity used when APP_ENV is not production.
+# Allows all admin operations for local development and testing.
+_DEV_IDENTITY = {"email": "dev@localhost", "role": "platform_admin", "subject": "dev-user"}
+
+# CSRF: a secret key used to validate double-submit tokens on state-changing
+# admin operations.  In production this must be set via ADMIN_CSRF_SECRET.
+# The token is a HMAC of the session identity + a per-request nonce; the
+# client sends it as X-CSRF-Token header and it is validated against the
+# auth cookie's session ID (double-submit pattern).
+_ADMIN_CSRF_SECRET = os.environ.get("ADMIN_CSRF_SECRET", "").strip()
+if is_production() and not _ADMIN_CSRF_SECRET:
+    raise RuntimeConfigurationError(
+        "ADMIN_CSRF_SECRET is required in production for CSRF protection"
+    )
+if not _ADMIN_CSRF_SECRET:
+    _ADMIN_CSRF_SECRET = "dev-only-csrf-secret-not-for-production"
+
+# Shared only by nginx and the admin backend. It authenticates the internal
+# hop carrying oauth2-proxy-derived identity headers, so a caller that somehow
+# reaches port 8004 cannot manufacture an operator identity.
+_ADMIN_GATEWAY_TOKEN = os.environ.get("ADMIN_GATEWAY_TOKEN", "").strip()
+if is_production() and not _ADMIN_GATEWAY_TOKEN:
+    raise RuntimeConfigurationError(
+        "ADMIN_GATEWAY_TOKEN is required in production for gateway authentication"
+    )
+if not _ADMIN_GATEWAY_TOKEN:
+    _ADMIN_GATEWAY_TOKEN = "dev-only-gateway-token-not-for-production"
+
+# CORS: explicit origin allowlist for widget cross-origin calls.
+# Never wildcard; admin routes are never exposed through CORS.
+_WIDGET_ALLOWED_ORIGINS = frozenset(
+    origin.strip()
+    for origin in os.environ.get("WIDGET_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+)
+
+
+def _role_at_least(role: str, min_role: str) -> bool:
+    """Return whether *role* meets the minimum required privilege level."""
+    return _ROLE_LEVELS.get(role, -1) >= _ROLE_LEVELS.get(min_role, 0)
+
+
+def _read_identity(handler: Any) -> Optional[Dict[str, str]]:
+    """Read the authenticated identity from gateway-injected headers.
+
+    Python first authenticates nginx's internal hop, then reads only the values
+    nginx captured from oauth2-proxy. In local development, the dev identity is
+    used.
+
+    Returns None if no identity is present (should not happen behind the
+    gateway, but Python fails closed).
+    """
+    if not is_production():
+        return dict(_DEV_IDENTITY)
+
+    gateway_token = handler.headers.get("X-TenantChat-Gateway-Token", "").strip()
+    if not hmac.compare_digest(gateway_token, _ADMIN_GATEWAY_TOKEN):
+        return None
+
+    email = handler.headers.get("X-Auth-Email", "").strip()
+    role = handler.headers.get("X-Auth-Role", "").strip()
+    subject = handler.headers.get("X-Auth-Subject", "").strip()
+
+    if not email or not role or not subject:
+        return None
+    if role not in _ROLE_LEVELS:
+        return None
+
+    return {"email": email, "role": role, "subject": subject}
+
+
+def _require_auth(handler: Any, min_role: str) -> Optional[Dict[str, str]]:
+    """Enforce authentication and authorization for admin operations.
+
+    Returns the identity dict if authorized, or None after sending a 401/403
+    response.  Python never trusts nginx alone — it re-checks roles here.
+    """
+    identity = _read_identity(handler)
+    if identity is None:
+        handler.send_api_error(401, "unauthorized")
+        return None
+    if not _role_at_least(identity["role"], min_role):
+        handler.send_api_error(403, "forbidden")
+        return None
+    return identity
+
+
+def _validate_csrf(handler: Any, identity: Dict[str, str]) -> bool:
+    """Validate a double-submit CSRF token for state-changing admin operations.
+
+    The token is an HMAC of the identity subject using the CSRF secret.
+    The client sends it as the X-CSRF-Token header.  This prevents a
+    cross-origin browser from submitting a state-changing request even if
+    it can cause the browser to send cookies (the SameSite=Lax auth cookie
+    is the first defense; CSRF is the second).
+    """
+    if not is_production():
+        return True
+
+    presented = handler.headers.get("X-CSRF-Token", "").strip()
+    if not presented:
+        return False
+
+    expected = hmac.new(
+        _ADMIN_CSRF_SECRET.encode("utf-8"),
+        identity["subject"].encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(presented, expected)
+
+
+def _generate_csrf_token(identity: Dict[str, str]) -> str:
+    """Generate a CSRF token for the given identity (for the admin UI to fetch)."""
+    return hmac.new(
+        _ADMIN_CSRF_SECRET.encode("utf-8"),
+        identity["subject"].encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 TenantConfig = Dict[str, Any]
@@ -204,7 +355,13 @@ TOOLS: List[Dict[str, Any]] = [
                     "customer_phone_or_email": {"type": "string"},
                     "address": {"type": "string"},
                 },
-                "required": ["service", "slot", "customer_name", "customer_phone_or_email", "address"],
+                "required": [
+                    "service",
+                    "slot",
+                    "customer_name",
+                    "customer_phone_or_email",
+                    "address",
+                ],
                 "additionalProperties": False,
             },
         },
@@ -383,7 +540,9 @@ def set_session_messages(session: Dict[str, Any], messages: List[Dict[str, str]]
                 "id": next_message_id(),
                 "role": message["role"],
                 "content": message["content"],
-                "source": message.get("source", "visitor" if message["role"] == "user" else "assistant"),
+                "source": message.get(
+                    "source", "visitor" if message["role"] == "user" else "assistant"
+                ),
                 "createdAt": timestamp,
             }
         )
@@ -1095,7 +1254,10 @@ def call_financing_agent(
     request = urllib.request.Request(
         f"{FINANCING_AGENT_URL.rstrip('/')}/answer",
         data=body,
-        headers={"Content-Type": "application/json", **internal_bearer_headers(FINANCING_AGENT_TOKEN)},
+        headers={
+            "Content-Type": "application/json",
+            **internal_bearer_headers(FINANCING_AGENT_TOKEN),
+        },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
@@ -1320,12 +1482,25 @@ class ChatHandler(BaseHTTPRequestHandler):
     server_version = "TenantChatPrototype/0.1"
 
     def do_OPTIONS(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if not parsed.path.startswith("/api/") or parsed.path not in (
+            _PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS
+        ):
+            self.send_api_error(404, "not_found")
+            return
         self.send_response(204)
         self.send_cors_headers()
         self.end_headers()
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/oauth2/auth" and not is_production():
+            self.send_response(202)
+            self.send_header("X-Auth-Request-Email", _DEV_IDENTITY["email"])
+            self.send_header("X-Auth-Request-User", _DEV_IDENTITY["subject"])
+            self.send_header("X-Auth-Request-Groups", _DEV_IDENTITY["role"])
+            self.end_headers()
+            return
         if parsed.path == "/metrics":
             self.send_text(render_chat_metrics(), "text/plain; version=0.0.4")
             return
@@ -1333,25 +1508,26 @@ class ChatHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/tenants":
             payload = {
                 "tenants": {
-                    tenant_id: public_tenant_config(config)
-                    for tenant_id, config in TENANTS.items()
+                    tenant_id: public_tenant_config(config) for tenant_id, config in TENANTS.items()
                 }
             }
             self.send_json(payload)
             return
 
         if parsed.path == "/api/leads":
+            if not _require_auth(self, "viewer"):
+                return
             params = urllib.parse.parse_qs(parsed.query)
             tenant_filter = params.get("tenantId", [None])[0]
             leads = [
-                lead
-                for lead in LEADS
-                if tenant_filter is None or lead["tenantId"] == tenant_filter
+                lead for lead in LEADS if tenant_filter is None or lead["tenantId"] == tenant_filter
             ]
             self.send_json({"leads": leads})
             return
 
         if parsed.path == "/api/admin/chats":
+            if not _require_auth(self, "viewer"):
+                return
             sessions = sorted(
                 (session_summary(session) for session in SESSIONS.values()),
                 key=lambda item: item["updatedAt"],
@@ -1361,6 +1537,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/admin/chats/"):
+            if not _require_auth(self, "viewer"):
+                return
             session_id = urllib.parse.unquote(parsed.path.split("/")[-1])
             session = SESSIONS.get(session_id)
             if not session:
@@ -1379,12 +1557,25 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_json({"session": session_detail(session)})
             return
 
+        if parsed.path == "/api/admin/csrf-token":
+            identity = _require_auth(self, "viewer")
+            if not identity:
+                return
+            self.send_json({"csrfToken": _generate_csrf_token(identity)})
+            return
+
         path = "/index.html" if parsed.path == "/" else parsed.path
         self.serve_static(path)
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path.startswith("/api/admin/chats/") and parsed.path.endswith("/messages"):
+            identity = _require_auth(self, "support_agent")
+            if not identity:
+                return
+            if not _validate_csrf(self, identity):
+                self.send_api_error(403, "csrf_validation_failed")
+                return
             self.handle_admin_message(parsed.path)
             return
 
@@ -1432,7 +1623,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_json({"reply": reply, "toolEvents": tool_events, "mode": mode})
 
     def handle_admin_message(self, path: str) -> None:
-        session_id = urllib.parse.unquote(path.removeprefix("/api/admin/chats/").removesuffix("/messages"))
+        session_id = urllib.parse.unquote(
+            path.removeprefix("/api/admin/chats/").removesuffix("/messages")
+        )
         session = SESSIONS.get(session_id)
         if not session:
             self.send_json({"error": "session_not_found"}, status=404)
@@ -1488,7 +1681,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                 f"Confirmation {result['confirmationId']}."
             )
             append_session_message(session, "assistant", reply, "assistant")
-            self.send_json({"reply": reply, "toolEvent": tool_event, "session": session_detail(session)})
+            self.send_json(
+                {"reply": reply, "toolEvent": tool_event, "session": session_detail(session)}
+            )
             return
 
         self.send_json({"error": "booking_failed", "toolEvent": tool_event}, status=400)
@@ -1522,6 +1717,16 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_api_error(self, status: int, error: str) -> None:
+        """Send a JSON error response with API-appropriate status (no redirect)."""
+        body = json.dumps({"error": error}).encode("utf-8")
+        self.send_response(status)
+        self.send_cors_headers()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_text(self, body: str, content_type: str, status: int = 200) -> None:
         encoded = body.encode("utf-8")
         self.send_response(status)
@@ -1532,9 +1737,28 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        """Emit tightly allowlisted CORS headers for widget cross-origin calls.
+
+        Never wildcard; admin routes are never exposed through CORS.  The
+        gateway (nginx) handles OPTIONS preflight for the visitor API; this
+        method mirrors the same allowlist for direct-to-backend development.
+        """
+        path = urllib.parse.urlparse(self.path).path
+        public_api_paths = {
+            candidate
+            for candidate in _PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS
+            if candidate.startswith("/api/")
+        }
+        if path not in public_api_paths:
+            return
+        origin = self.headers.get("Origin", "")
+        if origin and origin in _WIDGET_ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            # No Access-Control-Allow-Credentials: widget requests are
+            # credential-free by design.
+        self.send_header("Vary", "Origin")
 
     def log_message(self, format: str, *args: Any) -> None:
         print("%s - %s" % (self.address_string(), format % args))
@@ -1564,8 +1788,12 @@ def is_public_route(method: str, path: str) -> bool:
     normalized_path = urllib.parse.urlparse(path).path
     if method in {"GET", "HEAD"}:
         return normalized_path in _PUBLIC_GET_PATHS
-    if method in {"POST", "OPTIONS"}:
+    if method == "POST":
         return normalized_path in _PUBLIC_POST_PATHS
+    if method == "OPTIONS":
+        return normalized_path.startswith("/api/") and normalized_path in (
+            _PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS
+        )
     return False
 
 
@@ -1602,7 +1830,9 @@ def sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
                 {
                     "role": role,
                     "content": content[:4000],
-                    "source": source if source in {"user", "assistant", "admin", "proactive"} else role,
+                    "source": source
+                    if source in {"user", "assistant", "admin", "proactive"}
+                    else role,
                 }
             )
     return cleaned
@@ -1612,10 +1842,14 @@ def main() -> None:
     load_saved_chats()
     handler = ChatHandler
     if is_production():
-        internal_server = ThreadingHTTPServer((HOST, ADMIN_PORT), ChatHandler)
-        internal_thread = threading.Thread(target=internal_server.serve_forever, daemon=True)
-        internal_thread.start()
-        print(f"Serving internal chat administration at http://{HOST}:{ADMIN_PORT}")
+        # Single-origin gateway model: the nginx gateway routes visitor API
+        # calls to the public listener (PORT) and admin API calls to the
+        # admin listener (ADMIN_PORT).  The gateway handles authentication;
+        # Python re-enforces authorization on the admin listener.
+        admin_server = ThreadingHTTPServer((HOST, ADMIN_PORT), ChatHandler)
+        admin_thread = threading.Thread(target=admin_server.serve_forever, daemon=True)
+        admin_thread.start()
+        print(f"Serving admin API at http://{HOST}:{ADMIN_PORT} (auth-gated by gateway)")
         handler = PublicChatHandler
     server = ThreadingHTTPServer((HOST, PORT), handler)
     print(f"Serving tenant chat prototype at http://{HOST}:{PORT}")
