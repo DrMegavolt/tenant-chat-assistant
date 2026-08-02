@@ -1,0 +1,86 @@
+# Database migration runbook
+
+## Ownership boundary
+
+Alembic is the only schema writer. A release operator or one-shot migration Job
+uses `DATABASE_MIGRATION_URL`, whose role owns the objects. The API uses
+`DATABASE_URL`, whose distinct `NOINHERIT` login receives only `CONNECT`, schema
+`USAGE`, table `SELECT/INSERT/UPDATE/DELETE`, and sequence `USAGE/SELECT`.
+Audit events are further restricted to `SELECT/INSERT`, and the application role
+cannot mutate Alembic's revision table.
+
+Provision the login and password through the platform secret manager, then run:
+
+```sql
+CREATE ROLE tenantchat_app LOGIN NOINHERIT PASSWORD '<from secret manager>';
+```
+
+```bash
+psql "$DATABASE_MIGRATION_URL" \
+  --set=app_role=tenantchat_app \
+  --file=services/api/migrations/provision_app_role.sql
+```
+
+Do not give the API role membership in the owner role, `CREATE` on `public`, or
+permission to update `alembic_version`. Application startup does not invoke
+Alembic, call `MetaData.create_all`, or otherwise create schema.
+
+## Release procedure
+
+1. Take and verify a database backup. Record the current Alembic revision with
+   `alembic current` using the owner URL.
+2. Run `alembic upgrade head` in a one-shot release Job using the exact immutable
+   API image that will be deployed. `k8s/api-migration-job.yaml` is the template;
+   replace its image placeholder with the release digest before applying it.
+3. Re-run `provision_app_role.sql`. Default privileges cover new objects created
+   by the same owner, while the explicit grants also repair drift.
+4. Roll out the API using only the application-role secret. Confirm the Job has
+   completed before any new API pod becomes ready.
+
+Alembic records each revision transactionally. Running `upgrade head` again is a
+safe no-op once `alembic_version` is at the head revision.
+
+## Prototype snapshot reset decision
+
+The prototype's `chat_sessions(payload jsonb)` rows are not imported. They carry
+client-supplied transcript state, mix leads/bookings into snapshots, and do not
+contain the stable identifiers or trusted ordering required by the normalized
+schema. Guessing those values during an automatic import would turn unsafe demo
+state into authoritative production records.
+
+The initial migration detects the legacy table and stops without modifying it.
+For a prototype database:
+
+1. Stop every prototype writer and retain the `chats/` directory separately.
+2. Export the table with `pg_dump --format=custom --table=public.chat_sessions`.
+   Verify the dump with `pg_restore --list` and store it under the prototype's
+   existing data-retention controls because it contains PII.
+3. In a transaction, rename the legacy table to a dated quarantine name and
+   remove access from the future API role:
+
+   ```sql
+   BEGIN;
+   ALTER TABLE public.chat_sessions
+     RENAME TO prototype_chat_session_snapshots_20260801;
+   REVOKE ALL ON TABLE public.prototype_chat_session_snapshots_20260801
+     FROM tenantchat_app;
+   COMMIT;
+   ```
+
+4. Run the migration and seed tenants through a separately reviewed onboarding
+   process. Do not point the old prototype at this database again.
+5. Delete the quarantined table only after backup verification and the approved
+   prototype retention period. This task never deletes it automatically.
+
+## Downgrade and restore
+
+`alembic downgrade -1` is supported for development and tested as
+head-to-base-to-head. For this first revision it drops every authoritative table,
+enum, and all contained data, so it is not a production rollback mechanism.
+
+For a failed production release, prefer a forward fix when the schema remains
+compatible. If data or schema must be rolled back, stop writers, restore the
+pre-migration custom-format backup into a new database, run integrity checks,
+and change the application secret to the restored database. Keep the failed
+database read-only until the recovery is verified. Never downgrade a database
+in place without an independently verified backup and an approved data-loss plan.

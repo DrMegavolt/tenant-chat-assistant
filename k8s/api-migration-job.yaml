@@ -1,0 +1,43 @@
+# Release template. DEP-001 replaces the placeholder with the immutable image
+# digest produced by the release pipeline. Apply this Job before rolling out API
+# pods; migrations never run from the API container's startup command.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tenantchat-api-migrate
+  namespace: llm-chat
+  labels:
+    app.kubernetes.io/name: tenantchat-api-migrate
+    app.kubernetes.io/component: database-migration
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tenantchat-api-migrate
+        app.kubernetes.io/component: database-migration
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: tenantchat-api:replace-with-release-digest
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: ["uv", "run", "--frozen", "alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_MIGRATION_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-migration-credentials
+                  key: databaseUrl
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault

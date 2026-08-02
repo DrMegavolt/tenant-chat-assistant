@@ -7,8 +7,8 @@ SHELL := /bin/bash
 UV_RUN := uv run --frozen
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
-	js-install js-lint js-format js-format-check js-test js-test-cov check \
-	api up up-all down down-clean logs ps arch-validate arch-build clean
+	test-migrations migrate js-install js-lint js-format js-format-check js-test \
+	js-test-cov check api up up-all down down-clean logs ps arch-validate arch-build clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -37,14 +37,21 @@ format-check: ## Fail if any file is unformatted
 typecheck: ## Run mypy in strict mode
 	$(UV_RUN) mypy
 
-test: ## Run the test suite
-	$(UV_RUN) pytest
+test: ## Run the hermetic unit suite (no external services)
+	$(UV_RUN) pytest -m "not integration"
 
 test-cov: ## Run tests with a coverage report
-	$(UV_RUN) pytest --cov --cov-report=term-missing \
+	$(UV_RUN) pytest -m "not integration" --cov --cov-report=term-missing \
 		--cov-report=xml:coverage/python/coverage.xml \
 		--cov-report=html:coverage/python/html \
 		--junitxml=artifacts/test-results/python.xml
+
+test-migrations: ## Run migrations against an isolated Postgres 16 container
+	$(UV_RUN) pytest -m integration tests/migrations
+
+migrate: ## Upgrade with the schema-owner URL (never the application URL)
+	@test -n "$${DATABASE_MIGRATION_URL}" || { echo "DATABASE_MIGRATION_URL is required"; exit 2; }
+	$(UV_RUN) alembic upgrade head
 
 node_modules/.package-lock.json: package.json package-lock.json
 	npm ci

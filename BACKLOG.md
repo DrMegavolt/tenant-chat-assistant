@@ -150,7 +150,7 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 ### P0 production exposure blockers
 
 - [x] `QA-001` — Foundational automated test harness and CI — `P0`
-- [ ] `DATA-001` — Normalized schema and migration framework — `P0`
+- [x] `DATA-001` — Normalized schema and migration framework — `Done`
 - [ ] `API-001` — Production API runtime and typed contracts — `P0` — _slice 1 of 2 complete_
 - [ ] `DATA-002` — Server-authoritative repositories and concurrency control — `P0`
 - [ ] `DATA-003` — Transactional, idempotent booking — `P0`
@@ -367,7 +367,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 ### DATA-001 — Normalized schema and migration framework
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Data`
 - Depends on: `QA-001`
@@ -384,7 +384,23 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
   - The application role does not need schema-owner privileges during normal operation.
 - Verification:
   - Migration tests run against a temporary Postgres instance.
-- Completion notes: _Pending._
+- Completion notes: Alembic revision `0001_normalized` creates tenant-scoped
+  tenants, sessions, messages, tool executions, leads, bookings, handoffs,
+  idempotency keys, and audit events with composite tenant foreign keys, closed
+  state types/checks, timestamps, uniqueness, and tenant-leading query indexes.
+  Migrations use a schema-owner-only URL and a one-shot Kubernetes Job; the
+  separately provisioned runtime role has DML without DDL or Alembic revision
+  mutation, and audit events are append-only to it. Legacy JSONB snapshots fail
+  closed and follow the documented backup/quarantine/reset decision rather than
+  becoming trusted records. Changed: `alembic.ini`, `services/api/migrations/`,
+  `services/api/pyproject.toml`, `tests/migrations/`, `.github/workflows/ci.yml`,
+  `k8s/api-migration-job.yaml`, `docs/runbooks/database-migrations.md`,
+  `Makefile`, `.env.example`, `README.md`, `pyproject.toml`, and `uv.lock`.
+  Verified: `make test-migrations` (5 passed on disposable PostgreSQL 16) and
+  `make check` (264 passed; lock, lint, format, and mypy strict clean).
+  Follow-ups: `DATA-002` implements repositories; `DATA-003` owns transactional
+  booking and slot/idempotency semantics; `DEP-001` supplies the immutable image
+  digest used by the migration Job.
 
 ### API-001 — Production API runtime and typed contracts
 

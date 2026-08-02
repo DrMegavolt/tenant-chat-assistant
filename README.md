@@ -11,6 +11,7 @@ before `server.py` is retired.
 make api      # services/api on http://127.0.0.1:8080
 make setup    # install locked Python and frontend development dependencies
 make check    # complete Python + JavaScript quality gate with coverage
+make test-migrations # isolated PostgreSQL migration lifecycle
 ```
 
 `make check` runs without live services. Frontend tests use a DOM environment
@@ -106,6 +107,14 @@ recovery never requires parsing prose:
 
 Set `CHAT_API_DOCS_ENABLED=true` for the OpenAPI schema at `/docs`. It is off by
 default: it names every field and error code the API accepts.
+
+## Database schema
+
+The normalized production schema is versioned under `services/api/migrations`.
+It is upgraded as a release step with `DATABASE_MIGRATION_URL`; API startup never
+creates or alters schema. The separate `DATABASE_URL` role has runtime DML only.
+See `docs/runbooks/database-migrations.md` before migrating a database used by
+the JSONB-snapshot prototype or attempting a downgrade.
 
 ## Running the frontend against a remote backend
 
