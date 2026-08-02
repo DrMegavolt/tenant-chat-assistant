@@ -157,7 +157,7 @@ Then configure the frontend API base with one of these options:
 <script>
   window.CHAT_API_BASE_URL = "http://127.0.0.1:18080";
 </script>
-<script src="app.js"></script>
+<script type="module" src="embed.js"></script>
 ```
 
 ```html
@@ -169,7 +169,7 @@ Then configure the frontend API base with one of these options:
 ```
 
 ```html
-<script src="app.js" data-api-base-url="http://127.0.0.1:18080"></script>
+<script type="module" src="embed.js" data-api-base-url="http://127.0.0.1:18080"></script>
 ```
 
 The admin page supports the same global or script setting, plus `data-api-base-url`
@@ -190,8 +190,27 @@ Please have someone call me. My name is Sam Lee, my phone is 555-222-1919, I nee
 Example embed shape:
 
 ```html
-<script
-  src="https://your-domain.com/chat-widget.js"
-  data-company-id="clearview"
-></script>
+<div id="tenant-chat" data-company-id="clearview"></div>
+<script type="module" src="https://your-domain.com/embed.js"></script>
 ```
+
+## The frontend
+
+Everything the browser loads lives under `frontend/`, which is a self-contained
+npm project: `frontend/public/` is served as-is, `frontend/tests/` holds the
+Vitest suite, and ESLint, Prettier, and Vitest are configured beside them. The
+`make js-*` targets drive it; nothing at the repository root is an npm package.
+
+```text
+frontend/public/
+  index.html, admin.html, styles.css   demo site and operator console
+  embed.js                             the entry a customer site includes
+  app.js                               the demo page, which embeds the widget
+  widget/                              the widget itself; no host-page coupling
+```
+
+The widget renders into a shadow root, so an embedding page can neither style
+its internals nor collide with its element ids, and its own styles never escape.
+Accessibility is covered in [`docs/accessibility.md`](docs/accessibility.md):
+automated axe, contrast, focus, and consent checks run in `make check`, and the
+manual keyboard and screen-reader list lives there too.

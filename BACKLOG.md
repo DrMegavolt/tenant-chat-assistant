@@ -220,7 +220,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P1`
 - [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
 - [ ] `FEAT-012` — Booking cancellation and rescheduling — `P2`
-- [ ] `FEAT-013` — Accessibility, responsive embed, and privacy UX — `P2`
+- [ ] `FEAT-013` — Accessibility, responsive embed, and privacy UX — `P2` — _client slice complete_
 - [ ] `FEAT-014` — Additional business-domain agents — `P2`
 
 ## Completed baseline details
@@ -1512,7 +1512,8 @@ values are logged, never published. Run it with `make api`.
 
 ### FEAT-013 — Accessibility, responsive embed, and privacy UX
 
-- Status: `Todo`
+- Status: `In progress` — _client slice complete; screen-reader pass and
+  server-side consent record outstanding_
 - Priority: `P2`
 - Type: `Feature/frontend`
 - Depends on: `SEC-002`, `PRIV-001`, `FEAT-010`
@@ -1526,7 +1527,38 @@ values are logged, never published. Run it with `make api`.
   - Consent and privacy controls are clear before contact data is submitted.
 - Verification:
   - Run accessibility tests across supported viewport sizes and browsers.
-- Completion notes: _Pending._
+- Completion notes: Moved the whole frontend into `frontend/` as a
+  self-contained npm project (`frontend/public/` served as-is,
+  `frontend/tests/` for Vitest, ESLint/Prettier/Vitest beside them); served URLs
+  are unchanged. Rebuilt the widget to render into a shadow root with a scoped
+  `all: initial` reset, split it into `widget/{api,privacy,styles,widget,embed}.js`,
+  and added `embed.js` as the customer-facing entry now that `app.js` also drives
+  the demo host page. Accessibility work: `role="dialog"` with an accessible
+  name, `role="log"` transcript with `aria-live` and `aria-busy`, a `role="status"`
+  region for pending replies, per-message speaker names, a real composer label,
+  focus returned to launcher and composer on close and open, Escape to close,
+  `aria-expanded` on the launcher and privacy toggle, `role="alert"` booking and
+  backend-failure states with focus moved to the fix, full-viewport sizing under
+  560 px wide or 520 px tall, `prefers-reduced-motion` and `forced-colors`
+  handling, and a palette reworked so every painted pair meets AA. Privacy UX:
+  a persistent notice, an expandable panel describing what is stored, a delete
+  control that clears all browser state, a required consent checkbox that blocks
+  submission and travels with the booking payload, prefill of details already
+  given (§3.3.7), lazy session-id creation so nothing is stored until the visitor
+  sends something, and an in-memory fallback when the browser refuses storage.
+  Also raised control-border contrast on the demo and admin pages and labelled
+  the admin reply input and transcript.
+  Changed files: `frontend/**` (moved and rewritten), `docs/accessibility.md`
+  (new), `server.py` (static root, public-route allowlist), `Makefile`,
+  `Dockerfile`, `.github/workflows/ci.yml`, `.gitignore`, `.dockerignore`,
+  `tests/test_network_boundaries.py`, `README.md`, `CLAUDE.md`.
+  Verified: `make check` (407 Python and 50 frontend tests, 98% frontend
+  coverage), plus a manual pass in Chromium at 1280×800, 740×400, and 320×568
+  recorded in `docs/accessibility.md`.
+  Follow-ups: screen-reader pass with VoiceOver and NVDA (recorded as
+  outstanding in `docs/accessibility.md`); server-side consent record, retention,
+  and erasure belong to `PRIV-001` — the widget sends a consent object that
+  nothing yet persists; tenant-bound visitor sessions are `SEC-002`.
 
 ### FEAT-014 — Additional business-domain agents
 

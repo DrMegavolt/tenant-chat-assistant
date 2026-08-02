@@ -4,6 +4,9 @@
   --ink: #1d2328;
   --muted: #66707a;
   --line: #d9dedf;
+  /* Borders that are the only visible boundary of a control need 3:1 against
+     their background (WCAG 2.2 §1.4.11); --line is decorative and does not. */
+  --control-line: #78868a;
   --panel: #ffffff;
   --accent: #0e6f68;
   --accent-strong: #064e49;
@@ -36,6 +39,33 @@ button,
 select,
 input {
   font: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .page-shell {
@@ -99,7 +129,7 @@ h2 {
   width: 100%;
   min-height: 44px;
   padding: 0 12px;
-  border: 1px solid #b7c1c3;
+  border: 1px solid var(--control-line);
   border-radius: 6px;
   background: var(--panel);
   color: var(--ink);
@@ -155,266 +185,6 @@ dd {
   line-height: 1.45;
 }
 
-.chat-launcher {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 64px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  box-shadow: var(--shadow);
-  cursor: pointer;
-}
-
-.chat-launcher svg {
-  width: 29px;
-  height: 29px;
-}
-
-.chat-window {
-  position: fixed;
-  right: 24px;
-  bottom: 104px;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  width: min(420px, calc(100vw - 28px));
-  height: min(680px, calc(100vh - 132px));
-  overflow: hidden;
-  border: 1px solid rgba(16, 35, 40, 0.12);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.chat-window[hidden] {
-  display: none;
-}
-
-.chat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 14px 16px;
-  background: #102328;
-  color: #fff;
-}
-
-.chat-title {
-  display: grid;
-  gap: 2px;
-}
-
-.chat-title strong {
-  font-size: 0.98rem;
-}
-
-.chat-title span {
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.78rem;
-}
-
-.icon-button {
-  display: inline-grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 0;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  color: currentColor;
-  cursor: pointer;
-}
-
-.icon-button svg {
-  width: 20px;
-  height: 20px;
-}
-
-.messages {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  overflow-y: auto;
-  padding: 16px;
-  background: #f7f8f7;
-}
-
-.message {
-  max-width: 86%;
-  padding: 10px 12px;
-  border-radius: 8px;
-  line-height: 1.42;
-  white-space: pre-wrap;
-}
-
-.message.assistant {
-  align-self: flex-start;
-  border: 1px solid #dce2e3;
-  background: #fff;
-}
-
-.message.assistant.admin {
-  border-color: #d7b36c;
-  background: #fff8e7;
-}
-
-.message.assistant.proactive {
-  border-color: #c8d8dc;
-  background: #f0f6f7;
-}
-
-.message.user {
-  align-self: flex-end;
-  background: var(--accent);
-  color: #fff;
-}
-
-.tool-call {
-  align-self: flex-start;
-  max-width: 92%;
-  padding: 8px 10px;
-  border-left: 3px solid var(--warning);
-  background: #fff6ec;
-  color: #714018;
-  font-size: 0.82rem;
-  line-height: 1.35;
-}
-
-.booking-form-card {
-  align-self: flex-start;
-  display: grid;
-  gap: 10px;
-  width: min(92%, 340px);
-  padding: 12px;
-  border: 1px solid #c9d6d6;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.booking-form-card strong {
-  font-size: 0.96rem;
-}
-
-.booking-form-card label {
-  display: grid;
-  gap: 5px;
-}
-
-.booking-form-card span {
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.booking-form-card input,
-.booking-form-card select {
-  min-height: 38px;
-  min-width: 0;
-  padding: 0 10px;
-  border: 1px solid #bac5c7;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.booking-form-card button {
-  min-height: 40px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-  font-weight: 800;
-}
-
-.booking-form-card button:disabled {
-  cursor: wait;
-  opacity: 0.72;
-}
-
-.booking-error {
-  margin: 0;
-  color: #8b3f0c;
-  font-size: 0.86rem;
-}
-
-.quick-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px 0;
-  border-top: 1px solid #e1e6e7;
-  background: #fff;
-}
-
-.quick-actions button {
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid #c8d1d2;
-  border-radius: 999px;
-  background: #fff;
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.composer {
-  display: grid;
-  grid-template-columns: 1fr 44px;
-  gap: 8px;
-  padding: 10px 12px 12px;
-  background: #fff;
-}
-
-.composer input {
-  min-width: 0;
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid #bac5c7;
-  border-radius: 6px;
-}
-
-.composer button {
-  display: grid;
-  place-items: center;
-  min-height: 44px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-}
-
-.composer button:disabled,
-.composer input:disabled {
-  cursor: wait;
-  opacity: 0.72;
-}
-
-.composer svg {
-  width: 20px;
-  height: 20px;
-}
-
-.backend-error {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  max-width: min(380px, calc(100vw - 40px));
-  padding: 14px 16px;
-  border: 1px solid #e2a587;
-  border-radius: 8px;
-  background: #fff6ec;
-  color: #713812;
-  box-shadow: var(--shadow);
-}
-
 .admin-body {
   background: #eef2f0;
 }
@@ -451,7 +221,7 @@ dd {
   align-items: center;
   min-height: 40px;
   padding: 0 12px;
-  border: 1px solid #b8c5c4;
+  border: 1px solid var(--control-line);
   border-radius: 6px;
   background: #fff;
   color: var(--accent-strong);
@@ -533,7 +303,7 @@ dd {
   gap: 8px;
   width: 100%;
   padding: 12px;
-  border: 1px solid #d9e1e0;
+  border: 1px solid var(--control-line);
   border-left: 5px solid #9aa7aa;
   border-radius: 6px;
   background: #fff;
@@ -738,6 +508,11 @@ dd {
   color: #fff;
 }
 
+/* --muted is only legible on light panels; on the accent bubble it is not. */
+.admin-message.user time {
+  color: #e8f1f0;
+}
+
 .admin-message.admin {
   border-color: #d7b36c;
   background: #fff8e7;
@@ -769,7 +544,7 @@ dd {
 .admin-reply input {
   min-height: 42px;
   padding: 0 12px;
-  border: 1px solid #bac5c7;
+  border: 1px solid var(--control-line);
   border-radius: 6px;
 }
 
@@ -842,16 +617,6 @@ dd {
 
   .content-grid {
     margin-top: 46px;
-  }
-
-  .chat-window {
-    right: 12px;
-    bottom: 92px;
-  }
-
-  .chat-launcher {
-    right: 18px;
-    bottom: 18px;
   }
 
   .admin-header,

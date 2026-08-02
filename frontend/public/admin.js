@@ -89,7 +89,9 @@ function renderSessionList() {
   adminState.sessions.forEach((session) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `session-item outcome-${session.outcome || "active"} ${session.sessionId === adminState.selectedSessionId ? "selected" : ""}`;
+    const isSelected = session.sessionId === adminState.selectedSessionId;
+    button.className = `session-item outcome-${session.outcome || "active"} ${isSelected ? "selected" : ""}`;
+    button.setAttribute("aria-current", String(isSelected));
     button.addEventListener("click", () => {
       adminState.selectedSessionId = session.sessionId;
       loadSelectedSession().then(() => renderAdmin());
@@ -152,13 +154,16 @@ function renderTranscript(session) {
 
   const messages = document.createElement("div");
   messages.className = "admin-transcript";
+  messages.tabIndex = 0;
+  messages.setAttribute("role", "log");
+  messages.setAttribute("aria-label", "Transcript");
   for (const message of session.messages || []) {
     const item = document.createElement("div");
     item.className = `admin-message ${message.role} ${message.source || ""}`;
     item.innerHTML = `
       <span>${messageLabel(message)}</span>
       <p>${escapeHtml(message.content)}</p>
-      <time>${formatTime(message.createdAt)}</time>
+      <time datetime="${escapeHtml(isoTime(message.createdAt))}">${formatTime(message.createdAt)}</time>
     `;
     messages.append(item);
   }
@@ -166,7 +171,8 @@ function renderTranscript(session) {
   const form = document.createElement("form");
   form.className = "admin-reply";
   form.innerHTML = `
-    <input name="message" autocomplete="off" placeholder="Send a staff message into this chat..." />
+    <label class="visually-hidden" for="adminReply">Staff message</label>
+    <input id="adminReply" name="message" autocomplete="off" placeholder="Send a staff message into this chat..." />
     <button type="submit">Send</button>
   `;
   form.addEventListener("submit", async (event) => {
@@ -342,6 +348,11 @@ function outcomeLabel(outcome) {
 function formatTime(timestamp) {
   if (!timestamp) return "-";
   return new Date(timestamp * 1000).toLocaleTimeString();
+}
+
+function isoTime(timestamp) {
+  if (!timestamp) return "";
+  return new Date(timestamp * 1000).toISOString();
 }
 
 function adminApiUrl(path) {

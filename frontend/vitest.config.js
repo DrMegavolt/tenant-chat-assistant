@@ -12,7 +12,7 @@ export default defineConfig({
     },
     coverage: {
       provider: "v8",
-      include: ["public/app.js"],
+      include: ["public/app.js", "public/widget/**/*.js"],
       reporter: ["text", "html", "cobertura", "json-summary"],
       reportsDirectory: "../coverage/frontend"
     }

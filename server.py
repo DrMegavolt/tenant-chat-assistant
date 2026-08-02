@@ -1541,7 +1541,20 @@ class ChatHandler(BaseHTTPRequestHandler):
 
 
 _PUBLIC_GET_PATHS = frozenset(
-    {"/", "/index.html", "/app.js", "/styles.css", "/api/tenants", "/api/chat/session"}
+    {
+        "/",
+        "/index.html",
+        "/app.js",
+        "/embed.js",
+        "/styles.css",
+        "/widget/api.js",
+        "/widget/embed.js",
+        "/widget/privacy.js",
+        "/widget/styles.js",
+        "/widget/widget.js",
+        "/api/tenants",
+        "/api/chat/session",
+    }
 )
 _PUBLIC_POST_PATHS = frozenset({"/api/chat", "/api/book"})
 

@@ -156,5 +156,17 @@ def test_public_listener_excludes_admin_and_metrics_routes() -> None:
     assert is_public_route("POST", "/api/book")
     assert not is_public_route("GET", "/metrics")
     assert not is_public_route("GET", "/admin.html")
+    assert not is_public_route("GET", "/admin.js")
     assert not is_public_route("GET", "/api/leads")
     assert not is_public_route("GET", "/api/admin/chats")
+
+
+def test_public_listener_serves_every_module_the_widget_imports() -> None:
+    """A missing entry 403s a widget module and breaks every embed silently."""
+    from server import STATIC_ROOT, is_public_route
+
+    entry_points = ["/app.js", "/embed.js"]
+    modules = [f"/widget/{path.name}" for path in sorted((STATIC_ROOT / "widget").glob("*.js"))]
+
+    for path in [*entry_points, *modules]:
+        assert is_public_route("GET", path), path

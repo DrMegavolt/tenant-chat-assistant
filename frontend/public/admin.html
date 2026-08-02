@@ -16,18 +16,21 @@
         <a class="admin-link" href="/">Open website demo</a>
       </header>
 
-      <section class="admin-stats" id="adminStats"></section>
+      <section class="admin-stats" id="adminStats" aria-label="Chat volume summary"></section>
 
       <section class="admin-layout">
-        <aside class="admin-sidebar">
+        <aside class="admin-sidebar" aria-labelledby="sessionListTitle">
           <div class="admin-panel-header">
-            <h2>Live & Archived Chats</h2>
-            <span id="lastUpdated">-</span>
+            <h2 id="sessionListTitle">Live & Archived Chats</h2>
+            <span role="status">
+              <span class="visually-hidden">Last refreshed </span>
+              <span id="lastUpdated">-</span>
+            </span>
           </div>
           <div class="session-list" id="sessionList"></div>
         </aside>
 
-        <section class="admin-detail" id="sessionDetail">
+        <section class="admin-detail" id="sessionDetail" aria-label="Selected chat">
           <div class="empty-state">
             <h2>No chat selected</h2>
             <p>Open the website demo and send a message to create a live session.</p>
