@@ -157,7 +157,7 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 - [ ] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
 - [ ] `SEC-002` — Secure visitor sessions and tenant binding — `P0`
 - [ ] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
-- [ ] `SEC-004` — Service authentication and Kubernetes network boundaries — `P0`
+- [x] `SEC-004` — Service authentication and Kubernetes network boundaries — `Done`
 - [x] `SEC-005` — Secret management and credential removal — `P0`
 - [ ] `PRIV-001` — PII classification, consent, retention, export, and deletion — `P0`
 - [ ] `DEP-001` — Immutable, reproducible application images — `P0`
@@ -577,7 +577,7 @@ values are logged, never published. Run it with `make api`.
 
 ### SEC-004 — Service authentication and Kubernetes network boundaries
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Infrastructure security`
 - Depends on: None
@@ -593,7 +593,17 @@ values are logged, never published. Run it with `make api`.
   - Metrics remain scrapeable by Prometheus without public exposure.
 - Verification:
   - Network-policy smoke tests prove both allowed and denied paths.
-- Completion notes: _Pending._
+- Completion notes: Added namespace-wide default-deny and explicit least-privilege
+  NetworkPolicies for ingress, metrics, telemetry, DNS, service APIs, data stores,
+  and model-provider egress. Split public visitor traffic from internal chat admin
+  and metrics routes; removed non-chat LoadBalancer exposure. Added distinct,
+  fail-closed bearer credentials for each internal caller channel, including the
+  seed job, with production startup validation and external-key reuse rejection.
+  `make check` passes (296 Python and 6 frontend tests), deployment manifests pass
+  server-side dry-run, and a disposable four-namespace MicroK8s smoke run proved
+  15 documented allows and 17 denials before cleaning every created namespace.
+  Standard NetworkPolicy cannot bind provider egress to a configured FQDN, so a
+  production egress proxy or FQDN-aware policy remains recommended.
 
 ### SEC-005 — Secret management and credential removal
 

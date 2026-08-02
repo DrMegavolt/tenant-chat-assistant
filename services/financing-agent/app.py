@@ -4,11 +4,17 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from internal_auth import (
+    authenticate_internal_bearer,
+    internal_bearer_headers,
+    load_internal_credentials,
+    reject_external_credential_reuse,
+)
 from runtime_security import (
     load_openai_compatible_settings,
     openai_request_headers,
@@ -27,6 +33,14 @@ LLM_MODEL = LLM_SETTINGS.model
 LLM_API_KEY = LLM_SETTINGS.api_key
 LLM_TIMEOUT_SECONDS = LLM_SETTINGS.timeout_seconds
 TOP_K = int(os.environ.get("TOP_K", "6"))
+INTERNAL_CREDENTIALS = load_internal_credentials(
+    {
+        "CHAT_TO_FINANCING_TOKEN": "chat-backend",
+        "FINANCING_TO_EMBEDDING_TOKEN": "financing-agent",
+    }
+)
+EMBEDDING_TOKEN = INTERNAL_CREDENTIALS.get("financing-agent")
+reject_external_credential_reuse(INTERNAL_CREDENTIALS, ("LLM_API_KEY",))
 
 require_production_environment(("ES_USERNAME", "ES_PASSWORD"))
 
@@ -49,8 +63,32 @@ class AnswerRequest(BaseModel):
     messages: List[Dict[str, Any]] = []
 
 
+def require_chat_backend(authorization: Optional[str] = Header(default=None)) -> None:
+    if (
+        authenticate_internal_bearer(
+            authorization,
+            {
+                "chat-backend": token
+                for token in (INTERNAL_CREDENTIALS.get("chat-backend"),)
+                if token
+            },
+        )
+        is None
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Internal service authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def embed_query(query: str) -> List[float]:
-    response = requests.post(f"{EMBEDDING_URL.rstrip('/')}/embed", json={"texts": [query]}, timeout=120)
+    response = requests.post(
+        f"{EMBEDDING_URL.rstrip('/')}/embed",
+        json={"texts": [query]},
+        headers=internal_bearer_headers(EMBEDDING_TOKEN),
+        timeout=120,
+    )
     response.raise_for_status()
     return response.json()["embeddings"][0]
 
@@ -159,7 +197,7 @@ def metrics():
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/answer")
+@app.post("/answer", dependencies=[Depends(require_chat_backend)])
 def answer(request: AnswerRequest):
     started = time.time()
     try:

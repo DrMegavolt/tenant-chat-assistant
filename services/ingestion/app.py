@@ -7,11 +7,16 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import requests
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from internal_auth import (
+    authenticate_internal_bearer,
+    internal_bearer_headers,
+    load_internal_credentials,
+)
 from runtime_security import require_production_environment
 
 
@@ -23,6 +28,13 @@ INDEX_NAME = os.environ.get("KNOWLEDGE_INDEX", "tenant-knowledge-chunks")
 DOCS_PATH = Path(os.environ.get("DOCS_PATH", "/data/docs"))
 CHUNK_TOKENS = int(os.environ.get("CHUNK_TOKENS", "650"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "120"))
+INTERNAL_CREDENTIALS = load_internal_credentials(
+    {
+        "SEED_TO_INGESTION_TOKEN": "seed-financing-docs",
+        "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-service",
+    }
+)
+EMBEDDING_TOKEN = INTERNAL_CREDENTIALS.get("ingestion-service")
 
 require_production_environment(("ES_USERNAME", "ES_PASSWORD"))
 
@@ -37,6 +49,25 @@ class IngestRequest(BaseModel):
     tenantId: str = "apex"
     domain: str = "financing"
     path: Optional[str] = None
+
+
+def require_ingestion_caller(authorization: Optional[str] = Header(default=None)) -> None:
+    if (
+        authenticate_internal_bearer(
+            authorization,
+            {
+                "seed-financing-docs": token
+                for token in (INTERNAL_CREDENTIALS.get("seed-financing-docs"),)
+                if token
+            },
+        )
+        is None
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Internal service authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def tokenize(text: str) -> List[str]:
@@ -70,7 +101,12 @@ def parse_doc(path: Path) -> Dict[str, str]:
 
 
 def embed(texts: List[str]) -> Dict:
-    response = requests.post(f"{EMBEDDING_URL.rstrip('/')}/embed", json={"texts": texts}, timeout=300)
+    response = requests.post(
+        f"{EMBEDDING_URL.rstrip('/')}/embed",
+        json={"texts": texts},
+        headers=internal_bearer_headers(EMBEDDING_TOKEN),
+        timeout=300,
+    )
     response.raise_for_status()
     return response.json()
 
@@ -144,7 +180,7 @@ def metrics():
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/ingest")
+@app.post("/ingest", dependencies=[Depends(require_ingestion_caller)])
 def ingest(request: IngestRequest):
     started = time.time()
     base = Path(request.path) if request.path else DOCS_PATH / request.tenantId / request.domain

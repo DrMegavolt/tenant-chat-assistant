@@ -2,6 +2,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: llm-chat
+  labels:
+    tenantchat.openai.com/network-boundary: application
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -41,6 +43,8 @@ kind: Service
 metadata:
   name: elasticsearch
   namespace: llm-chat
+  labels:
+    tenantchat.openai.com/exposure: internal
 spec:
   selector:
     app: elasticsearch
@@ -114,8 +118,8 @@ metadata:
   namespace: llm-chat
   labels:
     app: kibana
+    tenantchat.openai.com/exposure: internal
 spec:
-  type: LoadBalancer
   selector:
     app: kibana
   ports:
@@ -170,6 +174,8 @@ kind: Service
 metadata:
   name: postgres
   namespace: llm-chat
+  labels:
+    tenantchat.openai.com/exposure: internal
 spec:
   selector:
     app: postgres
@@ -241,6 +247,7 @@ metadata:
   namespace: llm-chat
   labels:
     app: embedding-service
+    tenantchat.openai.com/exposure: internal
 spec:
   selector:
     app: embedding-service
@@ -280,10 +287,22 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: APP_ENV
+              value: production
             - name: EMBEDDING_MODEL
               value: Qwen/Qwen3-Embedding-0.6B
             - name: EMBEDDING_DEVICE
               value: cpu
+            - name: INGESTION_TO_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-to-embedding-credentials
+                  key: token
+            - name: FINANCING_TO_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: financing-to-embedding-credentials
+                  key: token
           resources:
             requests:
               memory: 3Gi
@@ -317,6 +336,7 @@ metadata:
   namespace: llm-chat
   labels:
     app: ingestion-service
+    tenantchat.openai.com/exposure: internal
 spec:
   selector:
     app: ingestion-service
@@ -376,6 +396,16 @@ spec:
               value: tenant-knowledge-chunks
             - name: DOCS_PATH
               value: /data/docs
+            - name: SEED_TO_INGESTION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: seed-to-ingestion-credentials
+                  key: token
+            - name: INGESTION_TO_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-to-embedding-credentials
+                  key: token
           readinessProbe:
             httpGet:
               path: /health
@@ -407,6 +437,7 @@ metadata:
   namespace: llm-chat
   labels:
     app: financing-agent
+    tenantchat.openai.com/exposure: internal
 spec:
   selector:
     app: financing-agent
@@ -484,6 +515,16 @@ spec:
                 configMapKeyRef:
                   name: llm-runtime
                   key: timeoutSeconds
+            - name: CHAT_TO_FINANCING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: chat-to-financing-credentials
+                  key: token
+            - name: FINANCING_TO_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: financing-to-embedding-credentials
+                  key: token
           readinessProbe:
             httpGet:
               path: /health
@@ -509,6 +550,7 @@ metadata:
     app.kubernetes.io/instance: llm-chat
     app.kubernetes.io/component: backend
     app.kubernetes.io/part-of: tenant-chat
+    tenantchat.openai.com/exposure: public-entrypoint
 spec:
   selector:
     app: chat-backend
@@ -516,6 +558,26 @@ spec:
     - name: http
       port: 8000
       targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-admin
+  namespace: llm-chat
+  labels:
+    app: chat-backend
+    app.kubernetes.io/name: chat-admin
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: tenant-chat
+    tenantchat.openai.com/metrics: enabled
+spec:
+  selector:
+    app: chat-backend
+  ports:
+    - name: admin-http
+      port: 8004
+      targetPort: 8004
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -555,6 +617,8 @@ spec:
           ports:
             - containerPort: 8000
               name: http
+            - containerPort: 8004
+              name: admin-http
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
@@ -566,6 +630,8 @@ spec:
               value: 0.0.0.0
             - name: CHAT_PORT
               value: "8000"
+            - name: CHAT_ADMIN_PORT
+              value: "8004"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -595,6 +661,11 @@ spec:
                   key: timeoutSeconds
             - name: FINANCING_AGENT_URL
               value: http://financing-agent:8003
+            - name: CHAT_TO_FINANCING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: chat-to-financing-credentials
+                  key: token
           readinessProbe:
             httpGet:
               path: /api/tenants
@@ -619,9 +690,9 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: chat-backend
+      tenantchat.openai.com/metrics: enabled
   endpoints:
-    - port: http
+    - port: admin-http
       path: /metrics
       interval: 30s
 ---

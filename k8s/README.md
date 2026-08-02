@@ -23,13 +23,20 @@ Supply the provider-issued LLM key even if the local provider would accept an
 unauthenticated request: Kubernetes runs the services with `APP_ENV=production`
 so the demo exercises authenticated requests and fails closed.
 
+Generate each internal service token independently with `openssl rand -hex 32`.
+The four credentials are deliberately separate and are never the external LLM
+key: chat→financing, seed→ingestion, ingestion→embedding, and
+financing→embedding. Rotate one channel by updating its Secret and restarting
+only its caller/server pair. Production startup rejects missing, placeholder, or
+duplicate credentials before serving requests.
+
 Provision these resources out of band.  The pipeline sends generated Secret
 manifests directly to `kubectl apply`; do not add `-v`, redirect the stream to a
 file, or commit anything under `.local/`:
 
 ```bash
 kubectl create namespace llm-chat --dry-run=client -o yaml | kubectl apply -f -
-for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials; do
+for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials; do
   kubectl -n llm-chat create secret generic "$name" \
     --from-env-file=".local/k8s/$name.env.example" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -50,6 +57,21 @@ For a production environment, replace the manual `.local/` source with an
 external secret controller or a GitOps secret-encryption mechanism.  Keep the
 same Secret/ConfigMap names and keys so workloads retain the fail-closed contract.
 Never store cleartext production values in Git.
+
+`k8s/network-policies.yaml` makes `llm-chat` ingress and egress default-deny.
+Only Traefik in the `ingress` namespace can reach the visitor-only chat listener
+on port 8000. Admin routes and chat metrics use the separate internal port 8004;
+Prometheus in `observability` can reach only that port and each other workload's
+own metrics/listen port. Internal data/API flows are explicit per workload.
+Kibana is ClusterIP-only. External model traffic is limited to public HTTPS or
+port 1234 on the private LAN because standard NetworkPolicy cannot bind an
+`ipBlock` to `LLM_BASE_URL`. Use an egress proxy or FQDN-aware policy engine in
+production if provider destinations need tighter binding.
+
+Run `make network-policy-smoke` only against the local MicroK8s test cluster. It
+creates four uniquely named disposable namespaces, applies the production
+policy shape to lightweight mock services, proves allowed and denied flows, and
+deletes only those namespaces. It never reads or changes `llm-chat` Secrets.
 
 `postgres-migration-credentials` contains the schema-owner URL used only by the
 one-shot `k8s/api-migration-job.yaml` release step. `deploy.sh` verifies that the

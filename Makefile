@@ -9,7 +9,7 @@ UV_RUN := uv run --frozen
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations test-repositories test-database migrate js-install js-lint js-format \
 	js-format-check js-test js-test-cov deployment-security check api up up-all down \
-	down-clean logs ps arch-validate arch-build clean
+	down-clean logs ps network-policy-smoke arch-validate arch-build clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -81,6 +81,9 @@ js-test-cov: node_modules/.package-lock.json ## Run frontend tests with coverage
 
 deployment-security: ## Scan rendered non-Secret Kubernetes manifests and runtime refs
 	$(UV_RUN) python scripts/verify_deployment_security.py
+
+network-policy-smoke: ## Prove allowed and denied flows in disposable MicroK8s namespaces
+	./k8s/tests/network-policy-smoke.sh
 
 check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov \
 	deployment-security ## Full local and CI quality gate

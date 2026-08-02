@@ -15,15 +15,22 @@ import json
 import mimetypes
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
+from internal_auth import (
+    internal_bearer_headers,
+    load_internal_credentials,
+    reject_external_credential_reuse,
+)
 from runtime_security import (
+    is_production,
     load_openai_compatible_settings,
     openai_request_headers,
     require_production_environment,
@@ -34,12 +41,19 @@ ROOT = Path(__file__).resolve().parent
 CHATS_DIR = Path(os.environ.get("CHATS_DIR", ROOT / "chats"))
 HOST = os.environ.get("CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CHAT_PORT", "8000"))
+ADMIN_PORT = int(os.environ.get("CHAT_ADMIN_PORT", "8004"))
 LLM_SETTINGS = load_openai_compatible_settings(local_base_url="http://localhost:1234/v1")
 LLM_BASE_URL = LLM_SETTINGS.base_url
 LLM_MODEL = LLM_SETTINGS.model
 LLM_API_KEY = LLM_SETTINGS.api_key
 LLM_TIMEOUT_SECONDS = LLM_SETTINGS.timeout_seconds
 FINANCING_AGENT_URL = os.environ.get("FINANCING_AGENT_URL", "")
+INTERNAL_CREDENTIALS = load_internal_credentials(
+    {"CHAT_TO_FINANCING_TOKEN": "chat-backend"},
+    required=bool(FINANCING_AGENT_URL),
+)
+FINANCING_AGENT_TOKEN = INTERNAL_CREDENTIALS.get("chat-backend")
+reject_external_credential_reuse(INTERNAL_CREDENTIALS, ("LLM_API_KEY",))
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DATABASE_INIT_RETRIES = int(os.environ.get("DATABASE_INIT_RETRIES", "30"))
 MAX_TOOL_ROUNDS = 4
@@ -274,7 +288,7 @@ def normalize_service(tenant: TenantConfig, raw_service: str) -> Optional[str]:
     for service in tenant["services"]:
         canonical = service.lower()
         if value == canonical or value in canonical or canonical in value:
-            return canonical
+            return cast(str, canonical)
     return None
 
 
@@ -872,7 +886,7 @@ def post_openai_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return cast(Dict[str, Any], json.loads(response.read().decode("utf-8")))
 
 
 def execute_tool(
@@ -1080,7 +1094,7 @@ def call_financing_agent(
     request = urllib.request.Request(
         f"{FINANCING_AGENT_URL.rstrip('/')}/answer",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **internal_bearer_headers(FINANCING_AGENT_TOKEN)},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
@@ -1496,7 +1510,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def read_json(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        return cast(Dict[str, Any], json.loads(self.rfile.read(length).decode("utf-8")))
 
     def send_json(self, payload: Dict[str, Any], status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -1525,6 +1539,44 @@ class ChatHandler(BaseHTTPRequestHandler):
         print("%s - %s" % (self.address_string(), format % args))
 
 
+_PUBLIC_GET_PATHS = frozenset(
+    {"/", "/index.html", "/app.js", "/styles.css", "/api/tenants", "/api/chat/session"}
+)
+_PUBLIC_POST_PATHS = frozenset({"/api/chat", "/api/book"})
+
+
+def is_public_route(method: str, path: str) -> bool:
+    """Return whether a route belongs on the internet-facing listener."""
+    normalized_path = urllib.parse.urlparse(path).path
+    if method in {"GET", "HEAD"}:
+        return normalized_path in _PUBLIC_GET_PATHS
+    if method in {"POST", "OPTIONS"}:
+        return normalized_path in _PUBLIC_POST_PATHS
+    return False
+
+
+class PublicChatHandler(ChatHandler):
+    """Expose visitor routes only; admin and metrics stay on the internal port."""
+
+    def _reject_non_public(self) -> bool:
+        if is_public_route(self.command, self.path):
+            return False
+        self.send_error(404)
+        return True
+
+    def do_GET(self) -> None:
+        if not self._reject_non_public():
+            super().do_GET()
+
+    def do_POST(self) -> None:
+        if not self._reject_non_public():
+            super().do_POST()
+
+    def do_OPTIONS(self) -> None:
+        if not self._reject_non_public():
+            super().do_OPTIONS()
+
+
 def sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     cleaned = []
     for message in messages[-24:]:
@@ -1544,7 +1596,14 @@ def sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
 def main() -> None:
     load_saved_chats()
-    server = ThreadingHTTPServer((HOST, PORT), ChatHandler)
+    handler = ChatHandler
+    if is_production():
+        internal_server = ThreadingHTTPServer((HOST, ADMIN_PORT), ChatHandler)
+        internal_thread = threading.Thread(target=internal_server.serve_forever, daemon=True)
+        internal_thread.start()
+        print(f"Serving internal chat administration at http://{HOST}:{ADMIN_PORT}")
+        handler = PublicChatHandler
+    server = ThreadingHTTPServer((HOST, PORT), handler)
     print(f"Serving tenant chat prototype at http://{HOST}:{PORT}")
     print(f"Persisting chat archives in {storage_description()}")
     print("OpenAI-compatible chat provider configured")

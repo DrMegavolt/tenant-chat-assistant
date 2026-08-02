@@ -156,7 +156,12 @@ def _scan_source_documents(errors: list[str], documents: list[tuple[Path, str]])
 
 def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -> None:
     workload_documents: dict[str, str] = {}
-    for workload in ("chat-backend", "financing-agent", "ingestion-service"):
+    for workload in (
+        "chat-backend",
+        "financing-agent",
+        "ingestion-service",
+        "embedding-service",
+    ):
         found = _document_for(documents, "Deployment", workload)
         if found is None:
             errors.append(f"Deployment/{workload}: missing from deployment input")
@@ -243,6 +248,52 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "timeoutSeconds",
         )
 
+    internal_refs = {
+        "chat-backend": {
+            "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
+        },
+        "financing-agent": {
+            "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
+            "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
+        },
+        "ingestion-service": {
+            "SEED_TO_INGESTION_TOKEN": "seed-to-ingestion-credentials",
+            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
+        },
+        "embedding-service": {
+            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
+            "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
+        },
+    }
+    for workload, references in internal_refs.items():
+        internal_document = workload_documents.get(workload)
+        if internal_document is None:
+            continue
+        for variable, secret_name in references.items():
+            _require_env_ref(
+                errors,
+                internal_document,
+                workload,
+                variable,
+                "secretKeyRef",
+                secret_name,
+                "token",
+            )
+
+    seed = _document_for(documents, "Job", "seed-financing-docs")
+    if seed is None:
+        errors.append("Job/seed-financing-docs: missing from deployment input")
+    else:
+        _require_env_ref(
+            errors,
+            seed[1],
+            "seed-financing-docs",
+            "SEED_TO_INGESTION_TOKEN",
+            "secretKeyRef",
+            "seed-to-ingestion-credentials",
+            "token",
+        )
+
 
 def _check_examples(errors: list[str]) -> None:
     examples = [ROOT / ".env.example", *sorted((K8S_DIR / "examples").glob("*.env.example"))]
@@ -270,6 +321,17 @@ def _check_client_authentication(errors: list[str]) -> None:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         if "headers=openai_request_headers(LLM_API_KEY)" not in text:
             errors.append(f"{relative_path}: OpenAI-compatible request is not authenticated")
+
+    internal_markers = {
+        "server.py": "internal_bearer_headers(FINANCING_AGENT_TOKEN)",
+        "services/ingestion/app.py": "internal_bearer_headers(EMBEDDING_TOKEN)",
+        "services/financing-agent/app.py": "internal_bearer_headers(EMBEDDING_TOKEN)",
+        "services/embedding/app.py": "Depends(require_embedding_caller)",
+    }
+    for relative_path, marker in internal_markers.items():
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        if marker not in text:
+            errors.append(f"{relative_path}: internal request authentication is missing")
 
 
 def verify() -> tuple[int, int]:

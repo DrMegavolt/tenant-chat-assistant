@@ -1,0 +1,440 @@
+# SEC-004 application boundary. Policies select by stable workload labels; the
+# namespace is default-deny and every allowed flow is listed explicitly below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: llm-chat
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: llm-chat
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Only the ingress controller is a public caller. There is intentionally no
+# LoadBalancer service for Kibana, financing, ingestion, embedding, or data stores.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-ingress-to-chat
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { protocol: TCP, port: 8000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-chat-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8004 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-embedding-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: embedding-service
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8001 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-ingestion-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: ingestion-service
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8002 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-financing-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: financing-agent
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8003 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-chat-to-financing
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: financing-agent
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: chat-backend
+      ports:
+        - { protocol: TCP, port: 8003 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rag-callers-to-embedding
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: embedding-service
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingestion-service
+        - podSelector:
+            matchLabels:
+              app: financing-agent
+      ports:
+        - { protocol: TCP, port: 8001 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-seed-to-ingestion
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: ingestion-service
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: seed-financing-docs
+      ports:
+        - { protocol: TCP, port: 8002 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-application-to-postgres
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: chat-backend
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tenantchat-api-migrate
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-approved-callers-to-elasticsearch
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: elasticsearch
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingestion-service
+        - podSelector:
+            matchLabels:
+              app: financing-agent
+        - podSelector:
+            matchLabels:
+              app: kibana
+        - podSelector:
+            matchLabels:
+              app: configure-kibana-system-user
+      ports:
+        - { protocol: TCP, port: 9200 }
+---
+# Workload egress is split by caller so adding a dependency to one service cannot
+# silently grant the same reachability to every pod in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-chat-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: financing-agent
+      ports:
+        - { protocol: TCP, port: 8003 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-financing-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: financing-agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: embedding-service
+      ports:
+        - { protocol: TCP, port: 8001 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingestion-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: ingestion-service
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: embedding-service
+      ports:
+        - { protocol: TCP, port: 8001 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: kibana
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-bootstrap-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: configure-kibana-system-user
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-seed-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: seed-financing-docs
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ingestion-service
+      ports:
+        - { protocol: TCP, port: 8002 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-migration-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tenantchat-api-migrate
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-application-telemetry-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [chat-backend, embedding-service, ingestion-service, financing-agent]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: opentelemetry-collector
+              app.kubernetes.io/instance: observability.otel-gateway
+      ports:
+        - { protocol: TCP, port: 4318 }
+---
+# Kubernetes NetworkPolicy cannot bind an ipBlock to the configured provider URL.
+# External HTTPS excludes private/cluster ranges; port 1234 is reserved for the
+# local OpenAI-compatible demo provider on the private LAN.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-model-provider-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [chat-backend, embedding-service, financing-agent]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock:
+            cidr: 192.168.0.0/16
+      ports:
+        - { protocol: TCP, port: 1234 }

@@ -32,6 +32,10 @@ require_key secret postgres-migration-credentials databaseUrl
 require_key secret kibana-credentials username
 require_key secret kibana-credentials password
 require_key secret llm-provider-credentials apiKey
+require_key secret chat-to-financing-credentials token
+require_key secret seed-to-ingestion-credentials token
+require_key secret ingestion-to-embedding-credentials token
+require_key secret financing-to-embedding-credentials token
 require_key configmap llm-runtime baseUrl
 require_key configmap llm-runtime model
 require_key configmap llm-runtime timeoutSeconds
@@ -42,11 +46,13 @@ kubectl apply -f "$ROOT_DIR/k8s/otel-collector.yaml"
 kubectl -n observability rollout status deploy/otel-gateway-collector --timeout=240s
 kubectl -n observability delete deploy,svc,configmap,servicemonitor otel-collector --ignore-not-found=true
 kubectl apply -f "$ROOT_DIR/k8s/observability-exposure.yaml"
+kubectl apply -f "$ROOT_DIR/k8s/network-policies.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/app.yaml"
 
 kubectl -n "$NS" create configmap chat-backend-code \
   --from-file=server.py="$ROOT_DIR/server.py" \
   --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
+  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
   --from-file=requirements.txt="$ROOT_DIR/requirements.txt" \
   --from-file=index.html="$ROOT_DIR/index.html" \
   --from-file=app.js="$ROOT_DIR/app.js" \
@@ -57,18 +63,22 @@ kubectl -n "$NS" create configmap chat-backend-code \
 
 kubectl -n "$NS" create configmap embedding-service-code \
   --from-file=app.py="$ROOT_DIR/services/embedding/app.py" \
+  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
+  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
   --from-file=requirements.txt="$ROOT_DIR/services/embedding/requirements.txt" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n "$NS" create configmap ingestion-service-code \
   --from-file=app.py="$ROOT_DIR/services/ingestion/app.py" \
   --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
+  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
   --from-file=requirements.txt="$ROOT_DIR/services/ingestion/requirements.txt" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n "$NS" create configmap financing-agent-code \
   --from-file=app.py="$ROOT_DIR/services/financing-agent/app.py" \
   --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
+  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
   --from-file=requirements.txt="$ROOT_DIR/services/financing-agent/requirements.txt" \
   --dry-run=client -o yaml | kubectl apply -f -
 

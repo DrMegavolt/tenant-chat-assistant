@@ -6,6 +6,11 @@ metadata:
 spec:
   backoffLimit: 8
   template:
+    metadata:
+      labels:
+        app: configure-kibana-system-user
+        app.kubernetes.io/name: configure-kibana-system-user
+        app.kubernetes.io/component: search-bootstrap
     spec:
       restartPolicy: OnFailure
       containers:
