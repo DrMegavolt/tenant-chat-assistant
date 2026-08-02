@@ -8,6 +8,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import (
     BookingRecord,
     ConversationRecord,
@@ -54,15 +55,6 @@ def _lead_urgency(value: str) -> LeadUrgency:
     return LeadUrgency(legacy.get(value, value))
 
 
-async def _tenant_exists(connection: AsyncConnection, tenant_id: str) -> None:
-    result = await connection.execute(
-        text("SELECT id FROM tenants WHERE id = :tenant_id AND status = 'active'"),
-        {"tenant_id": tenant_id},
-    )
-    if result.first() is None:
-        raise NotFoundError(detail="tenant absent or inactive")
-
-
 async def _action_session(
     connection: AsyncConnection, tenant_id: str, client_correlation_id: str
 ) -> uuid.UUID:
@@ -72,7 +64,7 @@ async def _action_session(
     tenant-leading unique index only groups today's write-only API actions until
     SEC-002 replaces it with a server-issued visitor credential.
     """
-    await _tenant_exists(connection, tenant_id)
+    await require_active_tenant(connection, tenant_id)
     session_id = uuid.uuid4()
     correlation = client_correlation_id or None
     if correlation is None:
@@ -156,7 +148,7 @@ class PostgresConversationStore:
     async def create(self, tenant_id: str) -> ConversationRecord:
         session_id = uuid.uuid4()
         async with self._engine.begin() as connection:
-            await _tenant_exists(connection, tenant_id)
+            await require_active_tenant(connection, tenant_id)
             result = await connection.execute(
                 text(
                     """

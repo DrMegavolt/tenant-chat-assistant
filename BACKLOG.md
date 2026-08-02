@@ -174,7 +174,7 @@ remaining production business workflows, and completed runbooks.
 - [ ] `AI-001` — Provider and model abstraction — `P1`
 - [ ] `REL-001` — Resilient dependency clients — `P1`
 - [ ] `REL-003` — Durable background jobs and retry handling — `P1`
-- [ ] `RAG-001` — Versioned knowledge content model — `P1`
+- [x] `RAG-001` — Versioned knowledge content model — `Done`
 - [ ] `RAG-002` — Secure asynchronous ingestion lifecycle — `P1`
 - [ ] `RAG-003` — Production document parsing and chunking — `P1`
 - [ ] `RAG-004` — Hybrid retrieval, reranking, and abstention — `P1`
@@ -911,7 +911,7 @@ values are logged, never published. Run it with `make api`.
 
 ### RAG-001 — Versioned knowledge content model
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `RAG/data`
 - Depends on: `DATA-001`, `SEC-001`
@@ -926,7 +926,41 @@ values are logged, never published. Run it with `make api`.
   - Expired, deleted, draft, or wrong-tenant content cannot be retrieved.
 - Verification:
   - Lifecycle integration tests cover draft, approve, publish, supersede, expire, delete, and rollback.
-- Completion notes: _Pending._
+- Completion notes: `tenantchat.core.knowledge` models sources, documents, and
+  versions with approval state, SHA-256 content checksum, effective/expiry
+  window, visibility, and indexing state. Retrievability is derived rather than
+  stored: one predicate combines approval state, indexing state, the half-open
+  effective window, source ownership, and the asking audience, so no flag can go
+  stale, and `RAG-004`'s index filter has a specification to match. Lifecycle
+  transitions return plans instead of applying writes, which keeps the rules
+  testable without a database while the adapter owns atomicity. Rollback is not a
+  separate operation — publishing a superseded version supersedes the current one
+  through the same path, so no window exists in which both answer. Revision
+  `0003_knowledge` adds three tables whose composite foreign keys pin the
+  denormalized domain to its source, a partial unique index that permits one
+  published version per document, and a per-document checksum uniqueness
+  constraint that makes re-ingestion idempotent under a racing worker.
+  `PostgresKnowledgeStore` locks the document row, builds a plan from the loaded
+  aggregate, and applies it in one transaction with guards that repeat the read
+  state; the application role can no longer delete knowledge rows, because
+  withdrawal is a tombstone the indexing worker must observe. Changed:
+  `packages/core/src/tenantchat/core/{knowledge,lifecycle,errors,__init__}.py`,
+  `packages/core/tests/{test_knowledge,test_errors}.py`,
+  `services/api/src/tenantchat/api/{problems.py,persistence/{knowledge,tenancy,
+  repositories,__init__}.py}`, `services/api/migrations/{versions/
+  0003_knowledge_content_model.py,provision_app_role.sql}`,
+  `services/api/tests/test_problem_details.py`, `tests/migrations/
+  test_migrations.py`, `tests/repositories/test_knowledge_repository.py`, and
+  the migration runbook. Verified: `make check` (407 Python and six frontend
+  tests; lock, lint, format, mypy strict, coverage, deployment security, and
+  image contracts clean) and `make test-database` (10 migration plus 23
+  repository tests on disposable PostgreSQL 16, including the concurrent-publish
+  and stored-versus-domain-filter agreement cases). Follow-ups: `RAG-002` owns
+  upload, parsing, and the durable indexing job that sets indexing state;
+  `RAG-004` implements the same retrieval predicate inside the search query;
+  `FEAT-001` adds the admin workflow once `SEC-001` provides admin
+  authentication, and owns restoring a deleted document, which re-uploading
+  deliberately does not do.
 
 ### RAG-002 — Secure asynchronous ingestion lifecycle
 

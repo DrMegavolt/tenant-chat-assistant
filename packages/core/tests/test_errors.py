@@ -14,11 +14,13 @@ from tenantchat.core.errors import (
     ConflictError,
     DomainError,
     InvalidContactError,
+    InvalidVersionTransitionError,
     MissingRequiredFieldsError,
     NotFoundError,
     UnknownServiceError,
 )
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.lifecycle import VersionState
 
 # Strings that must never surface in printable output. Modelled on what really
 # ends up in `detail`: connection strings, credentials, internal hostnames, and
@@ -41,6 +43,10 @@ SENSITIVE_MARKERS = (
 EXTRA_ARGS: dict[type[DomainError], dict[str, object]] = {
     MissingRequiredFieldsError: {"fields": (RequiredField.CUSTOMER_NAME,)},
     UnknownServiceError: {"offered": ("HVAC", "Electrical")},
+    InvalidVersionTransitionError: {
+        "current": VersionState.DRAFT,
+        "permitted": (VersionState.APPROVED,),
+    },
 }
 
 
@@ -182,6 +188,19 @@ class TestSemanticFields:
         error = UnknownServiceError(offered=("HVAC", "Electrical"))
 
         assert error.offered == ("HVAC", "Electrical")
+
+    def test_rejected_transition_carries_both_states_as_enum_members(self) -> None:
+        error = InvalidVersionTransitionError(
+            current=VersionState.DRAFT, permitted=(VersionState.APPROVED, VersionState.PUBLISHED)
+        )
+
+        assert error.current is VersionState.DRAFT
+        assert all(isinstance(state, VersionState) for state in error.permitted)
+
+    def test_rejected_transition_requires_at_least_one_permitted_state(self) -> None:
+        """An empty tuple would tell an operator console nothing to render."""
+        with pytest.raises(ValueError, match="at least one permitted state"):
+            InvalidVersionTransitionError(current=VersionState.DRAFT, permitted=())
 
     def test_not_found_message_does_not_confirm_resource_existence(self) -> None:
         """SEC-001: a cross-tenant read must not distinguish absent from forbidden."""

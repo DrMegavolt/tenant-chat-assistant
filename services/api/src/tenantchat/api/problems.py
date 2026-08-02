@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from tenantchat.core.errors import (
     ConflictError,
     DomainError,
+    InvalidVersionTransitionError,
     MissingRequiredFieldsError,
     NotFoundError,
     PolicyViolationError,
@@ -75,6 +76,11 @@ def _extensions(error: DomainError) -> dict[str, Any]:
         return {"offeredServices": list(error.offered)}
     if isinstance(error, SlotUnavailableError):
         return {"offeredSlots": list(error.offered)}
+    if isinstance(error, InvalidVersionTransitionError):
+        return {
+            "currentState": error.current.value,
+            "permittedStates": [state.value for state in error.permitted],
+        }
     return {}
 
 

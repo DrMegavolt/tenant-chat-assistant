@@ -37,6 +37,14 @@ SELECT format(
     'REVOKE DELETE ON TABLE public.chat_sessions FROM %I',
     :'app_role'
 ) \gexec
+-- Withdrawing knowledge is a tombstone, never a row delete: the indexing worker
+-- has to learn that chunks it wrote earlier are retracted, and an audit of what
+-- the assistant used to answer with has to stay answerable.
+SELECT format(
+    'REVOKE DELETE ON TABLE public.knowledge_sources, public.knowledge_documents, '
+    'public.knowledge_document_versions FROM %I',
+    :'app_role'
+) \gexec
 SELECT format(
     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
     'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',

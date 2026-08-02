@@ -10,6 +10,9 @@ Audit events are further restricted to `SELECT/INSERT`, and the application role
 cannot mutate Alembic's revision table. Authoritative messages are also
 `SELECT/INSERT` only; retention and subject deletion use a separately authorized
 privacy worker rather than granting transcript replacement to the API role.
+The knowledge tables are `SELECT/INSERT/UPDATE` only for the same reason:
+withdrawing a document is a tombstone the indexing worker has to observe, so the
+API role cannot remove the row that records the withdrawal.
 
 Provision the login and password through the platform secret manager, then run:
 
@@ -79,9 +82,12 @@ For a prototype database:
 `alembic downgrade -1` is supported for development and the empty-schema path is
 tested head-to-base-to-head. DATA-002 rows with label-only booking slots or its
 expanded lead urgencies deliberately block downgrade to DATA-001 rather than
-fabricating timestamps or rewriting business meaning. Downgrading the initial
+fabricating timestamps or rewriting business meaning. Downgrading the RAG-001
+revision drops every knowledge source, document, and version, which is the record
+of what the assistant was authorized to answer from; the search index built from
+them is derived and rebuildable, these rows are not. Downgrading the initial
 revision drops every authoritative table, enum, and all contained data, so
-neither operation is a production rollback mechanism.
+none of these operations is a production rollback mechanism.
 
 For a failed production release, prefer a forward fix when the schema remains
 compatible. If data or schema must be rolled back, stop writers, restore the

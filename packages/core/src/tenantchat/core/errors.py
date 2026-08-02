@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.lifecycle import VersionState
 
 
 class DomainError(Exception):
@@ -169,4 +170,33 @@ class SlotUnavailableError(ConflictError):
 
     def __init__(self, offered: tuple[str, ...] = (), detail: str | None = None) -> None:
         self.offered = offered
+        super().__init__(detail)
+
+
+class InvalidVersionTransitionError(ConflictError):
+    """A knowledge version is not in a state this change is allowed from.
+
+    A conflict rather than a validation failure: the request was well-formed and
+    would have succeeded a moment earlier. Two reviewers publishing different
+    versions of the same document arrive here, and the loser needs to reload
+    rather than correct anything.
+
+    Carries the states so an operator console can re-render the document's real
+    situation instead of asking the operator to guess what changed.
+    """
+
+    code = "invalid_version_transition"
+    message = "That document version has changed. Reload it and try again."
+
+    def __init__(
+        self,
+        *,
+        current: VersionState,
+        permitted: tuple[VersionState, ...],
+        detail: str | None = None,
+    ) -> None:
+        if not permitted:
+            raise ValueError("InvalidVersionTransitionError requires at least one permitted state")
+        self.current = current
+        self.permitted = permitted
         super().__init__(detail)

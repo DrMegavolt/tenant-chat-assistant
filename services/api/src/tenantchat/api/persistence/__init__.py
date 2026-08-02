@@ -1,6 +1,7 @@
 """PostgreSQL system-of-record adapters."""
 
 from tenantchat.api.persistence.database import Database, DatabasePoolSettings
+from tenantchat.api.persistence.knowledge import PostgresKnowledgeStore
 from tenantchat.api.persistence.repositories import (
     PostgresBookingStore,
     PostgresConversationStore,
@@ -12,5 +13,6 @@ __all__ = [
     "DatabasePoolSettings",
     "PostgresBookingStore",
     "PostgresConversationStore",
+    "PostgresKnowledgeStore",
     "PostgresLeadStore",
 ]

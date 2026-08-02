@@ -10,6 +10,9 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from tenantchat.api.app import REQUEST_ID_HEADER, _handle_unexpected_error
+from tenantchat.api.problems import problem_response
+from tenantchat.core.errors import InvalidVersionTransitionError
+from tenantchat.core.lifecycle import VersionState
 
 PayloadBuilder = Callable[..., dict[str, object]]
 
@@ -116,6 +119,28 @@ class TestRequestCorrelation:
         assert response.status_code == 500
         assert body["requestId"] == response.headers[REQUEST_ID_HEADER]
         assert b"deliberately-sensitive-value" not in response.body
+
+
+class TestTypedExtensions:
+    def test_rejected_knowledge_transition_publishes_both_states(self) -> None:
+        """An operator console has to re-render the document, not parse prose.
+
+        Checked directly rather than through a route because the knowledge
+        endpoints arrive with `FEAT-001`, behind the admin authentication in
+        `SEC-001`. The mapping is what those routes will depend on.
+        """
+        error = InvalidVersionTransitionError(
+            current=VersionState.DRAFT,
+            permitted=(VersionState.APPROVED, VersionState.PUBLISHED),
+        )
+
+        response = problem_response(error, request_id="known-request-id")
+        body = json.loads(response.body)
+
+        assert response.status_code == 409
+        assert body["code"] == "invalid_version_transition"
+        assert body["currentState"] == "draft"
+        assert body["permittedStates"] == ["approved", "published"]
 
 
 class TestRequestBounds:

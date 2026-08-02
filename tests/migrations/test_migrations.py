@@ -24,6 +24,9 @@ DOMAIN_TABLES = {
     "handoffs",
     "idempotency_keys",
     "audit_events",
+    "knowledge_sources",
+    "knowledge_documents",
+    "knowledge_document_versions",
 }
 TENANT_QUERY_TABLES = DOMAIN_TABLES - {"tenants"}
 
@@ -61,7 +64,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0002_repositories"
+    assert revision == "0003_knowledge"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -72,6 +75,10 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         "handoff_status",
         "idempotency_status",
         "audit_actor_type",
+        "knowledge_source_kind",
+        "knowledge_version_state",
+        "knowledge_indexing_state",
+        "knowledge_visibility",
     } <= enum_names
 
     for table in TENANT_QUERY_TABLES:
@@ -117,6 +124,166 @@ def test_composite_foreign_keys_reject_cross_tenant_records(
                 VALUES (%s, %s, %s, 1, 'visitor', 'hello')
                 """,
                 (message_id, "tenant-b", session_id),
+            )
+        connection.rollback()
+
+
+def seed_knowledge(connection: psycopg.Connection, tenant_id: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """One tenant, one financing source, one document, ready for versions."""
+    source_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    connection.execute(
+        """
+        INSERT INTO knowledge_sources (id, tenant_id, domain, kind, display_name)
+        VALUES (%s, %s, 'financing', 'upload', 'Partner brochures')
+        """,
+        (source_id, tenant_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO knowledge_documents
+            (id, tenant_id, domain, source_id, external_key, title)
+        VALUES (%s, %s, 'financing', %s, 'plan-terms.pdf', 'Plan terms')
+        """,
+        (document_id, tenant_id, source_id),
+    )
+    return source_id, document_id
+
+
+def insert_version(
+    connection: psycopg.Connection,
+    *,
+    tenant_id: str,
+    document_id: uuid.UUID,
+    revision: int,
+    checksum: str,
+    domain: str = "financing",
+    state: str = "published",
+) -> uuid.UUID:
+    version_id = uuid.uuid4()
+    connection.execute(
+        """
+        INSERT INTO knowledge_document_versions
+            (id, tenant_id, domain, document_id, revision, state, checksum,
+             byte_size, media_type, storage_key, approved_at, approved_by,
+             published_at, effective_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 1024, 'text/markdown', 'objects/v.md',
+                now(), 'ops@example', now(), now())
+        """,
+        (version_id, tenant_id, domain, document_id, revision, state, checksum),
+    )
+    return version_id
+
+
+@pytest.mark.integration
+def test_only_one_knowledge_version_can_be_published_per_document(
+    migration_database_url: str,
+) -> None:
+    """The schema, not just the domain, is what makes a publish atomic."""
+    upgrade_head(migration_database_url)
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s)", ("tenant-a", "Tenant A")
+        )
+        _, document_id = seed_knowledge(connection, "tenant-a")
+        insert_version(
+            connection, tenant_id="tenant-a", document_id=document_id, revision=1, checksum="a" * 64
+        )
+
+        with pytest.raises(errors.UniqueViolation):
+            insert_version(
+                connection,
+                tenant_id="tenant-a",
+                document_id=document_id,
+                revision=2,
+                checksum="b" * 64,
+            )
+        connection.rollback()
+
+
+@pytest.mark.integration
+def test_identical_content_cannot_become_a_second_revision(migration_database_url: str) -> None:
+    """Idempotent re-ingestion survives a racing worker, not just a checked read."""
+    upgrade_head(migration_database_url)
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s)", ("tenant-a", "Tenant A")
+        )
+        _, document_id = seed_knowledge(connection, "tenant-a")
+        insert_version(
+            connection,
+            tenant_id="tenant-a",
+            document_id=document_id,
+            revision=1,
+            checksum="c" * 64,
+            state="draft",
+        )
+
+        with pytest.raises(errors.UniqueViolation):
+            insert_version(
+                connection,
+                tenant_id="tenant-a",
+                document_id=document_id,
+                revision=2,
+                checksum="c" * 64,
+                state="draft",
+            )
+        connection.rollback()
+
+
+@pytest.mark.integration
+def test_a_knowledge_version_cannot_disagree_with_its_document_domain(
+    migration_database_url: str,
+) -> None:
+    """The denormalized domain is pinned by a composite key, not by convention.
+
+    Retrieval filters on tenant and domain, so a version carrying a domain its
+    document does not have would answer under the wrong filter.
+    """
+    upgrade_head(migration_database_url)
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s)", ("tenant-a", "Tenant A")
+        )
+        _, document_id = seed_knowledge(connection, "tenant-a")
+
+        with pytest.raises(errors.ForeignKeyViolation):
+            insert_version(
+                connection,
+                tenant_id="tenant-a",
+                document_id=document_id,
+                revision=1,
+                checksum="d" * 64,
+                domain="services",
+                state="draft",
+            )
+        connection.rollback()
+
+
+@pytest.mark.integration
+def test_a_document_cannot_reference_another_tenants_source(
+    migration_database_url: str,
+) -> None:
+    upgrade_head(migration_database_url)
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s), (%s, %s)",
+            ("tenant-a", "Tenant A", "tenant-b", "Tenant B"),
+        )
+        source_id, _ = seed_knowledge(connection, "tenant-a")
+
+        with pytest.raises(errors.ForeignKeyViolation):
+            connection.execute(
+                """
+                INSERT INTO knowledge_documents
+                    (id, tenant_id, domain, source_id, external_key, title)
+                VALUES (%s, 'tenant-b', 'financing', %s, 'stolen.pdf', 'Stolen')
+                """,
+                (uuid.uuid4(), source_id),
             )
         connection.rollback()
 
@@ -245,6 +412,12 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
         owner.execute(
             sql.SQL("REVOKE DELETE ON TABLE public.chat_sessions FROM {}").format(identifier)
         )
+        owner.execute(
+            sql.SQL(
+                "REVOKE DELETE ON TABLE public.knowledge_documents, "
+                "public.knowledge_document_versions FROM {}"
+            ).format(identifier)
+        )
         owner.execute(sql.SQL("REVOKE CREATE ON SCHEMA public FROM {}").format(identifier))
 
     with psycopg.connect(psycopg_url(migration_database_url)) as application:
@@ -304,5 +477,17 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
             application.execute(
                 "DELETE FROM chat_sessions WHERE tenant_id = %s AND id = %s",
                 ("runtime-tenant", session_id),
+            )
+        application.rollback()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as owner:
+        _, knowledge_document_id = seed_knowledge(owner, "runtime-tenant")
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "DELETE FROM knowledge_documents WHERE tenant_id = %s AND id = %s",
+                ("runtime-tenant", knowledge_document_id),
             )
         application.rollback()
