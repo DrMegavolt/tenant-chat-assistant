@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: configure-kibana-system-user
+  namespace: llm-chat
+spec:
+  backoffLimit: 8
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: configure-kibana
+          image: curlimages/curl:8.11.1
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+            - name: KIBANA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kibana-credentials
+                  key: password
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf -u "elastic:${ELASTIC_PASSWORD}" http://elasticsearch:9200/_cluster/health >/dev/null; do
+                sleep 5
+              done
+              curl -sf -u "elastic:${ELASTIC_PASSWORD}" \
+                -H 'Content-Type: application/json' \
+                -X POST http://elasticsearch:9200/_security/user/kibana_system/_password \
+                -d "{\"password\":\"${KIBANA_PASSWORD}\"}"

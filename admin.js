@@ -4,7 +4,7 @@ const adminState = {
   selectedSession: null
 };
 
-const ADMIN_API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+const ADMIN_API_BASE = resolveAdminApiBaseUrl();
 
 initAdmin();
 
@@ -188,6 +188,25 @@ function renderSidePanel(session) {
   const side = document.createElement("aside");
   side.className = "admin-side-stack";
 
+  const bookings = document.createElement("section");
+  bookings.className = "admin-card";
+  bookings.append(sectionTitle("Bookings"));
+  if (!session.bookings?.length) {
+    bookings.append(emptyCopy("No booked appointments for this chat yet."));
+  } else {
+    session.bookings.forEach((booking) => {
+      const item = document.createElement("div");
+      item.className = "lead-item";
+      item.innerHTML = `
+        <strong>${escapeHtml(booking.customerName)}</strong>
+        <span>${escapeHtml(booking.contact)}</span>
+        <span>${escapeHtml(booking.service)} · ${escapeHtml(booking.slot)}</span>
+        <p>${escapeHtml(booking.address)}</p>
+      `;
+      bookings.append(item);
+    });
+  }
+
   const leads = document.createElement("section");
   leads.className = "admin-card";
   leads.append(sectionTitle("Lead Info"));
@@ -224,6 +243,7 @@ function renderSidePanel(session) {
     });
   }
 
+  side.append(bookings);
   side.append(leads);
   side.append(tools);
   return side;
@@ -323,6 +343,18 @@ function formatTime(timestamp) {
 
 function adminApiUrl(path) {
   return `${ADMIN_API_BASE}${path}`;
+}
+
+function resolveAdminApiBaseUrl() {
+  const configured =
+    window.CHAT_API_BASE_URL ||
+    document.currentScript?.dataset.apiBaseUrl ||
+    document.body?.dataset.apiBaseUrl ||
+    "";
+  if (configured.trim()) {
+    return configured.trim().replace(/\/+$/, "");
+  }
+  return window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
 }
 
 function escapeHtml(value) {

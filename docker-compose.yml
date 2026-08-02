@@ -1,0 +1,99 @@
+# Local development dependencies.
+#
+#     make up        # Postgres + Elasticsearch (fast)
+#     make up-all    # also the embedding service and Kibana
+#
+# Every credential is required from the environment with `:?`, so a missing value
+# fails immediately with a named variable instead of starting a service on a
+# well-known default password (SEC-005).
+
+name: tenantchat
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Deterministic collation keeps index ordering identical across machines.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Naming the database and user avoids a false ready signal during the
+      # brief window when initdb has a server up but the app database absent.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      ELASTIC_PASSWORD: ${ES_PASSWORD:?set ES_PASSWORD in .env}
+      # Authentication on, transport encryption off. The retrieval client then
+      # exercises the same credential path locally that it uses in Kubernetes;
+      # disabling security outright would leave that code untested until deploy.
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.license.self_generated.type: basic
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS -u "elastic:$${ELASTIC_PASSWORD}"
+          "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s"
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 30s
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+
+  # Optional: `make up-all`. Excluded from the default set because the first run
+  # downloads model weights and the container is memory-hungry on a laptop.
+  embedding:
+    profiles: ["embedding"]
+    build:
+      context: .
+      dockerfile: services/embedding/Dockerfile
+    restart: unless-stopped
+    environment:
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
+    ports:
+      - "${EMBEDDING_PORT:-8001}:8001"
+    volumes:
+      # Cache weights across container rebuilds.
+      - huggingface-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as r; r.urlopen('http://localhost:8001/health')\""]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+# Kibana is deliberately absent. Kibana 8 refuses to start when configured with
+# the `elastic` superuser, so a local instance needs the `kibana_system` account
+# provisioned first (see k8s/kibana-setup-job.yaml). Until RAG-004 makes index
+# inspection a routine task, curl against Elasticsearch is enough:
+#
+#     curl -u "elastic:$ES_PASSWORD" localhost:9200/tenant-knowledge-chunks/_search
+
+volumes:
+  postgres-data:
+  elasticsearch-data:
+  huggingface-cache:

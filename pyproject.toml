@@ -1,0 +1,125 @@
+[project]
+name = "tenant-chat-assistant"
+version = "0.1.0"
+description = "Multi-tenant RAG and agent platform for home-services dispatch"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "tenantchat-core",
+    "tenantchat-api",
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "ruff==0.8.6",
+    "mypy==1.14.1",
+    # Starlette's TestClient transport. Dev-only: nothing in the services calls
+    # out over HTTP with it.
+    "httpx==0.28.1",
+]
+
+[tool.uv]
+# The root is a virtual project: it pins the toolchain and holds shared quality
+# configuration, but is never built or published.
+package = false
+# Pin uv itself so a lockfile refresh cannot silently change resolver behavior.
+required-version = ">=0.9,<1.0"
+
+[tool.uv.workspace]
+# Listed one at a time rather than `services/*`: the remaining service
+# directories are prototype scripts with no manifest, and a glob would fail the
+# lock on them.
+members = ["packages/*", "services/api"]
+
+[tool.uv.sources]
+tenantchat-core = { workspace = true }
+tenantchat-api = { workspace = true }
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["packages", "services", "tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "integration: requires Postgres, Elasticsearch, or the embedding service",
+    "security: tenant-isolation and abuse regression tests",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["tenantchat"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+    "architecture/likec4/node_modules",
+    "architecture/likec4/dist",
+    # Prototype code, deleted once `services/api` serves its endpoints.
+    "server.py",
+    "services/embedding/app.py",
+    "services/ingestion/app.py",
+    "services/financing-agent/app.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "A",    # builtin shadowing
+    "C4",   # comprehensions
+    "DTZ",  # timezone-aware datetimes
+    "T20",  # no print in library code
+    "SIM",  # simplify
+    "PTH",  # prefer pathlib
+    "TID",  # tidy imports
+    "RUF",  # ruff-specific
+    "S",    # bandit security
+    "ANN",  # require annotations
+]
+ignore = [
+    "ANN401", # allow explicit Any where a Protocol genuinely needs it
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "S105", "S106"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["tenantchat"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+pretty = true
+show_error_codes = true
+# Named per converted service rather than as `services`: the sibling directories
+# still hold excluded prototype scripts, and mypy errors on a directory with
+# nothing to check.
+files = ["packages", "services/api", "tests"]
+exclude = ["architecture/"]
+# `tenantchat` is a PEP 420 namespace package under a src layout, so mypy cannot
+# infer where the package root starts. Without these it derives two module names
+# for the same file ("core.catalog" and "tenantchat.core.catalog") and bails.
+# Each workspace member's src directory is added here as it is created.
+mypy_path = ["packages/core/src", "services/api/src"]
+explicit_package_bases = true
+namespace_packages = true

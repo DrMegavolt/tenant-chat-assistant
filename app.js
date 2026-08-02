@@ -10,7 +10,7 @@ const state = {
   proactiveNudgeShown: false
 };
 
-const API_BASE_URL = window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+const API_BASE_URL = resolveApiBaseUrl();
 
 const icons = {
   chat: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg>`,
@@ -191,6 +191,7 @@ async function handleUserMessage(rawText) {
     const payload = await response.json();
     for (const event of payload.toolEvents || []) {
       addToolCall(event.name, event.arguments, event.result);
+      maybeRenderBookingForm(event);
     }
     addMessage("assistant", payload.reply);
     scheduleProactiveNudge();
@@ -206,6 +207,109 @@ async function handleUserMessage(rawText) {
 
 function apiUrl(path) {
   return `${API_BASE_URL}${path}`;
+}
+
+function resolveApiBaseUrl() {
+  const configured =
+    window.CHAT_API_BASE_URL ||
+    document.currentScript?.dataset.apiBaseUrl ||
+    document.querySelector("#tenant-chat")?.dataset.apiBaseUrl ||
+    "";
+  if (configured.trim()) {
+    return configured.trim().replace(/\/+$/, "");
+  }
+  return window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+}
+
+function maybeRenderBookingForm(event) {
+  if (event.name !== "get_availability") return;
+  const service = event.result?.service;
+  const slots = event.result?.slots || [];
+  if (!service || !slots.length || !tenant().bookingEnabled) return;
+  renderBookingForm(service, slots);
+}
+
+function renderBookingForm(service, slots) {
+  document.querySelectorAll(".booking-form-card").forEach((element) => element.remove());
+  const messages = document.querySelector("#messages");
+  const card = document.createElement("form");
+  card.className = "booking-form-card";
+  card.innerHTML = `
+    <strong>Book ${escapeHtml(toTitle(service))}</strong>
+    <label>
+      <span>Available slot</span>
+      <select name="slot" required>
+        ${slots.map((slot) => `<option value="${escapeHtml(slot)}">${escapeHtml(slot)}</option>`).join("")}
+      </select>
+    </label>
+    <label>
+      <span>Name</span>
+      <input name="customerName" autocomplete="name" required />
+    </label>
+    <label>
+      <span>Address</span>
+      <input name="address" autocomplete="street-address" required />
+    </label>
+    <label>
+      <span>Phone or email</span>
+      <input name="contact" autocomplete="email" required />
+    </label>
+    <button type="submit">Book selected slot</button>
+  `;
+  card.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitBookingForm(card, service);
+  });
+  messages.append(card);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+async function submitBookingForm(form, service) {
+  const button = form.querySelector("button");
+  button.disabled = true;
+  button.textContent = "Booking...";
+  const data = new FormData(form);
+
+  try {
+    const response = await fetch(apiUrl("/api/book"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: state.tenantId,
+        sessionId: state.sessionId,
+        service,
+        slot: data.get("slot"),
+        customerName: data.get("customerName"),
+        address: data.get("address"),
+        contact: data.get("contact")
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(bookingErrorMessage(payload.toolEvent?.result));
+    }
+    addToolCall(payload.toolEvent.name, payload.toolEvent.arguments, payload.toolEvent.result);
+    addMessage("assistant", payload.reply);
+    form.remove();
+  } catch (error) {
+    const errorNode = form.querySelector(".booking-error") || document.createElement("p");
+    errorNode.className = "booking-error";
+    errorNode.textContent = error.message;
+    form.append(errorNode);
+    button.disabled = false;
+    button.textContent = "Book selected slot";
+  }
+}
+
+function bookingErrorMessage(result = {}) {
+  if (result.message) return result.message;
+  if (result.error === "missing_required_fields") {
+    return `Missing: ${result.missingFields.join(", ")}.`;
+  }
+  if (result.error === "slot_unavailable") {
+    return "That slot is no longer available. Please choose another slot.";
+  }
+  return "Booking failed. Please check the form and try again.";
 }
 
 function getSessionId(tenantId = "apex") {
@@ -269,6 +373,19 @@ function hasContactInfo() {
   const text = state.messages.map((message) => message.text).join("\n");
   return /[\w.+-]+@[\w.-]+\.\w+/.test(text) ||
     /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/.test(text);
+}
+
+function toTitle(text) {
+  return text.replace(/\w\S*/g, (word) => word.charAt(0).toUpperCase() + word.slice(1));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function setWaiting(isWaiting) {

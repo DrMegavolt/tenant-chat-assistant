@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo
+  namespace: observability
+  annotations:
+    meta.helm.sh/release-name: tempo
+    meta.helm.sh/release-namespace: observability
+  labels:
+    app.kubernetes.io/instance: tempo
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/version: 2.9.0
+    helm.sh/chart: tempo-1.24.1
+data:
+  overrides.yaml: |
+    overrides:
+      {}
+  tempo.yaml: |
+    memberlist:
+      cluster_label: "tempo.observability"
+    multitenancy_enabled: false
+    usage_report:
+      reporting_enabled: true
+    compactor:
+      compaction:
+        block_retention: 24h
+    distributor:
+      receivers:
+        jaeger:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:14250
+            thrift_binary:
+              endpoint: 0.0.0.0:6832
+            thrift_compact:
+              endpoint: 0.0.0.0:6831
+            thrift_http:
+              endpoint: 0.0.0.0:14268
+        opencensus: null
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+    ingester: {}
+    server:
+      http_listen_port: 3200
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+        wal:
+          path: /var/tempo/wal
+    metrics_generator:
+      ring:
+        kvstore:
+          store: memberlist
+      processor:
+        service_graphs: {}
+        span_metrics: {}
+      storage:
+        path: /var/tempo/generator/wal
+    querier: {}
+    query_frontend: {}
+    overrides:
+      defaults:
+        metrics_generator:
+          processors:
+            - service-graphs
+            - span-metrics
+      per_tenant_override_config: /conf/overrides.yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loki
+  namespace: observability
+  annotations:
+    meta.helm.sh/release-name: loki
+    meta.helm.sh/release-namespace: observability
+  labels:
+    app: loki
+    app.kubernetes.io/managed-by: Helm
+    chart: loki-2.16.0
+    heritage: Helm
+    release: loki
+type: Opaque
+stringData:
+  loki.yaml: |
+    auth_enabled: false
+    compactor:
+      working_directory: /data/loki/boltdb-shipper-compactor
+    ingester:
+      chunk_block_size: 262144
+      chunk_idle_period: 3m
+      chunk_retain_period: 1m
+      lifecycler:
+        ring:
+          replication_factor: 1
+      wal:
+        dir: /data/loki/wal
+    limits_config:
+      max_entries_limit_per_query: 5000
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      allow_structured_metadata: false
+      volume_enabled: true
+    memberlist:
+      join_members:
+        - loki-memberlist
+    schema_config:
+      configs:
+        - from: "2020-10-24"
+          index:
+            period: 24h
+            prefix: index_
+          object_store: filesystem
+          schema: v11
+          store: boltdb-shipper
+    server:
+      grpc_listen_port: 9095
+      http_listen_port: 3100
+    storage_config:
+      boltdb_shipper:
+        active_index_directory: /data/loki/boltdb-shipper-active
+        cache_location: /data/loki/boltdb-shipper-cache
+        cache_ttl: 24h
+      filesystem:
+        directory: /data/loki/chunks
+    table_manager:
+      retention_deletes_enabled: false
+      retention_period: 0s

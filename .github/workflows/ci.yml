@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same ref makes the in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python
+        run: uv python install
+
+      # Individually stepped so a failure names itself in the UI. Together these
+      # are exactly `make check`, which is what runs locally — with coverage
+      # substituted for the plain test run.
+      - name: Verify lockfile is current
+        run: make lock-check
+
+      - name: Lint
+        run: make lint
+
+      - name: Check formatting
+        run: make format-check
+
+      - name: Type check
+        run: make typecheck
+
+      - name: Test
+        run: make test-cov
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 14
+          if-no-files-found: error
+
+  architecture:
+    name: Architecture model
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: architecture/likec4/package-lock.json
+
+      - name: Install
+        run: npm --prefix architecture/likec4 ci
+
+      - name: Check formatting
+        run: npm --prefix architecture/likec4 run format:check
+
+      - name: Validate model
+        run: npm --prefix architecture/likec4 run validate
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a credential removed in the tip commit is still live if
+          # it was ever pushed. SEC-005 requires rotating anything committed.
+          fetch-depth: 0
+
+      - name: Scan for committed credentials
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

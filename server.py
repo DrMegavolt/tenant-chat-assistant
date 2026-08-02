@@ -25,12 +25,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parent
-CHATS_DIR = ROOT / "chats"
+CHATS_DIR = Path(os.environ.get("CHATS_DIR", ROOT / "chats"))
 HOST = os.environ.get("CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CHAT_PORT", "8000"))
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:1234/v1")
 LLM_MODEL = os.environ.get("LLM_MODEL", "local-model")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_TIMEOUT_SECONDS = int(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
+FINANCING_AGENT_URL = os.environ.get("FINANCING_AGENT_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DATABASE_INIT_RETRIES = int(os.environ.get("DATABASE_INIT_RETRIES", "30"))
 MAX_TOOL_ROUNDS = 4
 
 
@@ -119,7 +123,9 @@ TENANTS: Dict[str, TenantConfig] = {
 
 SESSIONS: Dict[str, Dict[str, Any]] = {}
 LEADS: List[Dict[str, Any]] = []
+BOOKINGS: List[Dict[str, Any]] = []
 MESSAGE_COUNTER = 0
+POSTGRES_READY = False
 ARCHIVE_AFTER_SECONDS = 300
 
 
@@ -171,9 +177,10 @@ TOOLS: List[Dict[str, Any]] = [
                     "service": {"type": "string"},
                     "slot": {"type": "string"},
                     "customer_name": {"type": "string"},
-                    "customer_phone": {"type": "string"},
+                    "customer_phone_or_email": {"type": "string"},
+                    "address": {"type": "string"},
                 },
-                "required": ["service", "slot"],
+                "required": ["service", "slot", "customer_name", "customer_phone_or_email", "address"],
                 "additionalProperties": False,
             },
         },
@@ -417,6 +424,10 @@ def leads_for_session(session_id: str) -> List[Dict[str, Any]]:
     return [lead for lead in LEADS if lead.get("sessionId") == session_id]
 
 
+def bookings_for_session(session_id: str) -> List[Dict[str, Any]]:
+    return [booking for booking in BOOKINGS if booking.get("sessionId") == session_id]
+
+
 def infer_outcome(session: Dict[str, Any]) -> str:
     tool_events = session.get("toolEvents", [])
     messages = session.get("messages", [])
@@ -424,7 +435,7 @@ def infer_outcome(session: Dict[str, Any]) -> str:
         event.get("name") == "book_appointment"
         and event.get("result", {}).get("status") == "confirmed"
         for event in tool_events
-    ):
+    ) or bookings_for_session(session["sessionId"]):
         return "booked"
     if leads_for_session(session["sessionId"]):
         return "lead"
@@ -457,19 +468,130 @@ def update_session_status(session: Dict[str, Any]) -> None:
     session["status"] = "active" if outcome == "active" else "archived"
 
 
-def persist_session(session: Dict[str, Any]) -> None:
-    CHATS_DIR.mkdir(exist_ok=True)
-    update_session_status(session)
-    payload = {
+def using_postgres_storage() -> bool:
+    return bool(DATABASE_URL)
+
+
+def storage_description() -> str:
+    if using_postgres_storage():
+        return "Postgres table chat_sessions(payload jsonb)"
+    return str(CHATS_DIR)
+
+
+def build_session_payload(session: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "schemaVersion": 1,
         "savedAt": now_seconds(),
         "session": session,
         "leads": leads_for_session(session["sessionId"]),
+        "bookings": bookings_for_session(session["sessionId"]),
     }
+
+
+def ensure_postgres_schema() -> None:
+    global POSTGRES_READY
+    if POSTGRES_READY or not using_postgres_storage():
+        return
+
+    last_error: Optional[BaseException] = None
+    for attempt in range(1, DATABASE_INIT_RETRIES + 1):
+        try:
+            import psycopg
+
+            with psycopg.connect(DATABASE_URL) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS chat_sessions (
+                            session_id text PRIMARY KEY,
+                            tenant_id text NOT NULL,
+                            status text NOT NULL,
+                            outcome text NOT NULL,
+                            created_at_epoch bigint NOT NULL,
+                            updated_at_epoch bigint NOT NULL,
+                            saved_at_epoch bigint NOT NULL,
+                            payload jsonb NOT NULL
+                        )
+                        """
+                    )
+                    cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS chat_sessions_tenant_updated_idx
+                        ON chat_sessions (tenant_id, updated_at_epoch DESC)
+                        """
+                    )
+                    cursor.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS chat_sessions_outcome_idx
+                        ON chat_sessions (outcome)
+                        """
+                    )
+            POSTGRES_READY = True
+            return
+        except Exception as error:  # pragma: no cover - depends on external DB startup.
+            last_error = error
+            time.sleep(min(5, attempt))
+
+    raise RuntimeError(f"Postgres chat storage is unavailable: {last_error}")
+
+
+def persist_session_postgres(session: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    ensure_postgres_schema()
+    import psycopg
+    from psycopg.types.json import Jsonb
+
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO chat_sessions (
+                    session_id,
+                    tenant_id,
+                    status,
+                    outcome,
+                    created_at_epoch,
+                    updated_at_epoch,
+                    saved_at_epoch,
+                    payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    tenant_id = EXCLUDED.tenant_id,
+                    status = EXCLUDED.status,
+                    outcome = EXCLUDED.outcome,
+                    created_at_epoch = EXCLUDED.created_at_epoch,
+                    updated_at_epoch = EXCLUDED.updated_at_epoch,
+                    saved_at_epoch = EXCLUDED.saved_at_epoch,
+                    payload = EXCLUDED.payload
+                """,
+                (
+                    session["sessionId"],
+                    session["tenantId"],
+                    session.get("status", "active"),
+                    session.get("outcome", "active"),
+                    int(session.get("createdAt", now_seconds())),
+                    int(session.get("updatedAt", now_seconds())),
+                    int(payload["savedAt"]),
+                    Jsonb(payload),
+                ),
+            )
+
+
+def persist_session_file(session: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    CHATS_DIR.mkdir(exist_ok=True)
     file_path = CHATS_DIR / f"{safe_file_stem(session['sessionId'])}.json"
     tmp_path = file_path.with_suffix(".json.tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp_path.replace(file_path)
+
+
+def persist_session(session: Dict[str, Any]) -> None:
+    update_session_status(session)
+    payload = build_session_payload(session)
+    if using_postgres_storage():
+        persist_session_postgres(session, payload)
+        return
+    persist_session_file(session, payload)
 
 
 def persist_session_id(session_id: str) -> None:
@@ -478,22 +600,55 @@ def persist_session_id(session_id: str) -> None:
         persist_session(session)
 
 
-def load_saved_chats() -> None:
+def load_saved_payload(payload: Dict[str, Any]) -> None:
+    session = payload.get("session")
+    if not isinstance(session, dict) or not session.get("sessionId"):
+        return
+    SESSIONS[session["sessionId"]] = session
+    for lead in payload.get("leads", []):
+        if isinstance(lead, dict) and not any(
+            existing.get("leadId") == lead.get("leadId") for existing in LEADS
+        ):
+            LEADS.append(lead)
+    for booking in payload.get("bookings", []):
+        if isinstance(booking, dict) and not any(
+            existing.get("bookingId") == booking.get("bookingId") for existing in BOOKINGS
+        ):
+            BOOKINGS.append(booking)
+
+
+def load_saved_chats_postgres() -> None:
+    ensure_postgres_schema()
+    import psycopg
+
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT payload
+                FROM chat_sessions
+                ORDER BY updated_at_epoch DESC
+                """
+            )
+            for (payload,) in cursor.fetchall():
+                if isinstance(payload, dict):
+                    load_saved_payload(payload)
+
+
+def load_saved_chats_file() -> None:
     CHATS_DIR.mkdir(exist_ok=True)
     for file_path in CHATS_DIR.glob("*.json"):
         try:
-            payload = json.loads(file_path.read_text(encoding="utf-8"))
-            session = payload.get("session")
-            if not isinstance(session, dict) or not session.get("sessionId"):
-                continue
-            SESSIONS[session["sessionId"]] = session
-            for lead in payload.get("leads", []):
-                if isinstance(lead, dict) and not any(
-                    existing.get("leadId") == lead.get("leadId") for existing in LEADS
-                ):
-                    LEADS.append(lead)
+            load_saved_payload(json.loads(file_path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             continue
+
+
+def load_saved_chats() -> None:
+    if using_postgres_storage():
+        load_saved_chats_postgres()
+    else:
+        load_saved_chats_file()
     for session in SESSIONS.values():
         update_session_status(session)
 
@@ -526,7 +681,51 @@ def session_detail(session: Dict[str, Any]) -> Dict[str, Any]:
     detail["messages"] = session.get("messages", [])
     detail["toolEvents"] = session.get("toolEvents", [])
     detail["leads"] = leads_for_session(session["sessionId"])
+    detail["bookings"] = bookings_for_session(session["sessionId"])
     return detail
+
+
+def prometheus_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def render_chat_metrics() -> str:
+    outcome_counts: Dict[Tuple[str, str], int] = {}
+    message_count = 0
+    tool_event_count = 0
+    for session in SESSIONS.values():
+        update_session_status(session)
+        key = (session.get("status", "active"), session.get("outcome", "active"))
+        outcome_counts[key] = outcome_counts.get(key, 0) + 1
+        message_count += len(session.get("messages", []))
+        tool_event_count += len(session.get("toolEvents", []))
+
+    lines = [
+        "# HELP chat_sessions_total Chat sessions by status and outcome.",
+        "# TYPE chat_sessions_total gauge",
+    ]
+    for (status, outcome), count in sorted(outcome_counts.items()):
+        lines.append(
+            'chat_sessions_total{status="%s",outcome="%s"} %s'
+            % (prometheus_label(status), prometheus_label(outcome), count)
+        )
+    lines.extend(
+        [
+            "# HELP chat_messages_total Messages retained in chat sessions.",
+            "# TYPE chat_messages_total gauge",
+            f"chat_messages_total {message_count}",
+            "# HELP chat_tool_events_total Tool events retained in chat sessions.",
+            "# TYPE chat_tool_events_total gauge",
+            f"chat_tool_events_total {tool_event_count}",
+            "# HELP chat_leads_total Leads retained by the chat backend.",
+            "# TYPE chat_leads_total gauge",
+            f"chat_leads_total {len(LEADS)}",
+            "# HELP chat_bookings_total Bookings retained by the chat backend.",
+            "# TYPE chat_bookings_total gauge",
+            f"chat_bookings_total {len(BOOKINGS)}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def build_system_prompt(tenant: TenantConfig) -> str:
@@ -539,7 +738,9 @@ def build_system_prompt(tenant: TenantConfig) -> str:
     booking_line = (
         "Booking through chat is allowed. Always call get_availability before offering slots. "
         "Call book_appointment only after the user explicitly confirms a specific slot. "
-        "When booking, pass the exact slot string returned by get_availability."
+        "When booking, pass the exact slot string returned by get_availability. "
+        "A booking requires customer name, valid phone or email, and service address; "
+        "the website may collect those with a structured form."
         if tenant["bookingEnabled"]
         else (
             "Booking through chat is not allowed. Do not call get_availability or "
@@ -664,7 +865,7 @@ def post_openai_chat(payload: Dict[str, Any]) -> Dict[str, Any]:
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
+    with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -696,8 +897,31 @@ def execute_tool(
             return {"error": "booking_disabled", "phone": tenant["phone"]}
         service = normalize_service(tenant, str(args.get("service", "")))
         slot = str(args.get("slot", "")).strip()
+        customer_name = clean_text(args.get("customer_name", ""))
+        contact = normalize_contact(
+            args.get("customer_phone_or_email", args.get("customer_phone", ""))
+        )
+        address = clean_text(args.get("address", ""))
         if not service:
             return {"error": "unknown_service", "allowed_services": tenant["services"]}
+        missing_fields = [
+            field
+            for field, value in {
+                "customer_name": customer_name,
+                "customer_phone_or_email": contact,
+                "address": address,
+                "slot": slot,
+            }.items()
+            if not value
+        ]
+        if missing_fields:
+            return {"error": "missing_required_fields", "missingFields": missing_fields}
+        if not is_valid_contact(contact):
+            return {
+                "error": "invalid_contact",
+                "field": "customer_phone_or_email",
+                "message": "Provide a valid email or a complete 10 digit US phone number with area code.",
+            }
         available_slots = tenant["availability"].get(service, [])
         matched_slot = find_matching_slot(slot, available_slots)
         if not matched_slot:
@@ -707,12 +931,29 @@ def execute_tool(
                 "slot": slot,
                 "availableSlots": available_slots,
             }
-        confirmation_id = f"BK-{int(time.time())}"
+        confirmation_id = f"BK-{int(time.time())}-{len(BOOKINGS) + 1}"
+        booking = {
+            "bookingId": confirmation_id,
+            "tenantId": tenant_id,
+            "tenantName": tenant["name"],
+            "sessionId": session_id,
+            "customerName": customer_name,
+            "contact": contact,
+            "address": address,
+            "service": service,
+            "slot": matched_slot,
+            "createdAt": int(time.time()),
+        }
+        if not any(existing.get("bookingId") == confirmation_id for existing in BOOKINGS):
+            BOOKINGS.append(booking)
         return {
             "status": "confirmed",
             "confirmationId": confirmation_id,
             "service": service,
             "slot": matched_slot,
+            "customerName": customer_name,
+            "contact": contact,
+            "address": address,
         }
 
     if name == "create_lead":
@@ -794,6 +1035,66 @@ def is_valid_contact(contact: str) -> bool:
         return True
     digits = re.sub(r"\D", "", contact)
     return len(digits) == 10 or (len(digits) == 11 and digits.startswith("1"))
+
+
+def latest_user_message(messages: List[Dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content", ""))
+    return ""
+
+
+def is_financing_question(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(financ(?:e|ing)|payment(?:s| plan| option)?|monthly payment(?:s)?|"
+            r"pay over time|apr|interest|loan|"
+            r"credit|lender|deferred|installment|apply|approval|qualify|"
+            r"promotional financing|same as cash)\b",
+            text.lower(),
+        )
+    )
+
+
+def call_financing_agent(
+    tenant_id: str,
+    session_id: str,
+    messages: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, Any]]]:
+    if not FINANCING_AGENT_URL:
+        raise urllib.error.URLError("FINANCING_AGENT_URL is not configured")
+    query = latest_user_message(messages)
+    payload = {
+        "tenantId": tenant_id,
+        "sessionId": session_id,
+        "query": query,
+        "messages": messages[-8:],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{FINANCING_AGENT_URL.rstrip('/')}/answer",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    tool_event = {
+        "name": "financing_agent",
+        "arguments": {"query": query},
+        "result": {
+            "chunkCount": len(data.get("chunks", [])),
+            "sources": [
+                {
+                    "title": chunk.get("title"),
+                    "section": chunk.get("section"),
+                    "score": chunk.get("score"),
+                }
+                for chunk in data.get("chunks", [])
+            ],
+        },
+    }
+    return data.get("answer", "I do not have enough financing information."), [tool_event]
 
 
 def fallback_response(
@@ -1004,6 +1305,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/metrics":
+            self.send_text(render_chat_metrics(), "text/plain; version=0.0.4")
+            return
+
         if parsed.path == "/api/tenants":
             payload = {
                 "tenants": {
@@ -1062,6 +1367,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.handle_admin_message(parsed.path)
             return
 
+        if parsed.path == "/api/book":
+            self.handle_booking_form()
+            return
+
         if parsed.path != "/api/chat":
             self.send_error(404)
             return
@@ -1080,8 +1389,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         set_session_messages(session, messages)
 
         try:
-            reply, tool_events = call_llm(messages, tenant_id, session_id)
-            mode = "llm"
+            if is_financing_question(latest_user_message(messages)):
+                reply, tool_events = call_financing_agent(tenant_id, session_id, messages)
+                mode = "financing_agent"
+            else:
+                reply, tool_events = call_llm(messages, tenant_id, session_id)
+                mode = "llm"
         except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as error:
             reply, tool_events = fallback_response(tenant_id, session_id, tenant, messages)
             mode = "fallback"
@@ -1115,6 +1428,50 @@ class ChatHandler(BaseHTTPRequestHandler):
         message = append_session_message(session, "assistant", content, "admin")
         self.send_json({"message": message, "session": session_detail(session)})
 
+    def handle_booking_form(self) -> None:
+        try:
+            request = self.read_json()
+            tenant_id = request.get("tenantId", "apex")
+            tenant = TENANTS[tenant_id]
+            session_id = clean_text(request.get("sessionId", "")) or f"session-{int(time.time())}"
+            session = ensure_session(tenant_id, session_id)
+            args = {
+                "service": request.get("service", ""),
+                "slot": request.get("slot", ""),
+                "customer_name": request.get("customerName", ""),
+                "customer_phone_or_email": request.get("contact", ""),
+                "address": request.get("address", ""),
+            }
+        except (KeyError, ValueError, json.JSONDecodeError):
+            self.send_json({"error": "invalid_request"}, status=400)
+            return
+
+        result = execute_tool(tenant_id, session_id, tenant, "book_appointment", args)
+        append_session_message(
+            session,
+            "user",
+            (
+                f"Booking form submitted for {clean_text(args['service'])}: "
+                f"{clean_text(args['slot'])}. Name: {clean_text(args['customer_name'])}. "
+                f"Contact: {clean_text(args['customer_phone_or_email'])}. "
+                f"Address: {clean_text(args['address'])}."
+            ),
+            "user",
+        )
+        tool_event = {"name": "book_appointment", "arguments": args, "result": result}
+        append_tool_events(session, [tool_event])
+
+        if result.get("status") == "confirmed":
+            reply = (
+                f"Booked {result['service']} for {result['slot']}. "
+                f"Confirmation {result['confirmationId']}."
+            )
+            append_session_message(session, "assistant", reply, "assistant")
+            self.send_json({"reply": reply, "toolEvent": tool_event, "session": session_detail(session)})
+            return
+
+        self.send_json({"error": "booking_failed", "toolEvent": tool_event}, status=400)
+
     def serve_static(self, path: str) -> None:
         clean_path = urllib.parse.unquote(path).lstrip("/")
         file_path = (ROOT / clean_path).resolve()
@@ -1143,6 +1500,15 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_text(self, body: str, content_type: str, status: int = 200) -> None:
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_cors_headers()
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1174,7 +1540,7 @@ def main() -> None:
     load_saved_chats()
     server = ThreadingHTTPServer((HOST, PORT), ChatHandler)
     print(f"Serving tenant chat prototype at http://{HOST}:{PORT}")
-    print(f"Persisting chat archives in {CHATS_DIR}")
+    print(f"Persisting chat archives in {storage_description()}")
     print(f"Calling OpenAI-compatible chat API at {LLM_BASE_URL}/chat/completions")
     server.serve_forever()
 

@@ -1,0 +1,636 @@
+specification {
+  tag deployment
+
+  element person {
+    style {
+      shape person
+      color blue
+    }
+  }
+
+  element softwareSystem {
+    style {
+      color blue
+    }
+  }
+
+  element externalSystem {
+    style {
+      color muted
+    }
+  }
+
+  element application {
+    style {
+      color sky
+    }
+  }
+
+  element userInterface {
+    style {
+      shape browser
+      color green
+    }
+  }
+
+  element service {
+    style {
+      color green
+    }
+  }
+
+  element component {
+    style {
+      color sky
+    }
+  }
+
+  element agent {
+    style {
+      color blue
+    }
+  }
+
+  element worker {
+    style {
+      color amber
+    }
+  }
+
+  element database {
+    style {
+      shape storage
+      color amber
+    }
+  }
+
+  element queue {
+    style {
+      shape queue
+      color amber
+    }
+  }
+
+  relationship request {
+    title 'Request'
+  }
+
+  relationship command {
+    title 'Command'
+  }
+
+  relationship query {
+    title 'Query'
+  }
+
+  relationship async {
+    title 'Asynchronous'
+    line dotted
+  }
+
+  relationship observe {
+    title 'Telemetry'
+    line dotted
+    color muted
+  }
+
+  relationship deploymentFlow {
+    #deployment
+    title 'Deployment flow'
+    color blue
+  }
+
+  deploymentNode environment
+
+  deploymentNode edge {
+    style {
+      color green
+    }
+  }
+
+  deploymentNode kubernetes {
+    style {
+      color blue
+      icon tech:kubernetes
+    }
+  }
+
+  deploymentNode namespace
+
+  deploymentNode workload {
+    style {
+      color sky
+      multiple true
+    }
+  }
+
+  deploymentNode managed {
+    style {
+      color amber
+    }
+  }
+
+  deploymentNode external {
+    style {
+      color muted
+    }
+  }
+}
+
+model {
+  visitor = person 'Visitor' {
+    description 'Customer using an embedded tenant chat widget'
+  }
+
+  supportAgent = person 'Support Agent' {
+    description 'Handles escalations and takes over conversations'
+  }
+
+  tenantAdmin = person 'Tenant Administrator' {
+    description 'Configures tenant policy, knowledge, integrations, and reporting'
+  }
+
+  platformOperator = person 'Platform Operator' {
+    description 'Operates deployments, security, reliability, and incident response'
+  }
+
+  identityProvider = externalSystem 'Identity Provider' {
+    technology 'OIDC / OAuth 2.1'
+    description 'Authenticates staff and administrative principals'
+  }
+
+  modelProviders = externalSystem 'Model Providers' {
+    technology 'OpenAI-compatible and provider adapters'
+    description 'Chat, tool-calling, embedding, and optional reranking models'
+  }
+
+  calendarProvider = externalSystem 'Calendar / Field Service' {
+    description 'Authoritative external availability and appointment system'
+  }
+
+  crmProvider = externalSystem 'CRM' {
+    description 'Receives consented, deduplicated leads'
+  }
+
+  messageProvider = externalSystem 'Email / SMS Provider' {
+    description 'Sends consented notifications and operational messages'
+  }
+
+  mcpServers = externalSystem 'Optional MCP Tool Servers' {
+    technology 'MCP with OAuth 2.1'
+    description 'Reusable external tools with least-privilege authorization'
+  }
+
+  observability = externalSystem 'Observability Platform' {
+    technology 'OpenTelemetry, Prometheus, Grafana, Loki, Tempo'
+    description 'Receives redacted traces, metrics, logs, SLOs, and alerts'
+  }
+
+  platform = softwareSystem 'Tenant Chat Platform' {
+    description 'Secure multi-tenant RAG and business-workflow platform'
+
+    experience = application 'Experience Layer' {
+      technology 'Versioned web assets'
+
+      widget = userInterface 'Embeddable Chat Widget' {
+        technology 'HTML, CSS, JavaScript'
+        description 'Streaming chat, citations, consent, booking, and handoff status'
+      }
+
+      admin = userInterface 'Tenant Operations Console' {
+        technology 'Web application'
+        description 'Conversation operations, handoff, knowledge, configuration, and analytics'
+      }
+    }
+
+    edgeGateway = service 'TLS Ingress and API Gateway' {
+      technology 'Ingress, WAF, rate limits'
+      description 'TLS termination, origin controls, request limits, routing, and correlation IDs'
+    }
+
+    api = application 'Application API' {
+      technology 'Python ASGI / FastAPI'
+
+      visitorApi = service 'Visitor Chat API' {
+        description 'Secure session creation, turns, citations, and customer data controls'
+      }
+
+      adminApi = service 'Admin API' {
+        description 'Tenant-scoped administrative and support operations'
+      }
+
+      realtime = service 'Realtime Delivery' {
+        technology 'SSE or WebSocket'
+        description 'Resumable message, staff reply, and handoff event delivery'
+      }
+
+      identity = component 'Identity and RBAC' {
+        description 'Validates staff identity and tenant-scoped roles'
+      }
+
+      visitorSessions = component 'Visitor Session Security' {
+        description 'Issues opaque credentials bound to one tenant and conversation'
+      }
+    }
+
+    orchestration = application 'Agent Orchestration' {
+      description 'Framework boundary for simple turns and durable stateful workflows'
+
+      runtime = component 'AgentRuntime Interface' {
+        description 'Framework-neutral typed turn, stream, usage, cancellation, and error contract'
+      }
+
+      simpleLoop = component 'Simple Agent Runtime' {
+        technology 'Custom bounded tool loop'
+        description 'Low-overhead path for short-lived ordinary chat turns'
+      }
+
+      graphRuntime = component 'LangGraph v1 Runtime' {
+        technology 'LangGraph with Postgres checkpointer'
+        description 'Branching, pause/resume, approval, handoff, and failure recovery'
+      }
+
+      router = component 'Intent Router' {
+        description 'Versioned structured routing with confidence and clarification policy'
+      }
+
+      guardrails = component 'Agent Guardrails' {
+        description 'Input, output, evidence, tool, budget, and workflow transition checks'
+      }
+
+      generalRag = agent 'General Knowledge Agent' {
+        description 'Answers grounded tenant knowledge questions with evidence'
+      }
+
+      financing = agent 'Financing Agent' {
+        description 'Applies financing-specific policy, retrieval, and safe abstention'
+      }
+
+      scheduling = agent 'Scheduling Agent' {
+        description 'Collects fields and proposes availability before confirmed actions'
+      }
+
+      leadQualification = agent 'Lead Qualification Agent' {
+        description 'Collects consented lead fields and prepares a typed action'
+      }
+
+      handoff = agent 'Handoff Agent' {
+        description 'Summarizes context and enters the staff queue when policy requires'
+      }
+    }
+
+    domain = application 'Deterministic Domain Services' {
+      description 'Framework-independent policy and transactional business actions'
+
+      toolGateway = service 'Typed Tool Gateway' {
+        description 'Authenticated, authorized, validated, and auditable tool boundary'
+      }
+
+      policy = component 'Tenant Policy Engine' {
+        description 'Deterministic service, pricing, action, consent, and tool permissions'
+      }
+
+      conversations = service 'Conversation Service' {
+        description 'Server-authoritative append-only messages and outcomes'
+      }
+
+      bookings = service 'Booking Service' {
+        description 'Transactional slot reservation, confirmation, cancellation, and idempotency'
+      }
+
+      leads = service 'Lead Service' {
+        description 'Consent validation, deduplication, and durable CRM delivery state'
+      }
+
+      handoffs = service 'Handoff Service' {
+        description 'Queue, SLA, assignment, takeover, release, and resolution'
+      }
+
+      tenants = service 'Tenant Configuration Service' {
+        description 'Versioned policies, branding, allowed origins, models, quotas, and integrations'
+      }
+
+      privacy = service 'Privacy Service' {
+        description 'Consent, retention, export, deletion, and PII redaction policy'
+      }
+    }
+
+    knowledge = application 'Knowledge and RAG Platform' {
+      description 'Governed content lifecycle and evidence-producing retrieval'
+
+      management = service 'Knowledge Management API' {
+        description 'Draft, scan, approve, publish, supersede, expire, rollback, and delete'
+      }
+
+      ingestion = service 'Ingestion Pipeline' {
+        description 'Secure parsers, model-aware chunking, embedding batches, and index activation'
+      }
+
+      retrieval = service 'Hybrid Retrieval Service' {
+        technology 'Lexical + vector + reranking'
+        description 'Tenant/version filters, relevance threshold, diversification, and abstention'
+      }
+
+      evidence = component 'Evidence and Citation Validator' {
+        description 'Binds supported claims to exact authorized document versions and locations'
+      }
+
+      contentSafety = component 'Content Safety Scanner' {
+        description 'Quarantines suspicious or unsupported source content'
+      }
+    }
+
+    workers = application 'Durable Workers' {
+      description 'Idempotent background work driven by leases and an outbox'
+
+      ingestionWorker = worker 'Ingestion Worker'
+      integrationWorker = worker 'Integration Delivery Worker'
+      reconciliationWorker = worker 'Calendar Reconciliation Worker'
+      notificationWorker = worker 'Notification Worker'
+      privacyWorker = worker 'Retention and Deletion Worker'
+    }
+
+    postgres = database 'Postgres System of Record' {
+      technology 'PostgreSQL'
+      description 'Authoritative tenant, conversation, action, audit, outbox, and LangGraph checkpoint schemas'
+    }
+
+    vectorIndex = database 'Knowledge Search Index' {
+      technology 'Elasticsearch'
+      description 'Derived active document chunks with tenant and version filters'
+    }
+
+    objectStorage = database 'Document Object Storage' {
+      description 'Versioned originals and safe parsed artifacts'
+    }
+
+    jobQueue = queue 'Durable Outbox and Job Queue' {
+      technology 'Postgres outbox / durable worker queue'
+      description 'Leased, retryable, idempotent background work and dead-letter state'
+    }
+  }
+
+  visitor -[request]-> platform.experience.widget 'Chats and manages consent over HTTPS'
+  supportAgent -[request]-> platform.experience.admin 'Accepts handoffs and replies'
+  tenantAdmin -[request]-> platform.experience.admin 'Manages tenant configuration and knowledge'
+  platformOperator -[request]-> observability 'Monitors SLOs and incidents'
+
+  platform.experience.widget -[request]-> platform.edgeGateway 'Visitor API and realtime traffic'
+  platform.experience.admin -[request]-> platform.edgeGateway 'Authenticated admin traffic'
+  platform.edgeGateway -[request]-> platform.api.visitorApi 'Routes visitor requests'
+  platform.edgeGateway -[request]-> platform.api.adminApi 'Routes admin requests'
+  platform.edgeGateway -[request]-> platform.api.realtime 'Routes resumable event streams'
+
+  platform.api.adminApi -[request]-> platform.api.identity 'Authorizes tenant-scoped operations'
+  platform.api.identity -[request]-> identityProvider 'Validates tokens and roles'
+  platform.api.visitorApi -[request]-> platform.api.visitorSessions 'Validates tenant-bound session'
+  platform.api.visitorApi -[command]-> platform.domain.conversations 'Appends visitor messages'
+  platform.api.visitorApi -[request]-> platform.orchestration.runtime 'Runs an agent turn'
+  platform.api.adminApi -[command]-> platform.domain.handoffs 'Operates queue and takeover'
+  platform.api.adminApi -[command]-> platform.domain.tenants 'Publishes tenant configuration'
+  platform.api.adminApi -[command]-> platform.knowledge.management 'Manages knowledge lifecycle'
+  platform.api.realtime -[query]-> platform.domain.conversations 'Streams committed messages'
+  platform.api.realtime -[query]-> platform.domain.handoffs 'Streams handoff state'
+
+  platform.orchestration.runtime -[request]-> platform.orchestration.simpleLoop 'Uses for short-lived turns'
+  platform.orchestration.runtime -[request]-> platform.orchestration.graphRuntime 'Uses for stateful workflows'
+  platform.orchestration.simpleLoop -[request]-> platform.orchestration.guardrails 'Validates turns and tool proposals'
+  platform.orchestration.graphRuntime -[request]-> platform.orchestration.guardrails 'Validates nodes and transitions'
+  platform.orchestration.graphRuntime -[request]-> platform.orchestration.router 'Routes current workflow step'
+  platform.orchestration.router -[request]-> platform.orchestration.generalRag 'Delegates general knowledge'
+  platform.orchestration.router -[request]-> platform.orchestration.financing 'Delegates financing questions'
+  platform.orchestration.router -[request]-> platform.orchestration.scheduling 'Delegates booking workflow'
+  platform.orchestration.router -[request]-> platform.orchestration.leadQualification 'Delegates lead workflow'
+  platform.orchestration.router -[request]-> platform.orchestration.handoff 'Delegates escalation'
+  platform.orchestration.runtime -[request]-> modelProviders 'Invokes configured chat model'
+  platform.orchestration.graphRuntime -[command]-> platform.postgres 'Persists workflow checkpoints only'
+
+  platform.orchestration.generalRag -[query]-> platform.knowledge.retrieval 'Requests grounded context'
+  platform.orchestration.financing -[query]-> platform.knowledge.retrieval 'Requests financing evidence'
+  platform.orchestration.scheduling -[command]-> platform.domain.toolGateway 'Proposes typed scheduling tools'
+  platform.orchestration.leadQualification -[command]-> platform.domain.toolGateway 'Proposes typed lead tools'
+  platform.orchestration.handoff -[command]-> platform.domain.toolGateway 'Proposes typed handoff tool'
+
+  platform.domain.toolGateway -[request]-> platform.domain.policy 'Authorizes every action deterministically'
+  platform.domain.toolGateway -[command]-> platform.domain.bookings 'Executes booking commands'
+  platform.domain.toolGateway -[command]-> platform.domain.leads 'Executes lead commands'
+  platform.domain.toolGateway -[command]-> platform.domain.handoffs 'Executes handoff commands'
+  platform.domain.toolGateway -[query]-> platform.domain.tenants 'Reads published tenant policy'
+  platform.domain.toolGateway -[request]-> mcpServers 'Optionally invokes authorized reusable tools'
+
+  platform.domain.conversations -[command]-> platform.postgres 'Stores authoritative transcript and outcome'
+  platform.domain.bookings -[command]-> platform.postgres 'Commits slot and idempotency transaction'
+  platform.domain.bookings -[command]-> calendarProvider 'Reserves or changes provider appointment'
+  platform.domain.bookings -[async]-> platform.jobQueue 'Publishes reconciliation and notification work'
+  platform.domain.leads -[command]-> platform.postgres 'Stores lead and outbox atomically'
+  platform.domain.leads -[async]-> platform.jobQueue 'Publishes CRM delivery work'
+  platform.domain.handoffs -[command]-> platform.postgres 'Stores queue and ownership state'
+  platform.domain.handoffs -[async]-> platform.jobQueue 'Publishes staff notification work'
+  platform.domain.tenants -[command]-> platform.postgres 'Stores versioned tenant configuration'
+  platform.domain.privacy -[command]-> platform.postgres 'Applies retention and subject requests'
+
+  platform.knowledge.management -[command]-> platform.objectStorage 'Stores versioned source documents'
+  platform.knowledge.management -[async]-> platform.jobQueue 'Queues scan and ingestion'
+  platform.jobQueue -[async]-> platform.workers.ingestionWorker 'Leases ingestion work'
+  platform.workers.ingestionWorker -[request]-> platform.knowledge.ingestion 'Runs the ingestion pipeline'
+  platform.knowledge.ingestion -[request]-> platform.knowledge.contentSafety 'Scans untrusted documents'
+  platform.knowledge.ingestion -[request]-> modelProviders 'Creates embeddings'
+  platform.knowledge.ingestion -[query]-> platform.objectStorage 'Reads approved source version'
+  platform.knowledge.ingestion -[command]-> platform.vectorIndex 'Atomically activates indexed chunks'
+  platform.knowledge.ingestion -[command]-> platform.postgres 'Records version and job state'
+  platform.knowledge.retrieval -[query]-> platform.vectorIndex 'Hybrid tenant-filtered search'
+  platform.knowledge.retrieval -[request]-> modelProviders 'Embeds query and optionally reranks'
+  platform.knowledge.retrieval -[request]-> platform.knowledge.evidence 'Builds bounded evidence contract'
+  platform.knowledge.evidence -[query]-> platform.postgres 'Validates authorized source version'
+
+  platform.jobQueue -[async]-> platform.workers.integrationWorker 'Leases CRM and webhook deliveries'
+  platform.jobQueue -[async]-> platform.workers.reconciliationWorker 'Leases calendar reconciliation'
+  platform.jobQueue -[async]-> platform.workers.notificationWorker 'Leases consented notifications'
+  platform.jobQueue -[async]-> platform.workers.privacyWorker 'Leases retention and deletion jobs'
+  platform.workers.integrationWorker -[command]-> crmProvider 'Upserts lead with idempotency key'
+  platform.workers.reconciliationWorker -[query]-> calendarProvider 'Reconciles appointment state'
+  platform.workers.notificationWorker -[command]-> messageProvider 'Sends approved email or SMS'
+  platform.workers.privacyWorker -[command]-> platform.objectStorage 'Deletes or anonymizes content'
+  platform.workers.privacyWorker -[command]-> platform.vectorIndex 'Removes derived subject or tenant data'
+  platform.workers.privacyWorker -[command]-> platform.postgres 'Records deletion audit result'
+
+  platform -[observe]-> observability 'Emits redacted logs, metrics, traces, SLOs, and alerts'
+}
+
+deployment {
+  environment production 'Production' {
+    edge publicEdge 'Public Edge' {
+      widgetCdn = instanceOf platform.experience.widget 'Versioned Widget CDN'
+      adminWeb = instanceOf platform.experience.admin 'Admin Web Hosting'
+      gateway = instanceOf platform.edgeGateway 'TLS Ingress / WAF'
+    }
+
+    kubernetes cluster 'Kubernetes Cluster' {
+      namespace appNamespace 'Application Namespace' {
+        workload apiPool 'Application API Pods' {
+          api1 = instanceOf platform.api 'API Replica 1'
+          api2 = instanceOf platform.api 'API Replica 2'
+        }
+
+        workload orchestrationPool 'Agent Runtime Pods' {
+          agent1 = instanceOf platform.orchestration 'Agent Replica 1'
+          agent2 = instanceOf platform.orchestration 'Agent Replica 2'
+        }
+
+        workload domainPool 'Domain Service Pods' {
+          domain1 = instanceOf platform.domain 'Domain Replica 1'
+          domain2 = instanceOf platform.domain 'Domain Replica 2'
+        }
+
+        workload knowledgePool 'Knowledge Service Pods' {
+          knowledge1 = instanceOf platform.knowledge 'Knowledge Replica 1'
+          knowledge2 = instanceOf platform.knowledge 'Knowledge Replica 2'
+        }
+
+        workload workerPool 'Durable Worker Pods' {
+          workers1 = instanceOf platform.workers 'Worker Replica 1'
+          workers2 = instanceOf platform.workers 'Worker Replica 2'
+        }
+      }
+    }
+
+    managed dataServices 'Managed Data Services' {
+      postgresPrimary = instanceOf platform.postgres 'Postgres Primary'
+      postgresStandby = instanceOf platform.postgres 'Postgres Standby'
+      search = instanceOf platform.vectorIndex 'Elasticsearch Cluster'
+      documents = instanceOf platform.objectStorage 'Encrypted Object Storage'
+      jobs = instanceOf platform.jobQueue 'Durable Queue / Outbox'
+    }
+
+    external providers 'External Providers' {
+      idp = instanceOf identityProvider
+      models = instanceOf modelProviders
+      calendar = instanceOf calendarProvider
+      crm = instanceOf crmProvider
+      messaging = instanceOf messageProvider
+      mcp = instanceOf mcpServers
+      telemetry = instanceOf observability
+    }
+
+    publicEdge.gateway -[deploymentFlow]-> cluster.appNamespace.apiPool 'Routes HTTPS and event streams'
+    cluster.appNamespace.apiPool -[deploymentFlow]-> cluster.appNamespace.orchestrationPool 'Runs agent turns'
+    cluster.appNamespace.apiPool -[deploymentFlow]-> cluster.appNamespace.domainPool 'Reads and commits application state'
+    cluster.appNamespace.apiPool -[deploymentFlow]-> cluster.appNamespace.knowledgePool 'Manages knowledge'
+    cluster.appNamespace.apiPool -[deploymentFlow]-> providers.idp 'Validates staff identity'
+    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> cluster.appNamespace.domainPool 'Invokes typed domain tools'
+    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> cluster.appNamespace.knowledgePool 'Retrieves grounded evidence'
+    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> dataServices.postgresPrimary 'Persists workflow checkpoints'
+    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> providers.models 'Invokes chat models'
+    cluster.appNamespace.domainPool -[deploymentFlow]-> dataServices.postgresPrimary 'Commits authoritative records and outbox'
+    cluster.appNamespace.domainPool -[deploymentFlow]-> providers.calendar 'Executes idempotent booking commands'
+    cluster.appNamespace.domainPool -[deploymentFlow]-> providers.mcp 'Optionally invokes authorized MCP tools'
+    cluster.appNamespace.knowledgePool -[deploymentFlow]-> dataServices.search 'Queries and updates tenant index'
+    cluster.appNamespace.knowledgePool -[deploymentFlow]-> dataServices.documents 'Reads and writes document versions'
+    cluster.appNamespace.knowledgePool -[deploymentFlow]-> providers.models 'Creates embeddings and reranks'
+    cluster.appNamespace.workerPool -[deploymentFlow]-> dataServices.jobs 'Leases durable jobs'
+    cluster.appNamespace.workerPool -[deploymentFlow]-> dataServices.postgresPrimary 'Updates delivery and audit state'
+    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.crm 'Delivers deduplicated leads'
+    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.calendar 'Reconciles appointments'
+    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.messaging 'Sends consented notifications'
+    cluster.appNamespace.apiPool -[deploymentFlow]-> providers.telemetry 'Emits redacted telemetry'
+    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> providers.telemetry 'Emits redacted telemetry'
+    cluster.appNamespace.domainPool -[deploymentFlow]-> providers.telemetry 'Emits redacted telemetry'
+    cluster.appNamespace.knowledgePool -[deploymentFlow]-> providers.telemetry 'Emits redacted telemetry'
+    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.telemetry 'Emits redacted telemetry'
+    dataServices.postgresStandby -[deploymentFlow]-> dataServices.postgresPrimary 'Streaming replication'
+  }
+}
+
+views {
+  view index {
+    title '01 / System Context'
+    description 'People, the Tenant Chat Platform, and trusted external dependencies in the proposed production end state.'
+
+    include visitor
+    include supportAgent
+    include tenantAdmin
+    include platformOperator
+    include platform
+    include identityProvider
+    include modelProviders
+    include calendarProvider
+    include crmProvider
+    include messageProvider
+    include mcpServers
+    include observability
+  }
+
+  view platform_overview {
+    title '02 / Platform Containers'
+    description 'Logical runtime boundaries. Domain services and Postgres own business truth; agent frameworks orchestrate typed calls.'
+
+    include visitor
+    include supportAgent
+    include tenantAdmin
+    include platform.*
+    include identityProvider
+    include modelProviders
+    include calendarProvider
+    include crmProvider
+    include messageProvider
+    include mcpServers
+    include observability
+  }
+
+  view agent_runtime {
+    title '03 / Agent Runtime and Workflow Boundary'
+    description 'Simple short-lived turns and LangGraph v1 share a framework-neutral runtime contract. All side effects cross the deterministic tool gateway.'
+
+    include platform.api.visitorApi
+    include platform.orchestration.*
+    include platform.domain.toolGateway
+    include platform.domain.policy
+    include platform.domain.bookings
+    include platform.domain.leads
+    include platform.domain.handoffs
+    include platform.domain.tenants
+    include platform.knowledge.retrieval
+    include platform.postgres
+    include modelProviders
+    include mcpServers
+  }
+
+  view knowledge_pipeline {
+    title '04 / Governed Knowledge and RAG Pipeline'
+    description 'Approved document versions become tenant-filtered evidence. Retrieval returns citations or an explicit insufficient-evidence result.'
+
+    include tenantAdmin
+    include platform.api.adminApi
+    include platform.knowledge.*
+    include platform.workers.ingestionWorker
+    include platform.postgres
+    include platform.vectorIndex
+    include platform.objectStorage
+    include platform.jobQueue
+    include modelProviders
+  }
+
+  view business_actions {
+    title '05 / Transactional Actions and Durable Delivery'
+    description 'Business actions are authorized and committed transactionally. The outbox and workers handle retryable external delivery.'
+
+    include platform.domain.*
+    include platform.workers.*
+    include platform.postgres
+    include platform.jobQueue
+    include platform.objectStorage
+    include platform.vectorIndex
+    include calendarProvider
+    include crmProvider
+    include messageProvider
+    include mcpServers
+  }
+
+  deployment view production_deployment {
+    title '06 / Production Deployment'
+    description 'Proposed highly available Kubernetes runtime with managed state, external providers, and independently scalable API, agent, domain, knowledge, and worker pools.'
+
+    include production.**
+    exclude * -> * where tag is not #deployment
+  }
+}

@@ -1,0 +1,50 @@
+"""Runtime configuration, read once at startup.
+
+Read from the environment into a frozen object at startup rather than consulted
+via ``os.environ`` at call sites, so configuration is visible in one place and a
+misconfiguration fails when the process starts instead of on the first request
+that happens to touch it.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+# Large enough for a booking form with a long address, small enough that an
+# unauthenticated caller cannot make the process buffer megabytes (SEC-003).
+_DEFAULT_MAX_REQUEST_BYTES = 64 * 1024
+
+# The widget is embedded on tenant sites, so cross-origin requests are normal and
+# the origin list is the control. Defaulting to localhost keeps development
+# working while making a production deployment state its origins explicitly —
+# a wildcard default is how a permissive CORS policy reaches production unnoticed.
+_DEFAULT_ALLOWED_ORIGINS = ("http://127.0.0.1:8000", "http://localhost:8000")
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    allowed_origins: tuple[str, ...]
+    max_request_bytes: int
+    docs_enabled: bool
+
+    @classmethod
+    def from_environment(cls) -> Settings:
+        """Build settings from ``CHAT_API_*`` variables, falling back to dev defaults.
+
+        Raises:
+            ValueError: if a numeric variable is set to something unparseable.
+        """
+        raw_origins = os.environ.get("CHAT_API_ALLOWED_ORIGINS", "")
+        origins = tuple(item.strip() for item in raw_origins.split(",") if item.strip())
+
+        return cls(
+            allowed_origins=origins or _DEFAULT_ALLOWED_ORIGINS,
+            max_request_bytes=int(
+                os.environ.get("CHAT_API_MAX_REQUEST_BYTES", _DEFAULT_MAX_REQUEST_BYTES)
+            ),
+            # Off by default: the schema names every field and error code the API
+            # accepts, which is a useful map for an attacker and useless to a
+            # visitor. Operators turn it on deliberately.
+            docs_enabled=os.environ.get("CHAT_API_DOCS_ENABLED", "").lower() == "true",
+        )

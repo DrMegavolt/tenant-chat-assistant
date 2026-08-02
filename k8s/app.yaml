@@ -1,0 +1,640 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-chat
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: elasticsearch-data
+  namespace: llm-chat
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embedding-model-cache
+  namespace: llm-chat
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: llm-chat
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: llm-chat
+spec:
+  selector:
+    app: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: llm-chat
+spec:
+  serviceName: elasticsearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+          ports:
+            - containerPort: 9200
+              name: http
+          env:
+            - name: discovery.type
+              value: single-node
+            - name: xpack.security.enabled
+              value: "true"
+            - name: xpack.security.http.ssl.enabled
+              value: "false"
+            - name: node.store.allow_mmap
+              value: "false"
+            - name: ES_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: "1"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: elasticsearch-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: llm-chat
+  labels:
+    app: kibana
+spec:
+  type: LoadBalancer
+  selector:
+    app: kibana
+  ports:
+    - name: http
+      port: 5601
+      targetPort: 5601
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: llm-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kibana
+  template:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:8.15.3
+          ports:
+            - containerPort: 5601
+              name: http
+          env:
+            - name: ELASTICSEARCH_HOSTS
+              value: http://elasticsearch:9200
+            - name: ELASTICSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: kibana-credentials
+                  key: username
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kibana-credentials
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 18
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: llm-chat
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: llm-chat
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: database
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - chat_app
+                - -d
+                - chat_app
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedding-service
+  namespace: llm-chat
+  labels:
+    app: embedding-service
+spec:
+  selector:
+    app: embedding-service
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding-service
+  namespace: llm-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embedding-service
+  template:
+    metadata:
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
+      labels:
+        app: embedding-service
+    spec:
+      containers:
+        - name: embedding-service
+          image: python:3.11-slim
+          workingDir: /app
+          command:
+            - sh
+            - -c
+            - pip install --no-cache-dir -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8001
+          ports:
+            - containerPort: 8001
+              name: http
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: EMBEDDING_MODEL
+              value: Qwen/Qwen3-Embedding-0.6B
+            - name: EMBEDDING_DEVICE
+              value: cpu
+          resources:
+            requests:
+              memory: 3Gi
+              cpu: "1"
+            limits:
+              memory: 8Gi
+              cpu: "4"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: code
+              mountPath: /app
+            - name: model-cache
+              mountPath: /root/.cache
+      volumes:
+        - name: code
+          configMap:
+            name: embedding-service-code
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: embedding-model-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion-service
+  namespace: llm-chat
+  labels:
+    app: ingestion-service
+spec:
+  selector:
+    app: ingestion-service
+  ports:
+    - name: http
+      port: 8002
+      targetPort: 8002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-service
+  namespace: llm-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestion-service
+  template:
+    metadata:
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
+      labels:
+        app: ingestion-service
+    spec:
+      containers:
+        - name: ingestion-service
+          image: python:3.11-slim
+          workingDir: /app
+          command:
+            - sh
+            - -c
+            - pip install --no-cache-dir -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8002
+          ports:
+            - containerPort: 8002
+              name: http
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: ELASTICSEARCH_URL
+              value: http://elasticsearch:9200
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+            - name: EMBEDDING_URL
+              value: http://embedding-service:8001
+            - name: KNOWLEDGE_INDEX
+              value: tenant-knowledge-chunks
+            - name: DOCS_PATH
+              value: /data/docs
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: code
+              mountPath: /app
+            - name: docs
+              mountPath: /data/docs
+      volumes:
+        - name: code
+          configMap:
+            name: ingestion-service-code
+        - name: docs
+          configMap:
+            name: financing-docs
+            items:
+              - key: apex-financing-options.md
+                path: apex/financing/financing-options.md
+              - key: clearview-financing-options.md
+                path: clearview/financing/financing-options.md
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: financing-agent
+  namespace: llm-chat
+  labels:
+    app: financing-agent
+spec:
+  selector:
+    app: financing-agent
+  ports:
+    - name: http
+      port: 8003
+      targetPort: 8003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: financing-agent
+  namespace: llm-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: financing-agent
+  template:
+    metadata:
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
+      labels:
+        app: financing-agent
+    spec:
+      containers:
+        - name: financing-agent
+          image: python:3.11-slim
+          workingDir: /app
+          command:
+            - sh
+            - -c
+            - pip install --no-cache-dir -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8003
+          ports:
+            - containerPort: 8003
+              name: http
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: ELASTICSEARCH_URL
+              value: http://elasticsearch:9200
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+            - name: EMBEDDING_URL
+              value: http://embedding-service:8001
+            - name: KNOWLEDGE_INDEX
+              value: tenant-knowledge-chunks
+            - name: LLM_BASE_URL
+              value: http://192.168.1.66:1234/v1
+            - name: LLM_MODEL
+              value: qwen3.6-35b-a3b-mtp@q4_k_s
+            - name: LLM_TIMEOUT_SECONDS
+              value: "120"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: code
+              mountPath: /app
+      volumes:
+        - name: code
+          configMap:
+            name: financing-agent-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-backend
+  namespace: llm-chat
+  labels:
+    app: chat-backend
+    app.kubernetes.io/name: chat-backend
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    app: chat-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+  namespace: llm-chat
+  labels:
+    app: chat-backend
+    app.kubernetes.io/name: chat-backend
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chat-backend
+  template:
+    metadata:
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
+      labels:
+        app: chat-backend
+        app.kubernetes.io/name: chat-backend
+        app.kubernetes.io/instance: llm-chat
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      containers:
+        - name: chat-backend
+          image: python:3.11-slim
+          workingDir: /app
+          command:
+            - sh
+            - -c
+            - pip install --no-cache-dir -r requirements.txt && python server.py
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: OTEL_SERVICE_NAME
+              value: chat-backend
+            - name: CHAT_HOST
+              value: 0.0.0.0
+            - name: CHAT_PORT
+              value: "8000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: databaseUrl
+            - name: DATABASE_INIT_RETRIES
+              value: "60"
+            - name: LLM_BASE_URL
+              value: http://192.168.1.66:1234/v1
+            - name: LLM_MODEL
+              value: qwen3.6-35b-a3b-mtp@q4_k_s
+            - name: LLM_TIMEOUT_SECONDS
+              value: "120"
+            - name: FINANCING_AGENT_URL
+              value: http://financing-agent:8003
+          readinessProbe:
+            httpGet:
+              path: /api/tenants
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: code
+              mountPath: /app
+      volumes:
+        - name: code
+          configMap:
+            name: chat-backend-code
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: chat-backend
+  namespace: llm-chat
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: chat-backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: embedding-service
+  namespace: llm-chat
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: embedding-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ingestion-service
+  namespace: llm-chat
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: ingestion-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: financing-agent
+  namespace: llm-chat
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: financing-agent
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

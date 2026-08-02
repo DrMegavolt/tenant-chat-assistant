@@ -1,0 +1,16 @@
+{
+  "name": "tenant-chat-architecture",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LikeC4 architecture-as-code model for the production RAG chatbot target state",
+  "scripts": {
+    "format": "likec4 format .",
+    "format:check": "likec4 format --check .",
+    "validate": "likec4 validate .",
+    "build": "likec4 build . -o dist --base ./ --output-single-file --title 'Tenant Chat Architecture'",
+    "export:png": "likec4 export png . -o diagrams --flat --notation --description"
+  },
+  "devDependencies": {
+    "likec4": "1.59.2"
+  }
+}

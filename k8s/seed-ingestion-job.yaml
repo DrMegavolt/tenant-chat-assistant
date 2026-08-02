@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-financing-docs
+  namespace: llm-chat
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: curlimages/curl:8.11.1
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              curl -fsS -X POST http://ingestion-service:8002/ingest \
+                -H 'Content-Type: application/json' \
+                -d '{"tenantId":"apex","domain":"financing"}'
+              curl -fsS -X POST http://ingestion-service:8002/ingest \
+                -H 'Content-Type: application/json' \
+                -d '{"tenantId":"clearview","domain":"financing"}'

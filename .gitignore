@@ -1,1 +1,41 @@
+# Secrets and local configuration. Only .env.example is tracked (SEC-005).
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Task-local agent prompts and review output.
+work/
+
+# Prototype chat archives. These contain conversation transcripts and contact
+# details; PRIV-001 moves this data into Postgres with a retention policy.
 chats/*.json
+
+# Node
+node_modules/
+architecture/likec4/node_modules/
+
+# Generated architecture site. Rebuildable from the model via `make arch-build`;
+# the PNG exports under architecture/likec4/diagrams/ are tracked on purpose so
+# the README renders without a build step.
+architecture/likec4/dist/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

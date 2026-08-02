@@ -2,7 +2,17 @@
 
 This is a prototype for an embeddable website chat widget with a Python backend.
 
-Run it locally:
+The production backend is being built alongside it in `services/api`, which
+already serves tenant configuration, availability, booking, and lead capture with
+the domain rules in `packages/core`. See `BACKLOG.md` (`API-001`) for what remains
+before `server.py` is retired.
+
+```bash
+make api      # services/api on http://127.0.0.1:8080
+make check    # lint, types, and tests
+```
+
+Run the prototype locally:
 
 ```bash
 python3 server.py
@@ -20,11 +30,14 @@ Admin dashboard:
 http://127.0.0.1:8000/admin.html
 ```
 
-Chat archives are saved as JSON files in:
+Chat archives are saved as JSON files locally in:
 
 ```text
 chats/
 ```
+
+When `DATABASE_URL` is set, sessions are persisted in Postgres `chat_sessions.payload`
+as JSONB instead.
 
 By default, the backend calls an OpenAI-compatible local API at:
 
@@ -44,6 +57,7 @@ Switch between the two configured companies:
 - Company B: answers from fixed pricing, checks ZIP-code service area, separates availability by service category, and books a selected slot after confirmation.
 - Both companies can capture follow-up leads after collecting name, contact, service, and request details.
 - Both companies can politely offer callback capture after buying intent, but the assistant should not imply it can call unless the visitor provides contact info.
+- Booking-enabled companies show a compact booking form after availability is checked: slot, name, address, and phone/email.
 
 The backend owns the tenant policy and tool calls:
 
@@ -52,8 +66,83 @@ The backend owns the tenant policy and tool calls:
 - Tools: `check_service_area`, `get_availability`, `book_appointment`, `create_lead`, `handoff_to_human`.
 - Guardrails: no pricing unless policy allows it, no booking unless policy allows it, human handoff for uncertainty or risky requests.
 - Admin: live chat list, transcript view, lead/tool panels, and manual staff replies into a visitor chat.
-- Persistence: each session is saved to `chats/<session-id>.json` and loaded again when the server starts.
+- Booking form endpoint: `POST /api/book` validates the structured form and records the booking in the chat archive.
+- Persistence: each local session is saved to `chats/<session-id>.json`; deployed sessions use Postgres JSONB when `DATABASE_URL` is configured.
 - Outcomes: admin marks chats as active, abandoned, booked, lead, handoff, completed, or empty.
+
+## The production API (`services/api`)
+
+FastAPI, with every booking and lead rule in `packages/core` so the same checks
+apply whether a request arrives from the booking form, a model tool call, or an
+operator action.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /healthz` | Liveness. Dependency-aware readiness is `REL-002`. |
+| `GET /api/tenants` | Public tenant configuration, projected from `PublicTenantView`. |
+| `GET /api/tenants/{id}/availability?service=` | Slots currently offered, and the list booking validates against. |
+| `POST /api/book` | Books an offered slot. |
+| `POST /api/leads` | Captures a callback request. |
+
+Failures return RFC 9457 Problem Details with a stable `code` a client can branch
+on, plus typed members (`missingFields`, `offeredServices`, `offeredSlots`) so
+recovery never requires parsing prose:
+
+```json
+{
+  "type": "/problems/invalid_contact",
+  "status": 422,
+  "code": "invalid_contact",
+  "detail": "Provide a valid email address or a complete 10-digit US phone number including the area code.",
+  "requestId": "a9f019936ae44127ae33938efc917317"
+}
+```
+
+Set `CHAT_API_DOCS_ENABLED=true` for the OpenAPI schema at `/docs`. It is off by
+default: it names every field and error code the API accepts.
+
+## Running the frontend against a remote backend
+
+The frontend only needs the chat backend API. For Kubernetes local testing:
+
+`k8s/app.yaml` deliberately contains no credential values. Before running
+`k8s/deploy.sh`, provision these Secrets in `llm-chat` through your local secret
+manager or an out-of-band `kubectl create secret` command:
+
+- `elastic-credentials`: `username`, `password`
+- `postgres-credentials`: `username`, `password`, `database`, `databaseUrl`
+- `kibana-credentials`: `username`, `password`
+
+The deploy script fails before changing workloads when any required Secret is
+missing. Never render Secret values into a tracked file.
+
+```bash
+kubectl -n llm-chat port-forward svc/chat-backend 18080:8000
+```
+
+Then configure the frontend API base with one of these options:
+
+```html
+<script>
+  window.CHAT_API_BASE_URL = "http://127.0.0.1:18080";
+</script>
+<script src="app.js"></script>
+```
+
+```html
+<div
+  id="tenant-chat"
+  data-company-id="clearview"
+  data-api-base-url="http://127.0.0.1:18080"
+></div>
+```
+
+```html
+<script src="app.js" data-api-base-url="http://127.0.0.1:18080"></script>
+```
+
+The admin page supports the same global or script setting, plus `data-api-base-url`
+on `<body>`.
 
 Inspect captured prototype leads:
 

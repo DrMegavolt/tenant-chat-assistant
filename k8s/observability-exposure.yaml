@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-lb
+  namespace: observability
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/instance: kube-prom-stack
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-lb
+  namespace: observability
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prom-stack-kube-prome-prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-lb
+  namespace: observability
+spec:
+  type: LoadBalancer
+  selector:
+    alertmanager: kube-prom-stack-kube-prome-alertmanager
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-lb
+  namespace: observability
+spec:
+  type: LoadBalancer
+  selector:
+    app: loki
+    release: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-lb
+  namespace: observability
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/instance: tempo
+    app.kubernetes.io/name: tempo
+  ports:
+    - name: query
+      port: 3200
+      targetPort: 3200
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-gateway-lb
+  namespace: observability
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/component: opentelemetry-collector
+    app.kubernetes.io/instance: observability.otel-gateway
+    app.kubernetes.io/managed-by: opentelemetry-operator
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: prom
+      port: 8889
+      targetPort: 8889

@@ -282,6 +282,64 @@ dd {
   line-height: 1.35;
 }
 
+.booking-form-card {
+  align-self: flex-start;
+  display: grid;
+  gap: 10px;
+  width: min(92%, 340px);
+  padding: 12px;
+  border: 1px solid #c9d6d6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.booking-form-card strong {
+  font-size: 0.96rem;
+}
+
+.booking-form-card label {
+  display: grid;
+  gap: 5px;
+}
+
+.booking-form-card span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.booking-form-card input,
+.booking-form-card select {
+  min-height: 38px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid #bac5c7;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.booking-form-card button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.booking-form-card button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.booking-error {
+  margin: 0;
+  color: #8b3f0c;
+  font-size: 0.86rem;
+}
+
 .quick-actions {
   display: flex;
   flex-wrap: wrap;
