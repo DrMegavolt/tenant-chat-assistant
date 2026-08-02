@@ -17,6 +17,11 @@ from fastapi.testclient import TestClient
 
 from tenantchat.api.app import create_app
 from tenantchat.api.settings import Settings
+from tenantchat.api.store import (
+    InMemoryBookingStore,
+    InMemoryConversationStore,
+    InMemoryLeadStore,
+)
 
 # Small enough that a body-limit test can exceed it without building a megabyte.
 TEST_MAX_REQUEST_BYTES = 2048
@@ -36,7 +41,15 @@ def client(settings: Settings) -> Iterator[TestClient]:
     """A client over a freshly built app, so stored records never leak between tests."""
     # `raise_server_exceptions=False` returns the 500 an operator would see
     # instead of re-raising, which would hide whether the handler ran at all.
-    with TestClient(create_app(settings), raise_server_exceptions=False) as test_client:
+    with TestClient(
+        create_app(
+            settings,
+            booking_store=InMemoryBookingStore(),
+            lead_store=InMemoryLeadStore(),
+            conversation_store=InMemoryConversationStore(),
+        ),
+        raise_server_exceptions=False,
+    ) as test_client:
         yield test_client
 
 

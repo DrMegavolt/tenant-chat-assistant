@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from tenantchat.api.registry import TenantRegistry
-from tenantchat.api.store import BookingStore, LeadStore
+from tenantchat.api.store import BookingStore, ConversationStore, LeadStore
 
 
 def get_registry(request: Request) -> TenantRegistry:
@@ -31,6 +31,11 @@ def get_lead_store(request: Request) -> LeadStore:
     return store
 
 
+def get_conversation_store(request: Request) -> ConversationStore:
+    store: ConversationStore = request.app.state.conversation_store
+    return store
+
+
 def get_request_id(request: Request) -> str:
     request_id: str = request.state.request_id
     return request_id
@@ -39,4 +44,5 @@ def get_request_id(request: Request) -> str:
 Registry = Annotated[TenantRegistry, Depends(get_registry)]
 Bookings = Annotated[BookingStore, Depends(get_booking_store)]
 Leads = Annotated[LeadStore, Depends(get_lead_store)]
+Conversations = Annotated[ConversationStore, Depends(get_conversation_store)]
 RequestId = Annotated[str, Depends(get_request_id)]

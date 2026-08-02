@@ -1,34 +1,60 @@
-"""Where accepted bookings and leads are recorded.
+"""Persistence contracts and explicit in-memory test doubles.
 
-The ``Protocol`` pair below is the seam `DATA-002` replaces with SQLAlchemy
-repositories and `DATA-003` makes transactional and idempotent. Routers depend on
-the protocol, so that swap does not reach into request handling.
-
-**The in-memory implementation is not production storage.** It loses everything
-on restart and two replicas disagree, which is exactly the property `DATA-002`
-exists to fix. It is here so the HTTP contract and its validation can be
-finished, tested, and reviewed before the schema work lands.
+The contracts expose server-issued conversation IDs and append-only message
+operations. There is intentionally no method that accepts or replaces a
+transcript. PostgreSQL implementations live in :mod:`tenantchat.api.persistence`;
+the fakes in this module are injected only by hermetic tests.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol
 
 from tenantchat.core.commands import BookingCommand, LeadCommand, LeadUrgency
 from tenantchat.core.contact import Contact
+from tenantchat.core.errors import NotFoundError
 
 
 def _reference(prefix: str) -> str:
-    """A collision-free customer-facing reference.
-
-    Random rather than a counter or a timestamp: sequential references leak
-    business volume to anyone who books twice, and a per-process counter repeats
-    itself the moment a second replica starts.
-    """
     return f"{prefix}-{uuid.uuid4().hex[:12].upper()}"
+
+
+class MessageRole(StrEnum):
+    VISITOR = "visitor"
+    ASSISTANT = "assistant"
+    STAFF = "staff"
+    SYSTEM = "system"
+    TOOL = "tool"
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationRecord:
+    session_id: uuid.UUID
+    tenant_id: str
+    status: str
+    outcome: str
+    version: int
+    started_at: datetime
+    last_activity_at: datetime
+    closed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class MessageRecord:
+    message_id: uuid.UUID
+    tenant_id: str
+    session_id: uuid.UUID
+    sequence_number: int
+    role: MessageRole
+    content: str
+    model_name: str | None
+    metadata: dict[str, object]
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,21 +86,121 @@ class LeadRecord:
     created_at: datetime
 
 
+class ConversationStore(Protocol):
+    async def create(self, tenant_id: str) -> ConversationRecord: ...
+
+    async def get(self, tenant_id: str, session_id: uuid.UUID) -> ConversationRecord: ...
+
+    async def append(
+        self,
+        tenant_id: str,
+        session_id: uuid.UUID,
+        *,
+        role: MessageRole,
+        content: str,
+        model_name: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> MessageRecord: ...
+
+    async def transcript(
+        self, tenant_id: str, session_id: uuid.UUID
+    ) -> tuple[MessageRecord, ...]: ...
+
+
 class BookingStore(Protocol):
-    def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord: ...
+    async def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord: ...
+
+    async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]: ...
 
 
 class LeadStore(Protocol):
-    def record(self, command: LeadCommand, *, session_id: str) -> LeadRecord: ...
+    async def record(self, command: LeadCommand, *, session_id: str) -> LeadRecord: ...
+
+    async def for_tenant(self, tenant_id: str) -> tuple[LeadRecord, ...]: ...
+
+
+class InMemoryConversationStore:
+    """A concurrency-safe fake; production composition never constructs it."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[tuple[str, uuid.UUID], ConversationRecord] = {}
+        self._messages: dict[tuple[str, uuid.UUID], list[MessageRecord]] = {}
+        self._lock = asyncio.Lock()
+
+    async def create(self, tenant_id: str) -> ConversationRecord:
+        now = datetime.now(UTC)
+        record = ConversationRecord(
+            session_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            status="active",
+            outcome="none",
+            version=1,
+            started_at=now,
+            last_activity_at=now,
+            closed_at=None,
+        )
+        async with self._lock:
+            key = (tenant_id, record.session_id)
+            self._sessions[key] = record
+            self._messages[key] = []
+        return record
+
+    async def get(self, tenant_id: str, session_id: uuid.UUID) -> ConversationRecord:
+        async with self._lock:
+            record = self._sessions.get((tenant_id, session_id))
+        if record is None:
+            raise NotFoundError(detail="conversation absent or outside tenant")
+        return record
+
+    async def append(
+        self,
+        tenant_id: str,
+        session_id: uuid.UUID,
+        *,
+        role: MessageRole,
+        content: str,
+        model_name: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> MessageRecord:
+        async with self._lock:
+            key = (tenant_id, session_id)
+            session = self._sessions.get(key)
+            if session is None:
+                raise NotFoundError(detail="conversation absent or outside tenant")
+            now = datetime.now(UTC)
+            record = MessageRecord(
+                message_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                session_id=session_id,
+                sequence_number=session.version,
+                role=role,
+                content=content,
+                model_name=model_name,
+                metadata=dict(metadata or {}),
+                created_at=now,
+            )
+            self._messages[key].append(record)
+            self._sessions[key] = replace(
+                session, version=session.version + 1, last_activity_at=now
+            )
+        return replace(record, metadata=dict(record.metadata))
+
+    async def transcript(self, tenant_id: str, session_id: uuid.UUID) -> tuple[MessageRecord, ...]:
+        await self.get(tenant_id, session_id)
+        async with self._lock:
+            return tuple(
+                replace(message, metadata=dict(message.metadata))
+                for message in self._messages[(tenant_id, session_id)]
+            )
 
 
 class InMemoryBookingStore:
-    """Process-local booking storage. See the module docstring."""
+    """An explicit API test fake, never the production source of truth."""
 
     def __init__(self) -> None:
         self._records: list[BookingRecord] = []
 
-    def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord:
+    async def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord:
         booking = BookingRecord(
             booking_id=_reference("BK"),
             tenant_id=command.tenant_id,
@@ -90,17 +216,17 @@ class InMemoryBookingStore:
         self._records.append(booking)
         return booking
 
-    def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]:
+    async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]:
         return tuple(record for record in self._records if record.tenant_id == tenant_id)
 
 
 class InMemoryLeadStore:
-    """Process-local lead storage. See the module docstring."""
+    """An explicit API test fake, never the production source of truth."""
 
     def __init__(self) -> None:
         self._records: list[LeadRecord] = []
 
-    def record(self, command: LeadCommand, *, session_id: str) -> LeadRecord:
+    async def record(self, command: LeadCommand, *, session_id: str) -> LeadRecord:
         lead = LeadRecord(
             lead_id=_reference("LD"),
             tenant_id=command.tenant_id,
@@ -117,5 +243,5 @@ class InMemoryLeadStore:
         self._records.append(lead)
         return lead
 
-    def for_tenant(self, tenant_id: str) -> tuple[LeadRecord, ...]:
+    async def for_tenant(self, tenant_id: str) -> tuple[LeadRecord, ...]:
         return tuple(record for record in self._records if record.tenant_id == tenant_id)

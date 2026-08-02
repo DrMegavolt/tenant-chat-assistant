@@ -7,7 +7,9 @@ uses `DATABASE_MIGRATION_URL`, whose role owns the objects. The API uses
 `DATABASE_URL`, whose distinct `NOINHERIT` login receives only `CONNECT`, schema
 `USAGE`, table `SELECT/INSERT/UPDATE/DELETE`, and sequence `USAGE/SELECT`.
 Audit events are further restricted to `SELECT/INSERT`, and the application role
-cannot mutate Alembic's revision table.
+cannot mutate Alembic's revision table. Authoritative messages are also
+`SELECT/INSERT` only; retention and subject deletion use a separately authorized
+privacy worker rather than granting transcript replacement to the API role.
 
 Provision the login and password through the platform secret manager, then run:
 
@@ -74,9 +76,12 @@ For a prototype database:
 
 ## Downgrade and restore
 
-`alembic downgrade -1` is supported for development and tested as
-head-to-base-to-head. For this first revision it drops every authoritative table,
-enum, and all contained data, so it is not a production rollback mechanism.
+`alembic downgrade -1` is supported for development and the empty-schema path is
+tested head-to-base-to-head. DATA-002 rows with label-only booking slots or its
+expanded lead urgencies deliberately block downgrade to DATA-001 rather than
+fabricating timestamps or rewriting business meaning. Downgrading the initial
+revision drops every authoritative table, enum, and all contained data, so
+neither operation is a production rollback mechanism.
 
 For a failed production release, prefer a forward fix when the schema remains
 compatible. If data or schema must be rolled back, stop writers, restore the

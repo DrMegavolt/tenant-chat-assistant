@@ -7,9 +7,9 @@ SHELL := /bin/bash
 UV_RUN := uv run --frozen
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
-	test-migrations migrate js-install js-lint js-format js-format-check js-test \
-	js-test-cov deployment-security check api up up-all down down-clean logs ps \
-	arch-validate arch-build clean
+	test-migrations test-repositories test-database migrate js-install js-lint js-format \
+	js-format-check js-test js-test-cov deployment-security check api up up-all down \
+	down-clean logs ps arch-validate arch-build clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -49,6 +49,11 @@ test-cov: ## Run tests with a coverage report
 
 test-migrations: ## Run migrations against an isolated Postgres 16 container
 	$(UV_RUN) pytest -m integration tests/migrations
+
+test-repositories: ## Run authoritative repository tests on isolated Postgres 16
+	$(UV_RUN) pytest -m integration tests/repositories
+
+test-database: test-migrations test-repositories ## Run all isolated Postgres suites
 
 migrate: ## Upgrade with the schema-owner URL (never the application URL)
 	@test -n "$${DATABASE_MIGRATION_URL}" || { echo "DATABASE_MIGRATION_URL is required"; exit 2; }

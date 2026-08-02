@@ -152,7 +152,7 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 - [x] `QA-001` — Foundational automated test harness and CI — `P0`
 - [x] `DATA-001` — Normalized schema and migration framework — `Done`
 - [ ] `API-001` — Production API runtime and typed contracts — `P0` — _slice 1 of 2 complete_
-- [ ] `DATA-002` — Server-authoritative repositories and concurrency control — `P0`
+- [x] `DATA-002` — Server-authoritative repositories and concurrency control — `Done`
 - [ ] `DATA-003` — Transactional, idempotent booking — `P0`
 - [ ] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
 - [ ] `SEC-002` — Secure visitor sessions and tenant binding — `P0`
@@ -448,7 +448,7 @@ values are logged, never published. Run it with `make api`.
 
 ### DATA-002 — Server-authoritative repositories and concurrency control
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Data/backend`
 - Depends on: `DATA-001`, `API-001` slice 1
@@ -465,7 +465,30 @@ values are logged, never published. Run it with `make api`.
   - Restarting a replica loses no committed state.
 - Verification:
   - Multi-process integration test sends concurrent messages and asserts a consistent transcript.
-- Completion notes: _Pending._
+- Completion notes: Production API composition now requires `DATABASE_URL` and
+  builds tenant-qualified async SQLAlchemy repositories over a bounded psycopg
+  pool; process-memory stores are available only through explicit test
+  injection. Conversation and message UUIDs are server-issued, the repository
+  exposes append rather than transcript replacement, and each append locks the
+  tenant/session row, inserts at its monotonic version, and advances that version
+  in one transaction. Current lead and static-slot booking writes are durable
+  with tenant-qualified reads and explicit transactions; real provider slot
+  reservation and request idempotency remain `DATA-003`. Revision
+  `0002_repositories` adds write-only client correlation, faithful service/slot
+  labels, and current lead urgency values without treating correlation as
+  visitor identity. The normal application role cannot update/delete messages
+  or delete sessions. Changed: `services/api/src/tenantchat/api/{app,settings,
+  dependencies,store,persistence/,routers/}`, migration revision and role grants,
+  `services/api/tests/`, `tests/{migrations,repositories}/`, `Makefile`, CI,
+  configuration/readme/runbook docs, ADR-0005, LikeC4 source/generated diagrams,
+  dependency manifests, and `uv.lock`. Verified: `make check` (289 Python and
+  six frontend tests; lock, lint, format, mypy strict, coverage, and deployment
+  security clean), `make test-database` (six migration plus six repository tests
+  on disposable PostgreSQL 16), repeated repository suite (six passed, including
+  24 appends from four spawned processes), and LikeC4 format/validation. Follow-
+  ups: `SEC-002` replaces write-only client correlation with authenticated
+  visitor credentials; `DATA-003` owns booking reservation/idempotency; `FEAT-006`
+  moves code-owned tenant configuration into Postgres.
 
 ### DATA-003 — Transactional, idempotent booking
 

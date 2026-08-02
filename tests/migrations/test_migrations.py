@@ -61,7 +61,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0001_normalized"
+    assert revision == "0002_repositories"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -239,6 +239,12 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
         owner.execute(
             sql.SQL("REVOKE UPDATE, DELETE ON TABLE public.audit_events FROM {}").format(identifier)
         )
+        owner.execute(
+            sql.SQL("REVOKE UPDATE, DELETE ON TABLE public.messages FROM {}").format(identifier)
+        )
+        owner.execute(
+            sql.SQL("REVOKE DELETE ON TABLE public.chat_sessions FROM {}").format(identifier)
+        )
         owner.execute(sql.SQL("REVOKE CREATE ON SCHEMA public FROM {}").format(identifier))
 
     with psycopg.connect(psycopg_url(migration_database_url)) as application:
@@ -265,4 +271,38 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
         application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
         with pytest.raises(errors.InsufficientPrivilege):
             application.execute("DELETE FROM audit_events")
+        application.rollback()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as owner:
+        session_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        owner.execute(
+            "INSERT INTO chat_sessions (id, tenant_id) VALUES (%s, %s)",
+            (session_id, "runtime-tenant"),
+        )
+        owner.execute(
+            """
+            INSERT INTO messages
+                (id, tenant_id, chat_session_id, sequence_number, role, content)
+            VALUES (%s, %s, %s, 1, 'staff', 'committed answer')
+            """,
+            (message_id, "runtime-tenant", session_id),
+        )
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "UPDATE messages SET content = 'replaced' WHERE tenant_id = %s AND id = %s",
+                ("runtime-tenant", message_id),
+            )
+        application.rollback()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "DELETE FROM chat_sessions WHERE tenant_id = %s AND id = %s",
+                ("runtime-tenant", session_id),
+            )
         application.rollback()

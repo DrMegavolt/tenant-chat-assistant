@@ -22,7 +22,7 @@ router = APIRouter(tags=["bookings"])
     response_model=BookingResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_booking(
+async def create_booking(
     payload: BookingRequest,
     registry: Registry,
     bookings: Bookings,
@@ -30,8 +30,8 @@ def create_booking(
     """Book an offered slot.
 
     Not yet idempotent: a retried request books twice. `DATA-003` adds the
-    idempotency key and the uniqueness constraint that close that gap, which
-    needs the database schema from `DATA-001` to exist first.
+    provider-backed slot reservation and idempotency transaction that close that
+    gap. This endpoint currently persists the accepted static-slot result only.
 
     Raises:
         NotFoundError: no such tenant.
@@ -57,4 +57,4 @@ def create_booking(
         offered_slots=record.offered_slots(resolved.slug) if resolved else (),
     )
 
-    return BookingResponse.of(bookings.record(command, session_id=payload.session_id))
+    return BookingResponse.of(await bookings.record(command, session_id=payload.session_id))

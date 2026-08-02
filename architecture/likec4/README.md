@@ -1,10 +1,9 @@
 # Tenant Chat Target Architecture
 
-This directory is the architecture-as-code source for the proposed production end state. It models the accepted hybrid agent approach from `BACKLOG.md`:
+This directory is the architecture-as-code source for the proposed production end state. It models the accepted agent approach from ADR-0001:
 
 - Framework-independent typed domain services own authorization, policy, transactions, idempotency, and business records.
-- A framework-neutral `AgentRuntime` supports both the existing short-lived tool loop and LangGraph v1.
-- LangGraph is used for branching, checkpointed, human-in-the-loop workflows; its checkpoint data is not the business system of record.
+- LangGraph v1 is the single branching, checkpointed, human-in-the-loop runtime; its checkpoint data is not the business system of record.
 - Postgres and a durable outbox/worker layer own committed application state and external delivery.
 - MCP is an optional interoperability boundary, not a replacement for domain validation.
 

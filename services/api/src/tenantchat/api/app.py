@@ -9,18 +9,26 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from tenantchat.api.persistence import (
+    Database,
+    DatabasePoolSettings,
+    PostgresBookingStore,
+    PostgresConversationStore,
+    PostgresLeadStore,
+)
 from tenantchat.api.problems import PROBLEM_CONTENT_TYPE, handle_domain_error
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.routers import bookings, health, leads, tenants
 from tenantchat.api.settings import Settings
-from tenantchat.api.store import InMemoryBookingStore, InMemoryLeadStore
+from tenantchat.api.store import BookingStore, ConversationStore, LeadStore
 from tenantchat.core.errors import DomainError
 
 REQUEST_ID_HEADER = "X-Request-Id"
@@ -157,15 +165,60 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
         return response
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    booking_store: BookingStore | None = None,
+    lead_store: LeadStore | None = None,
+    conversation_store: ConversationStore | None = None,
+) -> FastAPI:
     """Build the application.
 
     Args:
-        settings: Overrides the environment-derived configuration. Tests pass
-            explicit settings so a stray variable in the shell cannot change
-            what is being asserted.
+        settings: Overrides environment-derived configuration.
+        booking_store: Explicit test adapter. Production builds PostgreSQL stores.
+        lead_store: Explicit test adapter. Production builds PostgreSQL stores.
+        conversation_store: Explicit test adapter. Production builds PostgreSQL stores.
     """
     resolved = settings or Settings.from_environment()
+    registry = TenantRegistry.seeded()
+    database: Database | None = None
+
+    supplied = (booking_store, lead_store, conversation_store)
+    if any(store is None for store in supplied):
+        if any(store is not None for store in supplied):
+            raise ValueError("inject all stores together or let production composition build all")
+        if resolved.database_url is None:
+            raise ValueError(
+                "DATABASE_URL is required unless explicit in-memory test stores are injected"
+            )
+        database = Database.connect(
+            resolved.database_url,
+            DatabasePoolSettings(
+                size=resolved.database_pool_size,
+                max_overflow=resolved.database_max_overflow,
+                timeout_seconds=resolved.database_pool_timeout_seconds,
+                recycle_seconds=resolved.database_pool_recycle_seconds,
+            ),
+        )
+        booking_store = PostgresBookingStore(database.engine)
+        lead_store = PostgresLeadStore(database.engine)
+        conversation_store = PostgresConversationStore(database.engine)
+
+    if booking_store is None or lead_store is None or conversation_store is None:
+        raise RuntimeError("composition failed to provide persistence stores")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if database is not None:
+            await database.synchronize_tenants(
+                (record.policy.tenant_id, record.policy.name) for record in registry.all().values()
+            )
+        try:
+            yield
+        finally:
+            if database is not None:
+                await database.dispose()
 
     app = FastAPI(
         title="Tenant Chat API",
@@ -173,12 +226,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url="/docs" if resolved.docs_enabled else None,
         redoc_url=None,
         openapi_url="/openapi.json" if resolved.docs_enabled else None,
+        lifespan=lifespan,
     )
 
     app.state.settings = resolved
-    app.state.registry = TenantRegistry.seeded()
-    app.state.booking_store = InMemoryBookingStore()
-    app.state.lead_store = InMemoryLeadStore()
+    app.state.registry = registry
+    app.state.booking_store = booking_store
+    app.state.lead_store = lead_store
+    app.state.conversation_store = conversation_store
 
     _install_middleware(app, resolved)
 

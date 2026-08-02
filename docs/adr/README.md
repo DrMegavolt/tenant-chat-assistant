@@ -13,6 +13,7 @@ Consequences, Alternatives considered.
 | [0002](0002-backend-stack-and-layout.md) | Backend stack and repository layout | Accepted |
 | [0003](0003-retrieval-store.md) | Elasticsearch as the retrieval store | Accepted |
 | [0004](0004-model-provider.md) | Local OpenAI-compatible model provider by default | Accepted |
+| [0005](0005-conversation-persistence.md) | Tenant-qualified append-only conversation persistence | Accepted |
 
 ## Relationship to BACKLOG.md
 

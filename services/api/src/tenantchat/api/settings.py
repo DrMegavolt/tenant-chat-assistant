@@ -27,6 +27,11 @@ class Settings:
     allowed_origins: tuple[str, ...]
     max_request_bytes: int
     docs_enabled: bool
+    database_url: str | None = None
+    database_pool_size: int = 5
+    database_max_overflow: int = 5
+    database_pool_timeout_seconds: float = 5.0
+    database_pool_recycle_seconds: int = 1800
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -47,4 +52,13 @@ class Settings:
             # accepts, which is a useful map for an attacker and useless to a
             # visitor. Operators turn it on deliberately.
             docs_enabled=os.environ.get("CHAT_API_DOCS_ENABLED", "").lower() == "true",
+            database_url=os.environ.get("DATABASE_URL") or None,
+            database_pool_size=int(os.environ.get("CHAT_API_DATABASE_POOL_SIZE", "5")),
+            database_max_overflow=int(os.environ.get("CHAT_API_DATABASE_MAX_OVERFLOW", "5")),
+            database_pool_timeout_seconds=float(
+                os.environ.get("CHAT_API_DATABASE_POOL_TIMEOUT_SECONDS", "5")
+            ),
+            database_pool_recycle_seconds=int(
+                os.environ.get("CHAT_API_DATABASE_POOL_RECYCLE_SECONDS", "1800")
+            ),
         )

@@ -30,6 +30,14 @@ SELECT format(
     :'app_role'
 ) \gexec
 SELECT format(
+    'REVOKE UPDATE, DELETE ON TABLE public.messages FROM %I',
+    :'app_role'
+) \gexec
+SELECT format(
+    'REVOKE DELETE ON TABLE public.chat_sessions FROM %I',
+    :'app_role'
+) \gexec
+SELECT format(
     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
     'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
     current_user,

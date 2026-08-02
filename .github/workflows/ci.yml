@@ -165,8 +165,8 @@ jobs:
 
       # The test fixture starts and destroys its own pinned Postgres 16
       # container, so this job has no shared database or persistent state.
-      - name: Verify zero-to-head, rerun, downgrade, and tenant boundaries
-        run: make test-migrations
+      - name: Verify migrations and authoritative repositories
+        run: make test-database
 
   secrets:
     name: Secret scan

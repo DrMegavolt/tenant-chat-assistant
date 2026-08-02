@@ -17,8 +17,8 @@ text never passes through it.
 
 What is deliberately absent: persistence, idempotency keys, and transactions. A
 command says the request is well-formed and permitted, not that it is unique or
-durable. Reserving a slot against a real calendar is `DATA-003`; making that
-transactional and replay-safe is `DATA-002`.
+durable. `DATA-002` persists accepted current actions; reserving a real calendar
+slot transactionally and making retries replay-safe remains `DATA-003`.
 """
 
 from __future__ import annotations

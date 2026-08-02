@@ -291,7 +291,7 @@ model {
       }
 
       conversations = service 'Conversation Service' {
-        description 'Server-authoritative append-only messages and outcomes'
+        description 'Tenant-qualified append-only messages ordered transactionally with per-session row locks'
       }
 
       bookings = service 'Booking Service' {
@@ -351,7 +351,7 @@ model {
     }
 
     postgres = database 'Postgres System of Record' {
-      technology 'PostgreSQL'
+      technology 'PostgreSQL + bounded async SQLAlchemy pools'
       description 'Authoritative tenant, conversation, action, audit, outbox, and LangGraph checkpoint schemas'
     }
 

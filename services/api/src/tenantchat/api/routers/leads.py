@@ -21,7 +21,7 @@ router = APIRouter(tags=["leads"])
     response_model=LeadResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_lead(
+async def create_lead(
     payload: LeadRequest,
     registry: Registry,
     leads: Leads,
@@ -46,4 +46,4 @@ def create_lead(
         urgency=payload.urgency,
     )
 
-    return LeadResponse.of(leads.record(command, session_id=payload.session_id))
+    return LeadResponse.of(await leads.record(command, session_id=payload.session_id))

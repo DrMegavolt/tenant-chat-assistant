@@ -24,7 +24,9 @@ _TENANT_ID = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
 # A correlation label, never an identity. It is client-supplied, so it must not
 # be used to authorize a read or to bind a record to a visitor — `SEC-002`
 # replaces it with a server-issued session token that can carry that weight.
-# Nothing here reads by session, which is what keeps the weak value harmless.
+# DATA-002 uses it only to group write-only action records inside one tenant;
+# it never authorizes a read or selects a transcript, which keeps the weak value
+# from becoming an identity boundary.
 _SESSION_ID = Field(default="", max_length=128)
 _SHORT_TEXT = Field(default="", max_length=512)
 _LONG_TEXT = Field(default="", max_length=4096)

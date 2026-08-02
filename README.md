@@ -11,7 +11,7 @@ before `server.py` is retired.
 make api      # services/api on http://127.0.0.1:8080
 make setup    # install locked Python and frontend development dependencies
 make check    # complete Python + JavaScript quality gate with coverage
-make test-migrations # isolated PostgreSQL migration lifecycle
+make test-database # isolated PostgreSQL migrations and repository concurrency
 ```
 
 `make check` runs without live services. Frontend tests use a DOM environment
@@ -115,6 +115,13 @@ It is upgraded as a release step with `DATABASE_MIGRATION_URL`; API startup neve
 creates or alters schema. The separate `DATABASE_URL` role has runtime DML only.
 See `docs/runbooks/database-migrations.md` before migrating a database used by
 the JSONB-snapshot prototype or attempting a downgrade.
+
+Normal API composition requires `DATABASE_URL` and constructs bounded async
+PostgreSQL repositories; process-memory stores exist only as explicitly injected
+test doubles. Messages are server-appended under tenant-qualified session locks,
+so all replicas observe one immutable, gap-free transcript order. Pool size,
+overflow, checkout timeout, and recycle interval use the `CHAT_API_DATABASE_*`
+settings documented in `.env.example`. See ADR-0005 for the concurrency decision.
 
 ## Running the frontend against a remote backend
 
