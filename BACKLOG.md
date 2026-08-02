@@ -442,7 +442,11 @@ values are logged, never published. Run it with `make api`.
   transcribed, so this slice is gated on that task.
 - Repoint `Dockerfile` and `k8s/app.yaml` at `services/api` under `DEP-001`, then
   delete `server.py`. Until that lands, the deployed image still runs the
-  prototype and still accepts `0001234567`.
+  prototype and still accepts `0001234567`. The prototype snapshot schema and
+  normalized API schema are intentionally incompatible: do not run the API
+  migration Job against a database still used by the prototype. The cutover
+  must stop prototype writers, follow the migration runbook, and switch the
+  workload image and schema together.
 
 - Completion notes: _Slice 1 complete; task stays `In Progress` until slice 2 ships and `server.py` is deleted._
 
@@ -599,9 +603,10 @@ values are logged, never published. Run it with `make api`.
   and metrics routes; removed non-chat LoadBalancer exposure. Added distinct,
   fail-closed bearer credentials for each internal caller channel, including the
   seed job, with production startup validation and external-key reuse rejection.
-  `make check` passes (296 Python and 6 frontend tests), deployment manifests pass
-  server-side dry-run, and a disposable four-namespace MicroK8s smoke run proved
-  15 documented allows and 17 denials before cleaning every created namespace.
+  Final integrated `make check` passes (314 Python and 6 frontend tests),
+  deployment manifests pass server-side dry-run, and a disposable four-namespace
+  MicroK8s smoke run proved 15 documented allows and 21 denials—including exact
+  Prometheus port boundaries—before cleaning every created namespace.
   Standard NetworkPolicy cannot bind provider egress to a configured FQDN, so a
   production egress proxy or FQDN-aware policy remains recommended.
 
@@ -692,10 +697,15 @@ values are logged, never published. Run it with `make api`.
   `trust_remote_code=False`. Kubernetes release templates accept application
   digest substitution only, and the deploy gate requires all seven expected
   workload images to have 64-hex registry digests; runtime pip commands and
-  executable ConfigMap mounts were removed. `make check` passed with 290 Python
-  and six frontend tests; all Kubernetes inputs passed client dry-run. All five
-  arm64 images built, ran non-root import/writability/migration checks and live
-  health smokes, and recorded local digests under `artifacts/images/`. A
+  executable ConfigMap mounts were removed. Final integrated `make check` passed
+  with 314 Python and six frontend tests; all Kubernetes inputs passed server
+  dry-run. All five arm64 images built from commit `451f403`, ran non-root
+  import/writability/migration checks and live health smokes, and recorded local
+  digests under `artifacts/images/`. The API smoke migrated a fresh pinned
+  Postgres database through both revisions, then started the real Postgres
+  repository composition and passed `/healthz`. Runtime-source contract tests
+  follow local import closure so an image cannot omit `internal_auth.py` or
+  `runtime_security.py`. A
   checksum-verified Trivy 0.69.3 scan found zero fixed HIGH/CRITICAL findings in
   the final lockfile and five images after upgrading the affected framework and
   embedding dependencies. CI now repeats build, smoke, metadata upload, and
