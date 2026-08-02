@@ -19,7 +19,7 @@ def psycopg_url(sqlalchemy_url: str) -> str:
 def postgres_server_url() -> Iterator[str]:
     """Start one pinned server; no developer database or ambient URL is consulted."""
     with PostgresContainer(
-        "postgres:16-alpine",
+        "postgres:16.11-alpine3.23@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2",
         username="migration_owner",
         password="migration-test-only",
         dbname="postgres",

@@ -12,10 +12,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock .python-version ./
-COPY packages/core/pyproject.toml packages/core/pyproject.toml
-COPY services/api/pyproject.toml services/api/pyproject.toml
+COPY packages/core/ packages/core/
+COPY services/api/ services/api/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --only-group prototype-runtime --no-install-workspace --compile-bytecode
+    uv sync --frozen --package tenantchat-api --no-dev --no-editable --compile-bytecode
 
 FROM ${PYTHON_IMAGE} AS runtime
 ARG SOURCE_DATE_EPOCH="0"
@@ -24,18 +24,15 @@ LABEL org.opencontainers.image.created="${SOURCE_DATE_EPOCH}" \
       org.opencontainers.image.revision="${VCS_REF}"
 
 RUN groupadd --gid 10001 tenantchat \
-    && useradd --uid 10001 --gid tenantchat --create-home --shell /usr/sbin/nologin tenantchat \
-    && install -d -o 10001 -g 10001 /var/lib/tenantchat/chats
+    && useradd --uid 10001 --gid tenantchat --create-home --shell /usr/sbin/nologin tenantchat
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    CHAT_HOST=0.0.0.0 \
-    CHAT_PORT=8000 \
-    CHATS_DIR=/var/lib/tenantchat/chats
+    PYTHONUNBUFFERED=1
 COPY --from=builder /app/.venv /app/.venv
-COPY --chown=10001:10001 server.py runtime_security.py internal_auth.py index.html app.js admin.html admin.js styles.css README.md ./
+COPY --chown=10001:10001 alembic.ini ./
+COPY --chown=10001:10001 services/api/migrations/ services/api/migrations/
 
 USER 10001:10001
-EXPOSE 8000
-CMD ["python", "server.py"]
+EXPOSE 8004
+CMD ["uvicorn", "tenantchat.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8004"]

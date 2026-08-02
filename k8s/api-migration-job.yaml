@@ -23,10 +23,12 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: tenantchat-api:replace-with-release-digest
+          # The exact same API image serves traffic and runs migrations; only
+          # the command differs. Release automation replaces the digest token.
+          image: registry.example.invalid/tenantchat/api@sha256:REPLACE_WITH_API_DIGEST
           imagePullPolicy: IfNotPresent
           workingDir: /app
-          command: ["uv", "run", "--frozen", "alembic", "upgrade", "head"]
+          command: ["alembic", "upgrade", "head"]
           env:
             - name: DATABASE_MIGRATION_URL
               valueFrom:

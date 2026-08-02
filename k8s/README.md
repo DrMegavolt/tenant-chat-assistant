@@ -46,12 +46,23 @@ kubectl -n llm-chat create configmap llm-runtime \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Run `make deployment-security` before deployment.  `k8s/deploy.sh` repeats that
-static gate and checks every required Secret/ConfigMap key without displaying its
-value before it changes any workload.  Kubernetes `secretKeyRef` and
+Run `make deployment-security image-contracts` before deployment. `app.yaml` is
+a release template: replace each `REPLACE_WITH_*_DIGEST` token with the 64-hex
+registry digest recorded for that service, without changing the repository
+template. Pass that rendered file to `k8s/deploy.sh`; the script refuses a
+missing file or any unresolved image contract. It repeats both static gates and
+checks every required Secret/ConfigMap key without displaying its value before
+it changes any workload. Kubernetes `secretKeyRef` and
 `configMapKeyRef` remain non-optional, and each Python service validates required
 production values during import, so missing or placeholder configuration stops
 startup with a message containing variable names only.
+
+Application code and Python dependencies are bundled into non-root images. The
+only application ConfigMap mount is `financing-docs`, which is runtime content,
+not executable source. The OpenTelemetry operator is a separately reviewed
+cluster prerequisite; deploy intentionally does not download its manifest.
+Build, smoke, digest-recording, and scan commands are documented in
+`docs/runbooks/container-images.md`.
 
 For a production environment, replace the manual `.local/` source with an
 external secret controller or a GitOps secret-encryption mechanism.  Keep the

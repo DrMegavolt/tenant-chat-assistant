@@ -71,7 +71,7 @@ spec:
     spec:
       containers:
         - name: elasticsearch
-          image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3@sha256:01c1732062b4a846c5ca687b0094b89bad0bfed00c6d71626db32fb8f3131a78
           ports:
             - containerPort: 9200
               name: http
@@ -144,7 +144,7 @@ spec:
     spec:
       containers:
         - name: kibana
-          image: docker.elastic.co/kibana/kibana:8.15.3
+          image: docker.elastic.co/kibana/kibana:8.15.3@sha256:43dffccc4085ebca96ed8a8da30116fa3a246c9e204b028949d2a8e733544987
           ports:
             - containerPort: 5601
               name: http
@@ -202,7 +202,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:16.11-alpine3.23@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
           ports:
             - containerPort: 5432
               name: postgres
@@ -273,14 +273,14 @@ spec:
       labels:
         app: embedding-service
     spec:
+      securityContext:
+        # The model PVC is writable by the fixed non-root image user.
+        fsGroup: 10001
       containers:
         - name: embedding-service
-          image: python:3.11-slim
-          workingDir: /app
-          command:
-            - sh
-            - -c
-            - pip install --no-cache-dir -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8001
+          # Release automation replaces only the digest token after recording
+          # build metadata. k8s/deploy.sh refuses unresolved contracts.
+          image: registry.example.invalid/tenantchat/embedding@sha256:REPLACE_WITH_EMBEDDING_DIGEST
           ports:
             - containerPort: 8001
               name: http
@@ -291,6 +291,8 @@ spec:
               value: production
             - name: EMBEDDING_MODEL
               value: Qwen/Qwen3-Embedding-0.6B
+            - name: EMBEDDING_MODEL_REVISION
+              value: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
             - name: EMBEDDING_DEVICE
               value: cpu
             - name: INGESTION_TO_EMBEDDING_TOKEN
@@ -317,14 +319,9 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 10
           volumeMounts:
-            - name: code
-              mountPath: /app
             - name: model-cache
-              mountPath: /root/.cache
+              mountPath: /home/tenantchat/.cache/huggingface
       volumes:
-        - name: code
-          configMap:
-            name: embedding-service-code
         - name: model-cache
           persistentVolumeClaim:
             claimName: embedding-model-cache
@@ -364,12 +361,7 @@ spec:
     spec:
       containers:
         - name: ingestion-service
-          image: python:3.11-slim
-          workingDir: /app
-          command:
-            - sh
-            - -c
-            - pip install --no-cache-dir -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8002
+          image: registry.example.invalid/tenantchat/ingestion@sha256:REPLACE_WITH_INGESTION_DIGEST
           ports:
             - containerPort: 8002
               name: http
@@ -413,14 +405,9 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           volumeMounts:
-            - name: code
-              mountPath: /app
             - name: docs
               mountPath: /data/docs
       volumes:
-        - name: code
-          configMap:
-            name: ingestion-service-code
         - name: docs
           configMap:
             name: financing-docs
@@ -465,12 +452,7 @@ spec:
     spec:
       containers:
         - name: financing-agent
-          image: python:3.11-slim
-          workingDir: /app
-          command:
-            - sh
-            - -c
-            - pip install --no-cache-dir -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8003
+          image: registry.example.invalid/tenantchat/financing@sha256:REPLACE_WITH_FINANCING_DIGEST
           ports:
             - containerPort: 8003
               name: http
@@ -531,13 +513,6 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
-          volumeMounts:
-            - name: code
-              mountPath: /app
-      volumes:
-        - name: code
-          configMap:
-            name: financing-agent-code
 ---
 apiVersion: v1
 kind: Service
@@ -608,12 +583,7 @@ spec:
     spec:
       containers:
         - name: chat-backend
-          image: python:3.11-slim
-          workingDir: /app
-          command:
-            - sh
-            - -c
-            - pip install --no-cache-dir -r requirements.txt && python server.py
+          image: registry.example.invalid/tenantchat/prototype@sha256:REPLACE_WITH_PROTOTYPE_DIGEST
           ports:
             - containerPort: 8000
               name: http
@@ -672,13 +642,6 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
-          volumeMounts:
-            - name: code
-              mountPath: /app
-      volumes:
-        - name: code
-          configMap:
-            name: chat-backend-code
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

@@ -9,7 +9,8 @@ UV_RUN := uv run --frozen
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations test-repositories test-database migrate js-install js-lint js-format \
 	js-format-check js-test js-test-cov deployment-security check api up up-all down \
-	down-clean logs ps network-policy-smoke arch-validate arch-build clean
+	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
+	images-check arch-validate arch-build clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -85,8 +86,19 @@ deployment-security: ## Scan rendered non-Secret Kubernetes manifests and runtim
 network-policy-smoke: ## Prove allowed and denied flows in disposable MicroK8s namespaces
 	./k8s/tests/network-policy-smoke.sh
 
+image-contracts: ## Verify immutable image and Kubernetes artifact contracts
+	$(UV_RUN) python scripts/verify_image_contracts.py
+
+images-build: ## Build all five deployable images and record local metadata/digests
+	./scripts/build_images.sh
+
+images-smoke: ## Smoke all previously built deployable images as their runtime user
+	./scripts/smoke_images.sh
+
+images-check: image-contracts images-build images-smoke ## Build and smoke all release images
+
 check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov \
-	deployment-security ## Full local and CI quality gate
+	deployment-security image-contracts ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
 

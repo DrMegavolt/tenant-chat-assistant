@@ -3,9 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="llm-chat"
-OTEL_OPERATOR_VERSION="v0.116.0"
+APP_MANIFEST="${1:-}"
 
+if [[ -z "$APP_MANIFEST" || ! -f "$APP_MANIFEST" ]]; then
+  echo "usage: $0 <release-app-manifest.yaml>" >&2
+  echo "render k8s/app.yaml by replacing every REPLACE_WITH_*_DIGEST token first" >&2
+  exit 2
+fi
 "$ROOT_DIR/scripts/verify_deployment_security.py"
+"$ROOT_DIR/scripts/verify_image_contracts.py"
+"$ROOT_DIR/scripts/verify_release_manifest.py" "$APP_MANIFEST"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -40,47 +47,16 @@ require_key configmap llm-runtime baseUrl
 require_key configmap llm-runtime model
 require_key configmap llm-runtime timeoutSeconds
 
-kubectl apply -f "https://github.com/open-telemetry/opentelemetry-operator/releases/download/${OTEL_OPERATOR_VERSION}/opentelemetry-operator.yaml"
+# The OpenTelemetry operator is a cluster prerequisite managed by platform
+# automation. Fetching a mutable remote manifest during an application deploy
+# would bypass image-digest review and make this release non-reproducible.
 kubectl -n opentelemetry-operator-system rollout status deploy/opentelemetry-operator-controller-manager --timeout=240s
 kubectl apply -f "$ROOT_DIR/k8s/otel-collector.yaml"
 kubectl -n observability rollout status deploy/otel-gateway-collector --timeout=240s
 kubectl -n observability delete deploy,svc,configmap,servicemonitor otel-collector --ignore-not-found=true
 kubectl apply -f "$ROOT_DIR/k8s/observability-exposure.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/network-policies.yaml"
-kubectl apply -f "$ROOT_DIR/k8s/app.yaml"
-
-kubectl -n "$NS" create configmap chat-backend-code \
-  --from-file=server.py="$ROOT_DIR/server.py" \
-  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
-  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
-  --from-file=requirements.txt="$ROOT_DIR/requirements.txt" \
-  --from-file=index.html="$ROOT_DIR/index.html" \
-  --from-file=app.js="$ROOT_DIR/app.js" \
-  --from-file=admin.html="$ROOT_DIR/admin.html" \
-  --from-file=admin.js="$ROOT_DIR/admin.js" \
-  --from-file=styles.css="$ROOT_DIR/styles.css" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl -n "$NS" create configmap embedding-service-code \
-  --from-file=app.py="$ROOT_DIR/services/embedding/app.py" \
-  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
-  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
-  --from-file=requirements.txt="$ROOT_DIR/services/embedding/requirements.txt" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl -n "$NS" create configmap ingestion-service-code \
-  --from-file=app.py="$ROOT_DIR/services/ingestion/app.py" \
-  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
-  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
-  --from-file=requirements.txt="$ROOT_DIR/services/ingestion/requirements.txt" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl -n "$NS" create configmap financing-agent-code \
-  --from-file=app.py="$ROOT_DIR/services/financing-agent/app.py" \
-  --from-file=runtime_security.py="$ROOT_DIR/runtime_security.py" \
-  --from-file=internal_auth.py="$ROOT_DIR/internal_auth.py" \
-  --from-file=requirements.txt="$ROOT_DIR/services/financing-agent/requirements.txt" \
-  --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f "$APP_MANIFEST"
 
 kubectl -n "$NS" create configmap financing-docs \
   --from-file=apex-financing-options.md="$ROOT_DIR/docs/apex/financing/financing-options.md" \

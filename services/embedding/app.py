@@ -12,6 +12,9 @@ from internal_auth import authenticate_internal_bearer, load_internal_credential
 
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+MODEL_REVISION = os.environ.get(
+    "EMBEDDING_MODEL_REVISION", "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+)
 DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
 BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "16"))
 INTERNAL_CREDENTIALS = load_internal_credentials(
@@ -51,13 +54,23 @@ def require_embedding_caller(authorization: Optional[str] = Header(default=None)
 def get_model() -> SentenceTransformer:
     global MODEL
     if MODEL is None:
-        MODEL = SentenceTransformer(MODEL_NAME, device=DEVICE, trust_remote_code=True)
+        MODEL = SentenceTransformer(
+            MODEL_NAME,
+            device=DEVICE,
+            revision=MODEL_REVISION,
+            trust_remote_code=False,
+        )
     return MODEL
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "modelLoaded": MODEL is not None, "model": MODEL_NAME}
+    return {
+        "status": "ok",
+        "modelLoaded": MODEL is not None,
+        "model": MODEL_NAME,
+        "modelRevision": MODEL_REVISION,
+    }
 
 
 @app.get("/metrics")

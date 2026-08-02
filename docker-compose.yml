@@ -11,7 +11,7 @@ name: tenantchat
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.11-alpine3.23@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
@@ -33,7 +33,7 @@ services:
       start_period: 10s
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3@sha256:01c1732062b4a846c5ca687b0094b89bad0bfed00c6d71626db32fb8f3131a78
     restart: unless-stopped
     environment:
       discovery.type: single-node

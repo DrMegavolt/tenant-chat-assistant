@@ -142,6 +142,10 @@ The placeholder-only examples, safe local provisioning workflow, production
 secret-manager path, and mandatory rotation warning are in
 [`k8s/README.md`](k8s/README.md). The deploy script fails before changing
 workloads when a required resource or key is missing and never displays values.
+It also requires a rendered application manifest whose five release image
+contracts have been replaced with registry digests. See
+[`docs/runbooks/container-images.md`](docs/runbooks/container-images.md) for the
+locked build, non-root smoke, metadata, and scanning workflow.
 
 ```bash
 kubectl -n llm-chat port-forward svc/chat-backend 18080:8000

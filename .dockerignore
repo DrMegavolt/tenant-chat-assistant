@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+architecture/likec4/node_modules
+architecture/likec4/dist
+artifacts
+chats
+.env
+.env.*
+!.env.example

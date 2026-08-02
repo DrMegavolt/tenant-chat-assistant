@@ -59,15 +59,12 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  security:
-    name: Dependency and container scans
+  dependency-scan:
+    name: Dependency scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build prototype image for scanning
-        run: docker build --tag tenant-chat-ci:${{ github.sha }} .
 
       # Pinned to the immutable, known-safe v0.35.0 release. Older mutable tags
       # were affected by the March 2026 Trivy action supply-chain incident.
@@ -93,22 +90,46 @@ jobs:
           exit-code: 1
           skip-setup-trivy: true
 
-      - name: Create container vulnerability report
+      - name: Upload vulnerability reports
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-vulnerability-reports
+          path: trivy-*.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  image-scan:
+    name: Build, smoke, and scan ${{ matrix.image }} image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [prototype, api, embedding, ingestion, financing]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image and record metadata
+        run: ./scripts/build_images.sh "${{ matrix.image }}"
+
+      - name: Smoke image as configured non-root user
+        run: ./scripts/smoke_images.sh "${{ matrix.image }}"
+
+      # Pinned to the immutable, known-safe v0.35.0 action commit.
+      - name: Create container vulnerability report
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
-          image-ref: tenant-chat-ci:${{ github.sha }}
+          image-ref: tenantchat-local/${{ matrix.image }}:${{ github.sha }}
           scanners: vuln
           format: json
-          output: trivy-container.json
+          output: artifacts/images/${{ matrix.image }}.trivy.json
           exit-code: 0
-          skip-setup-trivy: true
 
       - name: Block high-severity container findings
-        if: always()
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
-          image-ref: tenant-chat-ci:${{ github.sha }}
+          image-ref: tenantchat-local/${{ matrix.image }}:${{ github.sha }}
           scanners: vuln
           format: table
           severity: HIGH,CRITICAL
@@ -116,14 +137,14 @@ jobs:
           exit-code: 1
           skip-setup-trivy: true
 
-      - name: Upload vulnerability reports
+      - name: Upload image metadata, digest, smoke, and scan evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: vulnerability-reports
-          path: trivy-*.json
+          name: image-evidence-${{ matrix.image }}
+          path: artifacts/images/${{ matrix.image }}.*
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
   architecture:
     name: Architecture model

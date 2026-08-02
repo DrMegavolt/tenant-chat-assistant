@@ -10,7 +10,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "tenantchat-core",
     "alembic==1.14.0",
-    "fastapi==0.115.6",
+    "fastapi==0.141.1",
     # SQLAlchemy's async facade uses greenlet even with a native async driver.
     # Declare it explicitly because SQLAlchemy's optional marker misses macOS arm64.
     "greenlet==3.5.4",

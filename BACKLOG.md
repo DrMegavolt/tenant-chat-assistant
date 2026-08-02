@@ -160,7 +160,7 @@ Required: Gate B plus `DEP-002` through `DEP-006`, `QA-002` through `QA-005`, an
 - [x] `SEC-004` — Service authentication and Kubernetes network boundaries — `Done`
 - [x] `SEC-005` — Secret management and credential removal — `P0`
 - [ ] `PRIV-001` — PII classification, consent, retention, export, and deletion — `P0`
-- [ ] `DEP-001` — Immutable, reproducible application images — `P0`
+- [x] `DEP-001` — Immutable, reproducible application images — `Done`
 
 ### P1 production core
 
@@ -271,7 +271,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py` and `requirements.txt`
+- Evidence: `server.py`, `pyproject.toml`, and `uv.lock`
 - Existing scope:
   - Atomic local JSON archive writes.
   - Optional Postgres JSONB session snapshots.
@@ -665,7 +665,7 @@ values are logged, never published. Run it with `make api`.
 
 ### DEP-001 — Immutable, reproducible application images
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Delivery`
 - Depends on: None
@@ -682,7 +682,26 @@ values are logged, never published. Run it with `make api`.
   - Image and dependency scans are integrated into verification.
 - Verification:
   - Build all images, run smoke tests from the images, and record image digests.
-- Completion notes: _Pending._
+- Completion notes: Five multi-stage images now cover the prototype, production
+  API/migration runtime, embedding, ingestion, and financing services. Every
+  Dockerfile frontend, uv builder, Python base, and declared external Kubernetes
+  image is digest-pinned; all Python graphs come from the hashed workspace
+  `uv.lock` (including CPU-only PyTorch), and final images run as numeric
+  `10001:10001`. The Qwen model uses reviewed commit
+  `97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3` with
+  `trust_remote_code=False`. Kubernetes release templates accept application
+  digest substitution only, and the deploy gate requires all seven expected
+  workload images to have 64-hex registry digests; runtime pip commands and
+  executable ConfigMap mounts were removed. `make check` passed with 290 Python
+  and six frontend tests; all Kubernetes inputs passed client dry-run. All five
+  arm64 images built, ran non-root import/writability/migration checks and live
+  health smokes, and recorded local digests under `artifacts/images/`. A
+  checksum-verified Trivy 0.69.3 scan found zero fixed HIGH/CRITICAL findings in
+  the final lockfile and five images after upgrading the affected framework and
+  embedding dependencies. CI now repeats build, smoke, metadata upload, and
+  fixed HIGH/CRITICAL scan gates in a five-image matrix. Publishing, SBOM,
+  signing, and provenance remain `DEP-006`; network policy and service auth
+  remain `SEC-004`.
 
 ## P1 production core task details
 
