@@ -1,0 +1,739 @@
+/**
+ * The widget's entire stylesheet.
+ *
+ * It is injected into the shadow root as text, so nothing here reaches the
+ * embedding page and nothing from that page reaches these rules. Colours come
+ * from `palette.ts`, which prepends the `:host` token block; everything else is
+ * declared against the scales below so spacing and type stay on one rhythm.
+ */
+
+:host {
+  /* Drop every inherited declaration from the embedding page before the widget
+     sets its own. Custom properties are unaffected by `all`. */
+  all: initial;
+  display: block;
+
+  color-scheme: light dark;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 28px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+
+  --edge: 20px;
+  --launcher-size: 60px;
+  --panel-width: 400px;
+
+  --elevation-panel: 0 1px 2px var(--shadow), 0 16px 40px -12px var(--shadow);
+  --elevation-bubble: 0 1px 1px light-dark(rgba(16, 31, 34, 0.05), rgba(0, 0, 0, 0.35));
+  --motion-fast: 140ms;
+  --motion-panel: 220ms;
+  --ease-out: cubic-bezier(0.22, 0.7, 0.31, 1);
+
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+/* The embedder can pin a scheme when their page is not scheme-aware. */
+:host([data-color-scheme="light"]) {
+  color-scheme: light;
+}
+
+:host([data-color-scheme="dark"]) {
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.panel-header :focus-visible {
+  outline-color: var(--header-ink);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --- Launcher ------------------------------------------------------------ */
+
+.launcher {
+  position: fixed;
+  right: var(--edge);
+  bottom: var(--edge);
+  display: inline-grid;
+  place-items: center;
+  width: var(--launcher-size);
+  height: var(--launcher-size);
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--elevation-panel);
+  cursor: pointer;
+  transition:
+    transform var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
+}
+
+.launcher:hover {
+  transform: translateY(-2px);
+}
+
+.launcher:active {
+  transform: scale(0.96);
+}
+
+.launcher svg {
+  width: 27px;
+  height: 27px;
+}
+
+/* An unread staff reply has to be visible without opening the panel. */
+.launcher-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 2px solid var(--surface);
+  border-radius: var(--radius-pill);
+  background: var(--danger-ink);
+  color: var(--surface);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* --- Panel --------------------------------------------------------------- */
+
+/* The launcher is hidden while the panel is open, so the panel takes its corner
+   rather than floating above an empty one. */
+.panel {
+  position: fixed;
+  right: var(--edge);
+  bottom: var(--edge);
+  display: flex;
+  flex-direction: column;
+  width: min(var(--panel-width), calc(100vw - 2 * var(--edge)));
+  height: min(660px, calc(100dvh - 2 * var(--edge)));
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--elevation-panel);
+  animation: panel-in var(--motion-panel) var(--ease-out);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--header-bg);
+  color: var(--header-ink);
+}
+
+.brand-mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand-text {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 1px;
+  min-width: 0;
+}
+
+.brand-text strong {
+  overflow: hidden;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-text span {
+  overflow: hidden;
+  color: var(--header-ink-muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: currentcolor;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+
+.icon-button:hover {
+  background: color-mix(in srgb, currentcolor 16%, transparent);
+}
+
+.icon-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* --- Transcript ---------------------------------------------------------- */
+
+.transcript-region {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 96px;
+}
+
+.transcript {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 96px;
+  overflow-y: auto;
+  padding: var(--space-4);
+  background: var(--surface-muted);
+  overscroll-behavior: contain;
+}
+
+.message {
+  max-width: 86%;
+  padding: 9px var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: 0.94rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: message-in 180ms var(--ease-out);
+}
+
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.message.assistant {
+  align-self: flex-start;
+  border: 1px solid var(--hairline);
+  border-bottom-left-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--elevation-bubble);
+}
+
+.message.user {
+  align-self: flex-end;
+  border-bottom-right-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.message.assistant.admin {
+  border-color: var(--staff-line);
+  background: var(--staff-surface);
+}
+
+.message.assistant.proactive {
+  background: var(--proactive-surface);
+}
+
+/* A staff reply comes from a person, so it says so above the text. */
+.message-attribution {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tool-call {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--notice-ink);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--notice-surface);
+  color: var(--notice-ink);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.typing {
+  display: flex;
+  align-self: flex-start;
+  gap: 4px;
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-bottom-left-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+  animation: typing-bounce 1.2s infinite var(--ease-out);
+}
+
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-4px);
+  }
+}
+
+/* Auto-scrolling a transcript somebody is reading loses their place, so a
+   visitor who has scrolled up is offered the jump instead of being moved. */
+.jump-to-latest {
+  position: absolute;
+  bottom: var(--space-3);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--elevation-panel);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transform: translateX(-50%);
+}
+
+.jump-to-latest svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* --- Footer -------------------------------------------------------------- */
+
+/* The composer is the one thing that must always be reachable, so the footer
+   does not shrink and the two parts that can grow without bound — the quick
+   actions and the privacy panel — carry their own caps instead. */
+.panel-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+.assistant-status {
+  margin: 0;
+  padding: var(--space-2) var(--space-4) 0;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.assistant-status:empty {
+  display: none;
+}
+
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-height: 132px;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.quick-actions button {
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+.quick-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+}
+
+.quick-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-2);
+}
+
+.composer input {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+
+.composer input:focus {
+  border-color: var(--accent);
+}
+
+.composer button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+  transition: opacity var(--motion-fast) var(--ease-out);
+}
+
+.composer button:disabled,
+.composer input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.composer svg {
+  width: 19px;
+  height: 19px;
+}
+
+.privacy-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-3);
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
+.link-button {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.privacy-panel {
+  display: grid;
+  gap: var(--space-3);
+  max-height: 32dvh;
+  overflow-y: auto;
+  padding: var(--space-4);
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-muted);
+  font-size: 0.85rem;
+}
+
+.privacy-panel h2 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.privacy-panel ul {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--ink-muted);
+}
+
+.privacy-panel button {
+  justify-self: start;
+  min-height: 40px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.privacy-panel button:hover {
+  background: var(--surface-raised);
+}
+
+/* --- Booking form -------------------------------------------------------- */
+
+.booking-form-card {
+  align-self: flex-start;
+  display: grid;
+  gap: var(--space-3);
+  width: min(94%, 340px);
+  padding: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--elevation-bubble);
+  animation: message-in 180ms var(--ease-out);
+}
+
+.booking-form-card > strong {
+  font-size: 0.95rem;
+}
+
+.booking-form-card label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.booking-form-card label > span {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.booking-form-card input,
+.booking-form-card select {
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 0.9rem;
+}
+
+.booking-form-card input:focus,
+.booking-form-card select:focus {
+  border-color: var(--accent);
+}
+
+.booking-form-card input[aria-invalid="true"] {
+  border-color: var(--danger-ink);
+  border-width: 2px;
+}
+
+.consent-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+
+.consent-field input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.consent-field span {
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.booking-form-card button[type="submit"] {
+  min-height: 44px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.booking-form-card button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-error {
+  display: block;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--danger-surface);
+  color: var(--danger-ink);
+  font-size: 0.84rem;
+}
+
+.form-error:empty {
+  display: none;
+}
+
+/* --- Failure state ------------------------------------------------------- */
+
+.widget-error {
+  position: fixed;
+  right: var(--edge);
+  bottom: var(--edge);
+  display: grid;
+  gap: var(--space-1);
+  max-width: min(360px, calc(100vw - 2 * var(--edge)));
+  padding: var(--space-4);
+  border: 1px solid var(--danger-ink);
+  border-radius: var(--radius-md);
+  background: var(--danger-surface);
+  color: var(--danger-ink);
+  box-shadow: var(--elevation-panel);
+}
+
+.widget-error h2 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.widget-error p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+/* --- Adaptations --------------------------------------------------------- */
+
+/* A single-column phone, or a landscape phone whose height cannot fit a
+   floating panel, gets the full viewport instead of a cramped card. */
+@media (max-width: 560px), (max-height: 520px) {
+  .panel {
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .launcher {
+    right: var(--space-3);
+    bottom: var(--space-3);
+  }
+
+  .message {
+    max-width: 90%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .panel,
+  .launcher,
+  .booking-form-card,
+  .message,
+  .typing {
+    border: 1px solid CanvasText;
+  }
+}

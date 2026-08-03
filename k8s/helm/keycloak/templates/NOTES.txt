@@ -1,0 +1,21 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed as {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+Issuer (must match oidc-credentials.issuerUrl in {{ .Values.networkPolicy.oauth2Proxy.namespace }}):
+
+    {{ include "tenantchat.keycloak.issuerUrl" . }}
+
+Endpoints for the oidc-endpoints ConfigMap in {{ .Values.networkPolicy.oauth2Proxy.namespace }}:
+
+    loginUrl={{ include "tenantchat.keycloak.issuerUrl" . }}/protocol/openid-connect/auth
+    redeemUrl={{ include "tenantchat.keycloak.internalUrl" . }}/realms/{{ .Values.keycloak.realm }}/protocol/openid-connect/token
+    jwksUrl={{ include "tenantchat.keycloak.internalUrl" . }}/realms/{{ .Values.keycloak.realm }}/protocol/openid-connect/certs
+    profileUrl={{ include "tenantchat.keycloak.internalUrl" . }}/realms/{{ .Values.keycloak.realm }}/protocol/openid-connect/userinfo
+    redirectUrl={{ include "tenantchat.keycloak.gatewayUrl" . }}/oauth2/callback
+
+Watch the realm bootstrap:
+
+    kubectl -n {{ .Release.Namespace }} logs job/{{ include "tenantchat.keycloak.fullname" . }}-bootstrap
+
+Then restart the proxy so it picks up the endpoint configuration:
+
+    kubectl -n {{ .Values.networkPolicy.oauth2Proxy.namespace }} rollout restart deploy/oauth2-proxy

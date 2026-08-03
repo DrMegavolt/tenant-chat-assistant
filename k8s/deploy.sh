@@ -65,6 +65,13 @@ require_key secret oidc-credentials clientId
 require_key secret oidc-credentials clientSecret
 require_key secret oidc-credentials issuerUrl
 require_key secret oidc-credentials cookieSecret
+# Browser-facing and backchannel OIDC endpoints. Discovery is off, so a missing
+# key here means oauth2-proxy starts with no login URL at all.
+require_key configmap oidc-endpoints loginUrl
+require_key configmap oidc-endpoints redeemUrl
+require_key configmap oidc-endpoints jwksUrl
+require_key configmap oidc-endpoints profileUrl
+require_key configmap oidc-endpoints redirectUrl
 require_present_key configmap widget-cors-origins origins
 
 # Admin CSRF secret used by Python to validate double-submit tokens.
@@ -79,6 +86,7 @@ kubectl apply -f "$ROOT_DIR/k8s/otel-collector.yaml"
 kubectl -n observability rollout status deploy/otel-gateway-collector --timeout=240s
 kubectl -n observability delete deploy,svc,configmap,servicemonitor otel-collector --ignore-not-found=true
 kubectl apply -f "$ROOT_DIR/k8s/observability-exposure.yaml"
+kubectl apply -f "$ROOT_DIR/k8s/public-loadbalancers.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/network-policies.yaml"
 kubectl apply -f "$APP_MANIFEST"
 

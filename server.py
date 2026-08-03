@@ -41,7 +41,7 @@ from runtime_security import (
 
 
 ROOT = Path(__file__).resolve().parent
-STATIC_ROOT = ROOT / "frontend" / "public"
+STATIC_ROOT = ROOT / "frontend" / "dist" / "public"
 CHATS_DIR = Path(os.environ.get("CHATS_DIR", ROOT / "chats"))
 HOST = os.environ.get("CHAT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CHAT_PORT", "8000"))
@@ -1764,21 +1764,24 @@ class ChatHandler(BaseHTTPRequestHandler):
         print("%s - %s" % (self.address_string(), format % args))
 
 
-_PUBLIC_GET_PATHS = frozenset(
-    {
-        "/",
-        "/index.html",
-        "/app.js",
-        "/embed.js",
-        "/styles.css",
-        "/widget/api.js",
-        "/widget/embed.js",
-        "/widget/privacy.js",
-        "/widget/styles.js",
-        "/widget/widget.js",
-        "/api/tenants",
-        "/api/chat/session",
-    }
+_PUBLIC_STATIC_ENTRIES = frozenset({"/", "/index.html", "/embed.js"})
+
+
+def _built_asset_paths() -> frozenset[str]:
+    """Return the hashed bundle files the public build emitted.
+
+    Filenames carry a content hash, so the allowlist is read from the build
+    output rather than written down.  An unbuilt checkout contributes nothing
+    and the entry points above still resolve.
+    """
+    assets = STATIC_ROOT / "assets"
+    return frozenset(f"/assets/{path.name}" for path in assets.glob("*") if path.is_file())
+
+
+_PUBLIC_GET_PATHS = (
+    _PUBLIC_STATIC_ENTRIES
+    | _built_asset_paths()
+    | frozenset({"/api/tenants", "/api/chat/session"})
 )
 _PUBLIC_POST_PATHS = frozenset({"/api/chat", "/api/book"})
 

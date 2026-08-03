@@ -1,0 +1,18 @@
+apiVersion: v2
+name: tenantchat-keycloak
+description: >-
+  Keycloak identity provider for the TenantChat single-origin gateway. Issues
+  the OIDC sessions oauth2-proxy validates and carries the group vocabulary the
+  gateway maps to application roles.
+type: application
+version: 0.1.0
+# Track the Keycloak minor this chart's configuration keys were written for.
+# KC_BOOTSTRAP_ADMIN_* and the fixed-hostname options are 26.x spellings.
+appVersion: "26.4"
+keywords:
+  - keycloak
+  - oidc
+  - authentication
+home: https://github.com/tenantchat
+annotations:
+  tenantchat.openai.com/adr: "0008"

@@ -9,11 +9,13 @@ and application only, run as numeric user/group `10001:10001`, and do not
 contain uv or pip build steps.
 
 The sixth, `web`, is the nginx gateway built from `frontend/Dockerfile`. It
-carries no Python: its content is `frontend/public/` plus the configuration in
-`frontend/nginx/`. Its smoke asserts the two document roots stay separate and
-that a malformed upstream origin stops the container instead of rendering a
-configuration that rewrites every proxied request. See
-[ADR-0006](../adr/0006-frontend-delivery.md).
+carries no Python: a digest-pinned Node stage runs `npm ci` and `npm run build`
+against `frontend/package-lock.json`, and the runtime stage holds those bundles
+plus the configuration in `frontend/nginx/`. Its smoke asserts the two document
+roots stay separate and that a malformed upstream origin stops the container
+instead of rendering a configuration that rewrites every proxied request. See
+[ADR-0007](../adr/0007-single-origin-gateway.md) and
+[ADR-0009](../adr/0009-react-frontend-build.md).
 
 The embedding runtime pins Qwen3-Embedding-0.6B to commit
 `97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, uses the CPU-only PyTorch index,

@@ -1,0 +1,18 @@
+{{/*
+The realm definition carries no credential: the client secret and the bootstrap
+user's password are set afterwards by the bootstrap Job from Secrets. A
+ConfigMap is readable by anything with namespace read access, so nothing in it
+may be sensitive.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-realm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    {{- include "tenantchat.keycloak.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: identity-provider
+data:
+  {{ .Values.keycloak.realm }}-realm.json: |
+{{ tpl (.Files.Get "files/realm-tenantchat.json") . | indent 4 }}

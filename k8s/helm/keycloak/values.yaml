@@ -1,0 +1,143 @@
+# Keycloak for the TenantChat single-origin gateway.
+#
+# Every value that identifies a host is required: a wrong issuer URL produces
+# tokens oauth2-proxy silently rejects, so the chart fails to render rather
+# than installing a broken login flow.
+
+# Resource names are derived from these, not from the release name, so the
+# Service keeps a stable in-cluster address and the `app.kubernetes.io/name:
+# keycloak` selector in k8s/network-policies.yaml keeps matching. Overriding
+# either means updating that policy and the oidc-endpoints ConfigMap.
+nameOverride: ""
+fullnameOverride: ""
+
+keycloak:
+  # The browser-facing base URL of Keycloak itself. Keycloak derives *every*
+  # issued URL from this, including the `iss` claim, so it must stay identical
+  # to `oidc-credentials.issuerUrl` in the llm-chat namespace (minus the realm
+  # path). Backchannel calls from oauth2-proxy use the in-cluster Service and
+  # still see this issuer because hostnameBackchannelDynamic is false.
+  publicUrl: ""
+  realm: tenantchat
+  image:
+    repository: quay.io/keycloak/keycloak
+    tag: "26.4.0"
+    # Record the digest for the tag above before installing; the deployment
+    # refuses to render without it, matching the digest-pinning rule the
+    # tracked manifests follow.
+    #
+    #     crane digest quay.io/keycloak/keycloak:26.4.0
+    digest: ""
+    pullPolicy: IfNotPresent
+  # TLS terminates at the ingress controller, so Keycloak speaks plain HTTP
+  # inside the cluster and trusts the forwarded scheme/host headers.
+  httpEnabled: true
+  proxyHeaders: xforwarded
+  replicas: 1
+  resources:
+    requests:
+      memory: 768Mi
+      cpu: 250m
+    limits:
+      # First boot performs a Quarkus augmentation before starting the server;
+      # 1536Mi is not enough for Keycloak 26.4.0 on the local x86 node.
+      memory: 2Gi
+      cpu: "2"
+  # Secret holding the temporary bootstrap admin of the *master* realm, used
+  # once to create a permanent admin and by the realm bootstrap Job.
+  adminSecret:
+    name: keycloak-admin-credentials
+    usernameKey: username
+    passwordKey: password
+
+database:
+  # An embedded single-replica Postgres is the local default. Point `external`
+  # at a managed instance instead by setting embedded to false.
+  embedded: true
+  name: keycloak
+  image:
+    repository: postgres
+    tag: 16.11-alpine3.23
+    digest: sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
+    pullPolicy: IfNotPresent
+  # Reused for the embedded StatefulSet and for the Keycloak JDBC credentials,
+  # so one rotation covers both sides.
+  credentialsSecret:
+    name: keycloak-db-credentials
+    usernameKey: username
+    passwordKey: password
+  storage:
+    size: 5Gi
+    className: ""
+  # Only read when embedded is false: host:port of the external Postgres.
+  external:
+    host: ""
+    port: 5432
+
+realm:
+  # The gateway origin users come back to. Becomes the client's redirect URI
+  # (`<gatewayUrl>/oauth2/callback`) and its only allowed web origin.
+  gatewayUrl: ""
+  clientId: tenantchat-gateway
+  # The confidential client's secret must equal `oidc-credentials.clientSecret`
+  # in llm-chat. Realm import cannot carry it (the file is world-readable in a
+  # ConfigMap), so the post-install Job sets it from this Secret.
+  clientSecret:
+    name: keycloak-client-credentials
+    key: clientSecret
+  # The group names the gateway maps to application roles. Changing these
+  # breaks the nginx group-to-role map in frontend/nginx/entrypoint.sh.
+  groups:
+    - viewer
+    - support_agent
+    - tenant_admin
+    - platform_admin
+  # Session and token lifetimes, in seconds.
+  accessTokenLifespan: 300
+  ssoSessionIdleTimeout: 1800
+  ssoSessionMaxLifespan: 36000
+
+bootstrapUser:
+  # A realm with no member of a role group authenticates nobody usefully: the
+  # gateway maps an unrecognized group set to no role and Python fails closed.
+  enabled: true
+  secret:
+    name: keycloak-bootstrap-user
+    usernameKey: username
+    passwordKey: password
+    emailKey: email
+  group: platform_admin
+  # The user must choose a new password at first login; the seeded one is
+  # transport for the initial handover only.
+  temporaryPassword: true
+
+ingress:
+  enabled: true
+  className: traefik
+  # The host part of keycloak.publicUrl. Kept separate because the ingress
+  # matches on host only.
+  host: ""
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: keycloak-tls
+
+networkPolicy:
+  enabled: true
+  # Namespace and pod labels of the ingress controller allowed to reach
+  # Keycloak's HTTP port.
+  ingressController:
+    namespace: ingress
+    podLabels:
+      app.kubernetes.io/name: traefik
+  # The oauth2-proxy that performs the backchannel token exchange and JWKS
+  # fetch. Nothing else in the cluster may reach Keycloak.
+  oauth2Proxy:
+    namespace: llm-chat
+    podLabels:
+      app: oauth2-proxy
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

@@ -29,7 +29,7 @@ Dependency changes mean editing `pyproject.toml` and running `make lock`.
 ```
 packages/core/      Domain model. Zero runtime dependencies.
 services/           Deployable services: api, ingestion, embedding, financing-agent.
-frontend/           Self-contained npm project: public/ is served, tests/ is Vitest.
+frontend/           Self-contained npm project: React 19 + TypeScript, built by Vite.
 tests/              Cross-cutting tests, including architecture invariants.
 docs/adr/           Architecture decision records.
 architecture/likec4/ Architecture-as-code model and generated diagrams.

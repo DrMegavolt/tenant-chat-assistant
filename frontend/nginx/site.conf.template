@@ -26,6 +26,19 @@
 # Never `*`; never includes admin origins.  Credential-free requests only.
 # The map entries are generated at container start from WIDGET_ALLOWED_ORIGINS.
 # ---------------------------------------------------------------------------
+# TLS terminates at the trusted ingress controller in Kubernetes. Preserve its
+# browser-facing scheme and host for OAuth redirects; direct Docker/dev traffic
+# has no forwarded headers and falls back to nginx's own request values.
+map $http_x_forwarded_proto $gateway_scheme {
+    default $http_x_forwarded_proto;
+    ""      $scheme;
+}
+
+map $http_x_forwarded_host $gateway_host {
+    default $http_x_forwarded_host;
+    ""      $http_host;
+}
+
 # ---------------------------------------------------------------------------
 # Server: single public listener
 # ---------------------------------------------------------------------------
@@ -44,9 +57,9 @@ server {
 
     # --- Proxy defaults -----------------------------------------------------
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $gateway_host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Proto $gateway_scheme;
     proxy_set_header X-Request-Id $request_id;
     proxy_connect_timeout 5s;
     proxy_send_timeout 30s;
@@ -61,16 +74,16 @@ server {
         proxy_pass ${AUTH_PROXY_ORIGIN}/oauth2/auth;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
-        proxy_set_header Host $host;
+        proxy_set_header Host $gateway_host;
         proxy_set_header X-Original-URI $request_uri;
-        proxy_set_header X-Original-URL $scheme://$host$request_uri;
+        proxy_set_header X-Original-URL $gateway_scheme://$gateway_host$request_uri;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $gateway_scheme;
     }
 
     # --- Login redirect for browser requests (HTML clients) -----------------
     location @auth_login {
-        return 302 /oauth2/start?rd=$scheme://$host$request_uri;
+        return 302 $gateway_scheme://$gateway_host/oauth2/start?rd=$gateway_scheme://$gateway_host$request_uri;
     }
 
     # --- API 401 handler (no redirect for API clients) -----------------------
@@ -190,10 +203,11 @@ server {
     # gateway origin and are proxied internally to oauth2-proxy.
     location /oauth2/ {
         proxy_pass ${AUTH_PROXY_ORIGIN};
-        proxy_set_header Host $host;
+        proxy_set_header Host $gateway_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $gateway_scheme;
+        proxy_set_header X-Forwarded-Host $gateway_host;
     }
 
     # --- Catch-all: unknown API paths fail closed ---------------------------
@@ -223,6 +237,23 @@ server {
     # --- Public frontend: default root ---------------------------------------
     root /srv/public;
     index index.html;
+
+    # The one file customer sites load cross-origin.  A module script is always
+    # fetched in CORS mode, so without an allowlisted origin here an embed on an
+    # approved customer domain fails before it runs.  The build makes embed.js
+    # self-contained precisely so this is the only asset that needs the header.
+    location = /embed.js {
+        if ($request_method = OPTIONS) {
+            add_header Vary Origin always;
+            add_header Access-Control-Allow-Origin $widget_cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $widget_cors_origin always;
+        add_header Vary Origin always;
+        try_files $uri =404;
+    }
 
     location / {
         try_files $uri $uri/ =404;

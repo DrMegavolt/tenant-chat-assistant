@@ -1,0 +1,57 @@
+/**
+ * Design tokens shared by the demo host page and the operator console.
+ *
+ * The widget does not use these: it ships its own palette inside its shadow
+ * root (`src/widget/palette.ts`) because it renders on other people's sites and
+ * cannot inherit anything. Keeping the two systems apart is deliberate — the
+ * demo page is a stand-in for a customer's brand, and it should not look like
+ * the widget embedded in it.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Neutrals: a single warm-grey ramp, one step per surface depth. */
+  --canvas: light-dark(#f6f4f0, #0e1214);
+  --surface: light-dark(#ffffff, #171d20);
+  --surface-muted: light-dark(#f2f1ed, #12181a);
+  --surface-raised: light-dark(#eceae4, #212a2d);
+  --ink: light-dark(#1b1f21, #e9eef0);
+  --ink-muted: light-dark(#5a6367, #a4b0b4);
+  --line: light-dark(#767f83, #7b878b);
+  --hairline: light-dark(#e2e0da, #262f32);
+
+  --accent: light-dark(#0b5f59, #5fd6c6);
+  --accent-ink: light-dark(#ffffff, #04211e);
+  --accent-quiet: light-dark(#e6f1ef, #16302d);
+
+  --positive: light-dark(#146b35, #74d99a);
+  --caution: light-dark(#8a4b06, #f0b075);
+  --info: light-dark(#20518f, #8dbdf5);
+  --violet: light-dark(#5b3d94, #c3a9f0);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 72px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px light-dark(rgba(27, 31, 33, 0.07), rgba(0, 0, 0, 0.4));
+  --shadow-md:
+    0 1px 2px light-dark(rgba(27, 31, 33, 0.06), rgba(0, 0, 0, 0.35)),
+    0 12px 28px -14px light-dark(rgba(27, 31, 33, 0.35), rgba(0, 0, 0, 0.7));
+
+  --motion-fast: 140ms;
+  --ease-out: cubic-bezier(0.22, 0.7, 0.31, 1);
+
+  --font-sans: "Inter var", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}

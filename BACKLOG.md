@@ -229,7 +229,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `index.html`, `app.js`, and `styles.css`
+- Evidence: `frontend/src/widget/` and `frontend/src/demo/`
 - Existing scope:
   - Browser chat experience with quick actions and per-tenant session IDs.
   - Two demonstration companies with distinct policies and branding.
@@ -251,7 +251,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py`, `app.js`, and `admin.js`
+- Evidence: `server.py`, `frontend/src/widget/`, and `frontend/src/admin/`
 - Existing scope:
   - Required-field and contact validation.
   - Lead capture through model tools and rule fallback.
@@ -262,7 +262,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py` and `app.js`
+- Evidence: `server.py` and `frontend/src/widget/components/BookingForm.tsx`
 - Existing scope:
   - Static service-specific availability.
   - Structured booking form with contact and address validation.
@@ -273,7 +273,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `admin.html` and `admin.js`
+- Evidence: `frontend/admin.html` and `frontend/src/admin/`
 - Existing scope:
   - Session list, outcomes, transcripts, leads, bookings, and tool-event panels.
   - Polling for updates and staff messages into visitor conversations.
@@ -1175,8 +1175,8 @@ values are logged, never published. Run it with `make api`.
 - Verification:
   - External route and TLS scan tests pass in a staging environment.
 - Progress: the widget hosting and route separation landed ahead of this task.
-  A sixth image, `web` (`frontend/Dockerfile`), serves `frontend/public/` from
-  nginx and is now the public entrypoint in Kubernetes and docker compose; the
+  A sixth image, `web` (`frontend/Dockerfile`), builds the browser bundles and
+  serves them from nginx, and is now the public entrypoint in Kubernetes and docker compose; the
   chat backend is no longer reachable from the ingress controller. The public
   listener forwards only the four visitor API paths and answers every other
   `/api/` path `404`; the operator console is a second listener with its own
@@ -1586,6 +1586,14 @@ values are logged, never published. Run it with `make api`.
   outstanding in `docs/accessibility.md`); server-side consent record, retention,
   and erasure belong to `PRIV-001` — the widget sends a consent object that
   nothing yet persists; tenant-bound visitor sessions are `SEC-002`.
+  Carried forward through the React rewrite ([ADR-0009](docs/adr/0009-react-frontend-build.md)):
+  every guarantee above is asserted by the ported suites against the same element
+  ids, and the contrast suite gained a scheme axis now that the widget honours
+  `prefers-color-scheme`. New in that pass: a jump-to-latest control so a staff
+  reply cannot scroll a reader away mid-sentence, an unread count on the launcher,
+  a typing indicator that is hidden from assistive technology because the status
+  region already announces it, and polling that no longer issues a conversation id
+  for a visitor who has typed nothing.
 
 ### FEAT-014 — Additional business-domain agents
 

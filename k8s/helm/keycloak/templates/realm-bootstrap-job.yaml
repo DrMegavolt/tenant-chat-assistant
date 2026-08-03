@@ -1,0 +1,208 @@
+{{/*
+Realm import cannot carry secrets, so the two credential-bearing parts of the
+realm are applied here from Kubernetes Secrets: the confidential client's
+secret (which must equal `oidc-credentials.clientSecret` in the gateway
+namespace) and the first operator account. The Job is idempotent — it reads
+before it writes — so a re-run after a values change converges rather than
+failing.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: realm-bootstrap
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  bootstrap.sh: |
+    #!/bin/sh
+    # POSIX sh with no awk/sed/jq: the Keycloak runtime image is a micro base
+    # and carries little beyond coreutils and the Keycloak CLI itself.
+    set -eu
+
+    KCADM=/opt/keycloak/bin/kcadm.sh
+    # kcadm persists its session; $HOME is not writable in this pod.
+    CONFIG=/tmp/kcadm.json
+
+    log() { echo "realm-bootstrap: $*"; }
+
+    log "starting"
+    attempt=0
+    until "$KCADM" config credentials --config "$CONFIG" --server "$KEYCLOAK_URL" \
+        --realm master --user "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" \
+        >/dev/null 2>/tmp/kcadm-login.err; do
+      attempt=$((attempt + 1))
+      log "admin login attempt $attempt failed"
+      cat /tmp/kcadm-login.err >&2 || true
+      if [ "$attempt" -ge 60 ]; then
+        log "keycloak did not accept admin credentials at $KEYCLOAK_URL after $attempt attempts"
+        exit 1
+      fi
+      sleep 5
+    done
+    log "authenticated against $KEYCLOAK_URL"
+
+    kc() { "$KCADM" "$@" --config "$CONFIG" -r "$REALM"; }
+
+    client_uuid="$(kc get clients -q "clientId=$CLIENT_ID" --fields id --format csv --noquotes)"
+    if [ -z "$client_uuid" ]; then
+      log "client $CLIENT_ID is absent from realm $REALM; realm import did not run"
+      exit 1
+    fi
+    kc update "clients/$client_uuid" -s "secret=$CLIENT_SECRET" >/dev/null
+    log "set the client secret for $CLIENT_ID"
+
+    if [ "${BOOTSTRAP_USER_ENABLED:-false}" != "true" ]; then
+      log "bootstrap user disabled; done"
+      exit 0
+    fi
+
+    user_id="$(kc get users -q "username=$USER_USERNAME" --fields id --format csv --noquotes)"
+    if [ -z "$user_id" ]; then
+      kc create users \
+        -s "username=$USER_USERNAME" \
+        -s "email=$USER_EMAIL" \
+        -s enabled=true \
+        -s emailVerified=true >/dev/null
+      user_id="$(kc get users -q "username=$USER_USERNAME" --fields id --format csv --noquotes)"
+      log "created user $USER_USERNAME"
+    else
+      log "user $USER_USERNAME already exists"
+    fi
+
+    # `search` is a substring match. It resolves to exactly one group because
+    # no name in realm.groups is a substring of another; the guards below are
+    # what catch a values change that breaks that.
+    group_id="$(kc get groups -q "search=$USER_GROUP" --fields id --format csv --noquotes)"
+    if [ -z "$group_id" ]; then
+      log "group $USER_GROUP is absent from realm $REALM"
+      exit 1
+    fi
+    matches="$(printf '%s\n' "$group_id" | wc -l | tr -d ' ')"
+    if [ "$matches" != "1" ]; then
+      log "group name $USER_GROUP matched $matches groups; use non-overlapping names"
+      exit 1
+    fi
+
+    # -n skips the read-modify-write merge: this endpoint takes the membership
+    # itself as the body, not a patch of an existing resource.
+    kc update "users/$user_id/groups/$group_id" \
+      -s "realm=$REALM" -s "userId=$user_id" -s "groupId=$group_id" -n >/dev/null
+    log "added $USER_USERNAME to $USER_GROUP"
+
+    {{- if .Values.bootstrapUser.temporaryPassword }}
+    kc set-password --userid "$user_id" --new-password "$USER_PASSWORD" \
+      --temporary >/dev/null
+    {{- else }}
+    kc set-password --userid "$user_id" --new-password "$USER_PASSWORD" >/dev/null
+    {{- end }}
+    log "set the password for $USER_USERNAME"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-bootstrap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: realm-bootstrap
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    # Kept after success so its log remains readable; the next release deletes
+    # it before creating the replacement.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        {{- include "tenantchat.keycloak.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/component: realm-bootstrap
+    spec:
+      # A failed attempt gets a fresh pod, preserving each pod's logs instead
+      # of rapidly rotating the only useful diagnostic output in one container.
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: {{ include "tenantchat.keycloak.image" . }}
+          imagePullPolicy: {{ .Values.keycloak.image.pullPolicy }}
+          command: ["/bin/sh", "/scripts/bootstrap.sh"]
+          env:
+            - name: KEYCLOAK_URL
+              value: {{ include "tenantchat.keycloak.internalUrl" . | quote }}
+            - name: REALM
+              value: {{ .Values.keycloak.realm | quote }}
+            - name: CLIENT_ID
+              value: {{ .Values.realm.clientId | quote }}
+            - name: ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.adminSecret.name }}
+                  key: {{ .Values.keycloak.adminSecret.usernameKey }}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.adminSecret.name }}
+                  key: {{ .Values.keycloak.adminSecret.passwordKey }}
+            - name: CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.realm.clientSecret.name }}
+                  key: {{ .Values.realm.clientSecret.key }}
+            - name: BOOTSTRAP_USER_ENABLED
+              value: {{ .Values.bootstrapUser.enabled | quote }}
+            {{- if .Values.bootstrapUser.enabled }}
+            - name: USER_GROUP
+              value: {{ .Values.bootstrapUser.group | quote }}
+            - name: USER_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bootstrapUser.secret.name }}
+                  key: {{ .Values.bootstrapUser.secret.usernameKey }}
+            - name: USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bootstrapUser.secret.name }}
+                  key: {{ .Values.bootstrapUser.secret.passwordKey }}
+            - name: USER_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bootstrapUser.secret.name }}
+                  key: {{ .Values.bootstrapUser.secret.emailKey }}
+            {{- end }}
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+              cpu: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "tenantchat.keycloak.fullname" . }}-bootstrap
+        - name: tmp
+          emptyDir: {}

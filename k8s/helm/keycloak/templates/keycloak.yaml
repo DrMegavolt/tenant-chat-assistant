@@ -1,0 +1,175 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "tenantchat.keycloak.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    {{- include "tenantchat.keycloak.selectorLabels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+# Keycloak talks to Postgres and to browsers; it never calls the Kubernetes API.
+automountServiceAccountToken: false
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    {{- include "tenantchat.keycloak.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: identity-provider
+    tenantchat.openai.com/exposure: internal
+spec:
+  selector:
+    {{- include "tenantchat.keycloak.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    # Health and metrics live on a separate listener so no ingress rule can
+    # publish them by matching a path on the public port.
+    - name: management
+      port: 9000
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    {{- include "tenantchat.keycloak.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: identity-provider
+spec:
+  serviceName: {{ include "tenantchat.keycloak.fullname" . }}
+  replicas: {{ .Values.keycloak.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tenantchat.keycloak.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Re-import the realm when its definition changes. Import is additive
+        # and never overwrites an existing realm, so this only matters on a
+        # first install or after a deliberate realm deletion.
+        checksum/realm: {{ include (print $.Template.BasePath "/realm-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "tenantchat.keycloak.commonLabels" . | nindent 8 }}
+        {{- include "tenantchat.keycloak.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: identity-provider
+    spec:
+      serviceAccountName: {{ include "tenantchat.keycloak.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keycloak
+          image: {{ include "tenantchat.keycloak.image" . }}
+          imagePullPolicy: {{ .Values.keycloak.image.pullPolicy }}
+          args: ["start", "--import-realm"]
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9000
+              name: management
+          env:
+            # A fixed hostname makes the issuer constant. Without it Keycloak
+            # derives `iss` from the request host, so a token minted over the
+            # in-cluster backchannel would carry a different issuer than the
+            # one oauth2-proxy was configured with and every login would fail.
+            - name: KC_HOSTNAME
+              value: {{ include "tenantchat.keycloak.publicUrl" . | quote }}
+            - name: KC_HOSTNAME_STRICT
+              value: "true"
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "false"
+            - name: KC_HTTP_ENABLED
+              value: {{ .Values.keycloak.httpEnabled | quote }}
+            - name: KC_PROXY_HEADERS
+              value: {{ .Values.keycloak.proxyHeaders | quote }}
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "true"
+            # Leave explicit headroom for Quarkus augmentation, class metadata,
+            # native buffers, and the embedded cache inside the 2Gi cgroup.
+            # Percentage-based defaults consumed too much heap and caused a
+            # first-start OOM before the optimized configuration was persisted.
+            - name: JAVA_OPTS_KC_HEAP
+              value: "-Xms256m -Xmx1024m"
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://{{ include "tenantchat.keycloak.databaseHost" . }}/{{ .Values.database.name }}
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.credentialsSecret.name }}
+                  key: {{ .Values.database.credentialsSecret.usernameKey }}
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.credentialsSecret.name }}
+                  key: {{ .Values.database.credentialsSecret.passwordKey }}
+            # Creates the master-realm admin on first start only; Keycloak
+            # ignores these once an admin exists.
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.adminSecret.name }}
+                  key: {{ .Values.keycloak.adminSecret.usernameKey }}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.adminSecret.name }}
+                  key: {{ .Values.keycloak.adminSecret.passwordKey }}
+          resources:
+            {{- toYaml .Values.keycloak.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # `start` without `--optimized` runs an augmentation step that
+            # rewrites the Quarkus build output under /opt/keycloak, so the
+            # root filesystem cannot be read-only. Building an optimized image
+            # is the production fix; it is not worth a custom image locally.
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: realm-import
+          configMap:
+            name: {{ include "tenantchat.keycloak.fullname" . }}-realm
+        - name: tmp
+          emptyDir: {}

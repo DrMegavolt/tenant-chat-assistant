@@ -1,0 +1,39 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := .Values.ingress.host | default (regexReplaceAll "^https?://" (include "tenantchat.keycloak.publicUrl" .) "") -}}
+{{- $host = regexReplaceAll ":[0-9]+$" $host "" -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+    {{- include "tenantchat.keycloak.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: identity-provider
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          # Only port 8080 is published. The management listener (9000) serves
+          # health and metrics and is deliberately unreachable from outside.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "tenantchat.keycloak.fullname" . }}
+                port:
+                  name: http
+{{- end }}

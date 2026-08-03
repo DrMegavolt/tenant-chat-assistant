@@ -696,6 +696,11 @@ spec:
               value: "static://202"
             - name: OAUTH2_PROXY_SKIP_PROVIDER_BUTTON
               value: "true"
+            # PKCE binds the authorization code to this client instance. The
+            # realm requires S256; discovery is off, so the method cannot be
+            # negotiated and has to be stated here.
+            - name: OAUTH2_PROXY_CODE_CHALLENGE_METHOD
+              value: "S256"
             # OIDC provider configuration — provisioned from secrets out of band.
             - name: OAUTH2_PROXY_PROVIDER
               value: "oidc"
@@ -719,6 +724,43 @@ spec:
                 secretKeyRef:
                   name: oidc-credentials
                   key: cookieSecret
+            # Discovery is skipped so the browser-facing and backchannel
+            # endpoints can differ: the login redirect has to be an address the
+            # user's browser can reach, while the code redemption, JWKS, and
+            # userinfo calls stay inside the cluster and never depend on
+            # split-horizon DNS or on the cluster trusting the gateway's
+            # certificate. The issuer above is the browser-facing one and is
+            # what the `iss` claim is compared against, so the provider must
+            # mint tokens with a fixed hostname (see ADR-0008).
+            - name: OAUTH2_PROXY_SKIP_OIDC_DISCOVERY
+              value: "true"
+            - name: OAUTH2_PROXY_LOGIN_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: oidc-endpoints
+                  key: loginUrl
+            - name: OAUTH2_PROXY_REDEEM_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: oidc-endpoints
+                  key: redeemUrl
+            - name: OAUTH2_PROXY_OIDC_JWKS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: oidc-endpoints
+                  key: jwksUrl
+            - name: OAUTH2_PROXY_PROFILE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: oidc-endpoints
+                  key: profileUrl
+            # Stated rather than derived from the request: the value has to be
+            # byte-identical to the redirect URI registered on the client.
+            - name: OAUTH2_PROXY_REDIRECT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: oidc-endpoints
+                  key: redirectUrl
           resources:
             requests:
               memory: 32Mi

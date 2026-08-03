@@ -7,6 +7,7 @@
 architecture/likec4/node_modules
 architecture/likec4/dist
 frontend/node_modules
+frontend/dist
 frontend/tests
 coverage
 artifacts

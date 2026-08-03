@@ -108,6 +108,73 @@ def test_the_ingress_controller_can_only_reach_the_web_gateway() -> None:
     assert ingress_callers == {"allow-public-ingress-to-web": {"app": "web"}}
 
 
+def test_oauth2_proxy_reaches_the_identity_provider_over_the_in_cluster_backchannel() -> None:
+    """Code redemption and JWKS must not depend on the ingress or on public DNS.
+
+    Without this rule the namespace's default-deny egress drops the token
+    exchange, and every login fails after the user has already authenticated.
+    """
+    policies = load_documents("k8s/network-policies.yaml")
+    egress = resource(policies, "NetworkPolicy", "allow-oauth2-proxy-egress")["spec"]["egress"]
+    backchannel = [
+        rule
+        for rule in egress
+        for destination in rule["to"]
+        if destination.get("namespaceSelector", {}).get("matchLabels", {})
+        == {"kubernetes.io/metadata.name": "identity"}
+    ]
+
+    assert len(backchannel) == 1
+    destination = backchannel[0]["to"][0]
+    assert destination["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": "keycloak"}
+    assert backchannel[0]["ports"] == [{"protocol": "TCP", "port": 8080}]
+
+
+def test_skipping_oidc_discovery_states_every_endpoint() -> None:
+    """Discovery is off, so an unstated endpoint is not defaulted — it is absent.
+
+    oauth2-proxy would start and only fail at the first redirect, so the gap is
+    caught here instead.
+    """
+    documents = load_documents("k8s/app.yaml")
+    env = container_env(resource(documents, "Deployment", "oauth2-proxy"))
+
+    assert env["OAUTH2_PROXY_SKIP_OIDC_DISCOVERY"]["value"] == "true"
+    for variable, key in {
+        "OAUTH2_PROXY_LOGIN_URL": "loginUrl",
+        "OAUTH2_PROXY_REDEEM_URL": "redeemUrl",
+        "OAUTH2_PROXY_OIDC_JWKS_URL": "jwksUrl",
+        "OAUTH2_PROXY_PROFILE_URL": "profileUrl",
+        "OAUTH2_PROXY_REDIRECT_URL": "redirectUrl",
+    }.items():
+        assert env[variable]["valueFrom"]["configMapKeyRef"] == {
+            "name": "oidc-endpoints",
+            "key": key,
+        }
+    assert env["OAUTH2_PROXY_OIDC_ISSUER_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": "oidc-credentials",
+        "key": "issuerUrl",
+    }
+
+
+def test_realm_groups_are_exactly_the_roles_the_gateway_maps() -> None:
+    """A group the gateway cannot map authenticates a user into having no role.
+
+    The failure is silent: login succeeds and every admin route returns 403.
+    """
+    values = yaml.safe_load(
+        (ROOT / "k8s/helm/keycloak/values.yaml").read_text(encoding="utf-8"),
+    )
+    entrypoint = (ROOT / "frontend/nginx/entrypoint.sh").read_text(encoding="utf-8")
+    mapped = {
+        role
+        for role in ("viewer", "support_agent", "tenant_admin", "platform_admin")
+        if f'"{role}";' in entrypoint
+    }
+
+    assert set(values["realm"]["groups"]) == mapped
+
+
 def test_workloads_use_distinct_internal_secret_refs() -> None:
     documents = load_documents("k8s/app.yaml")
     expected = {
@@ -182,17 +249,21 @@ def test_public_listener_excludes_admin_and_metrics_routes() -> None:
     assert is_public_route("POST", "/api/book")
     assert not is_public_route("GET", "/metrics")
     assert not is_public_route("GET", "/admin.html")
-    assert not is_public_route("GET", "/admin.js")
+    assert not is_public_route("GET", "/admin/")
     assert not is_public_route("GET", "/api/leads")
     assert not is_public_route("GET", "/api/admin/chats")
 
 
-def test_public_listener_serves_every_module_the_widget_imports() -> None:
-    """A missing entry 403s a widget module and breaks every embed silently."""
+def test_public_listener_serves_every_file_the_public_build_emitted() -> None:
+    """A missing entry 403s a bundle file and breaks the page silently.
+
+    Bundle filenames carry a content hash, so the allowlist has to be derived
+    from the build rather than written down; this asserts the derivation covers
+    everything the build actually produced.
+    """
     from server import STATIC_ROOT, is_public_route
 
-    entry_points = ["/app.js", "/embed.js"]
-    modules = [f"/widget/{path.name}" for path in sorted((STATIC_ROOT / "widget").glob("*.js"))]
-
-    for path in [*entry_points, *modules]:
-        assert is_public_route("GET", path), path
+    assert is_public_route("GET", "/")
+    assert is_public_route("GET", "/embed.js")
+    for path in sorted((STATIC_ROOT / "assets").glob("*")):
+        assert is_public_route("GET", f"/assets/{path.name}"), path.name

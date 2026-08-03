@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Tenant Chat Assistant Prototype</title>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- The mount element belongs to the host page, not to the application:
+         it is exactly what a customer site would paste in. `data-open` is set
+         here so a reviewer lands on an open widget; a real embed leaves it off
+         and starts collapsed. -->
+    <div id="tenant-chat" data-company-id="apex" data-open="true"></div>
+
+    <script type="module" src="/src/demo/main.tsx"></script>
+  </body>
+</html>

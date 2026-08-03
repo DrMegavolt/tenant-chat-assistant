@@ -16,6 +16,8 @@ Consequences, Alternatives considered.
 | [0005](0005-conversation-persistence.md) | Tenant-qualified append-only conversation persistence | Accepted |
 | [0006](0006-frontend-delivery.md) | nginx serves the frontend; the backend serves only the API | Superseded by 0007 |
 | [0007](0007-single-origin-gateway.md) | Single-origin nginx gateway with OIDC auth | Accepted |
+| [0008](0008-identity-provider.md) | Keycloak as the identity provider, with split browser and backchannel URLs | Accepted |
+| [0009](0009-react-frontend-build.md) | React and TypeScript behind a bundled build, with the embed as a published artefact | Accepted |
 
 ## Relationship to BACKLOG.md
 

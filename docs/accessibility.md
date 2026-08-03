@@ -4,27 +4,33 @@ The embeddable widget targets WCAG 2.2 AA (`FEAT-013`). This page records what
 is enforced automatically, what must be checked by hand, and the result of the
 last manual pass.
 
+The widget renders in whichever scheme the visitor's system asks for, or in the
+one an embedder pins with `data-color-scheme` on the mount element, so every
+check below applies to both.
+
 ## What the build enforces
 
 `make js-test` fails on any of these.
 
 | Check | Where |
 | --- | --- |
-| axe-core has no violations for the idle widget, the booking form, and the failure state | `frontend/tests/accessibility.test.js` |
-| Focus returns to the launcher on close and to the composer on open | `frontend/tests/accessibility.test.js` |
-| Escape closes the widget from inside the shadow root | `frontend/tests/accessibility.test.js` |
-| The transcript is a polite `log` and reports `aria-busy` while a reply is pending | `frontend/tests/accessibility.test.js` |
-| Every message carries a speaker name for a non-sighted listener | `frontend/tests/accessibility.test.js` |
-| Every color pair the widget paints meets the AA ratio for its use | `frontend/tests/contrast.test.js` |
-| Consent is required and explained before contact details are sent | `frontend/tests/privacy.test.js` |
-| Details already given are not requested twice (§3.3.7) | `frontend/tests/privacy.test.js` |
-| The widget renders no markup into the host document | `frontend/tests/widget.test.js` |
+| axe-core has no violations for the idle widget, the booking form, and the failure state | `frontend/tests/accessibility.test.tsx` |
+| Focus returns to the launcher on close and to the composer on open | `frontend/tests/accessibility.test.tsx` |
+| Escape closes the widget from inside the shadow root | `frontend/tests/accessibility.test.tsx` |
+| The transcript is a polite `log` and reports `aria-busy` while a reply is pending | `frontend/tests/accessibility.test.tsx` |
+| Every message carries a speaker name for a non-sighted listener | `frontend/tests/accessibility.test.tsx` |
+| Every color pair the widget paints meets the AA ratio for its use, in both schemes | `frontend/tests/contrast.test.ts` |
+| Consent is required and explained before contact details are sent | `frontend/tests/privacy.test.tsx` |
+| Details already given are not requested twice (§3.3.7) | `frontend/tests/privacy.test.tsx` |
+| The widget renders no markup into the host document | `frontend/tests/widget.test.tsx` |
+| An unopened panel takes no focus from the embedding page | `frontend/tests/accessibility.test.tsx` |
+| The operator console has no axe violations | `frontend/tests/admin.test.tsx` |
 
 axe cannot judge `color-contrast`, `target-size`, or `scrollable-region-focusable`
 under jsdom, which has no layout engine. Contrast is covered by the ratio test
 above; target size and the focusable transcript are covered by the minimum
-dimensions and `tabindex` in `frontend/public/widget/styles.js` and
-`widget.js`, and by the manual pass below.
+dimensions in `frontend/src/widget/widget.css` and the `tabindex` in
+`components/Transcript.tsx`, and by the manual pass below.
 
 ## Manual pass
 

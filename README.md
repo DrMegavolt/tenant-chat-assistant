@@ -27,16 +27,16 @@ python3 server.py
 ```
 
 Then serve the frontend against it. For frontend work, use the dev server: it
-hot-reloads `frontend/public/` and proxies `/api` to the backend on port 8000,
-so the browser stays same-origin exactly as it is behind nginx.
+hot-reloads `frontend/src/` and proxies `/api` to the backend on port 8000, so
+the browser stays same-origin exactly as it is behind nginx.
 
 ```bash
 make dev
 ```
 
 ```text
-http://127.0.0.1:5173            the demo site
-http://127.0.0.1:5173/admin.html the operator console
+http://127.0.0.1:5173        the demo site
+http://127.0.0.1:5173/admin/ the operator console
 ```
 
 Point the proxy somewhere else — `services/api`, or a port-forwarded cluster —
@@ -55,14 +55,16 @@ make web
 ```
 
 ```text
-http://127.0.0.1:8080            the demo site
-http://127.0.0.1:8081            the operator console, bound to loopback only
+http://127.0.0.1:8080        the demo site
+http://127.0.0.1:8080/admin/ the operator console, behind the gateway's auth
 ```
 
-`server.py` still serves `frontend/public/` on port 8000 for convenience, but
-the prototype image no longer contains those files: in a deployment the `web`
-image serves them and proxies the API back to the chat backend. See
-[ADR-0006](docs/adr/0006-frontend-delivery.md).
+`server.py` still serves the built frontend on port 8000 for convenience, so
+run `make js-build` once before using it; the prototype image no longer contains
+those files. In a deployment the `web` image serves them and proxies the API
+back to the chat backend. See
+[ADR-0007](docs/adr/0007-single-origin-gateway.md) and
+[ADR-0009](docs/adr/0009-react-frontend-build.md).
 
 Chat archives are saved as JSON files locally in:
 
@@ -174,6 +176,12 @@ contracts have been replaced with registry digests. See
 [`docs/runbooks/container-images.md`](docs/runbooks/container-images.md) for the
 locked build, non-root smoke, metadata, and scanning workflow.
 
+For the full local MicroK8s sequence, install the Keycloak Helm chart first and
+then run `./k8s/deploy.sh` as documented in [`k8s/README.md`](k8s/README.md).
+That deploy applies the public `web-lb` and `keycloak-lb` MetalLB Services at
+`192.168.1.180` and `192.168.1.181`; the HTTPS browser endpoints continue to use
+the Traefik ingress hostname.
+
 The deployed site is the `web` Service, which serves the assets and proxies the
 visitor API to the backend:
 
@@ -230,30 +238,45 @@ Example embed shape:
 <script type="module" src="https://your-domain.com/embed.js"></script>
 ```
 
+The mount element carries everything the widget needs. `data-open="true"` starts
+the panel expanded (the demo page does this; a real embed should not), and
+`data-color-scheme="light"` or `"dark"` pins the scheme on a host page that is
+not scheme-aware.
+
+Serving the embed from a different origin than the customer's site requires that
+origin in `WIDGET_ALLOWED_ORIGINS`, which the gateway turns into the CORS
+allowlist for both the visitor API and `/embed.js` itself.
+
 ## The frontend
 
 Everything the browser loads lives under `frontend/`, which is a self-contained
-npm project: `frontend/public/` is served as-is, `frontend/tests/` holds the
-Vitest suite, and ESLint, Prettier, Vite, and Vitest are configured beside them.
-The `make dev` and `make js-*` targets drive it; nothing at the repository root
-is an npm package.
+npm project: React 19 and TypeScript in `strict` mode, built by Vite. The
+`make dev` and `make js-*` targets drive it; nothing at the repository root is
+an npm package.
 
 ```text
-frontend/public/
-  index.html, admin.html, styles.css   demo site and operator console
-  embed.js                             the entry a customer site includes
-  app.js                               the demo page, which embeds the widget
-  widget/                              the widget itself; no host-page coupling
-frontend/nginx/                        the gateway that serves all of it
-frontend/Dockerfile                    the `web` image
-frontend/vite.config.js                the hot-reloading dev server
+frontend/index.html, admin.html   the two page shells
+frontend/src/widget/              the embeddable widget; no host-page coupling
+frontend/src/demo/                the stand-in customer site that embeds it
+frontend/src/admin/               the operator console
+frontend/src/embed/main.ts        the entry a customer site includes
+frontend/tests/                   the Vitest suite
+frontend/nginx/                   the gateway that serves all of it
+frontend/Dockerfile               the `web` image, Node build stage included
+frontend/vite.config.ts           three build passes and the dev server
 ```
 
-There is no build step. The dev server and the nginx image serve the same
-unbundled ES modules, so what hot-reloads locally is byte-for-byte what ships.
+`npm run build` (`make js-build`) runs three passes, because the deployment has
+three audiences: the public page and the operator console are separate builds so
+the two nginx document roots share no chunk, and `embed.js` is a third,
+self-contained file whose name never changes — customer sites hard-code that
+URL, and a module script's imports are fetched under CORS. See
+[ADR-0009](docs/adr/0009-react-frontend-build.md).
 
 The widget renders into a shadow root, so an embedding page can neither style
 its internals nor collide with its element ids, and its own styles never escape.
-Accessibility is covered in [`docs/accessibility.md`](docs/accessibility.md):
-automated axe, contrast, focus, and consent checks run in `make check`, and the
-manual keyboard and screen-reader list lives there too.
+It follows the visitor's `prefers-color-scheme`, or an explicit
+`data-color-scheme` on the mount element. Accessibility is covered in
+[`docs/accessibility.md`](docs/accessibility.md): automated axe, contrast, focus,
+and consent checks run in `make check`, and the manual keyboard and
+screen-reader list lives there too.

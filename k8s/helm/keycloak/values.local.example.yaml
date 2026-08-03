@@ -1,0 +1,38 @@
+# Example values for the local MicroK8s demo. Copy to .local/k8s/ (gitignored),
+# replace the hosts and the image digest, and pass with `-f`.
+#
+#     helm upgrade --install keycloak k8s/helm/keycloak \
+#       --namespace identity --create-namespace \
+#       -f .local/k8s/keycloak-values.yaml
+#
+# No credential belongs in this file. Every one is a Secret reference, and the
+# Secrets are created out of band exactly like the ones in k8s/examples/.
+
+keycloak:
+  publicUrl: https://auth.replace-with-your-host.invalid
+  realm: tenantchat
+  image:
+    tag: "26.4.0"
+    # crane digest quay.io/keycloak/keycloak:26.4.0
+    digest: sha256:REPLACE_WITH_KEYCLOAK_DIGEST
+
+realm:
+  # The gateway origin, i.e. where /admin/ is served. Must be HTTPS: the
+  # oauth2-proxy session cookie is issued with the Secure attribute.
+  gatewayUrl: https://replace-with-your-host.invalid
+
+bootstrapUser:
+  enabled: true
+  group: platform_admin
+
+ingress:
+  enabled: true
+  className: traefik
+  tls:
+    enabled: true
+    secretName: keycloak-tls
+
+database:
+  embedded: true
+  storage:
+    size: 5Gi

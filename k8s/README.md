@@ -47,6 +47,9 @@ kubectl -n llm-chat create configmap llm-runtime \
 kubectl -n llm-chat create configmap widget-cors-origins \
   --from-env-file=.local/k8s/widget-cors-origins.env.example \
   --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n llm-chat create configmap oidc-endpoints \
+  --from-env-file=.local/k8s/oidc-endpoints.env.example \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 Run `make deployment-security image-contracts` before deployment. `app.yaml` is
@@ -94,11 +97,77 @@ Before deployment, provision these additional resources out of band:
 - ConfigMap `widget-cors-origins` with key `origins` listing the comma-separated
   origins allowed to make cross-origin widget API calls (empty for same-origin
   only).
+- ConfigMap `oidc-endpoints` with keys `loginUrl`, `redeemUrl`, `jwksUrl`,
+  `profileUrl`, and `redirectUrl`. oauth2-proxy runs with OIDC discovery
+  disabled so the browser-facing endpoints and the in-cluster backchannel can
+  differ; see ADR-0008.
 
 The OIDC provider must include one of `viewer`, `support_agent`,
 `tenant_admin`, or `platform_admin` in its `groups` claim. Users without a
 recognized group fail closed at the Python authorization boundary. Register
 `https://<gateway-host>/oauth2/callback` as the provider callback URL.
+
+## Helm and full local setup
+
+The platform Helm releases (Traefik, cert-manager, observability, and data
+services) are managed from `/Users/sergio/Documents/k8s-infra`; apply those
+first. The application Keycloak chart is installed from this repository:
+
+```bash
+helm upgrade --install keycloak k8s/helm/keycloak \
+  --namespace identity --create-namespace \
+  -f .local/k8s/keycloak-values.yaml \
+  --wait --timeout 15m
+```
+
+After provisioning the Secrets and ConfigMaps above and rendering a release
+manifest with immutable image digests, the complete application setup is:
+
+```bash
+make deployment-security image-contracts
+./k8s/deploy.sh /absolute/path/to/rendered-app.yaml
+```
+
+`k8s/deploy.sh` applies the OTel collector, observability exposure, the
+web/Keycloak MetalLB Services, network policies, the application manifest,
+Kibana setup, and the seed job, then waits for the rollouts. The public Service
+IPs are reserved from the local pool as follows:
+
+- Web: `http://192.168.1.180` (TLS/browser canonical URL remains the Traefik
+  host, for example `https://chat.192.168.1.170.nip.io`).
+- Keycloak: `http://192.168.1.181:8080` (TLS/browser canonical URL remains the
+  configured Traefik host, for example `https://auth.192.168.1.170.nip.io`).
+
+The direct Keycloak LoadBalancer is intended for local-LAN service reachability;
+OIDC browser redirects and issuer values must continue using the configured
+HTTPS hostname. Only the web and Keycloak HTTP listeners are public; the
+backend, oauth2-proxy, databases, Elasticsearch, Kibana, and worker Services
+remain ClusterIP.
+
+Verify the assigned addresses with:
+
+```bash
+kubectl get svc -n llm-chat web web-lb -o wide
+kubectl get svc -n identity keycloak keycloak-lb -o wide
+```
+
+## Identity provider
+
+`k8s/helm/keycloak/` is a Helm chart deploying Keycloak into the `identity`
+namespace as that provider, so the auth path runs end to end on a local
+cluster. It creates the `tenantchat` realm with the four role groups, the
+`groups` client scope the gateway reads, default-deny NetworkPolicies matching
+this namespace's shape, and a post-install Job that applies the client secret
+and the first operator account from Secrets. Its README covers the Secrets,
+the values with no default, and how the split browser/backchannel URLs work.
+
+The chart is not covered by `make deployment-security` or `make image-contracts`:
+both scan the flat `k8s/*.yaml` glob and parse plain YAML, which Go templates
+are not. `make keycloak-render` renders the chart so the same eyes can check the
+output; every image in it must end in an exact digest.
+
+The `allow-oauth2-proxy-egress` policy admits the `identity` namespace on port
+8080 for the backchannel, and keeps external HTTPS for a hosted provider.
 
 Run `make network-policy-smoke` only against the local MicroK8s test cluster. It
 creates four uniquely named disposable namespaces, applies the production

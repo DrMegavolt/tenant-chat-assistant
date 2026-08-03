@@ -47,6 +47,13 @@ OAUTH2_PROXY_CONTRACT = re.compile(
     r"quay\.io/oauth2-proxy/oauth2-proxy:v[\d.]+@sha256:REPLACE_WITH_[A-Z0-9_]+_DIGEST$"
 )
 WEB_SITE_TEMPLATE = ROOT / "frontend/nginx/site.conf.template"
+WEB_VITE_CONFIG = ROOT / "frontend/vite.config.ts"
+# The build-stage directories each nginx document root is copied from.
+WEB_PUBLIC_BUILD = "/build/dist/public/"
+WEB_ADMIN_BUILD = "/build/dist/admin/"
+# A customer site hard-codes this URL in a script tag, so the build may not
+# rename it and the gateway has to answer it with allowlisted CORS.
+WEB_EMBED_PATH = "/embed.js"
 # The visitor API surface the public listener may forward, which has to stay
 # equal to `_PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS` minus the static routes in
 # server.py; `tests/test_web_gateway.py` asserts that equality directly.
@@ -197,11 +204,14 @@ def proxied_locations(block: str) -> set[str]:
 def verify_web_gateway(errors: list[str]) -> None:
     """Require the single public listener to isolate admin from public.
 
-    Two document roots and one listener are the whole isolation argument: if
-    the public root ever receives the full `frontend/public/` tree, or the
-    single server block grows an unauthenticated admin location, the operator
-    console becomes internet-facing with nothing else in the deployment to
-    stop it.  Admin routes must be auth-gated; unknown API paths must 404.
+    Two document roots and one listener are the whole isolation argument: if the
+    public root ever receives admin output, or the single server block grows an
+    unauthenticated admin location, the operator console becomes internet-facing
+    with nothing else in the deployment to stop it.  Admin routes must be
+    auth-gated; unknown API paths must 404.
+
+    Public and admin are separate Vite builds, so the two roots share no chunk
+    and each is copied whole from its own build directory.
     """
     dockerfile = str(WEB_DOCKERFILE.relative_to(ROOT))
     template = str(WEB_SITE_TEMPLATE.relative_to(ROOT))
@@ -209,18 +219,10 @@ def verify_web_gateway(errors: list[str]) -> None:
     if set(roots) != {"/srv/public", "/srv/admin"}:
         errors.append(f"{dockerfile}: expected exactly a public and an admin document root")
         return
-    for source in sorted(roots["/srv/public"]):
-        if Path(source).name.startswith("admin") or source.rstrip("/") == "frontend/public":
-            errors.append(f"{dockerfile}: public root must not receive {source}")
-    public_sources = {
-        "frontend/public/index.html",
-        "frontend/public/app.js",
-        "frontend/public/embed.js",
-        "frontend/public/styles.css",
-        "frontend/public/widget/",
-    }
-    for source in sorted(public_sources - roots["/srv/public"]):
-        errors.append(f"{dockerfile}: public root is missing {source}")
+    for expected, root in ((WEB_PUBLIC_BUILD, "/srv/public"), (WEB_ADMIN_BUILD, "/srv/admin")):
+        if roots[root] != {expected}:
+            got = ", ".join(sorted(roots[root])) or "nothing"
+            errors.append(f"{dockerfile}: {root} must be built from exactly {expected}, got {got}")
 
     blocks = web_server_blocks()
     if set(blocks) != {8080}:
@@ -271,6 +273,15 @@ def verify_web_gateway(errors: list[str]) -> None:
     for path in ADMIN_PROXY_PATHS:
         if "Access-Control-Allow-Origin" in locations.get(path, ""):
             errors.append(f"{template}: admin route {path} must not emit CORS permission")
+    # The embed is the only static asset a cross-origin customer site fetches.
+    embed_body = locations.get(WEB_EMBED_PATH, "")
+    if "Access-Control-Allow-Origin $widget_cors_origin" not in embed_body:
+        errors.append(f"{template}: {WEB_EMBED_PATH} is missing allowlisted CORS responses")
+    vite_config = WEB_VITE_CONFIG.read_text(encoding="utf-8")
+    if 'entryFileNames: "embed.js"' not in vite_config or "codeSplitting: false" not in vite_config:
+        errors.append(
+            f"{WEB_VITE_CONFIG.relative_to(ROOT)}: the embed must build to one unhashed embed.js"
+        )
     # Widget CORS must not be wildcard.
     if "Access-Control-Allow-Origin *" in block:
         errors.append(f"{template}: must not use wildcard CORS")

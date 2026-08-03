@@ -16,6 +16,8 @@ import yaml  # type: ignore[import-untyped]
 from scripts.verify_image_contracts import (
     ADMIN_PROXY_PATHS,
     PUBLIC_PROXY_PATHS,
+    WEB_ADMIN_BUILD,
+    WEB_PUBLIC_BUILD,
     location_bodies,
     proxied_locations,
     verify_web_gateway,
@@ -61,12 +63,32 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
     assert all_proxy >= backend_api | set(ADMIN_PROXY_PATHS)
 
 
-def test_public_listener_serves_every_module_the_widget_imports() -> None:
-    """A module missing from the public root 404s and breaks every embed."""
-    public_root = web_document_roots()["/srv/public"]
+def test_each_document_root_holds_exactly_one_build() -> None:
+    """A chunk shared between the two roots would publish admin code.
 
-    assert "frontend/public/widget/" in public_root
-    assert "frontend/public/embed.js" in public_root
+    Public and admin are separate Vite builds for this reason: neither root can
+    be assembled from files the other one also needs.
+    """
+    roots = web_document_roots()
+
+    assert roots["/srv/public"] == {WEB_PUBLIC_BUILD}
+    assert roots["/srv/admin"] == {WEB_ADMIN_BUILD}
+
+
+def test_the_embed_keeps_a_stable_cross_origin_url() -> None:
+    """Customer sites hard-code this URL, and module imports are CORS-gated.
+
+    Hashing the filename would break every existing embed on the next release;
+    splitting it into chunks would make each chunk a separate cross-origin fetch
+    that the gateway does not allowlist, so the widget would fail to load.
+    """
+    config = (ROOT / "frontend/vite.config.ts").read_text(encoding="utf-8")
+    assert 'entryFileNames: "embed.js"' in config
+    assert "codeSplitting: false" in config
+
+    embed = location_bodies(web_server_blocks()[8080])["/embed.js"]
+    assert "Access-Control-Allow-Origin $widget_cors_origin" in embed
+    assert "proxy_pass" not in embed
 
 
 def test_single_listener_has_no_separate_admin_port() -> None:
@@ -89,6 +111,19 @@ def test_admin_routes_are_auth_gated() -> None:
 
     admin_api_section = locations["/api/admin/"]
     assert "auth_request" in admin_api_section
+
+
+def test_oauth_redirect_preserves_the_ingress_origin() -> None:
+    """TLS terminates at Traefik, so redirects must not expose nginx :8080."""
+    template = (ROOT / "frontend/nginx/site.conf.template").read_text(encoding="utf-8")
+
+    assert "map $http_x_forwarded_proto $gateway_scheme" in template
+    assert "map $http_x_forwarded_host $gateway_host" in template
+    assert (
+        "return 302 $gateway_scheme://$gateway_host/oauth2/start?rd="
+        "$gateway_scheme://$gateway_host$request_uri;" in template
+    )
+    assert "proxy_set_header X-Forwarded-Proto $gateway_scheme;" in template
 
 
 def test_spoofable_identity_headers_are_handled() -> None:

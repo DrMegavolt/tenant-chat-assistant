@@ -1,0 +1,83 @@
+{
+  "realm": "{{ .Values.keycloak.realm }}",
+  "displayName": "TenantChat",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "verifyEmail": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 10,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "accessTokenLifespan": {{ .Values.realm.accessTokenLifespan }},
+  "ssoSessionIdleTimeout": {{ .Values.realm.ssoSessionIdleTimeout }},
+  "ssoSessionMaxLifespan": {{ .Values.realm.ssoSessionMaxLifespan }},
+  "offlineSessionIdleTimeout": 2592000,
+  "groups": [
+{{- range $index, $group := .Values.realm.groups }}
+    {{ if $index }},{{ end }}{ "name": "{{ $group }}", "path": "/{{ $group }}" }
+{{- end }}
+  ],
+  "clientScopes": [
+    {
+      "name": "groups",
+      "description": "Group membership, mapped by the gateway to an application role",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "{{ .Values.realm.clientId }}",
+      "name": "TenantChat admin gateway",
+      "description": "Confidential client for the oauth2-proxy sidecar in front of /admin/",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": ["{{ include "tenantchat.keycloak.gatewayUrl" . }}/oauth2/callback"],
+      "webOrigins": ["{{ include "tenantchat.keycloak.gatewayUrl" . }}"],
+      "attributes": {
+        "post.logout.redirect.uris": "{{ include "tenantchat.keycloak.gatewayUrl" . }}/*",
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email",
+        "roles",
+        "web-origins",
+        "groups"
+      ],
+      "optionalClientScopes": []
+    }
+  ]
+}

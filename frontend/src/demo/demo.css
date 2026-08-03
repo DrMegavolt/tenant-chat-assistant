@@ -1,0 +1,277 @@
+/**
+ * The stand-in customer website.
+ *
+ * It is deliberately *not* the widget's palette: a reviewer should be able to
+ * see at a glance that the teal panel in the corner belongs to a different
+ * system than the page behind it, because on a real customer's site it will.
+ */
+
+@import "../styles/base.css";
+
+body {
+  --brand: light-dark(#8a3f12, #f0a877);
+  --brand-quiet: light-dark(#f7ece4, #2a1a11);
+
+  background:
+    radial-gradient(60rem 32rem at 88% -10%, light-dark(#f2e4d8, #241a15) 0%, transparent 60%),
+    var(--canvas);
+}
+
+.page {
+  display: grid;
+  gap: var(--space-6);
+  width: min(1160px, 100% - 2 * var(--space-5));
+  margin-inline: auto;
+  padding-block: var(--space-5) var(--space-8);
+}
+
+/* --- Prototype banner ----------------------------------------------------- */
+
+/* The switcher is scaffolding, not part of the site being imitated, so it is
+   visibly bolted on above the page rather than dressed up as navigation. */
+.preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.preview-bar p {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.tenant-switcher {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+}
+
+.tenant-switcher button {
+  min-height: 34px;
+  padding: 0 var(--space-4);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
+}
+
+.tenant-switcher button:hover {
+  color: var(--ink);
+}
+
+.tenant-switcher button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--canvas);
+}
+
+/* --- Site header ---------------------------------------------------------- */
+
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.wordmark::before {
+  content: "";
+  width: 12px;
+  height: 26px;
+  border-radius: var(--radius-pill);
+  background: var(--brand);
+}
+
+.call-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 42px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--brand);
+  color: light-dark(#ffffff, #2a1409);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* --- Hero ------------------------------------------------------------------ */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: var(--space-7);
+  align-items: start;
+  padding-block: var(--space-5);
+}
+
+.hero h1 {
+  max-width: 16ch;
+  font-size: clamp(2.4rem, 5.2vw, 3.9rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.04;
+  text-wrap: balance;
+}
+
+.hero .lede {
+  max-width: 52ch;
+  margin-top: var(--space-4);
+  color: var(--ink-muted);
+  font-size: 1.05rem;
+  text-wrap: pretty;
+}
+
+.service-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  padding: 0;
+  list-style: none;
+}
+
+.service-chips li {
+  padding: 5px var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.contact-facts {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.contact-facts div {
+  display: grid;
+  gap: 2px;
+}
+
+.contact-facts dt {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.contact-facts dd {
+  font-weight: 600;
+}
+
+/* --- Policy panel ---------------------------------------------------------- */
+
+.policy-panel {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--surface-muted);
+}
+
+.policy-panel > p {
+  max-width: 70ch;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--space-3);
+}
+
+.policy-grid > div {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  padding: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.policy-grid dt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.policy-grid dd {
+  font-size: 0.92rem;
+}
+
+.policy-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+}
+
+.policy-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.policy-state.on {
+  background: var(--accent-quiet);
+  color: var(--accent);
+}
+
+.policy-state.off {
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: var(--space-5);
+  }
+}

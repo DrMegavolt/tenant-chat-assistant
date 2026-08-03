@@ -29,10 +29,11 @@ spec:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
 ---
-# The web gateway is the only pod the ingress controller may reach, and nothing
-# outside the namespace reaches the backend at all. There is intentionally no
-# LoadBalancer service for Kibana, financing, ingestion, embedding, or data stores.
-# Port 8080 is the single public listener; the separate admin port (8081) is gone.
+# The web gateway is the only public application pod. Traefik remains the TLS
+# ingress, and the dedicated MetalLB Service is an additional local-LAN entry
+# point. There is intentionally no LoadBalancer service for Kibana, financing,
+# ingestion, embedding, or data stores. Port 8080 is the single public listener;
+# the separate admin port (8081) is gone.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -51,6 +52,9 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: traefik
+        # MetalLB forwards the dedicated web-lb Service to this pod.
+        - ipBlock:
+            cidr: 0.0.0.0/0
       ports:
         # 8081 is absent on purpose: the console listener is not routable.
         - { protocol: TCP, port: 8080 }
@@ -476,9 +480,10 @@ spec:
       ports:
         - { protocol: TCP, port: 4318 }
 ---
-# oauth2-proxy needs to reach the external OIDC provider for token exchange
-# and JWKS validation.  Like the model provider, the FQDN cannot be bound to
-# an ipBlock in a standard NetworkPolicy, so external HTTPS is allowed.
+# oauth2-proxy reaches the OIDC provider for token exchange and JWKS
+# validation.  With the in-cluster Keycloak of ADR-0008 that traffic never
+# leaves the cluster; the external HTTPS rule stays for a hosted provider,
+# whose FQDN cannot be bound to an ipBlock in a standard NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -490,6 +495,15 @@ spec:
       app: oauth2-proxy
   policyTypes: [Egress]
   egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: identity
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: keycloak
+      ports:
+        - { protocol: TCP, port: 8080 }
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

@@ -1,0 +1,176 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+The identity namespace is default-deny in both directions, matching the
+application namespace in k8s/network-policies.yaml. Every flow below is listed
+because it is needed: browsers through the ingress controller, the backchannel
+from oauth2-proxy, and Keycloak's own database.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-default-deny-all
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-dns-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# Browser traffic reaches only the HTTP listener. TLS still terminates at the
+# Traefik ingress; the dedicated MetalLB Service is a local-LAN HTTP entrypoint
+# for the same listener. Nothing may reach the management port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-public-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tenantchat.keycloak.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressController.podLabels | nindent 14 }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Backchannel: oauth2-proxy redeems authorization codes and fetches JWKS over
+# the in-cluster Service, so neither call depends on the ingress, on external
+# DNS, or on the cluster trusting the gateway's TLS certificate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-oauth2-proxy-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tenantchat.keycloak.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.oauth2Proxy.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.oauth2Proxy.podLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-bootstrap-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tenantchat.keycloak.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: realm-bootstrap
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-bootstrap-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: realm-bootstrap
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "tenantchat.keycloak.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+{{- if .Values.database.embedded }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-keycloak-to-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tenantchat.keycloak.postgresSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tenantchat.keycloak.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenantchat.keycloak.fullname" . }}-allow-keycloak-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tenantchat.keycloak.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tenantchat.keycloak.selectorLabels" . | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "tenantchat.keycloak.postgresSelectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 5432 }
+{{- end }}
+{{- end }}

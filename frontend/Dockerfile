@@ -1,6 +1,18 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
+ARG NODE_IMAGE="node:24.18.1-alpine3.23@sha256:c2cc26d8f991c2db236ad51a61efee843c482372d6d22570787309d511694110"
 ARG NGINX_IMAGE="nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de"
+
+# The bundles are built here rather than on a developer's laptop, so what nginx
+# serves comes from package-lock.json and nothing else. `npm ci` fails outright
+# if the lockfile disagrees with package.json, the same guarantee `uv sync
+# --frozen` gives the Python images.
+FROM ${NODE_IMAGE} AS build
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
 
 FROM ${NGINX_IMAGE} AS runtime
 ARG SOURCE_DATE_EPOCH="0"
@@ -20,14 +32,12 @@ COPY frontend/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY frontend/nginx/site.conf.template /etc/nginx/templates/site.conf.template
 COPY --chmod=0555 frontend/nginx/entrypoint.sh /usr/local/bin/tenantchat-web
 
-# Two roots, not one root with denied paths: the public root contains no
-# admin asset and the admin root is served only under /admin/ behind auth.
-# The single listener serves both audiences from one port, with the admin
-# root reachable only through the /admin/ location prefix.
-COPY frontend/public/ /srv/admin/
-COPY frontend/public/index.html frontend/public/app.js frontend/public/embed.js \
-     frontend/public/styles.css /srv/public/
-COPY frontend/public/widget/ /srv/public/widget/
+# Two roots, not one root with denied paths: the public root holds the public
+# build and nothing else, and the admin root is served only under /admin/ behind
+# auth. The two are separate Vite builds precisely so no chunk is shared between
+# them — an admin asset cannot end up in the internet-facing root by accident.
+COPY --from=build /build/dist/public/ /srv/public/
+COPY --from=build /build/dist/admin/ /srv/admin/
 
 USER 10001:10001
 EXPOSE 8080

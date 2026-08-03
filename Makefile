@@ -12,9 +12,9 @@ NPM := npm --prefix frontend
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations test-repositories test-database migrate dev js-install js-lint js-format \
-	js-format-check js-test js-test-cov deployment-security check api up up-all web down \
+	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
-	images-check arch-validate arch-build clean
+	images-check keycloak-render keycloak-lint arch-validate arch-build clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -72,16 +72,22 @@ js-install: frontend/node_modules/.package-lock.json ## Install exact frontend d
 dev: frontend/node_modules/.package-lock.json ## Serve the frontend with hot reload against a local backend
 	$(NPM) run dev
 
-js-lint: frontend/node_modules/.package-lock.json ## Lint frontend JavaScript
+js-lint: frontend/node_modules/.package-lock.json ## Lint the frontend TypeScript
 	$(NPM) run lint
 
-js-format: frontend/node_modules/.package-lock.json ## Apply frontend JavaScript formatting
+js-typecheck: frontend/node_modules/.package-lock.json ## Typecheck the frontend in strict mode
+	$(NPM) run typecheck
+
+js-format: frontend/node_modules/.package-lock.json ## Apply frontend formatting
 	$(NPM) run format
 
-js-format-check: frontend/node_modules/.package-lock.json ## Fail if frontend JavaScript is unformatted
+js-format-check: frontend/node_modules/.package-lock.json ## Fail if the frontend is unformatted
 	$(NPM) run format:check
 
-js-test: frontend/node_modules/.package-lock.json ## Run frontend JavaScript tests
+js-build: frontend/node_modules/.package-lock.json ## Build the public, embed, and admin bundles
+	$(NPM) run build
+
+js-test: frontend/node_modules/.package-lock.json ## Run frontend tests
 	$(NPM) test
 
 js-test-cov: frontend/node_modules/.package-lock.json ## Run frontend tests with coverage reports
@@ -92,6 +98,15 @@ deployment-security: ## Scan rendered non-Secret Kubernetes manifests and runtim
 
 network-policy-smoke: ## Prove allowed and denied flows in disposable MicroK8s namespaces
 	./k8s/tests/network-policy-smoke.sh
+
+# Deliberately outside `check`: it needs helm, which the hermetic gate does not.
+keycloak-render: ## Render the Keycloak chart for review (KEYCLOAK_VALUES=path)
+	helm template keycloak k8s/helm/keycloak \
+		--namespace identity \
+		$(if $(KEYCLOAK_VALUES),-f $(KEYCLOAK_VALUES),-f k8s/helm/keycloak/values.local.example.yaml)
+
+keycloak-lint: ## Lint the Keycloak chart against the example values
+	helm lint k8s/helm/keycloak -f k8s/helm/keycloak/values.local.example.yaml
 
 image-contracts: ## Verify immutable image and Kubernetes artifact contracts
 	$(UV_RUN) python scripts/verify_image_contracts.py
@@ -104,8 +119,10 @@ images-smoke: ## Smoke all previously built deployable images as their runtime u
 
 images-check: image-contracts images-build images-smoke ## Build and smoke all release images
 
-check: lock-check lint format-check typecheck test-cov js-lint js-format-check js-test-cov \
-	deployment-security image-contracts ## Full local and CI quality gate
+# js-build runs before test-cov: the public route allowlist is derived from the
+# build output, so an unbuilt frontend makes that specification vacuous.
+check: lock-check lint format-check typecheck js-lint js-typecheck js-format-check js-build \
+	test-cov js-test-cov deployment-security image-contracts ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
 
@@ -142,4 +159,5 @@ arch-build: ## Regenerate architecture diagrams
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage coverage.xml coverage htmlcov artifacts
+	rm -rf frontend/dist frontend/node_modules/.tmp
 	find . -type d -name __pycache__ -not -path './.venv/*' -prune -exec rm -rf {} +
