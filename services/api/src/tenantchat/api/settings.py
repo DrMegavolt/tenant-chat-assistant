@@ -28,6 +28,11 @@ class Settings:
     max_request_bytes: int
     docs_enabled: bool
     database_url: str | None = None
+    # Both admin credentials are optional here and required by the production
+    # composition in `create_app`. Absent, every admin route fails closed, so a
+    # deployment that forgets one loses the console rather than opening it.
+    admin_gateway_token: str | None = None
+    admin_csrf_secret: str | None = None
     database_pool_size: int = 5
     database_max_overflow: int = 5
     database_pool_timeout_seconds: float = 5.0
@@ -53,6 +58,11 @@ class Settings:
             # visitor. Operators turn it on deliberately.
             docs_enabled=os.environ.get("CHAT_API_DOCS_ENABLED", "").lower() == "true",
             database_url=os.environ.get("DATABASE_URL") or None,
+            # Named without the `CHAT_API_` prefix because the gateway and this
+            # service must be handed the identical values, and the gateway's
+            # configuration already uses these names.
+            admin_gateway_token=os.environ.get("ADMIN_GATEWAY_TOKEN", "").strip() or None,
+            admin_csrf_secret=os.environ.get("ADMIN_CSRF_SECRET", "").strip() or None,
             database_pool_size=int(os.environ.get("CHAT_API_DATABASE_POOL_SIZE", "5")),
             database_max_overflow=int(os.environ.get("CHAT_API_DATABASE_MAX_OVERFLOW", "5")),
             database_pool_timeout_seconds=float(

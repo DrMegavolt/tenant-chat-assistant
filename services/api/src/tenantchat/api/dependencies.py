@@ -12,13 +12,44 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from tenantchat.api.faults import ChatUnavailableError
 from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.settings import Settings
 from tenantchat.api.store import BookingStore, ConversationStore, LeadStore
+from tenantchat.core.ports import ConversationRuntime
 
 
 def get_registry(request: Request) -> TenantRegistry:
     registry: TenantRegistry = request.app.state.registry
     return registry
+
+
+def get_settings(request: Request) -> Settings:
+    settings: Settings = request.app.state.settings
+    return settings
+
+
+def get_composed_runtime(request: Request) -> ConversationRuntime | None:
+    """The agent runtime, or ``None`` when this deployment composed none.
+
+    For routes that can still do their job without one — reading a transcript
+    does not need a model.
+    """
+    runtime: ConversationRuntime | None = request.app.state.conversation_runtime
+    return runtime
+
+
+def get_conversation_runtime(request: Request) -> ConversationRuntime:
+    """The composed agent runtime.
+
+    Raises:
+        ChatUnavailableError: this deployment composed no runtime, because
+            `AI-001` has not supplied the model adapter it is built over.
+    """
+    runtime = get_composed_runtime(request)
+    if runtime is None:
+        raise ChatUnavailableError
+    return runtime
 
 
 def get_booking_store(request: Request) -> BookingStore:
@@ -45,4 +76,7 @@ Registry = Annotated[TenantRegistry, Depends(get_registry)]
 Bookings = Annotated[BookingStore, Depends(get_booking_store)]
 Leads = Annotated[LeadStore, Depends(get_lead_store)]
 Conversations = Annotated[ConversationStore, Depends(get_conversation_store)]
+Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]
+ComposedRuntime = Annotated[ConversationRuntime | None, Depends(get_composed_runtime)]
+Configuration = Annotated[Settings, Depends(get_settings)]
 RequestId = Annotated[str, Depends(get_request_id)]

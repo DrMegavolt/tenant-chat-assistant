@@ -13,7 +13,7 @@ truncating every checkpoint table leaves the business records untouched.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import psycopg
@@ -64,20 +64,6 @@ def proposal() -> ModelResponse:
 
 def confirmation() -> ModelResponse:
     return ModelResponse(content="You are booked for Monday at 2pm.", model_name="scripted")
-
-
-@pytest.fixture
-def agent_database_url(repository_database_url: str) -> Iterator[str]:
-    """A migrated database with the checkpoint schema created the deployed way.
-
-    Calling the same entry point ``make migrate-checkpoints`` runs, rather than
-    ``saver.setup()`` inline, so a change that breaks the operational path fails
-    here instead of in production.
-    """
-    from scripts.setup_checkpoints import _setup
-
-    asyncio.run(_setup(repository_database_url))
-    yield repository_database_url
 
 
 @asynccontextmanager

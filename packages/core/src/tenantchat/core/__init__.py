@@ -47,9 +47,12 @@ from tenantchat.core.knowledge import (
 )
 from tenantchat.core.lifecycle import IndexingState, VersionState
 from tenantchat.core.ports import (
+    AssistantTurn,
     AvailabilityProvider,
     BookingConfirmation,
     BookingService,
+    CommittedEffect,
+    ConversationRuntime,
     HandoffService,
     HandoffTicket,
     IdempotencyKey,
@@ -61,15 +64,18 @@ from tenantchat.core.tenant import PricingPolicy, PublicTenantView, TenantPolicy
 
 __all__ = [
     "ApprovalPlan",
+    "AssistantTurn",
     "AvailabilityProvider",
     "BookingCommand",
     "BookingConfirmation",
     "BookingNotPermittedError",
     "BookingService",
+    "CommittedEffect",
     "ConflictError",
     "Contact",
     "ContactKind",
     "ContentChecksum",
+    "ConversationRuntime",
     "DocumentVersion",
     "DomainError",
     "ExpiryPlan",

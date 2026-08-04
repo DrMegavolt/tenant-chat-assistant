@@ -281,6 +281,34 @@ class PostgresConversationStore:
             )
             return tuple(_message(row) for row in result.all())
 
+    async def for_tenant(self, tenant_id: str, *, limit: int) -> tuple[ConversationRecord, ...]:
+        """Conversations with at least one message, most recently active first.
+
+        The ``EXISTS`` filter is what keeps the operator console readable: the
+        same table holds the write-only rows a booking or a lead correlates
+        against, and those carry no transcript.
+        """
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id, tenant_id, status, outcome, version,
+                           started_at, last_activity_at, closed_at
+                    FROM chat_sessions
+                    WHERE tenant_id = :tenant_id
+                      AND EXISTS (
+                          SELECT 1 FROM messages
+                          WHERE messages.tenant_id = chat_sessions.tenant_id
+                            AND messages.chat_session_id = chat_sessions.id
+                      )
+                    ORDER BY last_activity_at DESC, id
+                    LIMIT :limit
+                    """
+                ),
+                {"tenant_id": tenant_id, "limit": limit},
+            )
+            return tuple(_conversation(row) for row in result.all())
+
 
 class PostgresLeadStore:
     def __init__(self, engine: AsyncEngine) -> None:

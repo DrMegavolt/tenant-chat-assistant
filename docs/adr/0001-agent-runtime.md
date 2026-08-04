@@ -68,6 +68,16 @@ domain aggregates and must not know the framework exists, while the *checkpoint
 adapter* persists the framework's own execution state and necessarily imports it.
 Both talk to Postgres; only one is a domain concern.
 
+The chat routes reach the runtime the same way they reach anything else the
+domain does not own: through a `Protocol`. `tenantchat.core.ports.ConversationRuntime`
+takes a message and returns an `AssistantTurn` — a frozen domain value carrying
+the answer, what was committed, what the runtime stopped to ask, and the
+component versions `OBS-004` attributes the answer to. `tenantchat.api.agent`
+holds the one adapter from a LangGraph turn to that value. This is not a second
+runtime abstraction: there is one implementation, replacing LangGraph would mean
+rewriting it rather than adding another, and the port exists so the HTTP layer
+stays inside the scan rather than joining the composition root's exemption list.
+
 ### What is enforced today
 
 `tests/test_architecture_invariants.py` scans `packages/core` for framework,

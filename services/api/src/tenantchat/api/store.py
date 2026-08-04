@@ -123,6 +123,16 @@ class ConversationStore(Protocol):
         self, tenant_id: str, session_id: uuid.UUID
     ) -> tuple[MessageRecord, ...]: ...
 
+    async def for_tenant(self, tenant_id: str, *, limit: int) -> tuple[ConversationRecord, ...]:
+        """Conversations that have something to read, most recently active first.
+
+        A conversation with no messages is excluded. It is either one that was
+        opened and abandoned before the visitor typed, or one of the write-only
+        rows a booking or lead correlates against, and neither is a transcript
+        an operator can act on.
+        """
+        ...
+
 
 class BookingStore(Protocol):
     async def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord: ...
@@ -260,6 +270,16 @@ class InMemoryConversationStore:
                 replace(message, metadata=dict(message.metadata))
                 for message in self._messages[(tenant_id, session_id)]
             )
+
+    async def for_tenant(self, tenant_id: str, *, limit: int) -> tuple[ConversationRecord, ...]:
+        async with self._lock:
+            conversations = [
+                record
+                for key, record in self._sessions.items()
+                if key[0] == tenant_id and self._messages[key]
+            ]
+        conversations.sort(key=lambda record: record.last_activity_at, reverse=True)
+        return tuple(conversations[:limit])
 
 
 class InMemoryBookingStore:

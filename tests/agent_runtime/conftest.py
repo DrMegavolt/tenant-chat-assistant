@@ -14,6 +14,7 @@ which should change when the model does.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -278,6 +279,20 @@ def repository_database_url(agent_postgres_server_url: str) -> Iterator[str]:
             connection.execute(
                 sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(database_name))
             )
+
+
+@pytest.fixture
+def agent_database_url(repository_database_url: str) -> Iterator[str]:
+    """A migrated database with the checkpoint schema created the deployed way.
+
+    Calling the same entry point ``make migrate-checkpoints`` runs, rather than
+    ``saver.setup()`` inline, so a change that breaks the operational path fails
+    here instead of in production.
+    """
+    from scripts.setup_checkpoints import _setup
+
+    asyncio.run(_setup(repository_database_url))
+    yield repository_database_url
 
 
 def _libpq(sqlalchemy_url: str) -> str:

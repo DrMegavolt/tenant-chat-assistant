@@ -27,16 +27,18 @@ answers questions — it is what happens around the answer.
 The third is the one that is hard to fake, and it drives most of the
 architecture.
 
-**State of play.** `services/api` is the production backend and already serves
-tenant configuration, availability, booking, and lead capture over the domain
-rules in `packages/core`. `packages/orchestration` holds the LangGraph agent
-runtime (`ARCH-001`): a versioned dispatcher graph that pauses for a customer to
-confirm a booking, survives a process restart, and commits only through
-idempotent domain services. It is composed but not yet served over HTTP —
-`AI-001` supplies the model provider adapter and `API-001` the chat endpoint —
-so `server.py`, the original prototype, still serves the chat path. It will be
-deleted, not refactored. Claim 3 above is designed and specified, not yet built;
-the planning artifacts below are where that work is defined.
+**State of play.** `services/api` is the production backend and serves tenant
+configuration, availability, booking, lead capture, the visitor chat surface,
+and the operator console over the domain rules in `packages/core`.
+`packages/orchestration` holds the LangGraph agent runtime (`ARCH-001`): a
+versioned dispatcher graph that pauses for a customer to confirm a booking,
+survives a process restart, and commits only through idempotent domain services.
+Chat is served over that runtime, and a deployment answers turns once `AI-001`
+supplies the model provider adapter — until then the chat routes report
+themselves unavailable rather than guessing. `server.py`, the original
+prototype, still backs the deployed image; the `DEP-001` cutover repoints it and
+deletes it, rather than refactoring it. Claim 3 above is designed and specified,
+not yet built; the planning artifacts below are where that work is defined.
 
 ## Planning and architecture artifacts
 
@@ -175,6 +177,24 @@ operator action.
 | `GET /api/tenants/{id}/availability?service=` | Slots currently offered, and the list booking validates against. |
 | `POST /api/book` | Books an offered slot. |
 | `POST /api/leads` | Captures a callback request. |
+| `POST /api/chat/session` | Opens a conversation and returns the server-issued ID. |
+| `GET /api/chat/session/{id}?tenant_id=` | The transcript, and anything the conversation is waiting on. |
+| `POST /api/chat` | Answers one visitor turn through the agent runtime. |
+| `POST /api/chat/confirmation` | Approves or declines a booking the assistant proposed. |
+| `GET /api/admin/chats?tenant_id=` | Operator console: conversations with a transcript, newest first. |
+| `GET /api/admin/chats/{id}?tenant_id=` | One conversation in full. |
+| `POST /api/admin/chats/{id}/messages` | A staff reply, stored as a person speaking. |
+| `GET /api/admin/csrf-token` | The double-submit token a staff reply must echo. |
+
+A booking proposed by the assistant is not committed when it is proposed. The
+turn pauses, `POST /api/chat` returns `pending` instead of a reply, and nothing
+is written until `POST /api/chat/confirmation` carries the customer's answer.
+
+Admin routes require the identity headers the gateway injects plus the shared
+`ADMIN_GATEWAY_TOKEN`, and staff replies additionally require the CSRF token.
+Both values are required at startup, so a deployment missing one fails to boot
+rather than rejecting every operator. They are never reachable cross-origin: the
+`CHAT_API_ALLOWED_ORIGINS` allowlist covers the embedded widget only.
 
 Failures return RFC 9457 Problem Details with a stable `code` a client can branch
 on, plus typed members (`missingFields`, `offeredServices`, `offeredSlots`) so

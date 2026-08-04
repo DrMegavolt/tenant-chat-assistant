@@ -2,7 +2,7 @@
 project: tenant-chat-assistant
 document_type: implementation-backlog
 schema_version: 1
-last_updated: 2026-08-02
+last_updated: 2026-08-03
 source_of_truth: BACKLOG.md
 ---
 
@@ -20,7 +20,7 @@ Three claims, in order of how hard they are to fake:
 
 1. **Grounded answers, with the receipts.** A tenant uploads a document; it is parsed, chunked, embedded, indexed, and retrieved under tenant and version filters. Answers cite the exact authorized source version, or abstain and offer a human. A citation the model invented is rejected mechanically, not discouraged by a prompt.
 2. **Business actions that survive reality.** Booking, lead capture, and human handoff are transactional, idempotent, and authorized by deterministic domain services — so a retried request, a mid-conversation restart, or a replayed workflow node cannot double-book anyone.
-3. **Answers you can debug.** Any answer opens in the provenance viewer: the routing decision and the alternatives it rejected, the candidate set collapsing through reranking, the exact assembled prompt with trusted and untrusted regions distinguished, and each claim linked to the chunk supporting it. When an answer is wrong, the record says *which stage* was wrong — stale source, retrieval miss, truncated context, or a genuinely ungrounded claim.
+3. **Answers you can debug.** Any answer opens in the provenance viewer: the routing decision and the alternatives it rejected, the candidate set collapsing through reranking, the exact assembled prompt with trusted and untrusted regions distinguished, and each claim linked to the chunk supporting it. When an answer is wrong, the record identifies the first observable stage that failed. Deterministic failures are detected mechanically; prompt, model, and other ambiguous quality failures carry evidence, uncertainty, and controlled-comparison results rather than an unsupported causal claim from one stochastic response.
 
 Claim 3 is the differentiator and the reason `OBS-004` sits in `Gate B` rather than in operational polish. Retrieval-augmented chat is common; showing exactly why a given answer came out the way it did is not.
 
@@ -157,12 +157,35 @@ Required: every `P0` task in this document. Until Gate A passes, expose the proj
 
 Required: Gate A plus `ARCH-001`, `AI-001`, `AI-003`, `AGENT-001`, `REL-001`,
 `REL-003`, `RAG-001` through `RAG-009`, `FEAT-001`, `FEAT-008`, `FEAT-011`,
-`OBS-001`, `OBS-002`, `OBS-004`, `PRIV-002`, `QA-002`, and `QA-003`. The target
+`FEAT-015`, `OBS-001`, `OBS-002`, `OBS-004`, `PRIV-002`, `QA-002`, and `QA-003`. The target
 demonstration is a visible, tenant-safe document lifecycle: upload, parse,
 chunk, embed, index, retrieve, rerank, answer with authorized citations, abstain
 on weak evidence, and publish comparable evaluation results — with any single
-answer in that lifecycle openable in the provenance viewer, showing why it said
-what it said and, where it was wrong, which stage was at fault.
+answer in that lifecycle discoverable in the AI turn explorer and openable as
+the actual executed call graph, showing why it said what it said and, where it
+was wrong, which stage failed and how certain the causal diagnosis is.
+
+#### Gate B executable acceptance script
+
+The showcase is complete only when the following seeded cases run end to end
+across both demo tenants. Each case must define the expected customer behavior,
+executed graph, automatic detector or explicit `inconclusive` result, diagnosis
+status, safe replay result, and browser walkthrough in `FEAT-015`. Reuse these
+fixtures in `OBS-004`, `RAG-009`, and `RAG-008` rather than maintaining three
+independent corpora.
+
+1. A correct grounded answer with an authorized citation.
+2. A stale source that must not silently shape a current answer.
+3. A published document whose index generation is missing or incomplete.
+4. A relevant chunk retrieved but ranked below the selection cutoff.
+5. Selected evidence dropped by the context budget.
+6. A prompt regression isolated with the model and evidence held constant.
+7. A model-behavior difference demonstrated through bounded repeated trials
+   with prompt and evidence held constant.
+8. A fabricated citation rejected mechanically.
+9. An application, tool, or provider failure located at the executed node.
+10. An indirect prompt-injection document quarantined without changing policy
+    or invoking a tool.
 
 ### Gate C — Operational production candidate — documented, not committed
 
@@ -196,7 +219,7 @@ remaining production business workflows, and completed runbooks.
 
 - [x] `QA-001` — Foundational automated test harness and CI — `P0`
 - [x] `DATA-001` — Normalized schema and migration framework — `Done`
-- [ ] `API-001` — Production API runtime and typed contracts — `P0` — _slice 1 of 2 complete_
+- [ ] `API-001` — Production API runtime and typed contracts — `P0` — _slices 1 and 2 complete; cutover owned by `DEP-001`_
 - [x] `DATA-002` — Server-authoritative repositories and concurrency control — `Done`
 - [ ] `DATA-003` — Transactional, idempotent booking — `P0`
 - [ ] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
@@ -265,6 +288,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 - [ ] `FEAT-012` — Booking cancellation and rescheduling — `P2`
 - [ ] `FEAT-013` — Accessibility, responsive embed, and privacy UX — `P2` — _client slice complete_
 - [ ] `FEAT-014` — Additional business-domain agents — `P2`
+- [ ] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
 
 ## Completed baseline details
 
@@ -490,20 +514,58 @@ values are logged, never published. Run it with `make api`.
 - Changed: `packages/core/{commands,errors,__init__}.py`, `services/api/**`, `pyproject.toml`, `uv.lock`, `Makefile`, `.env.example`.
 - Verified: `make check` — 263 tests, ruff and mypy `strict` clean. `0001234567` returns `422 invalid_contact` under `make api`; a valid number returns `201`.
 
-**Slice 2 — remaining before cutover.**
+**Slice 2 — chat and admin surface. Complete.**
 
-- Port `/api/chat`, `/api/chat/session`, and the admin routes. The tool loop
-  becomes a LangGraph graph calling idempotent domain services under `ARCH-001`
-  rather than being transcribed, so this slice is gated on that task.
-- Repoint `Dockerfile` and `k8s/app.yaml` at `services/api` under `DEP-001`, then
-  delete `server.py`. Until that lands, the deployed image still runs the
-  prototype and still accepts `0001234567`. The prototype snapshot schema and
-  normalized API schema are intentionally incompatible: do not run the API
-  migration Job against a database still used by the prototype. The cutover
-  must stop prototype writers, follow the migration runbook, and switch the
-  workload image and schema together.
+`services/api` serves the visitor conversation and the operator console over the
+`ARCH-001` runtime. The prototype's tool loop was not transcribed: the graph is
+the loop, and every effect still crosses an idempotent domain service.
 
-- Completion notes: _Slice 1 complete; task stays `In Progress` until slice 2 ships and `server.py` is deleted._
+- **Conversation identity is server-issued.** `POST /api/chat/session` mints the
+  ID; `POST /api/chat` and `GET /api/chat/session/{id}` accept nothing else. A
+  visitor-chosen label can be guessed or replayed, which is why `DATA-002`
+  refuses to let one select a transcript. `SEC-002` replaces the unguessable ID
+  with a signed credential that can also carry an expiry.
+- **A proposed booking pauses instead of committing.** `POST /api/chat` returns
+  `pending` and no reply; nothing is written until `POST /api/chat/confirmation`
+  carries the customer's answer. Confirming a conversation that is waiting on
+  nothing is a `409` rather than a second answer to one question.
+- **The store is the record.** The visitor's message is appended before the
+  runtime is asked anything, so a model outage loses the reply and never the
+  question. Deleting every checkpoint costs resume points and no transcript.
+- **Chat without `AI-001` is unavailable, not broken.** A deployment with no
+  model adapter composes no runtime, and the chat routes answer `503
+  chat_unavailable`. Reading a transcript does not depend on being able to
+  answer one.
+- **Admin routes fail closed.** They require the gateway-injected identity plus
+  the shared `ADMIN_GATEWAY_TOKEN`, re-check the role in the service rather than
+  trusting proxy routing, and take a double-submit CSRF token on staff replies.
+  Both secrets are required at startup. A response to an admin path carries no
+  CORS grant, so an allowlisted widget origin cannot become a way to read
+  another tenant's transcripts. Tenant-scoped RBAC remains `SEC-001`.
+- **The HTTP layer does not import the agent framework.** Handlers depend on
+  `tenantchat.core.ports.ConversationRuntime`; `tenantchat.api.agent` is the one
+  adapter, and `tests/test_architecture_invariants.py` still holds the line. See
+  the boundary note added to [`ADR-0001`](docs/adr/0001-agent-runtime.md).
+
+Deliberately not ported: the prototype's authenticated `GET /api/leads`. The
+admin console never called it, and an unscoped listing hands every operator
+every tenant's customer contact details — it belongs with the tenant membership
+check in `SEC-001`, not ahead of it.
+
+- Changed: `packages/core/{ports,__init__}.py`, `services/api/src/tenantchat/api/{app,agent,dependencies,faults,identity,schemas,settings,store}.py`, `services/api/src/tenantchat/api/routers/{chat,admin}.py`, `services/api/src/tenantchat/api/persistence/repositories.py`, `services/api/tests/**`, `tests/{repositories,agent_runtime}/**`, `README.md`, `.env.example`.
+- Verified: `make check` — 606 hermetic tests, ruff and mypy `strict` clean. `make test-repositories` (27) and `make test-agent-runtime` (6) on disposable PostgreSQL 16, including a booking paused by one API instance and confirmed by a restarted one over the production composition and its PostgreSQL checkpointer.
+
+**Slice 3 — cutover, owned by `DEP-001`.**
+
+- Repoint `Dockerfile` and `k8s/app.yaml` at `services/api`, repoint the frontend
+  at the new contracts, then delete `server.py`. Until that lands, the deployed
+  image still runs the prototype and still accepts `0001234567`. The prototype
+  snapshot schema and normalized API schema are intentionally incompatible: do
+  not run the API migration Job against a database still used by the prototype.
+  The cutover must stop prototype writers, follow the migration runbook, and
+  switch the workload image and schema together.
+
+- Completion notes: _Slices 1 and 2 complete; task stays `In Progress` until the `DEP-001` cutover ships and `server.py` is deleted._
 
 ### DATA-002 — Server-authoritative repositories and concurrency control
 
@@ -573,7 +635,7 @@ values are logged, never published. Run it with `make api`.
 
 ### SEC-001 — Admin authentication and tenant-scoped RBAC
 
-- Status: `Done` (gateway integration phase; full tenant-scoped RBAC in `API-001`)
+- Status: `In Progress` (gateway integration complete; tenant-scoped API RBAC remains)
 - Priority: `P0`
 - Type: `Security`
 - Depends on: `API-001`, `DATA-001`
@@ -625,8 +687,7 @@ values are logged, never published. Run it with `make api`.
 
 ### SEC-003 — API abuse protection, CORS, and response hardening
 
-- Status: `Done` (CORS and response hardening phase; rate limiting in `API-001`)
-- Priority: `P0`
+- Status: `In Progress` (CORS and response hardening complete; rate limiting remains)
 - Priority: `P0`
 - Type: `Security/reliability`
 - Depends on: `API-001`, `SEC-002`
@@ -874,8 +935,9 @@ values are logged, never published. Run it with `make api`.
   - Measure request/error/latency by operation using bounded-cardinality labels.
   - Measure model tokens, estimated cost, time to first token, provider errors, fallbacks, and cancellations.
   - Measure retrieval latency, candidate count, score distribution, reranking, abstention, and citation count.
-  - Measure answer quality by class, not only by volume: the `OBS-004` failure-class distribution, router confidence and clarification rate, context-truncation rate, and citation-validation failure rate.
-  - Attach trace exemplars to quality and latency metrics so a Grafana spike links to one turn in the provenance viewer. The exemplar carries a trace ID only; the content stays in the inference plane per `ADR-0010`.
+  - Measure answer quality by class, not only by volume: the `OBS-004` diagnosis-cause distribution, router confidence and clarification rate, context-truncation rate, and citation-validation failure rate.
+  - Correlate bounded quality and failure metrics with the component-manifest hash from `OBS-004` through trace exemplars and report queries, so a regression can be associated with the exact build and AI configuration without using the hash or individual versions as Prometheus labels.
+  - Attach trace exemplars to quality and latency metrics so a Grafana spike links to one turn in `FEAT-015`. The exemplar carries a trace ID only; the content stays in the inference plane per `ADR-0010`.
   - Measure booking, lead, handoff, CRM-delivery, and conversion outcomes.
 - Acceptance criteria:
   - Metrics remain correct across replicas and restarts.
@@ -936,23 +998,32 @@ values are logged, never published. Run it with `make api`.
 - Priority: `P1`
 - Type: `AI observability`
 - Depends on: `OBS-001`, `AI-001`, `AI-003`, `RAG-005`, `PRIV-002`
-- Likely areas: turn-record schema and repository, orchestration instrumentation, OpenTelemetry GenAI spans, `k8s/otel-collector.yaml`, admin trace viewer
+- Likely areas: turn-record schema and repository, orchestration instrumentation, replay service, trace query API, OpenTelemetry GenAI spans, `k8s/otel-collector.yaml`
 - Scope:
   - Persist one append-only, tenant-qualified turn record per conversation turn, per `ADR-0010`, covering the router decision and the candidate intents it rejected, the standalone retrieval query and the history used to build it, every retrieval candidate with its lexical, vector, fused, and rerank scores, the evidence dropped by the context budget, the assembled prompt reference and content hash, model parameters and usage, raw output, parsed claims with citation IDs, validator verdicts, each tool call with its idempotency key and committed record ID, and the turn outcome.
-  - Record the version of every component that shaped the answer: prompt template, router policy, retriever configuration, embedding model, reranker, model ID, and the chunk and document versions of each cited source.
-  - Classify each unsatisfactory turn against a closed failure taxonomy: `stale_source`, `retrieval_miss`, `retrieval_rank`, `filter_exclusion`, `context_truncation`, `ungrounded_claim`, `fabricated_citation`, `routing_error`, `tool_error`, `provider_failure`. Detect automatically every class that is decidable from the record alone; leave the rest to review in `FEAT-008`.
+  - Record the actual executed graph, not a reconstruction inferred from the final state: node and edge IDs, start and end time, status, attempt, retry or fallback decision, safe input/output references, rejected branch and reason, implementation/configuration version, safe exception code, tool-policy verdict, and committed domain-record reference.
+  - Store one canonical component manifest and content-free hash for every turn: application build revision; graph version; prompt template and resolved-binding versions; router policy; parser and chunker versions; retriever configuration; immutable index generation or snapshot ID; embedding model; reranker; provider adapter; model ID and parameters including temperature and seed where supported; tool schema/contract versions; tenant-policy version; relevant feature flags; and the chunk and document versions of cited sources. Never include secrets in the manifest.
+  - Represent attribution as zero or more diagnosis records rather than one flat label. Each record carries a bounded cause code, stage, `primary` or `contributing` role, `detected`, `suspected`, `confirmed`, or `inconclusive` status, low/medium/high confidence, evidence references, detector version, and any later reviewer decision. Use the Gate B cause set `stale_source`, `ingestion_or_index_error`, `routing_error`, `query_rewrite_error`, `filter_exclusion`, `retrieval_miss`, `retrieval_rank`, `context_truncation`, `prompt_regression`, `model_behavior`, `grounding_or_citation_error`, `tool_error`, `application_error`, and `provider_failure`; document finer subcodes as Gate C rather than building detectors for them now.
+  - Record per-stage status on every turn, but create diagnosis records only for anomalous, automatically detected, or reviewed turns. Automatically detect every Gate B cause decidable from the record alone; ambiguous prompt/model causes remain `suspected` or `inconclusive` until controlled comparison or review adds evidence.
   - Emit OpenTelemetry spans following the GenAI semantic conventions for the operational plane, keeping content out of it per `ADR-0010`.
-  - Build the first-party single-answer drill-down in the admin console: question, routing decision with rejected alternatives, candidate set collapsing through reranking to the selected evidence, assembled prompt with trusted and untrusted segments visually distinct, and each answer claim linked to the chunk supporting it with the validator's verdict.
-  - Support replay from a turn ID: retrieval alone against pinned versions and against the current index, the model call alone against the stored context, and the whole turn under a changed component version with a diff against the recorded output.
+  - Expose tenant-scoped, RBAC-gated query, reconstruction, diagnosis, and replay APIs for `FEAT-015`; keep the first-party turn record, not any telemetry backend, authoritative.
+  - Support safe replay from a turn ID: retrieval against a retained immutable index generation and against the current index; corrected-query and reviewer-labelled gold-evidence substitution; the model call against stored context; bounded repeated trials; and a whole turn under one changed component manifest with claim, citation, and output diffs.
+  - Replace every effectful port with a recording fake or isolated sandbox during replay. A replay may write its experiment result but must never mutate production conversations, bookings, leads, handoffs, integrations, or other domain state.
+  - Distinguish exact historical reconstruction from replay: reconstruction returns the stored prompt, evidence, output, and verdicts exactly; model replay is explicitly stochastic; retrieval replay is called reproducible only while the exact implementation, configuration, and immutable index generation remain available.
+  - Finalize the durable turn record before marking an assistant answer delivered. A trace-finalization failure returns a safe retryable error, and retrying cannot redeliver an answer or repeat a committed business action.
 - Acceptance criteria:
   - Any turn can be reconstructed from its ID alone: exact prompt, exact evidence, model parameters, and validator verdicts.
-  - Replaying retrieval for a stored turn against its pinned versions reproduces the recorded candidate set.
-  - Seeded fixtures for a fabricated citation ID, an evidence chunk dropped by the context budget, and a chunk excluded by a tenant or version filter are each detected and labeled without human input.
-  - Failure class is a bounded enum, safe as a metric label, and its distribution is queryable by tenant and time.
+  - The turn record describes the actual executed nodes, attempts, branches, fallbacks, and failures, including partially completed turns.
+  - Replaying retrieval for a Gate B fixture against its retained immutable index generation reproduces the recorded candidate set; when a historical generation is unavailable, the API refuses to claim reproducibility and still returns the exact stored historical result for inspection.
+  - Seeded fixtures for an incomplete index, fabricated citation ID, evidence chunk dropped by the context budget, and chunk excluded by a tenant or version filter are detected without human input.
+  - Diagnosis cause, role, status, and confidence are bounded enums safe as metric dimensions, and cause distribution is queryable by tenant, time, and component-manifest hash.
+  - A replay test that traverses every effectful graph path produces zero production domain mutations.
+  - Bounded repeated trials and gold-evidence substitution can add evidence to a diagnosis without overwriting the original record or representing a stochastic result as proof.
+  - No assistant answer reaches `delivered` without a durable finalized turn record; injected trace-write failure is safe and retrying produces neither a duplicate answer nor a duplicate business action.
   - Turn-record reads are RBAC-gated and audited, and deleting every telemetry backend loses no turn record.
   - The operational plane contains no message content, contact details, or document text.
 - Verification:
-  - Run provenance reconstruction, replay determinism, per-class detection fixture, and operational-plane redaction tests, then walk one seeded turn end to end in the admin viewer.
+  - Run provenance reconstruction, executed-graph fidelity, immutable-index replay, stochastic replay labeling, gold-evidence substitution, zero-domain-write replay, trace-finalization failure, diagnosis fixture, RBAC/audit, and operational-plane redaction tests. `FEAT-015` owns the browser walkthrough.
 - Completion notes: _Pending._
 
 ### ARCH-001 — LangGraph agent runtime over a framework-free domain
@@ -1022,10 +1093,11 @@ values are logged, never published. Run it with `make api`.
   - `make migrate-checkpoints` creates LangGraph's own tables under
     `DATABASE_MIGRATION_URL`. The library owns that schema, and the application
     role holds no `CREATE` on `public`.
-  - **Not included, deliberately.** The runtime is composed but not yet served
-    over HTTP: `AI-001` supplies the `ChatModel` adapter — this task added the
-    port and a scripted double, not a provider client — and `API-001` exposes
-    the chat endpoint over it. `AI-003` replaces `prompts.py` with the template
+  - **Not included, deliberately.** This task composed the runtime and stopped
+    there. `API-001` slice 2 serves it over HTTP, and `AI-001` supplies the
+    `ChatModel` adapter — this task added the port and a scripted double, not a
+    provider client, so a deployment answers no turn until that lands.
+    `AI-003` replaces `prompts.py` with the template
     registry, `RAG-006` replaces the fixed transcript window, and `DATA-003`
     collapses the idempotency claim and the booking write into one transaction,
     which removes the in-flight window where a crashed attempt makes a retry
@@ -1084,15 +1156,17 @@ values are logged, never published. Run it with `make api`.
   - Express tenant customization as schema-validated slots — tone, business facts, escalation rules, disclaimers — so template structure stays code and tenant input stays data.
   - Segment the assembled prompt explicitly into trusted and untrusted regions, with retrieved evidence and prior visitor turns always untrusted, so `RAG-007` has a single boundary to enforce rather than a convention.
   - Enforce the token and source budget during assembly and report what was excluded, rather than truncating silently.
+  - Provide a canonical segment-level diff between any two retained template versions and their declared binding schemas, so `FEAT-015` can show exactly what changed without treating runtime values as template changes.
   - Make the assembled prompt the only input the model adapter accepts, so no code path can reach the provider with an unversioned prompt.
 - Acceptance criteria:
   - Every model call is attributable to a template ID and version recorded in the turn record.
   - A tenant configuration value cannot introduce a new instruction section, only fill a declared slot.
-  - Evidence and prior visitor text are marked untrusted in the assembled type, and the marking is visible to `RAG-007` checks and to the `OBS-004` viewer.
+  - Evidence and prior visitor text are marked untrusted in the assembled type, and the marking is visible to `RAG-007` checks and the `FEAT-015` viewer.
   - Assembly that exceeds the budget returns the excluded set explicitly; nothing is dropped without a record.
   - Changing a template produces a new version rather than mutating one already referenced by stored turn records.
+  - Comparing two template versions produces a deterministic segment and binding-schema diff.
 - Verification:
-  - Run prompt-assembly unit tests covering slot validation, injection attempts through tenant configuration and evidence, budget exclusion reporting, and version immutability.
+  - Run prompt-assembly unit tests covering slot validation, injection attempts through tenant configuration and evidence, budget exclusion reporting, version immutability, and canonical template diffing.
 - Completion notes: _Pending._
 
 ### RAG-001 — Versioned knowledge content model
@@ -1160,12 +1234,15 @@ values are logged, never published. Run it with `make api`.
   - Accept authorized source IDs or validated uploads into isolated object storage.
   - Run parsing, scanning, chunking, embedding, and indexing as observable background jobs.
   - Deactivate stale chunks and clean up partial failed indexes.
+  - Persist the parser, chunker, embedding model, and immutable index-generation identifiers needed by `OBS-004` to distinguish ingestion or index failure from retrieval failure.
+  - Detect published content missing from the active index generation, partial chunk indexing, stored-versus-indexed chunk-count mismatch, embedding-model mismatch, index lag beyond a documented threshold, and a superseded version that remains retrievable.
 - Acceptance criteria:
   - A caller cannot read arbitrary container files or ingest another tenant's content.
   - Re-ingesting unchanged content is idempotent.
   - Failed jobs expose safe status and can retry without duplicate active chunks.
+  - Each Gate B index-integrity fault has a bounded safe code, identifies the affected tenant-qualified source version and index generation, and is available to `FEAT-001` and `OBS-004` without document content appearing in operational telemetry.
 - Verification:
-  - Security and lifecycle tests cover path traversal, cross-tenant IDs, duplicate ingestion, and mid-index failure.
+  - Security and lifecycle tests cover path traversal, cross-tenant IDs, duplicate ingestion, mid-index failure, missing and partial index generations, count and embedding-version mismatch, index lag, and superseded content left retrievable.
 - Completion notes: _Pending._
 
 ### RAG-003 — Production document parsing and chunking
@@ -1278,6 +1355,7 @@ values are logged, never published. Run it with `make api`.
 - Scope:
   - Build the minimum scoreboard needed to tune anything: a runner, a fixture corpus, and three scores — retrieval recall@k against labelled gold chunks, citation precision, and abstention correctness on questions with no supporting evidence.
   - Start at 20–30 hand-labelled cases across both seed tenants, including at least one stale-document case, one cross-tenant isolation case, and one question the corpus cannot answer.
+  - Reuse the Gate B executable acceptance fixtures where they apply, including reviewer-labelled gold chunks for retrieval and context-substitution experiments; do not create a divergent copy of the same scenarios.
   - Run offline against fixtures with no live model, database, search service, or embedding service, so it belongs to the hermetic gate rather than to an integration environment.
   - Pin and report the component versions under test — retriever configuration, embedding model, reranker, prompt template, model ID — so two runs are comparable.
   - Print a diffable summary and exit non-zero below configured thresholds, without yet gating CI.
@@ -1301,12 +1379,14 @@ values are logged, never published. Run it with `make api`.
   - Grow the `RAG-009` harness rather than replacing it, so one runner and one scoring implementation serve both the development loop and the release gate.
   - Create versioned datasets for retrieval recall, grounded answer correctness, citation precision, refusal, tenant isolation, and multi-turn behavior.
   - Include financing policy edge cases and adversarial documents.
-  - Promote reviewed cases from the production flywheel: an `OBS-004` turn record labelled with a failure class and corrected under `FEAT-008` becomes a dataset case, subject to the `PRIV-002` anonymization checks.
-  - Compare prompt, retriever, embedding, reranker, and model versions.
+  - Promote reviewed cases from the production flywheel: an `OBS-004` turn record with a reviewed diagnosis and correction under `FEAT-008` becomes a dataset case, subject to the `PRIV-002` anonymization checks.
+  - Compare baseline and candidate component manifests across application build, prompt, retriever, parser/chunker, index generation, embedding, reranker, model, tool contract, tenant policy, and relevant feature-flag versions.
+  - Publish a baseline-versus-candidate report with the manifest diff, aggregate changes, improved and regressed cases, and a link from every regression to its evaluation trace or promoted turn record.
   - Score claim grounding with the same validator `RAG-005` runs online, so the property gated in CI is the property enforced at request time.
   - Define release thresholds and a reviewed exception process.
 - Acceptance criteria:
   - Evaluation runs are deterministic where possible and publish comparable reports.
+  - A reviewer can identify what changed between baseline and candidate, which cases regressed, and the trace supporting each regression without correlating separate reports by hand.
   - CI blocks statistically or materially significant regressions below thresholds.
   - Any LLM-as-judge scorer reports measured agreement against human labels on a held-out set; an unvalidated judge may inform review but may not gate a release.
   - Dataset examples contain no real customer PII.
@@ -1527,12 +1607,14 @@ values are logged, never published. Run it with `make api`.
 - Scope:
   - Add source creation, file upload, preview, validation, approval, publish, reindex, rollback, expiry, and deletion.
   - Display indexing status, document version, chunk count, errors, and last successful publish.
+  - Display the bounded index-integrity findings produced by `RAG-002` — missing or partial active generation, chunk-count or embedding-model mismatch, excessive index lag, and superseded content still retrievable — and link each finding to the affected source version and related turns when authorized.
 - Acceptance criteria:
   - Tenant admins can manage only their tenant's sources.
   - Draft content never affects answers before approval.
   - Every mutation is audited and recoverable where appropriate.
+  - A tenant admin can distinguish an ingestion/index-integrity failure from a retrieval-quality failure without inspecting infrastructure logs.
 - Verification:
-  - End-to-end test uploads, approves, publishes, queries, supersedes, and deletes a document.
+  - End-to-end test uploads, approves, publishes, queries, supersedes, and deletes a document, then seeds each bounded integrity fault and verifies its tenant-safe presentation.
 - Completion notes: _Pending._
 
 ### FEAT-002 — Real availability and calendar integration
@@ -1651,19 +1733,23 @@ values are logged, never published. Run it with `make api`.
 - Status: `Todo`
 - Priority: `P1`
 - Type: `Feature/AI quality`
-- Depends on: `DATA-002`, `RAG-005`, `SEC-001`, `OBS-004`
+- Depends on: `DATA-002`, `RAG-005`, `SEC-001`, `OBS-004`, `FEAT-015`
 - Likely areas: widget feedback UI, review queue, evaluation dataset tooling
 - Scope:
   - Add thumbs up/down, optional reason, staff review state, corrected answer, and links to prompt/model/retrieval versions.
-  - Open the reviewed turn in the `OBS-004` provenance viewer, and require the reviewer to assign a failure class from the taxonomy for any turn marked unsatisfactory.
+  - Automatically enqueue turns with a detected technical failure as well as user-reported turns; prioritize by bounded severity, recurrence, business outcome, and whether the component-manifest hash first appeared in the current candidate.
+  - Open the reviewed turn in the `FEAT-015` console, and require the reviewer to confirm, reject, or amend the diagnosis records for any turn marked unsatisfactory.
+  - Track the proposed fix and verify whether a later evaluation run closes the reviewed case without erasing the original diagnosis or answer.
   - Permit approved, anonymized examples to become evaluation cases.
 - Acceptance criteria:
   - Feedback cannot expose another conversation or alter production prompts directly.
   - Review decisions are audited and preserve original answer/evidence.
-  - A reviewed turn carries a failure class that agrees with the automatic classification where both exist, and disagreements are reported rather than silently overwritten.
+  - Automatic technical failures enter the queue without requiring a thumbs-down.
+  - Automatic and reviewer diagnoses remain distinct; disagreements are reported rather than silently overwritten.
+  - A reviewed case links to the first evaluation run that passes it after the fix, or remains visibly open.
   - Dataset promotion applies privacy checks.
 - Verification:
-  - E2E test covers feedback, review, failure-class assignment, correction, and safe evaluation promotion.
+  - E2E test covers feedback, automatic failure enqueueing, diagnosis review and disagreement, correction, safe evaluation promotion, and fix-closure verification.
 - Completion notes: _Pending._
 
 ### FEAT-009 — Business outcome and conversion analytics
@@ -1815,77 +1901,114 @@ values are logged, never published. Run it with `make api`.
   - Run end-to-end and evaluation suites for every added agent.
 - Completion notes: _Pending._
 
+### FEAT-015 — AI turn explorer and executed-graph console
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `Feature/AI operations`
+- Depends on: `OBS-004`, `SEC-001`
+- Likely areas: admin trace API client, admin routing and filters, executed-graph visualization, retrieval/prompt/claim/diagnosis panels, browser tests
+- Scope:
+  - Add a tenant-scoped turn explorer with exactly the Gate B filters needed for diagnosis: time, tenant, outcome, diagnosis cause, diagnosis status, and component-manifest hash. Defer additional filter dimensions until usage proves they are needed.
+  - Render the actual nodes, edges, attempts, branches, fallbacks, status, duration, and safe error codes from `OBS-004` as an accessible DAG or waterfall; never infer an idealized graph from the final answer.
+  - Provide coordinated drill-down panels for the routing alternatives, standalone query and filters, lexical/vector/fused/reranked candidate funnel, context-budget exclusions, trusted/untrusted prompt segments, prompt-version diff, claim-to-evidence verdicts, tool-policy and execution results, and automatic versus reviewer diagnoses.
+  - Overlay reviewer-labelled gold evidence when an evaluation or reviewed case provides it, and expose the safe replay controls supported by `OBS-004` with the original and changed component manifests visibly distinguished.
+  - Link content-free operational errors and metric exemplars to the corresponding turn while keeping the content-bearing record inside the inference trace plane.
+- Acceptance criteria:
+  - Every displayed execution node and edge maps to a stored execution event, and failed or partially completed turns remain inspectable.
+  - The six filters can locate every Gate B seeded failure without exposing another tenant's metadata or content.
+  - Deterministic automatic claim verdicts are limited to `supported`, `unsupported`, and `fabricated_citation`; graded entailment judgements remain reviewer labels or explicitly non-gating suggestions until validated under `RAG-008`.
+  - Trace reads and replay launches are RBAC-gated and audited, and the UI communicates `suspected` and `inconclusive` diagnoses without presenting them as confirmed causes.
+  - All ten Gate B acceptance cases can be walked from explorer result to executed graph, evidence, diagnosis, and replay result where applicable.
+- Verification:
+  - Run component and browser tests for the six filters, actual-graph fidelity, partial traces, retrieval funnel, prompt diff, claim evidence, diagnosis uncertainty, gold-evidence overlay, replay safety messaging, tenant isolation, keyboard navigation, and the ten-case Gate B walkthrough.
+- Completion notes: _Pending._
+
 ## Recommended dispatch sequence
 
 This sequence reduces merge conflicts and prevents agents from building features on insecure foundations.
 
-### Wave 1 — Parallel foundation work
+Complexity is implementation risk, not estimated duration: `S` is one bounded
+component, `M` spans a few components behind stable contracts, `L` crosses a
+security, persistence, or distributed boundary, and `XL` combines several such
+boundaries or requires uncertain AI-quality judgement. Use an economical coding
+model for `S` and most `M` tasks. Use the strongest available reasoning/coding
+model for `L` and `XL`; a cheaper model may still implement mechanical fixtures
+or UI subcomponents, but the task owner and final reviewer should remain the
+strong model. P0 security changes always receive strong-model review regardless
+of implementation complexity.
 
-- Agent A: `QA-001`
-- Agent B: `DATA-001` after the initial `QA-001` harness is available
-- Agent C: `SEC-005`
-- Agent D: `DEP-001`
-- `SEC-004` can run in parallel if no active agent is editing the same Kubernetes sections.
+### Wave 0 — Current unblockers
 
-### Wave 2 — RAG-enabling backend conversion
+Run these two now; their likely areas do not need to overlap. `API-001` slice 2
+landed the chat and admin surface, so everything Wave 1 was waiting on the API
+for is now startable.
 
-Run these mostly sequentially because they substantially overlap the current `server.py`.
-`API-001` slice 1 is the stable API foundation for the first step; completing
-`API-001` slice 2 is a cutover step after the repository and runtime boundaries
-exist, not a prerequisite for them.
+| Order | Task | Complexity | Model routing | Why now |
+|---|---|---:|---|---|
+| 0A | `DATA-003` | `L` | Strong | Independent P0 concurrency/idempotency boundary and required for safe business actions. |
+| 0B | `REL-003` | `L` | Strong | Independent durable-job foundation required by ingestion. |
 
-1. `DATA-002`
-2. Start `ARCH-001` and `REL-003` in parallel. The durable job/outbox track has
-   no remaining API or Kubernetes dependency and directly enables ingestion.
-3. `API-001` slice 2
-4. `SEC-001` and `SEC-002`
-5. Start `SEC-003`, `DATA-003`, and `PRIV-001` as a parallel safety lane. They
-   remain required before public exposure, but they must not delay a trusted-
-   network RAG vertical slice unless their contracts overlap the active work.
+### Wave 1 — API, identity, and first stable contracts
 
-### Wave 3 — Full ingestion and RAG vertical slice
+Start each row when its listed dependencies are complete; tasks on the same row
+may run in parallel only when their likely files do not overlap.
 
-- Content lane: implement `RAG-001`, then use the already-started `REL-003`
-  foundation to implement `RAG-002` → `RAG-003`.
-- Runtime lane: `AI-001` → `AI-003` → `REL-001`, while `AGENT-001` starts after
-  `ARCH-001`, `AI-001`, and `DATA-002`. `AI-003` precedes `RAG-005` and
-  `RAG-007`, both of which assume one typed prompt boundary rather than a
-  convention.
-- Retrieval convergence: `RAG-004` → `RAG-005`.
-- Provenance lane: `PRIV-002` then `OBS-004`, starting once `RAG-005` fixes the
-  citation contract. Land the turn record before `RAG-004` tuning begins in
-  earnest — retrieval thresholds, fusion weights, and reranking cannot be
-  calibrated against answers whose candidate sets were never recorded.
-- Visible demo workflows: start `FEAT-001` after `RAG-002`; start `FEAT-011`
-  after `RAG-005` and `SEC-002` so the demo visibly proves upload-to-answer and
-  authorized source inspection.
-- Quality and safety: land `RAG-009` before `RAG-004` tuning starts, then run
-  `RAG-007`, `RAG-006`, and finally `RAG-008`; grow `QA-002`, `QA-003`,
-  `OBS-001`, and `OBS-002` alongside the vertical slice.
-- Close the quality flywheel last in this wave: `FEAT-008` after `OBS-004` and
-  `RAG-005`, so reviewed production turns feed `RAG-008` datasets instead of
-  hand-written fixtures alone.
-- Demonstrate two tenants, document version replacement, failed-job retry,
-  prompt-injection quarantine, hybrid retrieval, reranking, abstention,
-  citations, and comparable evaluation reports before expanding the platform.
+| Order | Task | Complexity | Model routing | Dependency note |
+|---|---|---:|---|---|
+| 1A | `AI-001` | `L` | Strong | Unblocked, and the last thing between the served runtime and an answered turn: chat routes report themselves unavailable until a provider adapter exists. |
+| 1B | `SEC-001` remainder | `L` | Strong | After `API-001`; finish tenant membership and route-level RBAC rather than treating gateway auth as completion. |
+| 1C | `SEC-002` | `L` | Strong | After `API-001`; establishes the visitor security boundary. |
+| 1D | `QA-002` | `M` | Economical | Start after `API-001` and grow continuously as later APIs land. |
+| 1E | `RAG-002` | `L` | Strong | After `REL-003`; implements durable ingestion and index-integrity detection. |
 
-### Wave 4 — Business workflows and product polish
+### Wave 2 — Runtime, privacy foundation, and content preparation
 
-- `FEAT-002`, `FEAT-003`, `FEAT-005`, and `FEAT-006` can be developed in
-  parallel after their dependencies and the RAG showcase.
-- Implement `FEAT-010` before `FEAT-004` so handoff uses the durable real-time transport.
+| Order | Task | Complexity | Model routing | Dependency note |
+|---|---|---:|---|---|
+| 2A | `SEC-003` remainder | `M` | Economical implementation, strong security review | After `SEC-002`; rate, concurrency, and size limits are bounded middleware work. |
+| 2B | `PRIV-001` | `XL` | Strong | After `SEC-001` and `SEC-002`; cross-cuts schema, APIs, UI, retention, export, and deletion. |
+| 2C | `AI-003` | `M` | Economical implementation, strong boundary review | After `AI-001`; typed prompt assembly and deterministic template diff have explicit contracts. |
+| 2D | `REL-001` | `M` | Economical | After `AI-001`; bounded resilient-client adapters and contract tests. |
+| 2E | `AGENT-001` | `XL` | Strong | After `AI-001`; persisted routing, workflow recovery, and tool permissions are coupled. |
+| 2F | `RAG-003` | `M` | Economical | After `RAG-002`; parser adapters and golden fixtures are well bounded. |
+| 2G | `FEAT-001` | `M` | Economical | After `SEC-001` and `RAG-002`; admin workflow over established lifecycle APIs. |
 
-### Wave 5 — Deferred Kubernetes and operational hardening
+### Wave 3 — Retrieval, grounding, and safety
 
-- Use the existing `DEP-001` images and `SEC-004` network baseline for local or
-  trusted-network demonstrations. Do not spend the RAG milestone on additional
-  cluster features.
-- After the RAG showcase is complete, run `DEP-002` → `DEP-003` and `DEP-004`
-  → `DEP-005` and `DEP-006` for an operational production candidate.
-- `QA-002` and `QA-003` grow continuously and are RAG showcase release gates.
-- Complete `QA-004` after core business workflows.
-- Complete `QA-005` after HA and resilience work.
-- Finish the `P2` feature tasks based on demo narrative and user feedback.
+| Order | Task | Complexity | Model routing | Dependency note |
+|---|---|---:|---|---|
+| 3A | `RAG-009` | `M` | Economical | After `RAG-003`; land the deterministic runner before tuning retrieval. |
+| 3B | `RAG-004` | `XL` | Strong | After `RAG-003`; tune only after `RAG-009` can expose regressions. |
+| 3C | `RAG-005` | `L` | Strong | After `RAG-004`; the evidence contract and mechanical citation validator become system boundaries. |
+| 3D | `RAG-006` | `L` | Strong | After `RAG-004` and `AGENT-001`; conversation query planning must preserve untrusted-history boundaries. |
+| 3E | `RAG-007` | `L` | Strong | After `RAG-005`; adversarial content and deterministic policy enforcement are security-sensitive. |
+| 3F | `FEAT-011` | `S` | Economical | After `RAG-005` and `SEC-002`; bounded citation and authorized-source UI. |
+| 3G | `OBS-001` | `M` | Economical | After `PRIV-001`; structured events, correlation, and redaction under a fixed privacy contract. |
+| 3H | `PRIV-002` | `L` | Strong | After `PRIV-001`; protects the content-bearing inference plane. |
+| 3I | `QA-003` | `L` | Economical fixture implementation, strong security review | After all P0 security tasks and `PRIV-001`; adversarial tenant-isolation coverage is a release gate. |
+
+### Wave 4 — Provenance product and quality flywheel
+
+| Order | Task | Complexity | Model routing | Dependency note |
+|---|---|---:|---|---|
+| 4A | `OBS-002` | `M` | Economical | After `OBS-001` and `RAG-005`; bounded metrics and manifest correlation. |
+| 4B | `OBS-004` | `XL` | Strong | After `AI-003`, `RAG-005`, `OBS-001`, and `PRIV-002`; authoritative trace, diagnosis, durability, and safe replay. |
+| 4C | `FEAT-015` | `XL` | Strong | After `OBS-004`; integrates the actual graph and every diagnostic panel into the primary demo surface. |
+| 4D | `FEAT-008` | `M` | Economical | After `FEAT-015`; bounded review queue, diagnosis reconciliation, and case promotion. |
+| 4E | `RAG-008` | `L` | Strong | Last implementation task; integrates reviewed cases, adversarial evaluation, manifest comparison, and the release gate. |
+
+### Wave 5 — Gate B verification, then stop
+
+- Finish the continuously grown `QA-002` and `QA-003` suites.
+- Run the ten-case Gate B executable acceptance script across both tenants and
+  require every case to be discoverable in `FEAT-015`.
+- Record measured results and any explicit exception; do not start Gate C work
+  merely because a model or agent is idle.
+- Keep `OBS-003`, `AI-002`, `REL-002`, `FEAT-002` through `FEAT-007`,
+  `FEAT-009`, `FEAT-010`, `FEAT-012`, `FEAT-014`, `DEP-002` through `DEP-006`,
+  `QA-004`, and `QA-005` outside the Gate B dispatch queue unless the product
+  goal changes.
 
 ## Decision log required before implementation
 
@@ -1902,4 +2025,4 @@ Record these decisions as ADRs before or during their first dependent task:
 - Secret-management approach for local, staging, and production environments.
 - Public hosting domain, ingress, certificate, and widget asset strategy.
 - Privacy retention defaults and target compliance posture.
-- Telemetry plane split and inference-trace ownership (`ADR-0010` is accepted; record the selected trace viewer, its licence terms, and its retention settings when `OBS-004` adopts one).
+- Telemetry plane split and inference-trace ownership (`ADR-0010` is accepted; the first-party store and `FEAT-015` remain authoritative. If an optional third-party operational trace projection is adopted, record its licence terms, content-export setting, and retention here without making it the system of record).

@@ -74,6 +74,8 @@ def test_production_composition_persists_current_api_writes(
         database_url=repository_database_url,
         database_pool_size=2,
         database_max_overflow=0,
+        admin_gateway_token="gateway-token-for-tests",
+        admin_csrf_secret="csrf-secret-for-tests",
     )
     with TestClient(create_app(settings)) as client:
         lead = client.post(
@@ -179,6 +181,69 @@ def test_wrong_tenant_cannot_read_or_append_known_session_id(
                 )
 
             assert await store.transcript("apex", conversation.session_id) == (original,)
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_the_operator_listing_shows_only_conversations_with_something_in_them(
+    repository_database_url: str,
+) -> None:
+    """The console lists work, and an empty row is not work.
+
+    The same table holds the write-only rows a booking or a lead correlates
+    against, so without the filter an operator's queue fills with conversations
+    that have no transcript and never had a visitor.
+    """
+
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        store = PostgresConversationStore(database.engine)
+        try:
+            spoken = await store.create("apex")
+            await store.create("apex")
+            other_tenant = await store.create("clearview")
+            await store.append(
+                "apex", spoken.session_id, role=MessageRole.VISITOR, content="I need HVAC help."
+            )
+            await store.append(
+                "clearview",
+                other_tenant.session_id,
+                role=MessageRole.VISITOR,
+                content="Window cleaning?",
+            )
+
+            listed = await store.for_tenant("apex", limit=50)
+
+            assert [record.session_id for record in listed] == [spoken.session_id]
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_the_operator_listing_is_ordered_and_bounded(repository_database_url: str) -> None:
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        store = PostgresConversationStore(database.engine)
+        try:
+            conversations = []
+            for ordinal in range(3):
+                conversation = await store.create("apex")
+                await store.append(
+                    "apex",
+                    conversation.session_id,
+                    role=MessageRole.VISITOR,
+                    content=f"message {ordinal}",
+                )
+                conversations.append(conversation.session_id)
+
+            listed = await store.for_tenant("apex", limit=2)
+
+            assert [record.session_id for record in listed] == list(reversed(conversations))[:2]
         finally:
             await database.dispose()
 

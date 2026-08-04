@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -185,6 +186,85 @@ class TenantPolicySource(Protocol):
         Raises:
             NotFoundError: no such tenant, worded so it cannot be used to
                 enumerate which tenants exist.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedEffect:
+    """A domain action one conversation has already caused."""
+
+    action: str
+    reference: str
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AssistantTurn:
+    """What one conversation turn produced.
+
+    ``pending`` is the question the runtime stopped to ask, and its presence
+    means ``answer`` is not final: nothing has been committed for it yet and the
+    turn finishes only when :meth:`ConversationRuntime.resume` supplies a
+    decision. Its contents are whatever the runtime needs answered, so it may
+    quote the customer — it belongs in a response to that customer and in the
+    inference plane, never in a log or a metric label.
+
+    The three version fields pin the answer to the components that produced it,
+    which is what `OBS-004` reconstructs a turn from.
+    """
+
+    answer: str
+    committed: tuple[CommittedEffect, ...]
+    pending: Mapping[str, object] | None
+    model_name: str
+    graph_version: str
+    prompt_version: str
+
+    @property
+    def is_paused(self) -> bool:
+        return self.pending is not None
+
+
+class ConversationRuntime(Protocol):
+    """Runs assistant conversations, one visitor message at a time.
+
+    A port rather than a direct call because the runtime is an agent framework
+    and `ADR-0001` keeps that framework out of everything except orchestration,
+    the checkpoint adapter, and the composition root. An HTTP handler written
+    against this Protocol is testable, and stays written when the runtime behind
+    it is replaced.
+
+    Conversation identity is the caller's: ``session_id`` names a conversation
+    the caller has already authorized, and the runtime neither issues nor
+    validates it.
+    """
+
+    async def send(self, tenant_id: str, session_id: str, message: str) -> AssistantTurn:
+        """Deliver a visitor message and run until an answer or a question.
+
+        Raises:
+            ValueError: the identifiers cannot name a conversation.
+        """
+        ...
+
+    async def resume(self, tenant_id: str, session_id: str, *, approved: bool) -> AssistantTurn:
+        """Answer the pending question and run the turn to completion.
+
+        Resuming a conversation with nothing pending is not an error: it runs
+        the graph forward from wherever it stopped, which for a finished turn
+        changes nothing.
+
+        Raises:
+            ValueError: the identifiers cannot name a conversation.
+        """
+        ...
+
+    async def pending(self, tenant_id: str, session_id: str) -> Mapping[str, object] | None:
+        """The question this conversation is waiting on, if any.
+
+        Lets a returning visitor be shown the confirmation they abandoned rather
+        than a conversation that appears to have stopped mid-sentence.
         """
         ...
 
