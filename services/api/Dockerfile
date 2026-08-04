@@ -13,6 +13,8 @@ WORKDIR /app
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock .python-version ./
 COPY packages/core/ packages/core/
+# The API composes the agent runtime, so the orchestration package ships with it.
+COPY packages/orchestration/ packages/orchestration/
 COPY services/api/ services/api/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --package tenantchat-api --no-dev --no-editable --compile-bytecode

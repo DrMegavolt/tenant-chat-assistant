@@ -1,0 +1,31 @@
+[project]
+name = "tenantchat-orchestration"
+version = "0.1.0"
+description = "LangGraph agent runtime: graph state, nodes, interrupts, checkpoint adapter"
+requires-python = ">=3.12,<3.13"
+
+# The orchestration layer, so LangGraph is expected here and banned in
+# `packages/core`, application-service public contracts, API schemas, and
+# business repository adapters. ADR-0001's layer table is the authority.
+#
+# What must not appear is a business rule. Every side effect this package causes
+# goes through a `tenantchat.core.ports` Protocol implemented by the service that
+# owns the I/O, so authorization, validation, transactions, and idempotency stay
+# where a graph cannot reach them.
+dependencies = [
+    "tenantchat-core",
+    "langgraph==1.2.10",
+    # Declared because the runtime names `RunnableConfig` directly. Nothing else
+    # from LangChain is used: no chains, no `langchain-classic`. See ADR-0001.
+    "langchain-core==1.5.3",
+    # LangGraph's own execution-state persistence. A business repository must not
+    # know the framework exists; this adapter persists nothing but the framework.
+    "langgraph-checkpoint-postgres==3.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tenantchat"]

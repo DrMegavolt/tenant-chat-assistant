@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-31
-- **Affects:** `AI-001`, `AI-002`, `RAG-008`, `DEP-003`
+- **Affects:** `AI-001`, `AI-002`, `AI-003`, `RAG-008`, `RAG-009`, `DEP-003`
 
 ## Context
 
@@ -10,10 +10,10 @@ The platform needs a language model for the agent loop and for grounded answer
 generation, and an embedding model for retrieval. Two things pull in opposite
 directions.
 
-Development cost pulls toward local inference. `RAG-008` requires an evaluation
-suite that runs on every change to a prompt, retriever, chunker, or model. Those
-suites are run hundreds of times while being built, each run covering a full
-dataset. Metering every one of those calls against a hosted API turns iteration
+Development cost pulls toward local inference. `RAG-009` puts an evaluation
+harness in the ordinary development loop, and `RAG-008` grows it into a suite that
+runs on every change to a prompt, retriever, chunker, or model. Those suites are
+run hundreds of times while being built, each run covering a full dataset. Metering every one of those calls against a hosted API turns iteration
 speed into a billing decision, which is the wrong incentive when the goal is
 retrieval quality.
 

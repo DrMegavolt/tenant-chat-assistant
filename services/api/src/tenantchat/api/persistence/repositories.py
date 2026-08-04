@@ -12,11 +12,18 @@ from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import (
     BookingRecord,
     ConversationRecord,
+    HandoffRecord,
     LeadRecord,
     MessageRecord,
     MessageRole,
 )
-from tenantchat.core.commands import BookingCommand, LeadCommand, LeadUrgency
+from tenantchat.core.commands import (
+    BookingCommand,
+    HandoffCommand,
+    HandoffReason,
+    LeadCommand,
+    LeadUrgency,
+)
 from tenantchat.core.contact import Contact
 from tenantchat.core.errors import ConflictError, NotFoundError
 
@@ -360,6 +367,91 @@ class PostgresLeadStore:
                 address_or_zip=row.address_or_zip or "",
                 urgency=_lead_urgency(row.urgency),
                 created_at=row.created_at,
+            )
+            for row in rows
+        )
+
+
+class PostgresHandoffStore:
+    """Durably records requests for a person to take a conversation over.
+
+    Writing the handoff also moves the conversation to ``waiting_for_staff``, in
+    the same transaction: a queued handoff whose session still reads ``active``
+    is a conversation the assistant would keep answering while a staff member
+    believes they own it.
+    """
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord:
+        handoff_id = uuid.uuid4()
+        async with self._engine.begin() as connection:
+            authoritative_session_id = await _action_session(
+                connection, command.tenant_id, session_id
+            )
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO handoffs
+                        (id, tenant_id, chat_session_id, status, reason, summary)
+                    VALUES
+                        (:id, :tenant_id, :session_id, 'requested', :reason, :summary)
+                    RETURNING requested_at
+                    """
+                ),
+                {
+                    "id": handoff_id,
+                    "tenant_id": command.tenant_id,
+                    "session_id": authoritative_session_id,
+                    "reason": command.reason.value,
+                    "summary": command.summary,
+                },
+            )
+            requested_at = result.scalar_one()
+            await _advance_action_session(
+                connection, command.tenant_id, authoritative_session_id, "handoff"
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE chat_sessions SET status = 'waiting_for_staff'
+                    WHERE tenant_id = :tenant_id AND id = :session_id AND status = 'active'
+                    """
+                ),
+                {"tenant_id": command.tenant_id, "session_id": authoritative_session_id},
+            )
+        return HandoffRecord(
+            handoff_id=f"HO-{handoff_id.hex.upper()}",
+            tenant_id=command.tenant_id,
+            session_id=str(authoritative_session_id),
+            reason=command.reason,
+            summary=command.summary,
+            created_at=requested_at,
+        )
+
+    async def for_tenant(self, tenant_id: str) -> tuple[HandoffRecord, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id, tenant_id, chat_session_id, reason, summary, requested_at
+                    FROM handoffs
+                    WHERE tenant_id = :tenant_id
+                    ORDER BY requested_at, id
+                    """
+                ),
+                {"tenant_id": tenant_id},
+            )
+            rows = result.all()
+        return tuple(
+            HandoffRecord(
+                handoff_id=f"HO-{row.id.hex.upper()}",
+                tenant_id=row.tenant_id,
+                session_id=str(row.chat_session_id),
+                reason=HandoffReason.parse(row.reason),
+                summary=row.summary or "",
+                created_at=row.requested_at,
             )
             for row in rows
         )

@@ -134,3 +134,38 @@ class TenantRegistry:
 
     def all(self) -> dict[str, TenantRecord]:
         return dict(self._records)
+
+
+class RegistryPolicySource:
+    """Serves :class:`TenantPolicy` from the seeded registry.
+
+    An adapter over a synchronous in-process lookup, so the ``await`` buys
+    nothing today. It is here because the port is async and `FEAT-006` moves
+    these records into the database, where it will.
+    """
+
+    def __init__(self, registry: TenantRegistry) -> None:
+        self._registry = registry
+
+    async def policy(self, tenant_id: str) -> TenantPolicy:
+        """The tenant's current policy.
+
+        Raises:
+            NotFoundError: no such tenant.
+        """
+        return self._registry.get(tenant_id).policy
+
+
+class RegistryAvailabilityProvider:
+    """Serves the seeded slot labels. `DATA-003` replaces this with a calendar."""
+
+    def __init__(self, registry: TenantRegistry) -> None:
+        self._registry = registry
+
+    async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[str, ...]:
+        """Slot labels currently bookable for one service.
+
+        Raises:
+            NotFoundError: no such tenant.
+        """
+        return self._registry.get(tenant_id).offered_slots(service_slug)

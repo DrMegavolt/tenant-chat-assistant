@@ -10,6 +10,7 @@ WORKDIR /app
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock .python-version ./
 COPY packages/core/pyproject.toml packages/core/pyproject.toml
+COPY packages/orchestration/pyproject.toml packages/orchestration/pyproject.toml
 COPY services/api/pyproject.toml services/api/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --only-group financing-runtime --no-install-workspace --compile-bytecode

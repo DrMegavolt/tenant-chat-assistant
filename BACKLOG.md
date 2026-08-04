@@ -2,7 +2,7 @@
 project: tenant-chat-assistant
 document_type: implementation-backlog
 schema_version: 1
-last_updated: 2026-08-01
+last_updated: 2026-08-02
 source_of_truth: BACKLOG.md
 ---
 
@@ -13,6 +13,20 @@ source_of_truth: BACKLOG.md
 Turn the current tenant chatbot prototype into a production-oriented demonstration of a secure, multi-tenant RAG and agent platform. The finished demo should show safe knowledge retrieval, reliable business actions, human escalation, measurable outcomes, and an operational deployment story.
 
 This backlog is written for both humans and implementation agents. Every task has a stable ID, status, priority, dependencies, bounded scope, acceptance criteria, and expected verification.
+
+### What the demo is meant to prove
+
+Three claims, in order of how hard they are to fake:
+
+1. **Grounded answers, with the receipts.** A tenant uploads a document; it is parsed, chunked, embedded, indexed, and retrieved under tenant and version filters. Answers cite the exact authorized source version, or abstain and offer a human. A citation the model invented is rejected mechanically, not discouraged by a prompt.
+2. **Business actions that survive reality.** Booking, lead capture, and human handoff are transactional, idempotent, and authorized by deterministic domain services — so a retried request, a mid-conversation restart, or a replayed workflow node cannot double-book anyone.
+3. **Answers you can debug.** Any answer opens in the provenance viewer: the routing decision and the alternatives it rejected, the candidate set collapsing through reranking, the exact assembled prompt with trusted and untrusted regions distinguished, and each claim linked to the chunk supporting it. When an answer is wrong, the record says *which stage* was wrong — stale source, retrieval miss, truncated context, or a genuinely ungrounded claim.
+
+Claim 3 is the differentiator and the reason `OBS-004` sits in `Gate B` rather than in operational polish. Retrieval-augmented chat is common; showing exactly why a given answer came out the way it did is not.
+
+### Scope honesty
+
+This document is deliberately larger than the committed scope. It describes how the system *would* be productionized so the engineering judgement is legible; it is not a promise to build every task. `Gate B` is the target. `Gate C` is documented, costed, and explicitly not committed — see the note under it.
 
 ## Status and priority vocabulary
 
@@ -66,14 +80,24 @@ All future work must preserve these invariants:
 - PII and secrets do not appear in logs, metrics, traces, browser debug output, or error messages.
 - Production manifests contain no literal credentials and do not install dependencies during pod startup.
 - Degraded operation must fail safely: it may answer less, but it must not fabricate or duplicate business actions.
+- Every answer is reconstructible. Given a turn ID, the router decision, retrieval candidate set, assembled prompt, model parameters, and validator verdicts can be retrieved and re-run. An answer whose provenance cannot be reconstructed is a bug, not a mystery.
+- Prompt and evidence content lives in the inference trace plane only. The operational log, metric, and span plane carries identifiers, enums, counts, and versions.
 - Agent-framework checkpoints hold resumable execution state; Postgres domain tables remain the system of record for conversations and business actions.
 - Framework code may orchestrate typed domain tools, but authentication, authorization, validation, transactions, and idempotency stay in deterministic application services.
 
-## Accepted agent-framework architecture decision
+## Superseded agent-framework architecture decision
+
+> **Do not implement from this section.** It is retained for history only.
+> [`docs/adr/0001-agent-runtime.md`](docs/adr/0001-agent-runtime.md) supersedes
+> it and narrows the scope to a single LangGraph runtime with no abstraction
+> layer over agent frameworks. Point 2 below — the framework-neutral
+> `AgentRuntime` protocol with two adapters — is the specific part that was
+> rejected. Where the two disagree, the ADR wins.
 
 - Decision ID: `ADR-001`
-- Status: `Accepted`
+- Status: `Superseded by ADR-0001`
 - Decision date: `2026-07-31`
+- Superseded on: `2026-07-31`
 - Applies to: `ARCH-001`, `AI-001`, `AGENT-001`, `RAG-006`, and `FEAT-004`
 
 The target architecture is a hybrid rather than a framework-wide rewrite:
@@ -120,20 +144,35 @@ A non-documentation task is `Done` only when:
 
 ## Release gates
 
+Gate A makes the project safe to show. **Gate B is the target** — it is the gate
+that demonstrates the three claims above. Gate C is a costed description of what
+production would additionally require, kept because knowing the gap is part of
+the point, and not committed.
+
 ### Gate A — Safe public demo
 
 Required: every `P0` task in this document. Until Gate A passes, expose the project only on a trusted development network.
 
-### Gate B — Full RAG showcase
+### Gate B — Full RAG showcase — **the target**
 
-Required: Gate A plus `ARCH-001`, `AI-001`, `AGENT-001`, `REL-001`,
-`REL-003`, `RAG-001` through `RAG-008`, `FEAT-001`, `FEAT-011`,
-`OBS-001`, `OBS-002`, `QA-002`, and `QA-003`. The target demonstration is a
-visible, tenant-safe document lifecycle: upload, parse, chunk, embed, index,
-retrieve, rerank, answer with authorized citations, abstain on weak evidence,
-and publish comparable evaluation results.
+Required: Gate A plus `ARCH-001`, `AI-001`, `AI-003`, `AGENT-001`, `REL-001`,
+`REL-003`, `RAG-001` through `RAG-009`, `FEAT-001`, `FEAT-008`, `FEAT-011`,
+`OBS-001`, `OBS-002`, `OBS-004`, `PRIV-002`, `QA-002`, and `QA-003`. The target
+demonstration is a visible, tenant-safe document lifecycle: upload, parse,
+chunk, embed, index, retrieve, rerank, answer with authorized citations, abstain
+on weak evidence, and publish comparable evaluation results — with any single
+answer in that lifecycle openable in the provenance viewer, showing why it said
+what it said and, where it was wrong, which stage was at fault.
 
-### Gate C — Operational production candidate
+### Gate C — Operational production candidate — documented, not committed
+
+This gate exists to record what running the system for real would cost, not to
+schedule it. Its tasks — high availability, autoscaling, disaster-recovery
+drills, release provenance, load and soak testing — are the ones a demonstration
+cannot honestly claim without an operating burden that teaches nothing further
+about the architecture. Treat every `Gate C` task as `P3` in practice unless the
+project's purpose changes; the priorities below record what production would
+demand, not what to build next.
 
 Required: Gate B plus `DEP-002` through `DEP-006`, `QA-004`, `QA-005`, the
 remaining production business workflows, and completed runbooks.
@@ -170,8 +209,9 @@ remaining production business workflows, and completed runbooks.
 
 ### P1 demo-critical RAG path
 
-- [ ] `ARCH-001` — Agent runtime boundary and LangGraph adoption — `P1`
+- [x] `ARCH-001` — Agent runtime boundary and LangGraph adoption — `Done`
 - [ ] `AI-001` — Provider and model abstraction — `P1`
+- [ ] `AI-003` — Versioned prompt assembly and template registry — `P1`
 - [ ] `REL-001` — Resilient dependency clients — `P1`
 - [ ] `REL-003` — Durable background jobs and retry handling — `P1`
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
@@ -181,10 +221,13 @@ remaining production business workflows, and completed runbooks.
 - [ ] `RAG-005` — Evidence and citation contract — `P1`
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
 - [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
+- [ ] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
 - [ ] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
 - [ ] `OBS-001` — Structured logging and request correlation — `P1`
 - [ ] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
+- [ ] `OBS-004` — Inference trace, answer provenance, and failure attribution — `P1`
+- [ ] `PRIV-002` — Inference trace data plane, retention, and access control — `P1`
 - [ ] `QA-002` — API and database integration tests — `P1`
 - [ ] `QA-003` — Tenant-isolation and security regression tests — `P1`
 
@@ -215,7 +258,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 - [ ] `FEAT-005` — Notification and outbound webhook workflow — `P1`
 - [ ] `FEAT-006` — Tenant onboarding, policy, and branding administration — `P1`
 - [ ] `FEAT-007` — Conversation search, filters, and operator actions — `P2`
-- [ ] `FEAT-008` — User feedback and reviewed-answer workflow — `P2`
+- [ ] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
 - [ ] `FEAT-009` — Business outcome and conversion analytics — `P2`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P1`
 - [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
@@ -450,8 +493,8 @@ values are logged, never published. Run it with `make api`.
 **Slice 2 — remaining before cutover.**
 
 - Port `/api/chat`, `/api/chat/session`, and the admin routes. The tool loop
-  moves behind the `AgentRuntime` boundary in `ARCH-001` rather than being
-  transcribed, so this slice is gated on that task.
+  becomes a LangGraph graph calling idempotent domain services under `ARCH-001`
+  rather than being transcribed, so this slice is gated on that task.
 - Repoint `Dockerfile` and `k8s/app.yaml` at `services/api` under `DEP-001`, then
   delete `server.py`. Until that lands, the deployed image still runs the
   prototype and still accepts `0001234567`. The prototype snapshot schema and
@@ -831,13 +874,16 @@ values are logged, never published. Run it with `make api`.
   - Measure request/error/latency by operation using bounded-cardinality labels.
   - Measure model tokens, estimated cost, time to first token, provider errors, fallbacks, and cancellations.
   - Measure retrieval latency, candidate count, score distribution, reranking, abstention, and citation count.
+  - Measure answer quality by class, not only by volume: the `OBS-004` failure-class distribution, router confidence and clarification rate, context-truncation rate, and citation-validation failure rate.
+  - Attach trace exemplars to quality and latency metrics so a Grafana spike links to one turn in the provenance viewer. The exemplar carries a trace ID only; the content stays in the inference plane per `ADR-0010`.
   - Measure booking, lead, handoff, CRM-delivery, and conversion outcomes.
 - Acceptance criteria:
   - Metrics remain correct across replicas and restarts.
   - No session IDs, user IDs, free text, or PII are metric labels.
+  - Every label is a bounded enum or a tenant pseudonym, and a test asserts the per-metric cardinality ceiling so a new label value cannot quietly multiply series.
   - Each critical action has success, failure, and latency metrics.
 - Verification:
-  - Metric contract tests and sample Prometheus queries are documented.
+  - Metric contract tests, a label-cardinality test, and an exemplar drill-through walkthrough are documented alongside sample Prometheus queries.
 - Completion notes: _Pending._
 
 ### OBS-003 — Dashboards, SLOs, and alerts as code
@@ -859,30 +905,131 @@ values are logged, never published. Run it with `make api`.
   - Validate rules and import dashboards in a clean observability environment.
 - Completion notes: _Pending._
 
-### ARCH-001 — Agent runtime boundary and LangGraph adoption
+### PRIV-002 — Inference trace data plane, retention, and access control
 
 - Status: `Todo`
 - Priority: `P1`
-- Type: `Architecture/agent platform`
-- Depends on: `QA-001`, `API-001` slice 1, `DATA-002`
-- Likely areas: backend orchestration package, agent runtime adapters, architecture decision records, `architecture/likec4/`
+- Type: `Privacy/data governance`
+- Depends on: `PRIV-001`, `SEC-001`
+- Likely areas: turn-record schema, retention worker, admin RBAC and audit, `k8s/otel-collector.yaml`, privacy documentation
 - Scope:
-  - Define a framework-neutral `AgentRuntime` protocol with typed turn input, structured output, tool events, usage, cancellation, and error semantics.
-  - Move the current custom tool loop behind a `SimpleAgentRuntime` adapter without changing behavior.
-  - Add a LangGraph v1 runtime adapter with a durable Postgres checkpointer for workflows that require pause/resume, branching, human approval, or recovery.
-  - Keep domain tool interfaces and implementations free of LangChain/LangGraph types.
-  - Document why LangChain v1 `create_agent` is optional, why `langchain-classic` is excluded, and when an OpenAI Agents SDK adapter would be appropriate.
+  - Implement the two-plane split from `ADR-0010`: enforce that message content, contact details, and document text reach the turn record only, never logs, metrics, or exported spans.
+  - Add a collector redaction processor that runs ahead of every exporter, so adding a backend cannot widen what leaves the cluster.
+  - Gate the `TRACE_CONTENT_EXPORT` setting: disabled by default, permitted only for a viewer inside the cluster trust boundary behind admin authentication, and refused at startup in production for any external backend.
+  - Set turn-record retention independently of and shorter than transcript retention, with an automatic purge that emits auditable counts.
+  - Add a distinct role for turn-record access, separate from ordinary transcript viewing, with every read audited to an actor, turn, and reason.
+  - Extend `PRIV-001` export and erasure to cover turn records and any projection derived from them, including evaluation datasets promoted under `FEAT-008`.
+  - Document the classification, lawful basis, retention period, and access rules for prompts, retrieved evidence, and model outputs.
+- Acceptance criteria:
+  - An erasure request removes or irreversibly anonymizes the subject's turn records and derived projections within the documented window, and the removal is verifiable.
+  - No content field appears in any log line, metric label, or exported span under either `TRACE_CONTENT_EXPORT` setting.
+  - Production startup fails when content export is enabled for a backend outside the trust boundary.
+  - Turn-record reads by an actor without the dedicated role are refused and audited; permitted reads are audited too.
+  - Expired turn records are purged automatically and the purge is observable without exposing what was purged.
+- Verification:
+  - Run privacy lifecycle tests for turn-record export, expiry, and erasure; a redaction test asserting the operational plane is content-free; a startup-refusal test for misconfigured export; and an RBAC/audit test for trace access.
+- Completion notes: _Pending._
+
+### OBS-004 — Inference trace, answer provenance, and failure attribution
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `AI observability`
+- Depends on: `OBS-001`, `AI-001`, `AI-003`, `RAG-005`, `PRIV-002`
+- Likely areas: turn-record schema and repository, orchestration instrumentation, OpenTelemetry GenAI spans, `k8s/otel-collector.yaml`, admin trace viewer
+- Scope:
+  - Persist one append-only, tenant-qualified turn record per conversation turn, per `ADR-0010`, covering the router decision and the candidate intents it rejected, the standalone retrieval query and the history used to build it, every retrieval candidate with its lexical, vector, fused, and rerank scores, the evidence dropped by the context budget, the assembled prompt reference and content hash, model parameters and usage, raw output, parsed claims with citation IDs, validator verdicts, each tool call with its idempotency key and committed record ID, and the turn outcome.
+  - Record the version of every component that shaped the answer: prompt template, router policy, retriever configuration, embedding model, reranker, model ID, and the chunk and document versions of each cited source.
+  - Classify each unsatisfactory turn against a closed failure taxonomy: `stale_source`, `retrieval_miss`, `retrieval_rank`, `filter_exclusion`, `context_truncation`, `ungrounded_claim`, `fabricated_citation`, `routing_error`, `tool_error`, `provider_failure`. Detect automatically every class that is decidable from the record alone; leave the rest to review in `FEAT-008`.
+  - Emit OpenTelemetry spans following the GenAI semantic conventions for the operational plane, keeping content out of it per `ADR-0010`.
+  - Build the first-party single-answer drill-down in the admin console: question, routing decision with rejected alternatives, candidate set collapsing through reranking to the selected evidence, assembled prompt with trusted and untrusted segments visually distinct, and each answer claim linked to the chunk supporting it with the validator's verdict.
+  - Support replay from a turn ID: retrieval alone against pinned versions and against the current index, the model call alone against the stored context, and the whole turn under a changed component version with a diff against the recorded output.
+- Acceptance criteria:
+  - Any turn can be reconstructed from its ID alone: exact prompt, exact evidence, model parameters, and validator verdicts.
+  - Replaying retrieval for a stored turn against its pinned versions reproduces the recorded candidate set.
+  - Seeded fixtures for a fabricated citation ID, an evidence chunk dropped by the context budget, and a chunk excluded by a tenant or version filter are each detected and labeled without human input.
+  - Failure class is a bounded enum, safe as a metric label, and its distribution is queryable by tenant and time.
+  - Turn-record reads are RBAC-gated and audited, and deleting every telemetry backend loses no turn record.
+  - The operational plane contains no message content, contact details, or document text.
+- Verification:
+  - Run provenance reconstruction, replay determinism, per-class detection fixture, and operational-plane redaction tests, then walk one seeded turn end to end in the admin viewer.
+- Completion notes: _Pending._
+
+### ARCH-001 — LangGraph agent runtime over a framework-free domain
+
+- Status: `Done`
+- Priority: `P1`
+- Type: `Architecture/agent platform`
+- Governed by: [`ADR-0001`](docs/adr/0001-agent-runtime.md). The superseded inline `ADR-001` above described a two-adapter `AgentRuntime` protocol; that design is rejected and must not be built.
+- Depends on: `QA-001`, `API-001` slice 1, `DATA-002`
+- Likely areas: backend orchestration package, checkpoint adapter, composition root, `tests/test_architecture_invariants.py`, `architecture/likec4/`
+- Scope:
+  - Adopt LangGraph v1 with the Postgres checkpointer as the only agent runtime. Do not introduce an abstraction layer over agent frameworks, a second adapter, or a runtime-selection setting.
+  - Move the prototype tool loop in `server.py` into a versioned graph, replacing its in-process tool dispatch with calls to idempotent domain services.
+  - Enforce the `ADR-0001` layer policy by dependency direction: `packages/core`, application-service public contracts, API schemas, and business repository adapters stay framework-free; graph orchestration, the checkpoint adapter, and the composition root import LangGraph freely.
+  - Extend the architecture invariants scan from `packages/core` to `services/api` public contracts as those layers land, keeping orchestration and checkpoint adapters explicitly out of scope for the scan.
+  - Record the graph version alongside the other component versions in the `OBS-004` turn record, so a behavior change is attributable to a graph revision.
+  - Document why `langchain-classic` is excluded, when LangChain v1 `create_agent` is worth using inside a node, and what would have to change for the OpenAI Agents SDK alternative in `ADR-0001` to be reconsidered.
   - Keep the LikeC4 architecture model synchronized with the implementation boundary.
 - Acceptance criteria:
-  - The simple and LangGraph adapters pass the same runtime contract suite for shared capabilities.
-  - Ordinary one-turn chat can use the simple adapter without graph/checkpoint overhead.
-  - A persisted LangGraph test workflow pauses, survives process restart, resumes, and completes without repeating a committed domain action.
-  - Framework checkpoint records can be deleted and rebuilt without deleting authoritative conversations, bookings, leads, or handoffs.
-  - Graph nodes invoke side effects only through idempotent domain services with explicit idempotency keys.
-  - No API, repository, or domain-service public contract imports LangChain or LangGraph classes.
+  - A persisted workflow pauses at an interrupt, survives process restart, resumes, and completes without repeating a committed domain action.
+  - Deleting every checkpoint record loses no conversation, booking, lead, or handoff, and the system remains able to start new conversations.
+  - Graph nodes invoke side effects only through idempotent domain services with explicit idempotency keys, and a forced replay of a node commits nothing twice.
+  - No `packages/core` module, application-service public contract, API schema, or business repository adapter imports LangChain or LangGraph.
+  - A single-turn question that reaches no interrupt and commits no domain action stays within a documented checkpoint-write and latency budget, measured and recorded rather than assumed.
 - Verification:
-  - Run runtime contract tests, a restart/resume integration test, an idempotent replay test, and `npm --prefix architecture/likec4 run validate`.
-- Completion notes: _Pending._
+  - Run the architecture invariants test, a restart/resume integration test, an idempotent replay test, a checkpoint-deletion recovery test, the single-turn overhead benchmark, and `npm --prefix architecture/likec4 run validate`.
+- Completion notes:
+  - LangGraph v1.2.10 with the Postgres checkpointer is the only runtime. No
+    abstraction over agent frameworks was built, and no runtime-selection
+    setting exists. `packages/orchestration` holds the graph, its state, the
+    nodes, and the checkpoint adapter.
+  - The dispatcher graph is six nodes — model, tools, confirm booking, commit
+    booking, escalate, finalize — versioned as `dispatch@1`, with the system
+    prompt versioned separately as `dispatch-system@1`. `DispatchRuntime`
+    returns both on every turn, so `OBS-004` can pin an answer to them without
+    reaching into the graph.
+  - Every effect crosses a `tenantchat.core.ports` Protocol taking an
+    `IdempotencyKey`. Keys are derived from checkpointed values — tenant,
+    session, tool, turn, and the provider's call ID — and hashed, so a replayed
+    node derives the key it derived the first time and no key carries a
+    customer's words into a log. `tenantchat.api.actions` implements the
+    services over the existing `idempotency_keys` table with claim-then-complete
+    semantics.
+  - The booking confirmation is a real `interrupt`. A paused conversation is
+    resumed by a second process with its own pools in
+    `tests/agent_runtime/test_postgres_durability.py`, and truncating every
+    checkpoint table there leaves the booking, and the ability to start new
+    conversations, intact.
+  - The architecture invariants scan now covers `services/api` as well as
+    `packages/core`, banning LangChain, LangGraph, `tenantchat.orchestration`,
+    and provider SDKs everywhere except `agent.py` and `app.py`. The exemption
+    list is itself tested, so an entry for a file that no longer composes the
+    runtime fails the build.
+  - Measured, not assumed: a single-turn question that calls no tools costs 7
+    checkpoint writes and about 1.2 ms of in-process overhead. Budgets of 8
+    writes and a 25 ms median are enforced in
+    `tests/agent_runtime/test_runtime_overhead.py`, which also records both
+    figures into the JUnit XML.
+  - `ADR-0001` gained the framework-surface section this task called for —
+    why `langchain-classic` is excluded, when LangChain v1 `create_agent` earns
+    a place inside a node, and what would have to change for the OpenAI Agents
+    SDK to be reconsidered — plus the measured cost and the checkpoint-schema
+    runbook.
+  - Migration `0004_agent_runtime` adds `handoffs.summary`, nullable and
+    non-blank, so the escalation path's context reaches the staff queue rather
+    than only the transcript.
+  - `make migrate-checkpoints` creates LangGraph's own tables under
+    `DATABASE_MIGRATION_URL`. The library owns that schema, and the application
+    role holds no `CREATE` on `public`.
+  - **Not included, deliberately.** The runtime is composed but not yet served
+    over HTTP: `AI-001` supplies the `ChatModel` adapter — this task added the
+    port and a scripted double, not a provider client — and `API-001` exposes
+    the chat endpoint over it. `AI-003` replaces `prompts.py` with the template
+    registry, `RAG-006` replaces the fixed transcript window, and `DATA-003`
+    collapses the idempotency claim and the booking write into one transaction,
+    which removes the in-flight window where a crashed attempt makes a retry
+    wait for expiry rather than proceeding.
 
 ### AI-001 — Provider and model abstraction
 
@@ -922,6 +1069,30 @@ values are logged, never published. Run it with `make api`.
   - Policy blocks and model fallbacks are auditable and measurable.
 - Verification:
   - Tests cover quota exhaustion, provider failure, unsafe input/output, and fallback selection.
+- Completion notes: _Pending._
+
+### AI-003 — Versioned prompt assembly and template registry
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `AI platform`
+- Depends on: `AI-001`, `DATA-002`
+- Likely areas: prompt builder package, template registry, tenant policy, orchestration
+- Scope:
+  - Replace string concatenation with a typed prompt builder that takes tenant policy, workflow state, conversation history, and retrieved evidence and returns a closed assembled-prompt type carrying its template ID, template version, resolved bindings, and content hash.
+  - Keep prompt templates as versioned artifacts in the repository under review, never runtime-editable and never tenant-authored.
+  - Express tenant customization as schema-validated slots — tone, business facts, escalation rules, disclaimers — so template structure stays code and tenant input stays data.
+  - Segment the assembled prompt explicitly into trusted and untrusted regions, with retrieved evidence and prior visitor turns always untrusted, so `RAG-007` has a single boundary to enforce rather than a convention.
+  - Enforce the token and source budget during assembly and report what was excluded, rather than truncating silently.
+  - Make the assembled prompt the only input the model adapter accepts, so no code path can reach the provider with an unversioned prompt.
+- Acceptance criteria:
+  - Every model call is attributable to a template ID and version recorded in the turn record.
+  - A tenant configuration value cannot introduce a new instruction section, only fill a declared slot.
+  - Evidence and prior visitor text are marked untrusted in the assembled type, and the marking is visible to `RAG-007` checks and to the `OBS-004` viewer.
+  - Assembly that exceeds the budget returns the excluded set explicitly; nothing is dropped without a record.
+  - Changing a template produces a new version rather than mutating one already referenced by stored turn records.
+- Verification:
+  - Run prompt-assembly unit tests covering slot validation, injection attempts through tenant configuration and evidence, budget exclusion reporting, and version immutability.
 - Completion notes: _Pending._
 
 ### RAG-001 — Versioned knowledge content model
@@ -1096,21 +1267,48 @@ values are logged, never published. Run it with `make api`.
   - Run a maintained adversarial RAG test corpus in CI.
 - Completion notes: _Pending._
 
+### RAG-009 — Golden evaluation harness and scoreboard
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `AI quality`
+- Depends on: `RAG-001`, `RAG-003`
+- Blocks: `RAG-004` tuning, `RAG-005`, `RAG-006`, `RAG-007`, `RAG-008`
+- Likely areas: `evals/`, fixtures, `make` target
+- Scope:
+  - Build the minimum scoreboard needed to tune anything: a runner, a fixture corpus, and three scores — retrieval recall@k against labelled gold chunks, citation precision, and abstention correctness on questions with no supporting evidence.
+  - Start at 20–30 hand-labelled cases across both seed tenants, including at least one stale-document case, one cross-tenant isolation case, and one question the corpus cannot answer.
+  - Run offline against fixtures with no live model, database, search service, or embedding service, so it belongs to the hermetic gate rather than to an integration environment.
+  - Pin and report the component versions under test — retriever configuration, embedding model, reranker, prompt template, model ID — so two runs are comparable.
+  - Print a diffable summary and exit non-zero below configured thresholds, without yet gating CI.
+- Acceptance criteria:
+  - Two runs over unchanged inputs produce identical scores.
+  - A deliberately weakened retriever configuration moves recall@k measurably and visibly.
+  - The harness runs without network access and completes fast enough to sit in the ordinary development loop.
+  - Fixtures contain no real customer PII.
+- Verification:
+  - Run the harness twice for identical output, then once against a seeded regression to confirm the score moves in the expected direction.
+- Completion notes: This is the thin slice that makes `RAG-004` through `RAG-007` tunable. `RAG-008` grows it into the versioned, CI-gating suite. _Pending._
+
 ### RAG-008 — RAG evaluation and regression suite
 
 - Status: `Todo`
 - Priority: `P1`
 - Type: `AI quality`
-- Depends on: `RAG-004`, `RAG-005`, `RAG-007`
+- Depends on: `RAG-009`, `RAG-004`, `RAG-005`, `RAG-007`, `OBS-004`, `FEAT-008`
 - Likely areas: `evals/`, fixtures, CI workflow, evaluation reports
 - Scope:
+  - Grow the `RAG-009` harness rather than replacing it, so one runner and one scoring implementation serve both the development loop and the release gate.
   - Create versioned datasets for retrieval recall, grounded answer correctness, citation precision, refusal, tenant isolation, and multi-turn behavior.
   - Include financing policy edge cases and adversarial documents.
+  - Promote reviewed cases from the production flywheel: an `OBS-004` turn record labelled with a failure class and corrected under `FEAT-008` becomes a dataset case, subject to the `PRIV-002` anonymization checks.
   - Compare prompt, retriever, embedding, reranker, and model versions.
+  - Score claim grounding with the same validator `RAG-005` runs online, so the property gated in CI is the property enforced at request time.
   - Define release thresholds and a reviewed exception process.
 - Acceptance criteria:
   - Evaluation runs are deterministic where possible and publish comparable reports.
   - CI blocks statistically or materially significant regressions below thresholds.
+  - Any LLM-as-judge scorer reports measured agreement against human labels on a held-out set; an unvalidated judge may inform review but may not gate a release.
   - Dataset examples contain no real customer PII.
 - Verification:
   - Run the evaluation twice and confirm stable scoring within documented tolerance.
@@ -1125,12 +1323,14 @@ values are logged, never published. Run it with `make api`.
 - Likely areas: orchestration package, workflow tables, tool registry
 - Scope:
   - Replace keyword-only financing routing with a structured intent router.
-  - Implement stateful routing and interrupts as a versioned LangGraph graph behind the `AgentRuntime` boundary.
+  - Implement stateful routing and interrupts as a versioned LangGraph graph, per `ADR-0001`, without an intervening runtime abstraction.
+  - Record the whole routing decision, not the winner: every candidate intent with its score, the chosen intent, the confidence, the router policy version, and the clarification or handoff threshold applied. This is what distinguishes a `routing_error` from a retrieval failure in the `OBS-004` taxonomy.
   - Persist active workflow, collected fields, pending confirmation, tool results, and next allowed actions.
   - Register specialized agents with explicit input/output schemas and deterministic tool allowlists.
   - Support pause, resume, cancel, handoff, failure recovery, and topic switching.
 - Acceptance criteria:
   - The same user message routes consistently under a versioned router policy.
+  - A misrouted turn is diagnosable from its record alone: whether the correct intent was never a candidate, was scored and lost, or lost to a confidence threshold.
   - A specialized agent cannot call tools outside its allowlist.
   - Workflow recovery after restart does not repeat committed actions.
   - Low-confidence or conflicting intent asks a clarification or hands off safely.
@@ -1449,19 +1649,21 @@ values are logged, never published. Run it with `make api`.
 ### FEAT-008 — User feedback and reviewed-answer workflow
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P1`
 - Type: `Feature/AI quality`
-- Depends on: `DATA-002`, `RAG-005`, `SEC-001`
+- Depends on: `DATA-002`, `RAG-005`, `SEC-001`, `OBS-004`
 - Likely areas: widget feedback UI, review queue, evaluation dataset tooling
 - Scope:
   - Add thumbs up/down, optional reason, staff review state, corrected answer, and links to prompt/model/retrieval versions.
+  - Open the reviewed turn in the `OBS-004` provenance viewer, and require the reviewer to assign a failure class from the taxonomy for any turn marked unsatisfactory.
   - Permit approved, anonymized examples to become evaluation cases.
 - Acceptance criteria:
   - Feedback cannot expose another conversation or alter production prompts directly.
   - Review decisions are audited and preserve original answer/evidence.
+  - A reviewed turn carries a failure class that agrees with the automatic classification where both exist, and disagreements are reported rather than silently overwritten.
   - Dataset promotion applies privacy checks.
 - Verification:
-  - E2E test covers feedback, review, correction, and safe evaluation promotion.
+  - E2E test covers feedback, review, failure-class assignment, correction, and safe evaluation promotion.
 - Completion notes: _Pending._
 
 ### FEAT-009 — Business outcome and conversion analytics
@@ -1645,14 +1847,24 @@ exist, not a prerequisite for them.
 
 - Content lane: implement `RAG-001`, then use the already-started `REL-003`
   foundation to implement `RAG-002` → `RAG-003`.
-- Runtime lane: `AI-001` → `REL-001`, while `AGENT-001` starts after
-  `ARCH-001`, `AI-001`, and `DATA-002`.
+- Runtime lane: `AI-001` → `AI-003` → `REL-001`, while `AGENT-001` starts after
+  `ARCH-001`, `AI-001`, and `DATA-002`. `AI-003` precedes `RAG-005` and
+  `RAG-007`, both of which assume one typed prompt boundary rather than a
+  convention.
 - Retrieval convergence: `RAG-004` → `RAG-005`.
+- Provenance lane: `PRIV-002` then `OBS-004`, starting once `RAG-005` fixes the
+  citation contract. Land the turn record before `RAG-004` tuning begins in
+  earnest — retrieval thresholds, fusion weights, and reranking cannot be
+  calibrated against answers whose candidate sets were never recorded.
 - Visible demo workflows: start `FEAT-001` after `RAG-002`; start `FEAT-011`
   after `RAG-005` and `SEC-002` so the demo visibly proves upload-to-answer and
   authorized source inspection.
-- Quality and safety: run `RAG-007`, `RAG-006`, and finally `RAG-008`; grow
-  `QA-002`, `QA-003`, `OBS-001`, and `OBS-002` alongside the vertical slice.
+- Quality and safety: land `RAG-009` before `RAG-004` tuning starts, then run
+  `RAG-007`, `RAG-006`, and finally `RAG-008`; grow `QA-002`, `QA-003`,
+  `OBS-001`, and `OBS-002` alongside the vertical slice.
+- Close the quality flywheel last in this wave: `FEAT-008` after `OBS-004` and
+  `RAG-005`, so reviewed production turns feed `RAG-008` datasets instead of
+  hand-written fixtures alone.
 - Demonstrate two tenants, document version replacement, failed-job retry,
   prompt-injection quarantine, hybrid retrieval, reranking, abstention,
   citations, and comparable evaluation reports before expanding the platform.
@@ -1690,3 +1902,4 @@ Record these decisions as ADRs before or during their first dependent task:
 - Secret-management approach for local, staging, and production environments.
 - Public hosting domain, ingress, certificate, and widget asset strategy.
 - Privacy retention defaults and target compliance posture.
+- Telemetry plane split and inference-trace ownership (`ADR-0010` is accepted; record the selected trace viewer, its licence terms, and its retention settings when `OBS-004` adopts one).

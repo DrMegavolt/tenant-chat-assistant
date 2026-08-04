@@ -9,6 +9,10 @@ requires-python = ">=3.12,<3.13"
 # translates HTTP to domain calls and domain results back to HTTP.
 dependencies = [
     "tenantchat-core",
+    # The composition root wires the agent runtime, so the framework arrives
+    # here transitively and by design. `tenantchat.api.agent` is the only module
+    # in this package allowed to reference it.
+    "tenantchat-orchestration",
     "alembic==1.14.0",
     "fastapi==0.141.1",
     # SQLAlchemy's async facade uses greenlet even with a native async driver.

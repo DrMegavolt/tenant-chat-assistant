@@ -52,6 +52,34 @@ _MAX_LENGTHS: Final[dict[RequiredField, int]] = {
 }
 
 
+class HandoffReason(StrEnum):
+    """Why the assistant stopped and asked for a person.
+
+    A closed set because this value is the natural grouping for "how often does
+    the assistant give up, and why" — and a metric label built from model-written
+    prose is both unbounded and capable of carrying a customer's words into the
+    operational plane, which `ADR-0010` forbids.
+    """
+
+    CUSTOMER_REQUEST = "customer_request"
+    OUTSIDE_POLICY = "outside_policy"
+    TOOL_FAILURE = "tool_failure"
+    UNRESOLVED = "unresolved"
+
+    @classmethod
+    def parse(cls, raw: str) -> HandoffReason:
+        """Map free text onto the taxonomy, defaulting to :attr:`UNRESOLVED`.
+
+        Unrecognized input never refuses the handoff: this action exists because
+        something already went wrong, and rejecting it over an unparseable label
+        strands the customer with no route to a human.
+        """
+        try:
+            return cls(raw.strip().casefold())
+        except ValueError:
+            return cls.UNRESOLVED
+
+
 class LeadUrgency(StrEnum):
     """How soon the customer needs work done.
 
@@ -187,6 +215,45 @@ class BookingCommand:
             address=cleaned_address,
             service=resolved,
             slot=cleaned_slot,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffCommand:
+    """A request for a person to take over the conversation.
+
+    No policy gate: a tenant cannot switch off the escape hatch, because every
+    other action in this module can refuse and the customer needs somewhere to
+    go when one does.
+    """
+
+    tenant_id: str
+    reason: HandoffReason
+    summary: str
+
+    @classmethod
+    def parse(cls, policy: TenantPolicy, *, reason: str, summary: str) -> HandoffCommand:
+        """Build a handoff request.
+
+        ``summary`` is required. A handoff with no context makes the staff member
+        read the whole transcript before they can say hello, and the caller can
+        always supply one — the assistant that raised the handoff has the
+        conversation in front of it, and the runtime's own give-up path writes
+        the summary itself.
+
+        Raises:
+            MissingRequiredFieldsError: no summary was supplied.
+            ValidationError: the summary exceeded its length bound.
+        """
+        cleaned_summary = _clean(RequiredField.SUMMARY, summary)
+        missing = _missing(summary=cleaned_summary)
+        if missing:
+            raise MissingRequiredFieldsError(missing)
+
+        return cls(
+            tenant_id=policy.tenant_id,
+            reason=HandoffReason.parse(reason),
+            summary=cleaned_summary,
         )
 
 

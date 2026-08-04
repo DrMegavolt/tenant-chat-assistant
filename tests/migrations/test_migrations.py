@@ -64,7 +64,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0003_knowledge"
+    assert revision == "0004_agent_runtime"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -328,6 +328,43 @@ def test_assigned_handoff_can_be_cancelled_without_erasing_assignment(
     assert row[0] == "cancelled"
     assert row[1] == "staff-1"
     assert row[2] is not None
+
+
+@pytest.mark.integration
+def test_a_handoff_summary_is_optional_but_never_blank(migration_database_url: str) -> None:
+    """The graph always writes one; every handoff predating `ARCH-001` has none.
+
+    Nullable and non-blank rather than ``NOT NULL DEFAULT ''``: a staff member
+    seeing no summary knows to open the transcript, while an empty string reads
+    as an assistant that had nothing to say.
+    """
+    upgrade_head(migration_database_url)
+    session_id = uuid.uuid4()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s)", ("tenant-a", "Tenant A")
+        )
+        connection.execute(
+            "INSERT INTO chat_sessions (id, tenant_id) VALUES (%s, %s)", (session_id, "tenant-a")
+        )
+        connection.execute(
+            """
+            INSERT INTO handoffs (id, tenant_id, chat_session_id, reason, summary)
+            VALUES (%s, %s, %s, 'customer_request', NULL)
+            """,
+            (uuid.uuid4(), "tenant-a", session_id),
+        )
+
+        with pytest.raises(errors.CheckViolation):
+            connection.execute(
+                """
+                INSERT INTO handoffs (id, tenant_id, chat_session_id, reason, summary)
+                VALUES (%s, %s, %s, 'customer_request', '   ')
+                """,
+                (uuid.uuid4(), "tenant-a", session_id),
+            )
+        connection.rollback()
 
 
 @pytest.mark.integration

@@ -12,7 +12,11 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY pyproject.toml uv.lock .python-version ./
+# Workspace member manifests. Needed even under `--no-install-workspace`: uv
+# resolves the workspace before deciding what to skip, and a member missing its
+# manifest fails the frozen sync.
 COPY packages/core/pyproject.toml packages/core/pyproject.toml
+COPY packages/orchestration/pyproject.toml packages/orchestration/pyproject.toml
 COPY services/api/pyproject.toml services/api/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --only-group prototype-runtime --no-install-workspace --compile-bytecode

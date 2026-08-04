@@ -6,7 +6,13 @@ model SDK. See ``packages/core/pyproject.toml`` for why, and
 """
 
 from tenantchat.core.catalog import ServiceCatalog, ServiceDefinition, normalize_term
-from tenantchat.core.commands import BookingCommand, LeadCommand, LeadUrgency
+from tenantchat.core.commands import (
+    BookingCommand,
+    HandoffCommand,
+    HandoffReason,
+    LeadCommand,
+    LeadUrgency,
+)
 from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.errors import (
     BookingNotPermittedError,
@@ -40,12 +46,26 @@ from tenantchat.core.knowledge import (
     Visibility,
 )
 from tenantchat.core.lifecycle import IndexingState, VersionState
+from tenantchat.core.ports import (
+    AvailabilityProvider,
+    BookingConfirmation,
+    BookingService,
+    HandoffService,
+    HandoffTicket,
+    IdempotencyKey,
+    LeadReceipt,
+    LeadService,
+    TenantPolicySource,
+)
 from tenantchat.core.tenant import PricingPolicy, PublicTenantView, TenantPolicy
 
 __all__ = [
     "ApprovalPlan",
+    "AvailabilityProvider",
     "BookingCommand",
+    "BookingConfirmation",
     "BookingNotPermittedError",
+    "BookingService",
     "ConflictError",
     "Contact",
     "ContactKind",
@@ -53,6 +73,11 @@ __all__ = [
     "DocumentVersion",
     "DomainError",
     "ExpiryPlan",
+    "HandoffCommand",
+    "HandoffReason",
+    "HandoffService",
+    "HandoffTicket",
+    "IdempotencyKey",
     "IndexingState",
     "InvalidContactError",
     "InvalidVersionTransitionError",
@@ -61,6 +86,8 @@ __all__ = [
     "KnowledgeSource",
     "LeadCaptureNotPermittedError",
     "LeadCommand",
+    "LeadReceipt",
+    "LeadService",
     "LeadUrgency",
     "MissingRequiredFieldsError",
     "NotFoundError",
@@ -78,6 +105,7 @@ __all__ = [
     "SlotUnavailableError",
     "SourceKind",
     "TenantPolicy",
+    "TenantPolicySource",
     "UnknownServiceError",
     "ValidationError",
     "VersionState",

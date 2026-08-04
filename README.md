@@ -1,18 +1,66 @@
-# Tenant Chat Assistant Prototype
+# Tenant Chat Assistant
 
-This is a prototype for an embeddable website chat widget with a Python backend.
+A multi-tenant RAG and agent platform for home-services dispatch: an embeddable
+chat widget that answers from tenant-approved knowledge, books appointments,
+captures leads, and escalates to a human.
 
-The production backend is being built alongside it in `services/api`, which
-already serves tenant configuration, availability, booking, and lead capture with
-the domain rules in `packages/core`. See `BACKLOG.md` (`API-001`) for what remains
-before `server.py` is retired.
+It is built as a demonstration, which means the interesting part is not that it
+answers questions — it is what happens around the answer.
+
+**What it sets out to prove:**
+
+1. **Grounded answers, with the receipts.** Documents are parsed, chunked,
+   embedded, and retrieved under tenant and version filters. Answers cite the
+   exact authorized source version or abstain and offer a human. A citation the
+   model invented is rejected mechanically rather than discouraged by a prompt.
+2. **Business actions that survive reality.** Booking, lead capture, and handoff
+   are transactional, idempotent, and authorized by deterministic domain
+   services — so a retry, a restart, or a replayed workflow node cannot
+   double-book anyone.
+3. **Answers you can debug.** Every turn is recorded with the routing decision
+   and its rejected alternatives, the retrieval candidate set with per-stage
+   scores, the exact assembled prompt, and each claim linked to its supporting
+   chunk. When an answer is wrong, the record says *which stage* was wrong —
+   stale source, retrieval miss, truncated context, or a genuinely ungrounded
+   claim — rather than leaving "the model hallucinated" as the diagnosis.
+
+The third is the one that is hard to fake, and it drives most of the
+architecture.
+
+**State of play.** `services/api` is the production backend and already serves
+tenant configuration, availability, booking, and lead capture over the domain
+rules in `packages/core`. `packages/orchestration` holds the LangGraph agent
+runtime (`ARCH-001`): a versioned dispatcher graph that pauses for a customer to
+confirm a booking, survives a process restart, and commits only through
+idempotent domain services. It is composed but not yet served over HTTP —
+`AI-001` supplies the model provider adapter and `API-001` the chat endpoint —
+so `server.py`, the original prototype, still serves the chat path. It will be
+deleted, not refactored. Claim 3 above is designed and specified, not yet built;
+the planning artifacts below are where that work is defined.
+
+## Planning and architecture artifacts
+
+| Artifact | What it is |
+| --- | --- |
+| [`BACKLOG.md`](BACKLOG.md) | Every task with acceptance criteria and verification. Gate B is the target; Gate C is documented, not committed. |
+| [`docs/adr/`](docs/adr/README.md) | Decision records — what was chosen, what it cost, what was rejected and why. |
+| [`architecture/likec4/`](architecture/likec4/README.md) | Architecture-as-code for the target end state, with generated diagrams. |
+| [`CLAUDE.md`](CLAUDE.md) | Working agreements and the invariants enforced by tests. |
+| [`docs/runbooks/`](docs/runbooks/) | Operational procedures for migrations and container images. |
+
+Decisions worth reading first: [ADR-0001](docs/adr/0001-agent-runtime.md)
+(LangGraph as the single agent runtime over a framework-free domain) and
+[ADR-0010](docs/adr/0010-telemetry-planes.md) (two telemetry planes, with the
+turn record — not a vendor — as the system of record for answer provenance).
+
+## Running it
 
 ```bash
 make api      # services/api on http://127.0.0.1:8080
 make dev      # frontend with hot reload on http://127.0.0.1:5173
 make setup    # install locked Python and frontend development dependencies
 make check    # complete Python + JavaScript quality gate with coverage
-make test-database # isolated PostgreSQL migrations and repository concurrency
+make test-database # isolated PostgreSQL migrations, repositories, durable workflows
 ```
 
 `make check` runs without live services. Frontend tests use a DOM environment
@@ -87,18 +135,26 @@ You can override this with environment variables:
 LLM_BASE_URL=http://localhost:1234/v1 LLM_MODEL=local-model python3 server.py
 ```
 
-Switch between the two configured companies:
+Two seed tenants exercise opposite policies, which is what makes tenant isolation
+visible rather than asserted:
 
-- Company A: answers contact, address, hours, and service-area questions, but never shares pricing and does not book through chat.
-- Company B: answers from fixed pricing, checks ZIP-code service area, separates availability by service category, and books a selected slot after confirmation.
-- Both companies can capture follow-up leads after collecting name, contact, service, and request details.
-- Both companies can politely offer callback capture after buying intent, but the assistant should not imply it can call unless the visitor provides contact info.
-- Booking-enabled companies show a compact booking form after availability is checked: slot, name, address, and phone/email.
+- **Apex Home Services** (`apex`) — a phone-first desk. Answers contact, address,
+  hours, and service-area questions; never shares pricing; does not book through
+  chat.
+- **Clearview Property Care** (`clearview`) — answers from fixed pricing, checks
+  ZIP-code service area, separates availability by service category, and books a
+  selected slot after confirmation.
+
+Both capture follow-up leads once name, contact, service, and request details are
+collected, and both may offer callback capture after buying intent — without
+implying a call is possible before the visitor provides contact details. A
+booking-enabled tenant shows a compact form after availability is checked: slot,
+name, address, and phone or email.
 
 The backend owns the tenant policy and tool calls:
 
 - Tenant configuration: allowed services, pricing policy, booking policy, phone, address, hours, escalation rules.
-- Retrieval: approved company knowledge base for FAQs.
+- Retrieval: the prototype's main chat path answers from tenant policy and tools, not from retrieval. Only the financing side-agent (`services/financing-agent`) queries the knowledge index today; putting governed retrieval on the main path is `RAG-004` through `RAG-006`.
 - Tools: `check_service_area`, `get_availability`, `book_appointment`, `create_lead`, `handoff_to_human`.
 - Guardrails: no pricing unless policy allows it, no booking unless policy allows it, human handoff for uncertainty or risky requests.
 - Admin: live chat list, transcript view, lead/tool panels, and manual staff replies into a visitor chat.

@@ -1,4 +1,4 @@
-"""Booking and lead command parsing: policy gates, completeness, and field checks."""
+"""Booking, lead, and handoff command parsing: policy gates, completeness, field checks."""
 
 from __future__ import annotations
 
@@ -7,7 +7,13 @@ from typing import Any
 
 import pytest
 
-from tenantchat.core.commands import BookingCommand, LeadCommand, LeadUrgency
+from tenantchat.core.commands import (
+    BookingCommand,
+    HandoffCommand,
+    HandoffReason,
+    LeadCommand,
+    LeadUrgency,
+)
 from tenantchat.core.errors import (
     BookingNotPermittedError,
     InvalidContactError,
@@ -209,3 +215,43 @@ class TestLeadUrgency:
         command = LeadCommand.parse(build_tenant(), **lead_args(urgency=raw))
 
         assert command.urgency is expected
+
+
+class TestHandoffCommand:
+    def test_a_tenant_cannot_switch_off_the_escape_hatch(self, build_tenant: TenantBuilder) -> None:
+        """Every other command can refuse, so this one must not.
+
+        A tenant with booking and lead capture both disabled would otherwise
+        leave a customer with a conversation that can only say no.
+        """
+        command = HandoffCommand.parse(
+            build_tenant(booking_enabled=False, lead_capture_enabled=False),
+            reason="customer_request",
+            summary="Customer asked for a person.",
+        )
+
+        assert command.reason is HandoffReason.CUSTOMER_REQUEST
+
+    def test_a_handoff_without_context_is_refused(self, build_tenant: TenantBuilder) -> None:
+        """A summary-less handoff makes the staff member read the whole transcript."""
+        with pytest.raises(MissingRequiredFieldsError) as caught:
+            HandoffCommand.parse(build_tenant(), reason="customer_request", summary="   ")
+
+        assert caught.value.fields == (RequiredField.SUMMARY,)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("tool_failure", HandoffReason.TOOL_FAILURE),
+            ("  Outside_Policy ", HandoffReason.OUTSIDE_POLICY),
+            ("", HandoffReason.UNRESOLVED),
+            ("the model gave up", HandoffReason.UNRESOLVED),
+        ],
+    )
+    def test_an_unparseable_reason_degrades_instead_of_refusing(
+        self, raw: str, expected: HandoffReason, build_tenant: TenantBuilder
+    ) -> None:
+        """This action exists because something already failed; it cannot fail too."""
+        command = HandoffCommand.parse(build_tenant(), reason=raw, summary="Needs a person.")
+
+        assert command.reason is expected

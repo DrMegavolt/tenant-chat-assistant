@@ -11,7 +11,8 @@ UV_RUN := uv run --frozen
 NPM := npm --prefix frontend
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
-	test-migrations test-repositories test-database migrate dev js-install js-lint js-format \
+	test-migrations test-repositories test-agent-runtime test-database migrate migrate-checkpoints \
+	dev js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check keycloak-render keycloak-lint arch-validate arch-build clean
@@ -58,11 +59,20 @@ test-migrations: ## Run migrations against an isolated Postgres 16 container
 test-repositories: ## Run authoritative repository tests on isolated Postgres 16
 	$(UV_RUN) pytest -m integration tests/repositories
 
-test-database: test-migrations test-repositories ## Run all isolated Postgres suites
+test-agent-runtime: ## Run durable-workflow tests against isolated Postgres 16
+	$(UV_RUN) pytest -m integration tests/agent_runtime
+
+test-database: test-migrations test-repositories test-agent-runtime ## Run all isolated Postgres suites
 
 migrate: ## Upgrade with the schema-owner URL (never the application URL)
 	@test -n "$${DATABASE_MIGRATION_URL}" || { echo "DATABASE_MIGRATION_URL is required"; exit 2; }
 	$(UV_RUN) alembic upgrade head
+
+# LangGraph owns this schema, so it is created by the library rather than
+# transcribed into a migration. It still needs the schema owner: the application
+# role holds no CREATE on public.
+migrate-checkpoints: ## Create the LangGraph checkpoint tables (schema-owner URL)
+	$(UV_RUN) python scripts/setup_checkpoints.py
 
 frontend/node_modules/.package-lock.json: frontend/package.json frontend/package-lock.json
 	$(NPM) ci
