@@ -1,14 +1,14 @@
 # Container image build and release evidence
 
-The repository builds six application images. Five come from one hashed
-`uv.lock` — `prototype`, `api`, `embedding`, `ingestion`, and `financing` — and
+The repository builds five application images. Four come from one hashed
+`uv.lock` — `api`, `embedding`, `ingestion`, and `financing` — and
 the API image is also the migration image, so a migration and its serving
 release cannot acquire different Python dependencies. Build stages use
 digest-pinned Python and uv images; final stages contain the virtual environment
 and application only, run as numeric user/group `10001:10001`, and do not
 contain uv or pip build steps.
 
-The sixth, `web`, is the nginx gateway built from `frontend/Dockerfile`. It
+The fifth, `web`, is the nginx gateway built from `frontend/Dockerfile`. It
 carries no Python: a digest-pinned Node stage runs `npm ci` and `npm run build`
 against `frontend/package-lock.json`, and the runtime stage holds those bundles
 plus the configuration in `frontend/nginx/`. Its smoke asserts the two document
@@ -39,8 +39,9 @@ signing, SBOMs, provenance, and publishing belong to `DEP-006`. For each image i
 writes BuildKit metadata, `docker image inspect` output, and the exact local tag
 under ignored `artifacts/images/`. The smoke script confirms the configured
 non-root user, imports the packaged runtime (including psycopg in both backend
-images), verifies the writable prototype data directory, checks Alembic in the
-API image, and calls the service health endpoint from a running container.
+images), runs the API image through its migration against an isolated throwaway
+Postgres then checks Alembic, and calls the service health endpoint from a
+running container.
 
 To verify one image while iterating:
 
@@ -49,7 +50,7 @@ To verify one image while iterating:
 ./scripts/smoke_images.sh api
 ```
 
-CI performs the same build and smoke in a six-image matrix. It uploads the
+CI performs the same build and smoke in a five-image matrix. It uploads the
 metadata, inspect output, health response, and Trivy JSON for each image and
 fails on fixed HIGH or CRITICAL findings. A separate filesystem scan covers the
 locked dependencies and repository inputs.

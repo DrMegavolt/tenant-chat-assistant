@@ -21,6 +21,11 @@ dependencies = [
     # LangGraph's own execution-state persistence. A business repository must not
     # know the framework exists; this adapter persists nothing but the framework.
     "langgraph-checkpoint-postgres==3.1.1",
+    # The AI-001 OpenAI-compatible provider adapter (`providers/openai_compatible.py`)
+    # speaks the chat-completions contract over httpx. Declared here because the
+    # orchestration package imports it directly; it is already in the resolved
+    # graph via langgraph-core, so this only makes the direct dependency explicit.
+    "httpx==0.28.1",
 ]
 
 [build-system]

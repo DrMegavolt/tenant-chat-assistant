@@ -54,12 +54,14 @@ schema. Guessing those values during an automatic import would turn unsafe demo
 state into authoritative production records.
 
 The initial migration detects the legacy table and stops without modifying it.
-For a prototype database:
+For a database that still holds pre-cutover JSONB snapshots (the prototype image
+that wrote them was deleted with the `API-001` cutover, so new writers are
+impossible but the rows can remain):
 
-1. Stop every prototype writer and retain the `chats/` directory separately.
+1. Retain the `chats/` directory separately.
 2. Export the table with `pg_dump --format=custom --table=public.chat_sessions`.
-   Verify the dump with `pg_restore --list` and store it under the prototype's
-   existing data-retention controls because it contains PII.
+   Verify the dump with `pg_restore --list` and store it under the existing
+   data-retention controls because it contains PII.
 3. In a transaction, rename the legacy table to a dated quarantine name and
    remove access from the future API role:
 
@@ -73,7 +75,7 @@ For a prototype database:
    ```
 
 4. Run the migration and seed tenants through a separately reviewed onboarding
-   process. Do not point the old prototype at this database again.
+   process.
 5. Delete the quarantined table only after backup verification and the approved
    prototype retention period. This task never deletes it automatically.
 

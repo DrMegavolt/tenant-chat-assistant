@@ -6,7 +6,7 @@
 # against a Kubernetes Service, a compose network, and a port-forwarded backend.
 set -eu
 
-: "${CHAT_BACKEND_ORIGIN:=http://chat-backend:8000}"
+: "${CHAT_BACKEND_ORIGIN:=http://chat-admin:8004}"
 : "${CHAT_ADMIN_ORIGIN:=http://chat-admin:8004}"
 : "${AUTH_PROXY_ORIGIN:=http://oauth2-proxy:4180}"
 : "${WIDGET_ALLOWED_ORIGINS:=}"

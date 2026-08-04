@@ -19,7 +19,9 @@ _DEFAULT_MAX_REQUEST_BYTES = 64 * 1024
 # the origin list is the control. Defaulting to localhost keeps development
 # working while making a production deployment state its origins explicitly —
 # a wildcard default is how a permissive CORS policy reaches production unnoticed.
-_DEFAULT_ALLOWED_ORIGINS = ("http://127.0.0.1:8000", "http://localhost:8000")
+# The dev port is the `make api` default; the gateway answers same-origin calls
+# in the deployed shape, so the allowlist is only the widget's direct path.
+_DEFAULT_ALLOWED_ORIGINS = ("http://127.0.0.1:8080", "http://localhost:8080")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,14 @@ class Settings:
     database_max_overflow: int = 5
     database_pool_timeout_seconds: float = 5.0
     database_pool_recycle_seconds: int = 1800
+    # AI-001: OpenAI-compatible provider settings. Both the base URL and the
+    # model are required to compose a chat runtime; absent either, no runtime is
+    # composed and chat fails closed (503). `api_key` stays optional so a local,
+    # unauthenticated endpoint keeps working in development.
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_api_key: str = ""
+    llm_timeout_seconds: int = 120
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -71,4 +81,12 @@ class Settings:
             database_pool_recycle_seconds=int(
                 os.environ.get("CHAT_API_DATABASE_POOL_RECYCLE_SECONDS", "1800")
             ),
+            # AI-001 provider settings. The same `LLM_*` names the prototype and
+            # the financing agent used, so an existing environment configures all
+            # three clients identically. Values are trimmed; empty means "not
+            # configured", which composes no runtime.
+            llm_base_url=os.environ.get("LLM_BASE_URL", "").strip() or None,
+            llm_model=os.environ.get("LLM_MODEL", "").strip() or None,
+            llm_api_key=os.environ.get("LLM_API_KEY", "").strip(),
+            llm_timeout_seconds=int(os.environ.get("LLM_TIMEOUT_SECONDS", "120")),
         )

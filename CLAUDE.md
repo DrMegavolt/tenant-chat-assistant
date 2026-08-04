@@ -88,10 +88,11 @@ orchestration code so this stays achievable.
 
 ## Context
 
-`server.py` and the current `services/*/app.py` files are prototype code being
-replaced. They are excluded from lint and type checking and will be deleted, not
-refactored — several of their behaviors are bugs worth losing. Do not extend them;
-build in `packages/core` and `services/api` instead.
+The current `services/*/app.py` files are prototype code being replaced. They
+are excluded from lint and type checking and will be deleted, not refactored —
+several of their behaviors are bugs worth losing. The original `server.py`
+prototype was removed in the `DEP-001` cutover; do not reintroduce it. Build in
+`packages/core` and `services/api` instead.
 
 `BACKLOG.md` is the full productionization plan and is written for both humans and
 implementation agents. Task IDs referenced in comments (`SEC-003`, `RAG-004`) point

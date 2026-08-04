@@ -27,12 +27,14 @@ import { defineConfig, type BuildEnvironmentOptions, type Plugin } from "vite";
  * The dev server reproduces the production paths:
  * - `/` serves the demo host page.
  * - `/admin/` serves the operator console.
- * - `/api` public routes proxy to the public backend listener.
- * - `/api/admin/` and `/api/leads` proxy to the admin backend listener.
- * - Widget CORS and admin auth belong to the gateway in production; the local
- *   prototype backend serves both audiences on one port.
+ * - `/api` public routes proxy to the API listener (`make api`, port 8080).
+ * - `/api/admin/` routes to the same listener; the gateway auth-gates them in
+ *   production, and the API fail-closes locally when no gateway identity is
+ *   sent, so the console's login screen is the expected dev behavior.
+ * - Widget CORS and admin auth belong to the gateway in production; in
+ *   development the API serves both audiences on one port.
  */
-const backendOrigin = process.env.CHAT_DEV_BACKEND_ORIGIN ?? "http://127.0.0.1:8000";
+const backendOrigin = process.env.CHAT_DEV_BACKEND_ORIGIN ?? "http://127.0.0.1:8080";
 const adminOrigin = process.env.CHAT_DEV_ADMIN_ORIGIN ?? backendOrigin;
 
 const resolvePath = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
@@ -110,13 +112,14 @@ export default defineConfig(({ mode }) => ({
     port: Number(process.env.CHAT_DEV_PORT ?? 5173),
     strictPort: true,
     proxy: {
-      // Admin API routes proxy to the admin listener (in production, the
-      // gateway auth-gates these before forwarding).
+      // Admin API routes proxy to the backend (in production, the gateway
+      // auth-gates these before forwarding).
       "/api/admin/": { target: adminOrigin, changeOrigin: false },
-      "/api/leads": { target: adminOrigin, changeOrigin: false },
       // OAuth callback (auth proxy in production; no-op in dev).
       "/oauth2/callback": { target: adminOrigin, changeOrigin: false },
-      // Public visitor API routes proxy to the public listener.
+      // Public visitor API routes proxy to the API listener, including the
+      // visitor lead-capture POST.  `/api` ordering keeps the admin prefix
+      // above this catch-all.
       "/api": { target: backendOrigin, changeOrigin: false }
     }
   }

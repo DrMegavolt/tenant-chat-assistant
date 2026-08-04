@@ -5,18 +5,16 @@
  * The hook is scoped to one tenant. `ChatWidget` is keyed by tenant id, so
  * switching tenants remounts it and this state starts clean rather than being
  * torn down field by field.
+ *
+ * The conversation is a single server-issued session (`POST /api/chat/session`
+ * mints the ID; this hook only persists it), and a booking is not committed
+ * until the visitor approves the assistant's proposed `pending` confirmation.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ChatApi } from "src/widget/api";
-import type {
-  BookingContact,
-  ChatTurn,
-  TenantConfig,
-  ToolEvent,
-  TranscriptEntry
-} from "src/widget/types";
+import type { ChatTurnResponse, TenantConfig, TranscriptEntry } from "src/widget/types";
 import type { VisitorData } from "src/widget/visitorData";
 import { consentStatement } from "src/widget/visitorData";
 
@@ -25,6 +23,12 @@ const PROACTIVE_DELAY_MS = 12000;
 
 const EMAIL_PATTERN = /[\w.+-]+@[\w.-]+\.\w+/;
 const PHONE_PATTERN = /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A server-issued session ID, or null for anything else. */
+function isValidSessionId(id: string | null): id is string {
+  return id !== null && UUID_PATTERN.test(id);
+}
 
 const WAITING_STATUS = "Waiting for the assistant to reply.";
 const RESET_STATUS = "This conversation was deleted from your browser and a new one has started.";
@@ -49,32 +53,12 @@ function welcomeEntry(config: TenantConfig): TranscriptEntry {
   };
 }
 
-function toTurns(entries: readonly TranscriptEntry[]): ChatTurn[] {
-  return entries
-    .filter((entry) => entry.kind === "message")
-    .map((entry) => ({ role: entry.role, content: entry.text, source: entry.source }));
-}
-
 function hasContactInfo(entries: readonly TranscriptEntry[]): boolean {
-  const text = toTurns(entries)
-    .map((turn) => turn.content)
+  const text = entries
+    .filter((entry) => entry.kind === "message" && entry.role === "user")
+    .map((entry) => (entry.kind === "message" ? entry.text : ""))
     .join("\n");
   return EMAIL_PATTERN.test(text) || PHONE_PATTERN.test(text);
-}
-
-/** A `get_availability` result the tenant is allowed to turn into a booking. */
-function bookableSlots(event: ToolEvent, config: TenantConfig): string[] | null {
-  if (event.name !== "get_availability" || !config.bookingEnabled) return null;
-  const slots = event.result.slots;
-  if (typeof event.result.service !== "string" || !Array.isArray(slots) || !slots.length) {
-    return null;
-  }
-  return slots.filter((slot): slot is string => typeof slot === "string");
-}
-
-export interface BookingOutcome {
-  ok: boolean;
-  message?: string;
 }
 
 export interface Conversation {
@@ -85,10 +69,8 @@ export interface Conversation {
   /** Staff replies that arrived while the panel was closed. */
   unreadStaffCount: number;
   send: (text: string) => Promise<void>;
-  book: (
-    entryId: string,
-    request: BookingContact & { service: string; slot: string }
-  ) => Promise<BookingOutcome>;
+  /** Approve or decline a booking the assistant proposed and is waiting on. */
+  decide: (decision: "approved" | "declined") => Promise<void>;
   /** Erase this tenant's browser data and start a fresh conversation. */
   forget: () => void;
   markRead: () => void;
@@ -129,6 +111,7 @@ export function useConversation({
   const proactiveTimer = useRef<number | null>(null);
   const proactiveShown = useRef(false);
   const isSendingRef = useRef(false);
+  const sessionRef = useRef<string | null>(visitor.existingSessionId());
 
   const clearProactiveTimer = useCallback(() => {
     if (proactiveTimer.current !== null) {
@@ -171,6 +154,52 @@ export function useConversation({
     setStatus(sending ? WAITING_STATUS : "");
   }, []);
 
+  /**
+   * Obtain (or reuse) the server-issued session ID for this tenant.
+   *
+   * A stored value the server never minted — the prototype's
+   * `web-<tenant>-<ts>-<rand>` shape, for example — is not retried forever:
+   * the API rejects it and this widget would only ever show the failure
+   * bubble. Any value that is not a UUID is discarded and a fresh session is
+   * minted.
+   */
+  const ensureSession = useCallback(async (): Promise<string> => {
+    if (isValidSessionId(sessionRef.current)) return sessionRef.current;
+    const session = await api.openSession({ tenantId });
+    visitor.recordSession(session.sessionId);
+    sessionRef.current = session.sessionId;
+    return session.sessionId;
+  }, [api, tenantId, visitor]);
+
+  /** Append one turn's assistant output (tool events + reply/confirmation). */
+  const applyTurn = useCallback(
+    (payload: ChatTurnResponse) => {
+      const appended: TranscriptEntry[] = [];
+      if (payload.pending) {
+        appended.push({
+          kind: "booking",
+          id: nextId("booking"),
+          pending: payload.pending
+        });
+      } else if (payload.reply) {
+        appended.push({
+          kind: "message",
+          id: nextId("assistant"),
+          role: "assistant",
+          source: "assistant",
+          text: payload.reply
+        });
+      }
+      setEntries((previous) =>
+        appended.some((entry) => entry.kind === "booking")
+          ? [...previous.filter((entry) => entry.kind !== "booking"), ...appended]
+          : [...previous, ...appended]
+      );
+      scheduleProactiveNudge();
+    },
+    [scheduleProactiveNudge, setEntries]
+  );
+
   const send = useCallback(
     async (rawText: string) => {
       const text = rawText.trim();
@@ -184,39 +213,9 @@ export function useConversation({
       setSending(true);
 
       try {
-        const payload = await api.chat({
-          tenantId,
-          sessionId: visitor.sessionId(),
-          messages: toTurns(entriesRef.current)
-        });
-        const appended: TranscriptEntry[] = [];
-        for (const event of payload.toolEvents ?? []) {
-          appended.push({ kind: "tool", id: nextId("tool"), event });
-          const slots = bookableSlots(event, config);
-          if (slots) {
-            appended.push({
-              kind: "booking",
-              id: nextId("booking"),
-              service: event.result.service as string,
-              slots
-            });
-          }
-        }
-        appended.push({
-          kind: "message",
-          id: nextId("assistant"),
-          role: "assistant",
-          source: "assistant",
-          text: payload.reply
-        });
-        // Only one booking form is open at a time: an older one offers slots the
-        // backend has already moved past.
-        setEntries((previous) =>
-          appended.some((entry) => entry.kind === "booking")
-            ? [...previous.filter((entry) => entry.kind !== "booking"), ...appended]
-            : [...previous, ...appended]
-        );
-        scheduleProactiveNudge();
+        const sessionId = await ensureSession();
+        const payload = await api.chat({ tenantId, sessionId, message: text });
+        applyTurn(payload);
       } catch {
         setEntries((previous) => [
           ...previous,
@@ -232,58 +231,51 @@ export function useConversation({
         setSending(false);
       }
     },
-    [
-      api,
-      clearProactiveTimer,
-      config,
-      scheduleProactiveNudge,
-      setEntries,
-      setSending,
-      tenantId,
-      visitor
-    ]
+    [api, applyTurn, clearProactiveTimer, ensureSession, setEntries, setSending, tenantId]
   );
 
-  const book = useCallback(
-    async (entryId: string, request: BookingContact & { service: string; slot: string }) => {
-      const consent = visitor.recordConsent(consentStatement(config.name));
-      const { customerName, address, contact, service, slot } = request;
-      const result = await api.book({
-        tenantId,
-        sessionId: visitor.sessionId(),
-        service,
-        slot,
-        customerName,
-        address,
-        contact,
-        consent
-      });
-
-      if (!result.ok) {
-        return { ok: false, message: bookingErrorMessage(result.payload) };
-      }
-
-      visitor.rememberContact({ customerName, address, contact });
-      setEntries((previous) => [
-        ...previous.filter((entry) => entry.id !== entryId),
-        { kind: "tool", id: nextId("tool"), event: result.payload.toolEvent },
-        {
-          kind: "message",
-          id: nextId("assistant"),
-          role: "assistant",
-          source: "assistant",
-          text: result.payload.reply
+  /** Answer a booking the assistant proposed and is waiting on. */
+  const decide = useCallback(
+    async (decision: "approved" | "declined") => {
+      if (isSendingRef.current) return;
+      const sessionId = sessionRef.current;
+      if (!sessionId) return;
+      setSending(true);
+      try {
+        // Approving submits the visitor's name, address, and contact, so it is
+        // also the moment consent is given (the confirmation gated the approve
+        // button on the consent checkbox).
+        if (decision === "approved") {
+          visitor.recordConsent(consentStatement(config.name));
         }
-      ]);
-      return { ok: true };
+        const payload = await api.confirm({ tenantId, sessionId, decision });
+        // The visitor has answered the pending question; drop the confirmation
+        // card before showing what the answer produced.
+        setEntries((previous) => previous.filter((entry) => entry.kind !== "booking"));
+        applyTurn(payload);
+      } catch {
+        setEntries((previous) => [
+          ...previous,
+          {
+            kind: "message",
+            id: nextId("assistant"),
+            role: "assistant",
+            source: "assistant",
+            text: CHAT_FAILURE
+          }
+        ]);
+      } finally {
+        setSending(false);
+      }
     },
-    [api, config.name, setEntries, tenantId, visitor]
+    [api, applyTurn, config.name, setEntries, setSending, tenantId, visitor]
   );
 
   const forget = useCallback(() => {
     visitor.clear();
     seenServerMessageIds.current.clear();
     proactiveShown.current = false;
+    sessionRef.current = null;
     clearProactiveTimer();
     setEntries(() => [welcomeEntry(config)]);
     setUnreadStaffCount(0);
@@ -293,22 +285,25 @@ export function useConversation({
   const markRead = useCallback(() => setUnreadStaffCount(0), []);
 
   // Staff can answer from the operator console while the visitor is still on
-  // the page, so an open conversation polls for replies it did not cause.
+  // the page, so an open conversation polls for replies it did not cause. Only
+  // `staff` messages are new arrivals: model replies and the visitor's own
+  // messages already rendered as part of the turn that produced them.
   useEffect(() => {
     const poll = async () => {
       const sessionId = visitor.existingSessionId();
-      if (!sessionId) return;
-      const session = await api.session(sessionId);
+      if (!isValidSessionId(sessionId)) return;
+      const session = await api.session(sessionId, tenantId);
       const staff = (session?.messages ?? []).filter(
-        (message) => message.source === "admin" && !seenServerMessageIds.current.has(message.id)
+        (message) =>
+          message.role === "staff" && !seenServerMessageIds.current.has(message.messageId)
       );
       if (!staff.length) return;
-      for (const message of staff) seenServerMessageIds.current.add(message.id);
+      for (const message of staff) seenServerMessageIds.current.add(message.messageId);
       setEntries((previous) => [
         ...previous,
         ...staff.map((message): TranscriptEntry => ({
           kind: "message",
-          id: `staff-${message.id}`,
+          id: `staff-${message.messageId}`,
           role: "assistant",
           source: "admin",
           text: message.content
@@ -319,21 +314,7 @@ export function useConversation({
 
     const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [api, isOpen, setEntries, visitor]);
+  }, [api, isOpen, setEntries, tenantId, visitor]);
 
-  return { entries, isSending, status, unreadStaffCount, send, book, forget, markRead };
-}
-
-function bookingErrorMessage(payload: {
-  toolEvent?: { result?: { message?: string; error?: string; missingFields?: string[] } };
-}): string {
-  const result = payload.toolEvent?.result ?? {};
-  if (result.message) return result.message;
-  if (result.error === "missing_required_fields") {
-    return `Missing: ${(result.missingFields ?? []).join(", ")}.`;
-  }
-  if (result.error === "slot_unavailable") {
-    return "That slot is no longer available. Please choose another slot.";
-  }
-  return "Booking failed. Please check the form and try again.";
+  return { entries, isSending, status, unreadStaffCount, send, decide, forget, markRead };
 }

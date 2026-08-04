@@ -12,9 +12,8 @@ import {
 } from "tests/support/backend";
 import {
   allInWidget,
-  fillBooking,
   inWidget,
-  openBookingForm,
+  openBookingConfirmation,
   renderDemo,
   requireInWidget,
   selectTenant,
@@ -50,7 +49,18 @@ describe("widget initialization", () => {
   test("switching tenants creates an isolated session and resets the visible conversation", async () => {
     stubBackend((url) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
-      if (url.endsWith("/api/chat")) return jsonResponse({ reply: "Noted.", toolEvents: [] });
+      if (url.endsWith("/api/chat/session")) {
+        return jsonResponse({ session: { session_id: "session-apex" }, messages: [] });
+      }
+      if (url.endsWith("/api/chat")) {
+        return jsonResponse({
+          session_id: "session-apex",
+          reply: "Noted.",
+          pending: null,
+          committed: [],
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+        });
+      }
       return null;
     });
     await renderDemo();
@@ -58,7 +68,7 @@ describe("widget initialization", () => {
     submitChat("Hello from Apex");
     await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("Noted."));
     const apexSession = window.sessionStorage.getItem("tenant-chat-session-id:apex");
-    expect(apexSession).toMatch(/^web-apex-/);
+    expect(apexSession).toBe("session-apex");
 
     selectTenant("Clearview Heating");
 
@@ -68,9 +78,7 @@ describe("widget initialization", () => {
 
     submitChat("Hello from Clearview");
     await waitFor(() =>
-      expect(window.sessionStorage.getItem("tenant-chat-session-id:clearview")).toMatch(
-        /^web-clearview-/
-      )
+      expect(window.sessionStorage.getItem("tenant-chat-session-id:clearview")).toBe("session-apex")
     );
     expect(window.sessionStorage.getItem("tenant-chat-session-id:apex")).toBe(apexSession);
   });
@@ -130,13 +138,21 @@ describe("widget initialization", () => {
 });
 
 describe("chat and booking contracts", () => {
-  test("posts the visible conversation and renders tool results and the assistant reply", async () => {
+  test("posts one turn and renders the assistant reply", async () => {
     const fetchMock = stubBackend((url, init) => {
       if (url === "https://chat.example.test/api/tenants") {
         return jsonResponse({ tenants: TENANTS });
       }
+      if (url === "https://chat.example.test/api/chat/session" && init?.method === "POST") {
+        return jsonResponse({ session: { session_id: "session-clearview" }, messages: [] });
+      }
       if (url === "https://chat.example.test/api/chat" && init?.method === "POST") {
-        return jsonResponse({ ...AVAILABILITY_REPLY, reply: "I found one opening." });
+        return jsonResponse({
+          ...AVAILABILITY_REPLY,
+          session_id: "session-clearview",
+          reply: "I found one opening.",
+          pending: null
+        });
       }
       return null;
     });
@@ -149,71 +165,47 @@ describe("chat and booking contracts", () => {
       expect(inWidget("#messages")?.textContent).toContain("I found one opening.");
     });
     const [request] = requestBodies(fetchMock, "/api/chat") as {
-      tenantId: string;
-      sessionId: string;
-      messages: unknown[];
+      tenant_id: string;
+      session_id: string;
+      message: string;
     }[];
-    expect(request?.tenantId).toBe("clearview");
-    expect(request?.sessionId).toMatch(/^web-clearview-/);
-    expect(request?.messages.at(-1)).toEqual({
-      role: "user",
-      content: "I need HVAC help",
-      source: "user"
-    });
-    expect(inWidget(".tool-call")?.textContent).toContain("get_availability");
-    expect(inWidget(".booking-form-card")).not.toBeNull();
+    expect(request?.tenant_id).toBe("clearview");
+    expect(request?.session_id).toBe("session-clearview");
+    expect(request?.message).toBe("I need HVAC help");
   });
 
-  test("submits the structured booking form and replaces it with confirmation", async () => {
+  test("renders a booking confirmation and commits it on approval", async () => {
     const fetchMock = stubBackend(workingBackend());
     await renderDemo();
 
-    const form = await openBookingForm();
-    fillBooking(form);
-    fireEvent.submit(form);
+    const confirmation = await openBookingConfirmation();
+    expect(confirmation.textContent).toContain("Confirm your booking");
+    expect(confirmation.textContent).toContain("HVAC");
+    expect(confirmation.textContent).toContain("Tomorrow 09:00");
 
-    await waitFor(() => expect(inWidget(".booking-form-card")).toBeNull());
-    expect(requestBodies(fetchMock, "/api/book")[0]).toMatchObject({
-      tenantId: "clearview",
-      service: "hvac",
-      slot: "Tomorrow 09:00",
-      customerName: "Sam Lee",
-      address: "42 Cedar Road",
-      contact: "sam@example.test"
+    const approve = [...confirmation.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Confirm booking")
+    )!;
+    const consent = confirmation.querySelector<HTMLInputElement>("#bookingConfirmConsent")!;
+    expect(consent.checked).toBe(false);
+    fireEvent.click(consent);
+    fireEvent.click(approve);
+
+    await waitFor(() => expect(inWidget(".booking-confirmation-card")).toBeNull());
+    expect(requestBodies(fetchMock, "/api/chat/confirmation")[0]).toMatchObject({
+      tenant_id: "clearview",
+      session_id: "session-1",
+      decision: "approved"
     });
     expect(inWidget("#messages")?.textContent).toContain("Your appointment is booked.");
-  });
-
-  test("keeps a failed booking editable and presents the backend validation message", async () => {
-    stubBackend((url) => {
-      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
-      if (url.endsWith("/api/chat")) return jsonResponse(AVAILABILITY_REPLY);
-      if (url.endsWith("/api/book")) {
-        return jsonResponse(
-          { toolEvent: { result: { message: "Please provide a reachable contact." } } },
-          { ok: false, status: 422 }
-        );
-      }
-      return null;
-    });
-    await renderDemo();
-
-    const form = await openBookingForm();
-    fillBooking(form);
-    fireEvent.change(form.querySelector("#booking-contact")!, { target: { value: "invalid" } });
-    fireEvent.submit(form);
-
-    await waitFor(() => {
-      expect(inWidget("#bookingError")?.textContent).toBe("Please provide a reachable contact.");
-    });
-    expect(form.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled).toBe(false);
-    expect(inWidget(".booking-form-card")).toBe(form);
-    expect(form.querySelector<HTMLInputElement>("#booking-customerName")?.value).toBe("Sam Lee");
   });
 
   test("a failed chat turn tells the visitor instead of leaving the composer stuck", async () => {
     stubBackend((url) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session")) {
+        return jsonResponse({ session: { session_id: "session-1" }, messages: [] });
+      }
       if (url.endsWith("/api/chat")) return jsonResponse({}, { ok: false, status: 500 });
       return null;
     });

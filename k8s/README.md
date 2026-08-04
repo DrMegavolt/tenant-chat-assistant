@@ -79,8 +79,8 @@ Never store cleartext production values in Git.
 Only Traefik in the `ingress` namespace can reach the single web gateway listener
 on port 8080. The separate admin port (8081) is gone: admin pages and admin API
 are served under `/admin/` and `/api/admin/` on the same port, auth-gated by an
-oauth2-proxy sidecar (see ADR-0007). The web gateway can reach the chat backend
-(ports 8000 and 8004) and oauth2-proxy (port 4180). Prometheus in `observability`
+oauth2-proxy sidecar (see ADR-0007). The web gateway can reach the API image's
+single port (8004) and oauth2-proxy (port 4180). Prometheus in `observability`
 can reach chat metrics on port 8004 and each other workload's own metrics port.
 Internal data/API flows are explicit per workload. Kibana is ClusterIP-only.
 External model traffic is limited to public HTTPS or port 1234 on the private LAN

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 
 import type { ChatApi } from "src/widget/api";
-import { BookingForm } from "src/widget/components/BookingForm";
+import { BookingConfirmation } from "src/widget/components/BookingConfirmation";
 import { Composer } from "src/widget/components/Composer";
 import { Launcher } from "src/widget/components/Launcher";
 import { MessageBubble } from "src/widget/components/MessageBubble";
@@ -116,13 +116,11 @@ export function ChatWidget({ api, tenantId, config, isOpen, onOpen, onClose }: C
               return <ToolTrace key={entry.id} event={entry.event} />;
             }
             return (
-              <BookingForm
+              <BookingConfirmation
                 key={entry.id}
-                service={entry.service}
-                slots={entry.slots}
-                remembered={visitor.contact()}
+                pending={entry.pending}
                 consentStatement={consentStatement(config.name)}
-                onSubmit={(request) => conversation.book(entry.id, request)}
+                onDecide={(decision) => conversation.decide(decision)}
               />
             );
           })}

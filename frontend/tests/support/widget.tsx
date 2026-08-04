@@ -84,20 +84,10 @@ export function selectTenant(name: string): void {
   fireEvent.click(button);
 }
 
-export function fillBooking(form: HTMLElement, { consent = true } = {}): void {
-  const set = (id: string, value: string) => {
-    fireEvent.change(form.querySelector(`#${id}`)!, { target: { value } });
-  };
-  set("booking-customerName", "Sam Lee");
-  set("booking-address", "42 Cedar Road");
-  set("booking-contact", "sam@example.test");
-  if (consent) fireEvent.click(form.querySelector("#bookingConsent")!);
-}
-
-/** Drive one turn that ends with the booking form on screen. */
-export async function openBookingForm(): Promise<HTMLElement> {
+/** Drive one turn that ends with a booking confirmation on screen. */
+export async function openBookingConfirmation(): Promise<HTMLElement> {
   selectTenant("Clearview Heating");
   submitChat("Show HVAC availability");
-  await waitFor(() => expect(inWidget(".booking-form-card")).not.toBeNull());
-  return requireInWidget(".booking-form-card");
+  await waitFor(() => expect(inWidget(".booking-confirmation-card")).not.toBeNull());
+  return requireInWidget(".booking-confirmation-card");
 }

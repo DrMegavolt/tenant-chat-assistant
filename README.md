@@ -35,10 +35,11 @@ versioned dispatcher graph that pauses for a customer to confirm a booking,
 survives a process restart, and commits only through idempotent domain services.
 Chat is served over that runtime, and a deployment answers turns once `AI-001`
 supplies the model provider adapter — until then the chat routes report
-themselves unavailable rather than guessing. `server.py`, the original
-prototype, still backs the deployed image; the `DEP-001` cutover repoints it and
-deletes it, rather than refactoring it. Claim 3 above is designed and specified,
-not yet built; the planning artifacts below are where that work is defined.
+themselves unavailable rather than guessing. The `DEP-001` cutover is shipped:
+the deployed `api` image is `services/api`, the prototype `server.py` and its
+image are gone, and the gateway forwards exactly the API's visitor routes. Claim
+3 above is designed and specified, not yet built; the planning artifacts below
+are where that work is defined.
 
 ## Planning and architecture artifacts
 
@@ -70,15 +71,15 @@ and deterministic fake API responses; Python unit and API contract tests use
 in-memory stores and fakes. Coverage reports are written below `coverage/`, and
 JUnit test results below `artifacts/test-results/`.
 
-Run the prototype backend locally:
+Run the API locally:
 
 ```bash
-python3 server.py
+make api
 ```
 
 Then serve the frontend against it. For frontend work, use the dev server: it
-hot-reloads `frontend/src/` and proxies `/api` to the backend on port 8000, so
-the browser stays same-origin exactly as it is behind nginx.
+hot-reloads `frontend/src/` and proxies `/api` to the API on port 8080, so the
+browser stays same-origin exactly as it is behind nginx.
 
 ```bash
 make dev
@@ -89,8 +90,8 @@ http://127.0.0.1:5173        the demo site
 http://127.0.0.1:5173/admin/ the operator console
 ```
 
-Point the proxy somewhere else — `services/api`, or a port-forwarded cluster —
-with `CHAT_DEV_BACKEND_ORIGIN`:
+Point the proxy somewhere else — a port-forwarded cluster, or a second API — with
+`CHAT_DEV_BACKEND_ORIGIN`:
 
 ```bash
 CHAT_DEV_BACKEND_ORIGIN=http://127.0.0.1:8080 make dev
@@ -109,12 +110,12 @@ http://127.0.0.1:8080        the demo site
 http://127.0.0.1:8080/admin/ the operator console, behind the gateway's auth
 ```
 
-`server.py` still serves the built frontend on port 8000 for convenience, so
-run `make js-build` once before using it; the prototype image no longer contains
-those files. In a deployment the `web` image serves them and proxies the API
+`make web` serves the built frontend from the `web` image and proxies the API
 back to the chat backend. See
 [ADR-0007](docs/adr/0007-single-origin-gateway.md) and
-[ADR-0009](docs/adr/0009-react-frontend-build.md).
+[ADR-0009](docs/adr/0009-react-frontend-build.md). In a deployment the same image
+serves both document roots and the operator console sits behind the gateway's
+auth.
 
 Chat archives are saved as JSON files locally in:
 
@@ -134,7 +135,7 @@ http://localhost:1234/v1/chat/completions
 You can override this with environment variables:
 
 ```bash
-LLM_BASE_URL=http://localhost:1234/v1 LLM_MODEL=local-model python3 server.py
+LLM_BASE_URL=http://localhost:1234/v1 LLM_MODEL=local-model make api
 ```
 
 Two seed tenants exercise opposite policies, which is what makes tenant isolation
@@ -218,8 +219,8 @@ default: it names every field and error code the API accepts.
 The normalized production schema is versioned under `services/api/migrations`.
 It is upgraded as a release step with `DATABASE_MIGRATION_URL`; API startup never
 creates or alters schema. The separate `DATABASE_URL` role has runtime DML only.
-See `docs/runbooks/database-migrations.md` before migrating a database used by
-the JSONB-snapshot prototype or attempting a downgrade.
+See `docs/runbooks/database-migrations.md` before migrating a database that held
+the pre-cutover JSONB snapshots or attempting a downgrade.
 
 Normal API composition requires `DATABASE_URL` and constructs bounded async
 PostgreSQL repositories; process-memory stores exist only as explicitly injected
@@ -262,15 +263,15 @@ The deployed site is the `web` Service, which serves the assets and proxies the
 visitor API to the backend:
 
 ```bash
-kubectl -n llm-chat port-forward svc/web 18080:80
-kubectl -n llm-chat port-forward svc/web-admin 18081:8081   # operator console
+kubectl -n llm-chat port-forward svc/web 18080:80     # demo site + visitor API
+open http://127.0.0.1:18080/admin/                    # operator console
 ```
 
 To point a locally served frontend at a port-forwarded backend instead, forward
 the API itself and configure the API base with one of these options:
 
 ```bash
-kubectl -n llm-chat port-forward svc/chat-backend 18080:8000
+kubectl -n llm-chat port-forward svc/chat-admin 18080:8004
 ```
 
 ```html
@@ -295,11 +296,9 @@ kubectl -n llm-chat port-forward svc/chat-backend 18080:8000
 The admin page supports the same global or script setting, plus `data-api-base-url`
 on `<body>`.
 
-Inspect captured prototype leads:
-
-```text
-http://127.0.0.1:8000/api/leads
-```
+Captured leads are written but not listable: reading them waits on the
+tenant-scoped RBAC in `SEC-001`, and the API deliberately has no unauthenticated
+read side. The operator console lists conversations today.
 
 Useful lead-capture test message:
 

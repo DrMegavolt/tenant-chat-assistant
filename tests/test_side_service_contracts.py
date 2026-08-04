@@ -1,10 +1,9 @@
-"""Offline characterization of prototype behavior still awaiting replacement.
+"""Characterization of the ingestion and financing side-service contracts.
 
-The production domain and API suites specify tenant policy, tool validation, and
-the migrated HTTP contracts. These tests close QA-001's remaining baseline gaps:
-fallback routing, ingestion chunk boundaries, and tenant-scoped retrieval. The
-prototype modules are loaded dynamically because they are scheduled for deletion,
-not suitable as importable application packages.
+These behaviors predate the shared packages and are still exercised through the
+loose-file service entrypoints, which are excluded from lint and type checking
+but shipped in their images. The modules are loaded dynamically because they are
+scheduled to move into the packages, not because they are importable packages.
 """
 
 from __future__ import annotations
@@ -20,67 +19,18 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def load_prototype(name: str, relative_path: str) -> ModuleType:
+def load_service(name: str, relative_path: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, REPO_ROOT / relative_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load prototype module {relative_path}")
+        raise RuntimeError(f"could not load service module {relative_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
-server = load_prototype("tenantchat_legacy_server", "server.py")
-ingestion = load_prototype("tenantchat_legacy_ingestion", "services/ingestion/app.py")
-financing = load_prototype("tenantchat_legacy_financing_agent", "services/financing-agent/app.py")
-
-
-class TestFallbackRouting:
-    def test_zip_question_routes_through_the_service_area_tool(self) -> None:
-        reply, events = server.fallback_response(
-            "apex",
-            "session-1",
-            server.TENANTS["apex"],
-            [{"role": "user", "content": "Do you serve 98103?"}],
-        )
-
-        assert "serves 98103" in reply
-        assert events == [
-            {
-                "name": "check_service_area",
-                "arguments": {"zip": "98103"},
-                "result": {
-                    "served": True,
-                    "zip": "98103",
-                    "phone": "(555) 214-0800",
-                },
-            }
-        ]
-
-    def test_pricing_policy_routes_phone_first_tenant_away_from_a_quote(self) -> None:
-        reply, events = server.fallback_response(
-            "apex",
-            "session-1",
-            server.TENANTS["apex"],
-            [{"role": "user", "content": "How much does HVAC cost?"}],
-        )
-
-        assert "does not provide pricing through chat" in reply
-        assert "(555) 214-0800" in reply
-        assert events == []
-
-    def test_booking_intent_routes_to_tenant_specific_availability(self) -> None:
-        reply, events = server.fallback_response(
-            "clearview",
-            "session-2",
-            server.TENANTS["clearview"],
-            [{"role": "user", "content": "Show me HVAC availability"}],
-        )
-
-        assert "Hvac openings" in reply
-        assert events[0]["name"] == "get_availability"
-        assert events[0]["arguments"] == {"service": "hvac"}
-        assert events[0]["result"]["slots"] == server.TENANTS["clearview"]["availability"]["hvac"]
+ingestion = load_service("tenantchat_legacy_ingestion", "services/ingestion/app.py")
+financing = load_service("tenantchat_legacy_financing_agent", "services/financing-agent/app.py")
 
 
 class TestIngestionChunking:

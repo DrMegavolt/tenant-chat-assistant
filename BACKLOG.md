@@ -219,7 +219,7 @@ remaining production business workflows, and completed runbooks.
 
 - [x] `QA-001` — Foundational automated test harness and CI — `P0`
 - [x] `DATA-001` — Normalized schema and migration framework — `Done`
-- [ ] `API-001` — Production API runtime and typed contracts — `P0` — _slices 1 and 2 complete; cutover owned by `DEP-001`_
+- [x] `API-001` — Production API runtime and typed contracts — `Done`
 - [x] `DATA-002` — Server-authoritative repositories and concurrency control — `Done`
 - [ ] `DATA-003` — Transactional, idempotent booking — `P0`
 - [ ] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
@@ -307,7 +307,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py`
+- Evidence: `packages/core/` (dispatcher and policy rules) and `packages/orchestration/` (the `ARCH-001` graph). The prototype tool loop in `server.py` was deleted with the `API-001` cutover.
 - Existing scope:
   - Server-owned tenant facts and pricing/booking policies.
   - OpenAI-compatible chat-completions loop with bounded tool rounds.
@@ -318,7 +318,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py`, `frontend/src/widget/`, and `frontend/src/admin/`
+- Evidence: `services/api/` (`POST /api/leads`), `frontend/src/widget/`, and `frontend/src/admin/`. The prototype `server.py` lead capture was deleted with the `API-001` cutover.
 - Existing scope:
   - Required-field and contact validation.
   - Lead capture through model tools and rule fallback.
@@ -329,7 +329,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py` and `frontend/src/widget/components/BookingForm.tsx`
+- Evidence: `services/api/` (`POST /api/book`, availability) and `frontend/src/widget/components/BookingConfirmation.tsx`. The prototype `server.py`/`BookingForm.tsx` booking flow was deleted with the `API-001` cutover.
 - Existing scope:
   - Static service-specific availability.
   - Structured booking form with contact and address validation.
@@ -350,7 +350,7 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py`, `pyproject.toml`, and `uv.lock`
+- Evidence: `packages/core/` (DML-only repositories) and `services/api/` persistence. The prototype JSONB snapshot writer in `server.py` was deleted with the `API-001` cutover.
 - Existing scope:
   - Atomic local JSON archive writes.
   - Optional Postgres JSONB session snapshots.
@@ -393,9 +393,9 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 - Status: `Done`
 - Priority: `Baseline`
-- Evidence: `server.py`, service applications, and `k8s/otel-collector.yaml`
+- Evidence: `services/*/app.py` metrics endpoints and ServiceMonitors, `k8s/otel-collector.yaml`, and the API's `/healthz` probe. The prototype `server.py` metrics scaffolding was deleted with the `API-001` cutover; the API itself gains Prometheus instrumentation in `OBS-002`.
 - Existing scope:
-  - Prometheus metrics endpoints and ServiceMonitors.
+  - Prometheus metrics endpoints and ServiceMonitors (side services; the API intentionally has no ServiceMonitor until it exposes `/metrics`).
   - OpenTelemetry auto-instrumentation scaffolding and Tempo export.
   - Conversation outcome inference and deterministic fallback when the LLM is unavailable.
 - Completion notes: Production observability is tracked in `OBS-*`.
@@ -422,9 +422,12 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 - Verification:
   - Run the documented full quality-gate command twice from a clean checkout.
 - Completion notes: Added a locked Vitest/jsdom frontend harness with ESLint,
-  Prettier, V8 coverage, and six offline widget characterizations; added seven
-  offline prototype characterizations for fallback routing, ingestion chunking,
-  and tenant/domain/active retrieval filters. Existing core/API tests cover
+  Prettier, V8 coverage, and six offline widget characterizations; added offline
+  characterizations for the ingestion and financing side-service contracts
+  (`tests/test_side_service_contracts.py`) plus fixture-based domain and API
+  contract tests. The remainder of `server.py`'s fallback characterization was
+  deleted with the `API-001` cutover, where the behavior became the chat routes'
+  `503 chat_unavailable` signal. Existing core/API tests cover
   tenant policy, tool validation, and current contracts with in-memory fakes.
   `make check` is the documented local/CI gate for Python and JavaScript and
   writes Python XML/HTML plus frontend Cobertura/HTML/summary coverage under
@@ -434,15 +437,16 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
   no external service or configured secret is required. Changed: `package.json`,
   `package-lock.json`, `eslint.config.js`, `.prettierrc.json`,
   `vitest.config.js`, `frontend/tests/widget.test.js`,
-  `tests/test_prototype_characterization.py`, `pyproject.toml`, `uv.lock`,
+  `tests/test_side_service_contracts.py`, `pyproject.toml`, `uv.lock`,
   `Makefile`, `.github/workflows/ci.yml`, `.gitignore`, `README.md`,
   `CLAUDE.md`, plus formatting-only updates to `app.js` and `admin.js`.
   Verified `make check` twice after removing dependency directories and cleaning
   generated artifacts: 271 Python tests (99% covered source) and six widget
   tests (86.21% statements) passed both times; `npm audit --audit-level=high`
   reported zero vulnerabilities. Follow-ups: `QA-002` through `QA-005` deepen
-  integration, isolation, E2E, and failure coverage; `DEP-001` replaces the
-  scanned prototype image and `DEP-006` owns release scanning/provenance.
+  integration, isolation, E2E, and failure coverage; `DEP-001` replaced the
+  prototype image (deleted with the `API-001` cutover) and `DEP-006` owns
+  release scanning/provenance.
 
 ### DATA-001 — Normalized schema and migration framework
 
@@ -483,11 +487,11 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
 
 ### API-001 — Production API runtime and typed contracts
 
-- Status: `In Progress`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Backend architecture`
 - Depends on: `QA-001`
-- Likely areas: `server.py`, `services/api/`, `Dockerfile`, `k8s/app.yaml`
+- Likely areas: `services/api/`, `k8s/app.yaml`
 - Scope:
   - Replace the standard-library `ThreadingHTTPServer` with a maintained ASGI framework and production server.
   - Split routing, domain services, provider clients, configuration, and persistence into testable modules.
@@ -555,17 +559,26 @@ check in `SEC-001`, not ahead of it.
 - Changed: `packages/core/{ports,__init__}.py`, `services/api/src/tenantchat/api/{app,agent,dependencies,faults,identity,schemas,settings,store}.py`, `services/api/src/tenantchat/api/routers/{chat,admin}.py`, `services/api/src/tenantchat/api/persistence/repositories.py`, `services/api/tests/**`, `tests/{repositories,agent_runtime}/**`, `README.md`, `.env.example`.
 - Verified: `make check` — 606 hermetic tests, ruff and mypy `strict` clean. `make test-repositories` (27) and `make test-agent-runtime` (6) on disposable PostgreSQL 16, including a booking paused by one API instance and confirmed by a restarted one over the production composition and its PostgreSQL checkpointer.
 
-**Slice 3 — cutover, owned by `DEP-001`.**
+**Slice 3 — cutover. Complete.**
 
-- Repoint `Dockerfile` and `k8s/app.yaml` at `services/api`, repoint the frontend
-  at the new contracts, then delete `server.py`. Until that lands, the deployed
-  image still runs the prototype and still accepts `0001234567`. The prototype
-  snapshot schema and normalized API schema are intentionally incompatible: do
-  not run the API migration Job against a database still used by the prototype.
-  The cutover must stop prototype writers, follow the migration runbook, and
-  switch the workload image and schema together.
+The deployment now runs `services/api` and the prototype is gone: `server.py`,
+the root `Dockerfile`, and the `prototype` image were deleted rather than
+refactored. `k8s/app.yaml` runs the `api` image on the single port 8004; the
+frontend, the nginx gateway, the Vite dev proxy, and the local compose/`make
+api` flow target the new contracts, and the gateway's public listener forwards
+exactly the API's visitor surface (including the visitor `POST /api/leads`
+write and the path-parameter session and availability routes). The API holds no
+`FINANCING_AGENT_URL` and no `CHAT_TO_FINANCING_TOKEN`; the network policies and
+their live smoke were updated to match. A migration of a database still holding
+prototype JSONB snapshots must follow the migration runbook and stop all
+prototype writers first — which the deletion of the prototype image now
+guarantees by construction.
 
-- Completion notes: _Slices 1 and 2 complete; task stays `In Progress` until the `DEP-001` cutover ships and `server.py` is deleted._
+- Completion notes: The `DEP-001` cutover shipped; `server.py` is deleted and
+  the deployed image is `services/api`. `make check` is green (590 hermetic
+  Python tests plus the frontend suite), and `make image-contracts`,
+  `make deployment-security`, and `make images-check` reflect the five-image
+  set.
 
 ### DATA-002 — Server-authoritative repositories and concurrency control
 
@@ -818,15 +831,16 @@ check in `SEC-001`, not ahead of it.
   - Image and dependency scans are integrated into verification.
 - Verification:
   - Build all images, run smoke tests from the images, and record image digests.
-- Completion notes: Five multi-stage images now cover the prototype, production
-  API/migration runtime, embedding, ingestion, and financing services. Every
+- Completion notes: Five multi-stage images now cover the production API and
+  migration runtime, embedding, ingestion, financing, and web gateway services.
+  Every
   Dockerfile frontend, uv builder, Python base, and declared external Kubernetes
   image is digest-pinned; all Python graphs come from the hashed workspace
   `uv.lock` (including CPU-only PyTorch), and final images run as numeric
   `10001:10001`. The Qwen model uses reviewed commit
   `97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3` with
   `trust_remote_code=False`. Kubernetes release templates accept application
-  digest substitution only, and the deploy gate requires all seven expected
+  digest substitution only, and the deploy gate requires all expected
   workload images to have 64-hex registry digests; runtime pip commands and
   executable ConfigMap mounts were removed. Final integrated `make check` passed
   with 314 Python and six frontend tests; all Kubernetes inputs passed server
@@ -840,7 +854,10 @@ check in `SEC-001`, not ahead of it.
   checksum-verified Trivy 0.69.3 scan found zero fixed HIGH/CRITICAL findings in
   the final lockfile and five images after upgrading the affected framework and
   embedding dependencies. CI now repeats build, smoke, metadata upload, and
-  fixed HIGH/CRITICAL scan gates in a five-image matrix. Publishing, SBOM,
+  fixed HIGH/CRITICAL scan gates in a five-image matrix. The `API-001` slice-3
+  cutover is part of this task's completion: the prototype image and the root
+  `Dockerfile` were deleted, `k8s/app.yaml` runs the `api` image, and the smoke
+  scripts cover the five remaining images. Publishing, SBOM,
   signing, and provenance remain `DEP-006`; network policy and service auth
   remain `SEC-004`.
 
@@ -1036,7 +1053,7 @@ check in `SEC-001`, not ahead of it.
 - Likely areas: backend orchestration package, checkpoint adapter, composition root, `tests/test_architecture_invariants.py`, `architecture/likec4/`
 - Scope:
   - Adopt LangGraph v1 with the Postgres checkpointer as the only agent runtime. Do not introduce an abstraction layer over agent frameworks, a second adapter, or a runtime-selection setting.
-  - Move the prototype tool loop in `server.py` into a versioned graph, replacing its in-process tool dispatch with calls to idempotent domain services.
+  - Replace the prototype's in-process tool dispatch (now removed with `server.py`) with calls to idempotent domain services.
   - Enforce the `ADR-0001` layer policy by dependency direction: `packages/core`, application-service public contracts, API schemas, and business repository adapters stay framework-free; graph orchestration, the checkpoint adapter, and the composition root import LangGraph freely.
   - Extend the architecture invariants scan from `packages/core` to `services/api` public contracts as those layers land, keeping orchestration and checkpoint adapters explicitly out of scope for the scan.
   - Record the graph version alongside the other component versions in the `OBS-004` turn record, so a behavior change is attributable to a graph revision.
@@ -1864,7 +1881,8 @@ check in `SEC-001`, not ahead of it.
   Also raised control-border contrast on the demo and admin pages and labelled
   the admin reply input and transcript.
   Changed files: `frontend/**` (moved and rewritten), `docs/accessibility.md`
-  (new), `server.py` (static root, public-route allowlist), `Makefile`,
+  (new), `server.py` (static root, public-route allowlist; deleted with the
+  `API-001` cutover), `Makefile`,
   `Dockerfile`, `.github/workflows/ci.yml`, `.gitignore`, `.dockerignore`,
   `tests/test_network_boundaries.py`, `README.md`, `CLAUDE.md`.
   Verified: `make check` (407 Python and 50 frontend tests, 98% frontend

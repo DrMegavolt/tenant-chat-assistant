@@ -7,7 +7,7 @@ import { TENANTS, jsonResponse, stubBackend, workingBackend } from "tests/suppor
 import {
   allInWidget,
   inWidget,
-  openBookingForm,
+  openBookingConfirmation,
   renderDemo,
   requireInWidget,
   shadow,
@@ -38,10 +38,10 @@ describe("automated accessibility checks", () => {
     expect(await violations(document)).toEqual([]);
   });
 
-  test("the booking form, including its consent control, has no axe violations", async () => {
+  test("the booking confirmation, including its consent control, has no axe violations", async () => {
     stubBackend(workingBackend());
     await renderDemo();
-    await openBookingForm();
+    await openBookingConfirmation();
 
     expect(await violations(document)).toEqual([]);
   });
@@ -89,6 +89,9 @@ describe("keyboard and screen-reader behavior", () => {
     let resolveChat: (value: unknown) => void = () => undefined;
     stubBackend((url) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session")) {
+        return jsonResponse({ session: { session_id: "session-1", messages: [] } });
+      }
       if (url.endsWith("/api/chat")) return new Promise((resolve) => (resolveChat = resolve));
       return null;
     });
@@ -103,16 +106,35 @@ describe("keyboard and screen-reader behavior", () => {
     await waitFor(() => expect(log.getAttribute("aria-busy")).toBe("true"));
     expect(inWidget("#assistantStatus")?.textContent).toBe("Waiting for the assistant to reply.");
 
-    resolveChat(await jsonResponse({ reply: "Hi there.", toolEvents: [] }));
+    resolveChat(
+      await jsonResponse({
+        session_id: "session-1",
+        reply: "Hi there.",
+        pending: null,
+        committed: [],
+        provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+      })
+    );
 
     await waitFor(() => expect(log.getAttribute("aria-busy")).toBe("false"));
     expect(inWidget("#assistantStatus")?.textContent).toBe("");
+    expect(inWidget("#messages")?.textContent).toContain("Hi there.");
   });
 
   test("every message names its speaker for a listener who cannot see alignment", async () => {
     stubBackend((url) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
-      if (url.endsWith("/api/chat")) return jsonResponse({ reply: "Hi there.", toolEvents: [] });
+      if (url.endsWith("/api/chat/session")) {
+        return jsonResponse({ session: { session_id: "session-1", messages: [] } });
+      }
+      if (url.endsWith("/api/chat"))
+        return jsonResponse({
+          session_id: "session-1",
+          reply: "Hi there.",
+          pending: null,
+          committed: [],
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+        });
       return null;
     });
     await renderDemo();

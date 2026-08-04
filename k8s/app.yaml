@@ -590,11 +590,10 @@ spec:
             - containerPort: 8080
               name: http
           env:
-            # Visitor API routes proxy to the public listener; admin API
-            # routes proxy to the admin listener.  Both are same-origin
-            # through the single gateway listener.
+            # The API serves visitor and admin routes on the single chat-admin
+            # Service; the separate 8000-alias Service is gone.
             - name: CHAT_BACKEND_ORIGIN
-              value: http://chat-backend:8000
+              value: http://chat-admin:8004
             - name: CHAT_ADMIN_ORIGIN
               value: http://chat-admin:8004
             # oauth2-proxy auth-check and browser OAuth endpoints. Browser
@@ -779,11 +778,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: chat-backend
+  name: chat-admin
   namespace: llm-chat
   labels:
     app: chat-backend
-    app.kubernetes.io/name: chat-backend
+    app.kubernetes.io/name: chat-admin
     app.kubernetes.io/instance: llm-chat
     app.kubernetes.io/component: backend
     app.kubernetes.io/part-of: tenant-chat
@@ -793,26 +792,6 @@ spec:
     app: chat-backend
   ports:
     - name: http
-      port: 8000
-      targetPort: 8000
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: chat-admin
-  namespace: llm-chat
-  labels:
-    app: chat-backend
-    app.kubernetes.io/name: chat-admin
-    app.kubernetes.io/instance: llm-chat
-    app.kubernetes.io/component: backend
-    app.kubernetes.io/part-of: tenant-chat
-    tenantchat.openai.com/metrics: enabled
-spec:
-  selector:
-    app: chat-backend
-  ports:
-    - name: admin-http
       port: 8004
       targetPort: 8004
 ---
@@ -845,32 +824,20 @@ spec:
     spec:
       containers:
         - name: chat-backend
-          image: registry.example.invalid/tenantchat/prototype@sha256:REPLACE_WITH_PROTOTYPE_DIGEST
+          image: registry.example.invalid/tenantchat/api@sha256:REPLACE_WITH_API_DIGEST
           ports:
-            - containerPort: 8000
-              name: http
             - containerPort: 8004
-              name: admin-http
+              name: http
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
-            - name: APP_ENV
-              value: production
             - name: OTEL_SERVICE_NAME
               value: chat-backend
-            - name: CHAT_HOST
-              value: 0.0.0.0
-            - name: CHAT_PORT
-              value: "8000"
-            - name: CHAT_ADMIN_PORT
-              value: "8004"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: postgres-credentials
                   key: databaseUrl
-            - name: DATABASE_INIT_RETRIES
-              value: "60"
             - name: LLM_BASE_URL
               valueFrom:
                 configMapKeyRef:
@@ -891,13 +858,6 @@ spec:
                 configMapKeyRef:
                   name: llm-runtime
                   key: timeoutSeconds
-            - name: FINANCING_AGENT_URL
-              value: http://financing-agent:8003
-            - name: CHAT_TO_FINANCING_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: chat-to-financing-credentials
-                  key: token
             - name: ADMIN_CSRF_SECRET
               valueFrom:
                 secretKeyRef:
@@ -908,29 +868,25 @@ spec:
                 secretKeyRef:
                   name: admin-gateway-credentials
                   key: token
+            # The API applies its own credential-free CORS allowlist to the
+            # visitor surface; the same origins the gateway's embed allows.
+            - name: CHAT_API_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: widget-cors-origins
+                  key: origins
+            - name: CHAT_API_DOCS_ENABLED
+              value: "false"
           readinessProbe:
             httpGet:
-              path: /api/tenants
+              path: /healthz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
 ---
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: chat-backend
-  namespace: llm-chat
-  labels:
-    release: kube-prom-stack
-spec:
-  selector:
-    matchLabels:
-      tenantchat.openai.com/metrics: enabled
-  endpoints:
-    - port: admin-http
-      path: /metrics
-      interval: 30s
----
+# The side services expose Prometheus /metrics; the API does not yet. A
+# ServiceMonitor here would silently scrape 404s, so the API has none until
+# OBS-002 wires real instrumentation.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

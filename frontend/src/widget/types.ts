@@ -27,11 +27,31 @@ export type TenantDirectory = Record<string, TenantConfig>;
 export type MessageRole = "user" | "assistant";
 
 /**
+ * The wire role of one transcript message, as the API's `MessageRole` reports
+ * it. Kept distinct from the widget's rendering roles so a staff reply can be
+ * told from a model turn.
+ */
+export type WireMessageRole = "visitor" | "assistant" | "staff" | "system" | "tool";
+
+/**
  * Who produced a message, which is not the same as its chat role: a staff reply
  * and a proactive nudge are both `assistant` turns to the model but are shown,
  * and announced, differently.
  */
 export type MessageSource = "user" | "assistant" | "admin" | "proactive";
+
+/** A server-issued conversation identity (`POST /api/chat/session`). */
+export interface ServerSession {
+  sessionId: string;
+}
+
+/** The server's view of one transcript message (`TranscriptMessage`). */
+export interface ServerMessage {
+  messageId: string;
+  role: WireMessageRole;
+  content: string;
+  createdAt: string;
+}
 
 export interface ToolEvent {
   name: string;
@@ -43,23 +63,61 @@ export interface ToolEvent {
 export type TranscriptEntry =
   | { kind: "message"; id: string; role: MessageRole; text: string; source: MessageSource }
   | { kind: "tool"; id: string; event: ToolEvent }
-  | { kind: "booking"; id: string; service: string; slots: string[] };
+  | { kind: "booking"; id: string; pending: PendingBooking };
 
-export interface ChatTurn {
-  role: MessageRole;
-  content: string;
-  source: MessageSource;
+/**
+ * A booking the assistant proposed that the customer still has to approve.
+ * Mirrors the API's `PendingConfirmation` so the widget can render a review
+ * before deciding.
+ */
+export interface PendingBooking {
+  awaiting: string;
+  service: string;
+  slot: string;
+  customerName: string;
+  address: string;
 }
 
+/** One thing the conversation caused, as `CommittedActionSummary` reports it. */
+export interface CommittedAction {
+  action: string;
+  reference: string;
+  replayed: boolean;
+}
+
+/** Component versions an answer is attributable to (`TurnProvenance`). */
+export interface TurnProvenance {
+  modelName: string;
+  graphVersion: string;
+  promptVersion: string;
+}
+
+/** A request to open a conversation (`POST /api/chat/session`). */
+export interface OpenSessionRequest {
+  tenantId: string;
+}
+
+/** A request to send one visitor turn (`POST /api/chat`). */
 export interface ChatRequest {
   tenantId: string;
   sessionId: string;
-  messages: ChatTurn[];
+  message: string;
 }
 
-export interface ChatResponse {
+/** A response to a proposed booking (`POST /api/chat/confirmation`). */
+export interface ConfirmationRequest {
+  tenantId: string;
+  sessionId: string;
+  decision: "approved" | "declined";
+}
+
+/** The response to one turn, pending and reply being alternatives. */
+export interface ChatTurnResponse {
+  sessionId: string;
   reply: string;
-  toolEvents?: ToolEvent[];
+  pending: PendingBooking | null;
+  committed: CommittedAction[];
+  provenance: TurnProvenance;
 }
 
 export interface ConsentRecord {
@@ -74,31 +132,8 @@ export interface BookingContact {
   contact: string;
 }
 
-export interface BookingRequest extends BookingContact {
-  tenantId: string;
-  sessionId: string;
-  service: string;
-  slot: string;
-  consent: ConsentRecord;
-}
-
-export interface BookingResponse {
-  reply: string;
-  toolEvent: ToolEvent;
-}
-
-/** The failure body `POST /api/book` returns, which drives the field error. */
-export interface BookingFailure {
-  toolEvent?: { result?: { message?: string; error?: string; missingFields?: string[] } };
-}
-
-export interface ServerMessage {
-  id: string;
-  role: MessageRole;
-  content: string;
-  source?: MessageSource;
-}
-
 export interface SessionSnapshot {
+  sessionId: string;
   messages?: ServerMessage[];
+  pending?: PendingBooking | null;
 }

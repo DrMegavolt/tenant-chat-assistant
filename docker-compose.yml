@@ -102,16 +102,17 @@ services:
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
     environment:
-      # The backend runs on the host, not in compose: `python3 server.py`, or
-      # `make api` for services/api on 8080. Outside APP_ENV=production the
-      # prototype serves admin routes on its single port, so both origins point
-      # at the same place here; Kubernetes splits them across 8000 and 8004.
-      CHAT_BACKEND_ORIGIN: ${CHAT_BACKEND_ORIGIN:-http://host.docker.internal:8000}
-      CHAT_ADMIN_ORIGIN: ${CHAT_ADMIN_ORIGIN:-http://host.docker.internal:8000}
-      # In local compose there is no oauth2-proxy sidecar; point at the backend
-      # which serves a dev auth mode.  The gateway health check (nginx -t)
-      # requires these to be valid URLs.
-      AUTH_PROXY_ORIGIN: ${AUTH_PROXY_ORIGIN:-http://host.docker.internal:8000}
+      # The API runs on the host, not in compose: `make api` serves services/api
+      # on 127.0.0.1:8080.  The API image serves visitor and admin routes on the
+      # same port, so both origins point at the same place here; Kubernetes
+      # routes them through the gateway's public and admin listeners.
+      CHAT_BACKEND_ORIGIN: ${CHAT_BACKEND_ORIGIN:-http://host.docker.internal:8080}
+      CHAT_ADMIN_ORIGIN: ${CHAT_ADMIN_ORIGIN:-http://host.docker.internal:8080}
+      # Local compose has no oauth2-proxy sidecar.  `make api` has no dev auth
+      # mode, so admin pages require a local auth proxy and the gateway token;
+      # the visitor surface does not touch this origin.  The gateway health
+      # check (nginx -t) requires these to be valid URLs.
+      AUTH_PROXY_ORIGIN: ${AUTH_PROXY_ORIGIN:-http://host.docker.internal:8080}
       ADMIN_GATEWAY_TOKEN: ${ADMIN_GATEWAY_TOKEN:?set ADMIN_GATEWAY_TOKEN in .env}
       WIDGET_ALLOWED_ORIGINS: ${WIDGET_ALLOWED_ORIGINS:-}
     extra_hosts:

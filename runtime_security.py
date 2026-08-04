@@ -1,8 +1,7 @@
-"""Fail-closed runtime configuration shared by the prototype services.
+"""Fail-closed runtime configuration shared by the side services.
 
-The deployment still runs the prototype entry points while the production API is
-built.  Keeping the security-sensitive environment handling here prevents the
-two OpenAI-compatible clients from drifting apart.
+Keeping the security-sensitive environment handling here prevents the two
+OpenAI-compatible clients from drifting apart.
 """
 
 from __future__ import annotations

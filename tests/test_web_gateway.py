@@ -15,6 +15,7 @@ import yaml  # type: ignore[import-untyped]
 
 from scripts.verify_image_contracts import (
     ADMIN_PROXY_PATHS,
+    API_PATH_TO_GATEWAY,
     PUBLIC_PROXY_PATHS,
     WEB_ADMIN_BUILD,
     WEB_PUBLIC_BUILD,
@@ -47,20 +48,35 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
 
     A path the backend treats as public but nginx does not forward is a feature
     that silently 404s for every visitor; a path nginx forwards but the backend
-    treats as internal is an admin route published to the internet.
+    treats as internal is an admin route published to the internet.  The visitor
+    surface is derived from the API's routers so neither list can drift, and
+    path-parameter routes are mapped to the regex locations that publish them.
     """
-    from server import _PUBLIC_GET_PATHS, _PUBLIC_POST_PATHS
+    from tenantchat.api.routers import bookings, chat, leads, tenants
 
-    backend_api = {
-        path for path in _PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS if path.startswith("/api/")
+    visitor_paths: set[str] = set()
+    for module in (chat, tenants, bookings, leads):
+        for route in module.router.routes:
+            for method in getattr(route, "methods", set()):  # noqa: B007
+                if route.path.startswith("/api/") and not route.path.startswith("/api/admin/"):
+                    visitor_paths.add(route.path)
+    assert visitor_paths == {
+        "/api/tenants",
+        "/api/tenants/{tenant_id}/availability",
+        "/api/chat/session",
+        "/api/chat/session/{session_id}",
+        "/api/chat",
+        "/api/chat/confirmation",
+        "/api/book",
+        "/api/leads",
     }
 
+    gateway_keys = {API_PATH_TO_GATEWAY.get(path, path) for path in visitor_paths}
+    assert gateway_keys == set(PUBLIC_PROXY_PATHS)
+
     all_proxy = proxied_locations(web_server_blocks()[8080])
-    # The public paths must all be proxied.
-    assert backend_api <= all_proxy
-    assert set(PUBLIC_PROXY_PATHS) <= all_proxy
-    # Admin paths are also proxied (auth-gated), so the total set is larger.
-    assert all_proxy >= backend_api | set(ADMIN_PROXY_PATHS)
+    assert gateway_keys <= all_proxy
+    assert all_proxy >= set(PUBLIC_PROXY_PATHS) | set(ADMIN_PROXY_PATHS)
 
 
 def test_each_document_root_holds_exactly_one_build() -> None:
@@ -179,10 +195,8 @@ def test_the_gateway_reaches_the_backend_and_auth_proxy() -> None:
     backend_egress = next(
         e for e in egress if e["to"][0]["podSelector"]["matchLabels"] == {"app": "chat-backend"}
     )
-    assert backend_egress["ports"] == [
-        {"protocol": "TCP", "port": 8000},
-        {"protocol": "TCP", "port": 8004},
-    ]
+    # The API image serves visitor and admin routes on the single port 8004.
+    assert backend_egress["ports"] == [{"protocol": "TCP", "port": 8004}]
     proxy_egress = next(
         e for e in egress if e["to"][0]["podSelector"]["matchLabels"] == {"app": "oauth2-proxy"}
     )

@@ -1,6 +1,6 @@
 """The prototype's tool loop, now expressed as graph nodes over domain services.
 
-`server.py` decided policy inline: it checked ``bookingEnabled`` in the tool
+The prototype decided policy inline: it checked ``bookingEnabled`` in the tool
 handler, validated contacts with its own regex, and appended to a module-level
 list. The behaviors these tests pin are the ones that had to survive that move —
 a tenant's policy still refuses, an incomplete request still asks rather than

@@ -32,6 +32,7 @@ from tenantchat.orchestration.model import (
 )
 from tenantchat.orchestration.nodes import MAX_TOOL_ROUNDS, DispatchNode
 from tenantchat.orchestration.prompts import SYSTEM_PROMPT_VERSION, build_system_prompt
+from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
 from tenantchat.orchestration.runtime import DispatchRuntime, TurnResult, thread_id
 from tenantchat.orchestration.state import CommittedAction, DispatchState
 from tenantchat.orchestration.tools import TOOL_SPECS, ToolName
@@ -51,6 +52,7 @@ __all__ = [
     "MessageRole",
     "ModelMessage",
     "ModelResponse",
+    "OpenAICompatibleChatModel",
     "ToolCall",
     "ToolName",
     "ToolSpec",

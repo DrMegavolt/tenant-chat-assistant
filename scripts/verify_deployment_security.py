@@ -156,6 +156,10 @@ def _scan_source_documents(errors: list[str], documents: list[tuple[Path, str]])
 
 def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -> None:
     workload_documents: dict[str, str] = {}
+    # The side services read APP_ENV through the shared runtime_security module.
+    # The API does not: it fails closed through its own composition (admin
+    # credentials and database URL required, chat 503 without an LLM).
+    app_env_workloads = ("financing-agent", "ingestion-service", "embedding-service")
     for workload in (
         "chat-backend",
         "financing-agent",
@@ -168,9 +172,12 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             continue
         _, document = found
         workload_documents[workload] = document
-        app_env = _env_block(document, "APP_ENV")
-        if not re.search(r"^\s*value:\s*production\s*$", app_env, re.MULTILINE):
-            errors.append(f"Deployment/{workload}: APP_ENV must select fail-closed production mode")
+        if workload in app_env_workloads:
+            app_env = _env_block(document, "APP_ENV")
+            if not re.search(r"^\s*value:\s*production\s*$", app_env, re.MULTILINE):
+                errors.append(
+                    f"Deployment/{workload}: APP_ENV must select fail-closed production mode"
+                )
 
     chat = workload_documents.get("chat-backend")
     if chat is not None:
@@ -182,6 +189,26 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "secretKeyRef",
             "postgres-credentials",
             "databaseUrl",
+        )
+        # The API composition requires both admin credentials; without them every
+        # admin route fails closed at startup (see services/api settings).
+        _require_env_ref(
+            errors,
+            chat,
+            "chat-backend",
+            "ADMIN_GATEWAY_TOKEN",
+            "secretKeyRef",
+            "admin-gateway-credentials",
+            "token",
+        )
+        _require_env_ref(
+            errors,
+            chat,
+            "chat-backend",
+            "ADMIN_CSRF_SECRET",
+            "secretKeyRef",
+            "admin-csrf-secret",
+            "secret",
         )
 
     for workload in ("financing-agent", "ingestion-service"):
@@ -249,9 +276,6 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
         )
 
     internal_refs = {
-        "chat-backend": {
-            "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
-        },
         "financing-agent": {
             "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
             "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
@@ -317,13 +341,20 @@ def _check_examples(errors: list[str]) -> None:
 
 
 def _check_client_authentication(errors: list[str]) -> None:
-    for relative_path in ("server.py", "services/financing-agent/app.py"):
-        text = (ROOT / relative_path).read_text(encoding="utf-8")
-        if "headers=openai_request_headers(LLM_API_KEY)" not in text:
-            errors.append(f"{relative_path}: OpenAI-compatible request is not authenticated")
+    # The API's OpenAI-compatible client lives in the orchestration package;
+    # the financing agent still builds its request inline.
+    if "Bearer {self._api_key}" not in (
+        ROOT / "packages/orchestration/src/tenantchat/orchestration/providers/openai_compatible.py"
+    ).read_text(encoding="utf-8"):
+        errors.append("packages/orchestration: OpenAI-compatible request is not authenticated")
+    if "headers=openai_request_headers(LLM_API_KEY)" not in (
+        ROOT / "services/financing-agent/app.py"
+    ).read_text(encoding="utf-8"):
+        errors.append(
+            "services/financing-agent/app.py: OpenAI-compatible request is not authenticated"
+        )
 
     internal_markers = {
-        "server.py": "internal_bearer_headers(FINANCING_AGENT_TOKEN)",
         "services/ingestion/app.py": "internal_bearer_headers(EMBEDDING_TOKEN)",
         "services/financing-agent/app.py": "internal_bearer_headers(EMBEDDING_TOKEN)",
         "services/embedding/app.py": "Depends(require_embedding_caller)",

@@ -16,7 +16,7 @@ SMOKE_DB_USER="smoke_owner"
 SMOKE_DB_PASSWORD="image-smoke-test-only"
 SMOKE_DB_NAME="tenantchat_smoke"
 
-ALL_IMAGES=(prototype api embedding ingestion financing web)
+ALL_IMAGES=(api embedding ingestion financing web)
 if (( $# )); then
   IMAGES=("$@")
 else
@@ -51,7 +51,6 @@ trap 'exit 143' TERM
 
 health_path() {
   case "$1" in
-    prototype) echo "/api/tenants" ;;
     api|web) echo "/healthz" ;;
     *) echo "/health" ;;
   esac
@@ -59,7 +58,6 @@ health_path() {
 
 container_port() {
   case "$1" in
-    prototype) echo 8000 ;;
     embedding) echo 8001 ;;
     ingestion) echo 8002 ;;
     financing) echo 8003 ;;
@@ -100,7 +98,7 @@ start_smoke_database() {
 
 mkdir -p "$OUTPUT_DIR"
 for image in "${IMAGES[@]}"; do
-  case "$image" in prototype|api|embedding|ingestion|financing|web) ;; *)
+  case "$image" in api|embedding|ingestion|financing|web) ;; *)
     echo "unknown image '$image'; choose: ${ALL_IMAGES[*]}" >&2
     exit 2
   esac
@@ -116,10 +114,6 @@ for image in "${IMAGES[@]}"; do
   run_args=(--detach --rm --name "$container" --publish "127.0.0.1::$port")
 
   case "$image" in
-    prototype)
-      docker run --rm --entrypoint python "$tag" -c \
-        'import os, pathlib, psycopg; p=pathlib.Path(os.environ["CHATS_DIR"]); (p/".smoke").write_text("ok"); (p/".smoke").unlink()'
-      ;;
     api)
       docker run --rm --entrypoint sh "$tag" -c \
         'python -c "import psycopg, tenantchat.api.app" && alembic --version'

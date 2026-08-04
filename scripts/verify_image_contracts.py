@@ -10,8 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Images whose contents come from the Python lockfile.
+# The root Dockerfile that shipped the prototype is gone; every workload now
+# runs from a service image.
 PYTHON_DOCKERFILES = (
-    ROOT / "Dockerfile",
     ROOT / "services/api/Dockerfile",
     ROOT / "services/embedding/Dockerfile",
     ROOT / "services/ingestion/Dockerfile",
@@ -22,7 +23,6 @@ DOCKERFILES = (*PYTHON_DOCKERFILES, WEB_DOCKERFILE)
 # Entrypoint modules copied as loose files rather than installed from the lock.
 # The API is absent on purpose: it ships as a built wheel in the image venv.
 RUNTIME_ENTRYPOINTS = {
-    ROOT / "Dockerfile": ROOT / "server.py",
     ROOT / "services/embedding/Dockerfile": ROOT / "services/embedding/app.py",
     ROOT / "services/ingestion/Dockerfile": ROOT / "services/ingestion/app.py",
     ROOT / "services/financing-agent/Dockerfile": ROOT / "services/financing-agent/app.py",
@@ -40,7 +40,7 @@ K8S_FILES = tuple(sorted((ROOT / "k8s").glob("*.yaml")))
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 POSTGRES_IMAGE = re.compile(r"postgres:\d[\w.\-]*(?:@sha256:[0-9a-f]{64})?")
 RELEASE_CONTRACT = re.compile(
-    r"registry\.example\.invalid/tenantchat/(?:prototype|api|embedding|ingestion|financing|web)"
+    r"registry\.example\.invalid/tenantchat/(?:api|embedding|ingestion|financing|web)"
     r"@sha256:REPLACE_WITH_[A-Z]+_DIGEST$"
 )
 OAUTH2_PROXY_CONTRACT = re.compile(
@@ -54,15 +54,31 @@ WEB_ADMIN_BUILD = "/build/dist/admin/"
 # A customer site hard-codes this URL in a script tag, so the build may not
 # rename it and the gateway has to answer it with allowlisted CORS.
 WEB_EMBED_PATH = "/embed.js"
-# The visitor API surface the public listener may forward, which has to stay
-# equal to `_PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS` minus the static routes in
-# server.py; `tests/test_web_gateway.py` asserts that equality directly.
-# The visitor API surface the public listener may forward, which has to stay
-# equal to `_PUBLIC_GET_PATHS | _PUBLIC_POST_PATHS` minus the static routes in
-# server.py; `tests/test_web_gateway.py` asserts that equality directly.
-PUBLIC_PROXY_PATHS = frozenset({"/api/tenants", "/api/chat", "/api/chat/session", "/api/book"})
+# The visitor API surface the public listener may forward. `tests/test_web_gateway.py`
+# derives the set from the API's routers and asserts it equals this exactly, so a
+# route cannot reach a browser until both sides list it.
+# Path-parameter routes are nginx regex locations, so their allowlist entries are
+# the regex patterns themselves — narrowed to the shapes the API accepts.
+API_PATH_TO_GATEWAY = {
+    "/api/tenants/{tenant_id}/availability": r"^/api/tenants/[a-z0-9][a-z0-9-]{0,63}/availability$",
+    "/api/chat/session/{session_id}": (
+        r"^/api/chat/session/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    ),
+}
+PUBLIC_PROXY_PATHS = frozenset(
+    {
+        "/api/tenants",
+        "/api/chat",
+        "/api/chat/session",
+        "/api/chat/confirmation",
+        "/api/book",
+        "/api/leads",
+    }
+    | set(API_PATH_TO_GATEWAY.values())
+)
 # Admin API paths that proxy to the admin listener (auth-gated).
-ADMIN_PROXY_PATHS = frozenset({"/api/admin/", "/api/leads"})
+ADMIN_PROXY_PATHS = frozenset({"/api/admin/"})
 AUTH_PROXY_PATHS = frozenset({"/_auth", "/oauth2/"})
 
 
@@ -182,9 +198,14 @@ def web_server_blocks() -> dict[int, str]:
 
 
 def location_bodies(block: str) -> dict[str, str]:
-    """Return location bodies using brace balancing, including nested `if`s."""
+    """Return location bodies using brace balancing, including nested `if`s.
+
+    Keys are the matched path: the literal path after `= ` or a bare prefix, and
+    the pattern itself for a regex location, so the allowlist can name exactly
+    what nginx will match.
+    """
     bodies: dict[str, str] = {}
-    pattern = re.compile(r"location\s+(?:=\s*)?(\S+)\s*\{")
+    pattern = re.compile(r"location\s+(?:=\s*|\^~\s*|~\s*\*\s*|~\s*)?(\S+)\s*\{")
     for match in pattern.finditer(block):
         depth = 1
         index = match.end()
@@ -192,7 +213,9 @@ def location_bodies(block: str) -> dict[str, str]:
             depth += {"{": 1, "}": -1}.get(block[index], 0)
             index += 1
         if depth == 0:
-            bodies[match.group(1)] = block[match.end() : index - 1]
+            # Regex locations are quoted in the template so their quantifier
+            # braces do not close the location block; key by the bare pattern.
+            bodies[match.group(1).strip('"')] = block[match.end() : index - 1]
     return bodies
 
 
@@ -240,8 +263,6 @@ def verify_web_gateway(errors: list[str]) -> None:
     # Admin API paths must also proxy upstream (auth-gated, checked below).
     if "/api/admin/" not in all_proxy:
         errors.append(f"{template}: admin API route /api/admin/ is not proxied")
-    if "/api/leads" not in all_proxy:
-        errors.append(f"{template}: admin route /api/leads is not proxied")
     unexpected = all_proxy - set(PUBLIC_PROXY_PATHS | ADMIN_PROXY_PATHS | AUTH_PROXY_PATHS)
     if unexpected:
         errors.append(f"{template}: unexpected proxied locations {', '.join(sorted(unexpected))}")

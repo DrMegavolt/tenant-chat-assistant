@@ -1250,6 +1250,7 @@ name = "tenantchat-orchestration"
 version = "0.1.0"
 source = { editable = "packages/orchestration" }
 dependencies = [
+    { name = "httpx" },
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres" },
@@ -1258,6 +1259,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "langchain-core", specifier = "==1.5.3" },
     { name = "langgraph", specifier = "==1.2.10" },
     { name = "langgraph-checkpoint-postgres", specifier = "==3.1.1" },

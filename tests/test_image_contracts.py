@@ -24,7 +24,7 @@ from scripts.verify_release_manifest import REQUIRED_WORKLOADS, validate_manifes
 
 
 def test_every_deployable_image_is_covered() -> None:
-    assert len(DOCKERFILES) == 6
+    assert len(DOCKERFILES) == 5
     assert all(path.is_file() for path in DOCKERFILES)
     assert ROOT / "frontend/Dockerfile" in DOCKERFILES
 
@@ -96,7 +96,7 @@ def test_final_stage_copies_exclude_the_build_stage(tmp_path: Path) -> None:
     """
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(
-        "FROM base AS builder\nCOPY server.py ./\n"
+        "FROM base AS builder\nCOPY entrypoint.py ./\n"
         "FROM base AS runtime\n"
         "COPY --from=builder /app/.venv /app/.venv\n"
         "COPY --chown=10001:10001 internal_auth.py runtime_security.py ./\n",

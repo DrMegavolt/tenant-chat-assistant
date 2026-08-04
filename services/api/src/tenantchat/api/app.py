@@ -43,6 +43,7 @@ from tenantchat.core.errors import DomainError
 from tenantchat.core.ports import ConversationRuntime
 from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpointer
 from tenantchat.orchestration.model import ChatModel
+from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
 
 REQUEST_ID_HEADER = "X-Request-Id"
 ADMIN_PATH_PREFIX = "/api/admin/"
@@ -255,9 +256,11 @@ def create_app(
         conversation_store: Explicit test adapter. Production builds PostgreSQL stores.
         handoff_store: Explicit test adapter. Production builds PostgreSQL stores.
         idempotency_store: Explicit test adapter. Production builds PostgreSQL stores.
-        chat_model: The model the agent runtime calls. Without one, no runtime is
-            composed and the chat routes report themselves unavailable; `AI-001`
-            supplies the provider client this service deliberately lacks.
+        chat_model: The model the agent runtime calls. Injected for tests; when
+            omitted, `AI-001` builds an OpenAI-compatible adapter from
+            ``LLM_BASE_URL``/``LLM_MODEL``/``LLM_API_KEY`` if both the base URL
+            and model are configured. Without either, no runtime is composed and
+            the chat routes report themselves unavailable.
         checkpointer: Execution-state store for the agent runtime. Production
             opens a PostgreSQL checkpointer over ``DATABASE_URL`` during startup.
 
@@ -268,6 +271,19 @@ def create_app(
     resolved = settings or Settings.from_environment()
     registry = TenantRegistry.seeded()
     database: Database | None = None
+    # AI-001: a provider adapter built from settings for the production
+    # composition. Tests inject `chat_model` explicitly and leave this None; a
+    # production deployment without a model configured also leaves it None so
+    # chat fails closed rather than starting against a guessed endpoint.
+    owned_model: OpenAICompatibleChatModel | None = None
+    if chat_model is None and resolved.llm_base_url and resolved.llm_model:
+        owned_model = OpenAICompatibleChatModel(
+            base_url=resolved.llm_base_url,
+            model=resolved.llm_model,
+            api_key=resolved.llm_api_key,
+            timeout_seconds=resolved.llm_timeout_seconds,
+        )
+    effective_model = chat_model or owned_model
 
     supplied = (
         booking_store,
@@ -342,16 +358,20 @@ def create_app(
                     (record.policy.tenant_id, record.policy.name)
                     for record in registry.all().values()
                 )
+            # Owned provider clients are closed with the app. An injected test
+            # model is the caller's to clean up, not the app's.
+            if owned_model is not None:
+                closing.push_async_callback(owned_model.close)
             # Opened here rather than in the builder because the checkpointer
             # owns a connection pool, and a pool created at import time outlives
             # nothing and belongs to no event loop.
-            if chat_model is not None and running.state.conversation_runtime is None:
+            if effective_model is not None and running.state.conversation_runtime is None:
                 if resolved.database_url is None:
                     raise ValueError("the agent runtime requires DATABASE_URL or a checkpointer")
                 saver = await closing.enter_async_context(
                     postgres_checkpointer(resolved.database_url)
                 )
-                running.state.conversation_runtime = compose_runtime(saver, chat_model)
+                running.state.conversation_runtime = compose_runtime(saver, effective_model)
             yield
 
     app = FastAPI(
@@ -371,10 +391,13 @@ def create_app(
     app.state.handoff_store = handoff_store
     app.state.idempotency_store = idempotency_store
     app.state.conversation_runtime = (
-        compose_runtime(checkpointer, chat_model)
-        if chat_model is not None and checkpointer is not None
+        compose_runtime(checkpointer, effective_model)
+        if effective_model is not None and checkpointer is not None
         else None
     )
+    # The effective model is public state so a test can assert which adapter
+    # composition chose without reaching into construction internals (`AI-001`).
+    app.state.chat_model = effective_model
 
     _install_middleware(app, resolved)
 

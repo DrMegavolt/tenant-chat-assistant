@@ -71,7 +71,9 @@ create_client() {
 }
 
 create_server web 8080
-create_server chat-backend 8000
+# One Service backs the single-port API workload; prometheus has no scrape
+# policy for it because the API exposes no /metrics yet (OBS-002).
+create_server chat-backend 8004
 kubectl -n "$target_ns" expose pod chat-backend \
   --name=chat-admin --port=8004 --target-port=8004 >/dev/null
 create_server oauth2-proxy 4180
@@ -159,14 +161,11 @@ expect_denied_pod_port() {
 }
 
 expect_allowed "$ingress_ns" traefik web 8080
-expect_allowed "$target_ns" web chat-backend 8000
 expect_allowed "$target_ns" web chat-admin 8004
 expect_allowed "$target_ns" web oauth2-proxy 4180
-expect_allowed "$observability_ns" prometheus chat-admin 8004
 expect_allowed "$observability_ns" prometheus embedding-service 8001
 expect_allowed "$observability_ns" prometheus ingestion-service 8002
 expect_allowed "$observability_ns" prometheus financing-agent 8003
-expect_allowed "$target_ns" chat-backend financing-agent 8003
 expect_allowed "$target_ns" chat-backend postgres 5432
 expect_allowed "$target_ns" financing-agent embedding-service 8001
 expect_allowed "$target_ns" financing-agent elasticsearch 9200
@@ -178,14 +177,15 @@ expect_allowed "$target_ns" kibana elasticsearch 9200
 expect_allowed "$target_ns" configure-kibana-system-user elasticsearch 9200
 
 for service_port in \
-  web:8080 chat-backend:8000 financing-agent:8003 embedding-service:8001 \
+  web:8080 chat-backend:8004 financing-agent:8003 embedding-service:8001 \
   ingestion-service:8002 postgres:5432 elasticsearch:9200 oauth2-proxy:4180; do
   expect_denied "$attacker_ns" attacker "${service_port%:*}" "${service_port#*:}"
   expect_denied "$target_ns" random-client "${service_port%:*}" "${service_port#*:}"
 done
-expect_denied "$ingress_ns" traefik chat-backend 8000
+expect_denied "$ingress_ns" traefik chat-backend 8004
 expect_denied "$target_ns" web postgres 5432
 expect_denied "$target_ns" web financing-agent 8003
+expect_denied "$target_ns" chat-backend financing-agent 8003
 expect_denied "$target_ns" chat-backend ingestion-service 8002
 expect_denied "$target_ns" chat-backend embedding-service 8001
 expect_denied "$target_ns" chat-backend elasticsearch 9200

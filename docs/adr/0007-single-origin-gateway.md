@@ -41,17 +41,22 @@ re-enforces authorization independently.**
 ```
 Internet → nginx (8080) ──┬── /               → /srv/public (public frontend)
                           ├── /admin/          → /srv/admin (auth-gated)
-                          ├── /api/tenants     → chat-backend:8000 (public API)
-                          ├── /api/chat        → chat-backend:8000
-                          ├── /api/chat/session→ chat-backend:8000
-                          ├── /api/book        → chat-backend:8000
+                          ├── /api/tenants     → chat-admin:8004 (public API)
+                          ├── /api/chat        → chat-admin:8004
+                          ├── /api/chat/session→ chat-admin:8004
+                          ├── /api/book        → chat-admin:8004
+                          ├── /api/leads       → chat-admin:8004 (public write)
                           ├── /api/admin/...   → chat-admin:8004 (auth-gated)
-                          ├── /api/leads       → chat-admin:8004 (auth-gated)
                           ├── /api/            → 404 (fail closed)
                           └── /oauth2/*        → oauth2-proxy:4180
                                                      ↑
                           auth_request ────────→ oauth2-proxy:4180/oauth2/auth
 ```
+
+The wiring reflects the `API-001` cutover: the API image serves visitor and
+admin routes on one port (8004), the `chat-backend` port-8000 alias Service is
+gone, and `POST /api/leads` is a visitor write. The auth gate applies only to
+`/admin/` and `/api/admin/` routes.
 
 ### Authentication flow
 
@@ -132,9 +137,10 @@ handles this with an explicit, tightly allowlisted CORS policy:
 The Vite dev server reproduces production paths:
 - `/` serves the public frontend.
 - `/admin/` is accessible (Vite serves from the same root).
-- `/api` public routes proxy to the public backend listener.
-- `/api/admin/` and `/api/leads` proxy to the admin backend listener.
-- No CORS or auth is needed in development (dev auth mode).
+- All `/api` routes proxy to the single API listener (`127.0.0.1:8080` by
+  default); there is no separate admin listener to target.
+- Admin routes fail closed without the gateway's identity headers; there is no
+  dev auth bypass.
 
 ## Consequences
 

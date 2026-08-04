@@ -36,19 +36,45 @@ export const TENANTS: TenantDirectory = {
 };
 
 export const AVAILABILITY_REPLY = {
-  reply: "Choose a time.",
-  toolEvents: [
-    {
-      name: "get_availability",
-      arguments: { service: "hvac" },
-      result: { service: "hvac", slots: ["Tomorrow 09:00"] }
-    }
-  ]
+  session_id: "session-1",
+  reply: "",
+  pending: {
+    awaiting: "booking_confirmation",
+    service: "HVAC",
+    slot: "Tomorrow 09:00",
+    customer_name: "Dana Ruiz",
+    address: "12 Alder Court, Portland, OR 97205"
+  },
+  committed: [],
+  provenance: {
+    model_name: "scripted",
+    graph_version: "dispatch@1",
+    prompt_version: "dispatch-system@1"
+  }
 };
 
 export const BOOKING_CONFIRMED = {
+  session_id: "session-1",
   reply: "Your appointment is booked.",
-  toolEvent: { name: "book_appointment", arguments: {}, result: { bookingId: "booking-1" } }
+  pending: null,
+  committed: [{ action: "book_appointment", reference: "booking-1", replayed: false }],
+  provenance: {
+    model_name: "scripted",
+    graph_version: "dispatch@1",
+    prompt_version: "dispatch-system@1"
+  }
+};
+
+export const SIMPLE_REPLY = {
+  session_id: "session-1",
+  reply: "I found one opening.",
+  pending: null,
+  committed: [],
+  provenance: {
+    model_name: "scripted",
+    graph_version: "dispatch@1",
+    prompt_version: "dispatch-system@1"
+  }
 };
 
 export function jsonResponse(body: unknown, { ok = true, status = 200 } = {}) {
@@ -69,7 +95,8 @@ export function stubBackend(handler: RouteHandler) {
     const handled = handler(url, init);
     if (handled) return handled;
     if (url.includes("/api/chat/session")) {
-      return jsonResponse({ session: { messages: [] } });
+      // `messages` sits top-level, mirroring `ChatSessionResponse`.
+      return jsonResponse({ session: { session_id: "session-1" }, messages: [] });
     }
     throw new Error(`unexpected request: ${url}`);
   });
@@ -77,12 +104,17 @@ export function stubBackend(handler: RouteHandler) {
   return fetchMock;
 }
 
-/** A backend that answers tenants, chat, and booking with the fixtures above. */
+/** A backend that answers tenants, chat, and session minting with fixtures. */
 export function workingBackend(): RouteHandler {
   return (url) => {
     if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+    if (url.includes("/api/chat/session") && url.includes("?tenant_id=")) {
+      return jsonResponse({ session: { session_id: "session-1" }, messages: [], pending: null });
+    }
+    if (url.endsWith("/api/chat/session"))
+      return jsonResponse({ session: { session_id: "session-1" }, messages: [] });
+    if (url.endsWith("/api/chat/confirmation")) return jsonResponse(BOOKING_CONFIRMED);
     if (url.endsWith("/api/chat")) return jsonResponse(AVAILABILITY_REPLY);
-    if (url.endsWith("/api/book")) return jsonResponse(BOOKING_CONFIRMED);
     return null;
   };
 }

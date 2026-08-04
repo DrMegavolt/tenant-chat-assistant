@@ -3,62 +3,65 @@ import { describe, expect, test } from "vitest";
 
 import { requestBodies, stubBackend, workingBackend } from "tests/support/backend";
 import {
-  fillBooking,
   inWidget,
-  openBookingForm,
+  openBookingConfirmation,
   renderDemo,
   requireInWidget,
-  shadow,
-  submitChat
+  shadow
 } from "tests/support/widget";
 
 describe("consent before contact data leaves the browser", () => {
-  test("the booking form states what is stored and by whom before anything is sent", async () => {
+  test("the booking confirmation states what is stored and by whom before approving", async () => {
     stubBackend(workingBackend());
     await renderDemo();
-    const form = await openBookingForm();
+    const confirmation = await openBookingConfirmation();
 
-    const consentLabel = form.querySelector("label[for='bookingConsent']");
+    const consentLabel = confirmation.querySelector("label[for='bookingConfirmConsent']");
     expect(consentLabel?.textContent).toContain("Clearview Heating");
     expect(consentLabel?.textContent).toContain("name, address, and contact details");
-    expect(form.querySelector<HTMLInputElement>("#bookingConsent")?.checked).toBe(false);
+    expect(confirmation.querySelector<HTMLInputElement>("#bookingConfirmConsent")?.checked).toBe(
+      false
+    );
   });
 
-  test("submitting without consent sends nothing and moves focus to the checkbox", async () => {
+  test("approving without consent sends nothing and moves focus to the checkbox", async () => {
     const fetchMock = stubBackend(workingBackend());
     await renderDemo();
-    const form = await openBookingForm();
-    fillBooking(form, { consent: false });
+    const confirmation = await openBookingConfirmation();
 
-    fireEvent.submit(form);
+    const approve = [...confirmation.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Confirm booking")
+    )!;
+    fireEvent.click(approve);
 
-    expect(requestBodies(fetchMock, "/api/book")).toHaveLength(0);
-    expect(form.querySelector("#bookingError")?.textContent).toBe(
-      "Please agree to the data notice before booking."
+    expect(requestBodies(fetchMock, "/api/chat/confirmation")).toHaveLength(0);
+    expect(confirmation.querySelector("#bookingConfirmError")?.textContent).toBe(
+      "Please agree to the data notice before confirming."
     );
-    const checkbox = form.querySelector("#bookingConsent");
+    const checkbox = confirmation.querySelector("#bookingConfirmConsent");
     expect(checkbox?.getAttribute("aria-invalid")).toBe("true");
     expect(shadow().activeElement).toBe(checkbox);
   });
 
-  test("granting consent records it locally and sends it with the booking", async () => {
+  test("granting consent records it locally and commits the booking", async () => {
     const fetchMock = stubBackend(workingBackend());
     await renderDemo();
-    const form = await openBookingForm();
-    fillBooking(form);
+    const confirmation = await openBookingConfirmation();
 
-    fireEvent.submit(form);
-    await waitFor(() => expect(requestBodies(fetchMock, "/api/book")).toHaveLength(1));
+    fireEvent.click(confirmation.querySelector("#bookingConfirmConsent")!);
+    const approve = [...confirmation.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Confirm booking")
+    )!;
+    fireEvent.click(approve);
 
-    const [sent] = requestBodies(fetchMock, "/api/book") as {
-      consent: { statement: string; grantedAt: string };
-    }[];
-    expect(sent?.consent.statement).toContain("Clearview Heating");
-    expect(Date.parse(sent!.consent.grantedAt)).not.toBeNaN();
+    await waitFor(() => expect(requestBodies(fetchMock, "/api/chat/confirmation")).toHaveLength(1));
+    expect(requestBodies(fetchMock, "/api/chat/confirmation")[0]).toMatchObject({
+      decision: "approved"
+    });
     const stored = JSON.parse(
       window.sessionStorage.getItem("tenant-chat-consent:clearview") ?? "null"
     ) as { statement: string };
-    expect(stored.statement).toBe(sent?.consent.statement);
+    expect(stored.statement).toContain("Clearview Heating");
   });
 });
 
@@ -82,10 +85,13 @@ describe("visitor data controls", () => {
   test("deleting local data clears every stored key and announces the reset", async () => {
     stubBackend(workingBackend());
     await renderDemo();
-    const form = await openBookingForm();
-    fillBooking(form);
-    fireEvent.submit(form);
-    await waitFor(() => expect(inWidget(".booking-form-card")).toBeNull());
+    const confirmation = await openBookingConfirmation();
+    fireEvent.click(confirmation.querySelector("#bookingConfirmConsent")!);
+    const approve = [...confirmation.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Confirm booking")
+    )!;
+    fireEvent.click(approve);
+    await waitFor(() => expect(inWidget(".booking-confirmation-card")).toBeNull());
 
     fireEvent.click(requireInWidget("#privacyToggle"));
     fireEvent.click(requireInWidget("#clearVisitorData"));
@@ -97,23 +103,20 @@ describe("visitor data controls", () => {
     expect(inWidget("#messages")?.textContent).not.toContain("Your appointment is booked.");
   });
 
-  test("a second booking in the same session does not ask for details already given", async () => {
+  test("a later booking in the same session reuses the recorded consent", async () => {
     stubBackend(workingBackend());
     await renderDemo();
-    const first = await openBookingForm();
-    fillBooking(first);
-    fireEvent.submit(first);
-    await waitFor(() => expect(inWidget(".booking-form-card")).toBeNull());
+    const first = await openBookingConfirmation();
+    fireEvent.click(first.querySelector("#bookingConfirmConsent")!);
+    const approve = [...first.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Confirm booking")
+    )!;
+    fireEvent.click(approve);
+    await waitFor(() => expect(inWidget(".booking-confirmation-card")).toBeNull());
 
-    submitChat("Another HVAC visit please");
-    await waitFor(() => expect(inWidget(".booking-form-card")).not.toBeNull());
-
-    const second = requireInWidget(".booking-form-card");
-    expect(second.querySelector<HTMLInputElement>("#booking-customerName")?.value).toBe("Sam Lee");
-    expect(second.querySelector<HTMLInputElement>("#booking-address")?.value).toBe("42 Cedar Road");
-    expect(second.querySelector<HTMLInputElement>("#booking-contact")?.value).toBe(
-      "sam@example.test"
-    );
-    expect(second.querySelector<HTMLInputElement>("#bookingConsent")?.checked).toBe(false);
+    // Consent persisted by the earlier approval.
+    expect(
+      JSON.parse(window.sessionStorage.getItem("tenant-chat-consent:clearview") ?? "null")
+    ).not.toBeNull();
   });
 });

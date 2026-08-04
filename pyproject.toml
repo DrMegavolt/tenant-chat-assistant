@@ -15,7 +15,7 @@ dev = [
     "pytest-cov==6.0.0",
     "ruff==0.8.6",
     "mypy==1.14.1",
-    # Characterization tests import the prototype ingestion and retrieval
+    # Characterization tests import the side-service ingestion and retrieval
     # modules, then replace every outbound request with a deterministic fake.
     "prometheus-client==0.21.1",
     "requests==2.32.3",
@@ -24,7 +24,7 @@ dev = [
     # calls out over HTTP with it.
     "httpx2==2.9.1",
 ]
-# Deployable prototype scripts are intentionally not workspace packages. Their
+# The side-service entrypoints are intentionally not workspace packages. Their
 # complete transitive graphs still live in uv.lock, so every image consumes the
 # same reviewed lock as the production API instead of maintaining hand-written
 # requirements files that drift independently.
@@ -63,8 +63,8 @@ required-version = ">=0.9,<1.0"
 
 [tool.uv.workspace]
 # Listed one at a time rather than `services/*`: the remaining service
-# directories are prototype scripts with no manifest, and a glob would fail the
-# lock on them.
+# directories are side-service scripts with no manifest, and a glob would fail
+# the lock on them.
 members = ["packages/*", "services/api"]
 
 [tool.uv.sources]
@@ -110,8 +110,8 @@ line-length = 100
 extend-exclude = [
     "architecture/likec4/node_modules",
     "architecture/likec4/dist",
-    # Prototype code, deleted once `services/api` serves its endpoints.
-    "server.py",
+    # Side-service entrypoints that predate the shared packages; each will be
+    # rewritten to import from the packages once the RAG work lands.
     "services/embedding/app.py",
     "services/ingestion/app.py",
     "services/financing-agent/app.py",
@@ -157,7 +157,7 @@ warn_unreachable = true
 pretty = true
 show_error_codes = true
 # Named per converted service rather than as `services`: the sibling directories
-# still hold excluded prototype scripts, and mypy errors on a directory with
+# still hold excluded side-service scripts, and mypy errors on a directory with
 # nothing to check.
 files = ["packages", "services/api", "scripts", "tests", "runtime_security.py"]
 exclude = ["architecture/"]

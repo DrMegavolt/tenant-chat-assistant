@@ -50,11 +50,9 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
         "allow-web-to-chat",
         "allow-web-to-oauth2-proxy",
         "allow-web-egress",
-        "allow-prometheus-chat-metrics",
         "allow-prometheus-embedding-metrics",
         "allow-prometheus-ingestion-metrics",
         "allow-prometheus-financing-metrics",
-        "allow-chat-to-financing",
         "allow-rag-callers-to-embedding",
         "allow-seed-to-ingestion",
         "allow-application-to-postgres",
@@ -177,10 +175,9 @@ def test_realm_groups_are_exactly_the_roles_the_gateway_maps() -> None:
 
 def test_workloads_use_distinct_internal_secret_refs() -> None:
     documents = load_documents("k8s/app.yaml")
+    # chat-backend no longer calls the financing agent, so it holds no
+    # internal-call credential; its LLM key comes from llm-provider-credentials.
     expected = {
-        "chat-backend": {
-            "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
-        },
         "financing-agent": {
             "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
             "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
@@ -222,9 +219,10 @@ def test_internal_data_routes_require_auth_but_health_and_metrics_do_not() -> No
 
 
 def test_prometheus_is_the_only_cross_namespace_metrics_caller() -> None:
+    """Prometheus reaches the side-service metrics ports; the API has no
+    `/metrics` yet (`OBS-002`), so no policy may grant scraping to it."""
     policies = load_documents("k8s/network-policies.yaml")
     expected = {
-        "allow-prometheus-chat-metrics": ("chat-backend", 8004),
         "allow-prometheus-embedding-metrics": ("embedding-service", 8001),
         "allow-prometheus-ingestion-metrics": ("ingestion-service", 8002),
         "allow-prometheus-financing-metrics": ("financing-agent", 8003),
@@ -239,31 +237,10 @@ def test_prometheus_is_the_only_cross_namespace_metrics_caller() -> None:
             "kubernetes.io/metadata.name": "observability"
         }
         assert caller["podSelector"]["matchLabels"] == {"app.kubernetes.io/name": "prometheus"}
-
-
-def test_public_listener_excludes_admin_and_metrics_routes() -> None:
-    from server import is_public_route
-
-    assert is_public_route("GET", "/")
-    assert is_public_route("POST", "/api/chat")
-    assert is_public_route("POST", "/api/book")
-    assert not is_public_route("GET", "/metrics")
-    assert not is_public_route("GET", "/admin.html")
-    assert not is_public_route("GET", "/admin/")
-    assert not is_public_route("GET", "/api/leads")
-    assert not is_public_route("GET", "/api/admin/chats")
-
-
-def test_public_listener_serves_every_file_the_public_build_emitted() -> None:
-    """A missing entry 403s a bundle file and breaks the page silently.
-
-    Bundle filenames carry a content hash, so the allowlist has to be derived
-    from the build rather than written down; this asserts the derivation covers
-    everything the build actually produced.
-    """
-    from server import STATIC_ROOT, is_public_route
-
-    assert is_public_route("GET", "/")
-    assert is_public_route("GET", "/embed.js")
-    for path in sorted((STATIC_ROOT / "assets").glob("*")):
-        assert is_public_route("GET", f"/assets/{path.name}"), path.name
+    metrics_targets = {
+        frozenset(policy["spec"]["podSelector"]["matchLabels"].items())
+        for policy in policies
+        if policy.get("kind") == "NetworkPolicy"
+        and policy["metadata"]["name"].startswith("allow-prometheus-")
+    }
+    assert frozenset({"app": "chat-backend"}.items()) not in metrics_targets
