@@ -20,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Create the per-tenant operator role assignments.
 
-    The four-column composite key is the record's identity: one operator holds
+    The (tenant, subject) composite key is the record's identity: one operator holds
     exactly one role per tenant, and revoking deletes the row rather than
     flagging it, because the audit table already records who assigned and who
     revoked and when. ``platform_admin`` is deliberately not an assignable
