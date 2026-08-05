@@ -210,6 +210,18 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "admin-csrf-secret",
             "secret",
         )
+        # SEC-002: without the signing key every visitor route fails closed at
+        # startup, so a deployment that forgets it loses the widget, not the
+        # visitors' conversations.
+        _require_env_ref(
+            errors,
+            chat,
+            "chat-backend",
+            "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY",
+            "secretKeyRef",
+            "visitor-credential-signing-key",
+            "key",
+        )
 
     for workload in ("financing-agent", "ingestion-service"):
         dependency_document = workload_documents.get(workload)

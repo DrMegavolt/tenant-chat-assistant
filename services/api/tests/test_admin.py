@@ -13,7 +13,7 @@ from collections.abc import Callable
 import pytest
 from fastapi.testclient import TestClient
 
-from services.api.tests.conftest import BOOKING_TENANT, TEST_GATEWAY_TOKEN
+from services.api.tests.conftest import BOOKING_TENANT, TEST_GATEWAY_TOKEN, VisitorSession
 from tenantchat.api.identity import (
     CSRF_HEADER,
     GATEWAY_TOKEN_HEADER,
@@ -176,14 +176,11 @@ def test_the_widget_surface_still_answers_cross_origin(client: TestClient) -> No
 def test_conversations_are_listed_most_recently_active_first(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    open_session: Callable[..., str],
+    visitor_session: Callable[..., VisitorSession],
 ) -> None:
-    older, newer = open_session(), open_session()
-    for session_id in (older, newer):
-        client.post(
-            "/api/chat",
-            json={"tenant_id": BOOKING_TENANT, "session_id": session_id, "message": "Hello"},
-        )
+    older, newer = visitor_session(), visitor_session()
+    for visitor in (older, newer):
+        client.post("/api/chat", json={"message": "Hello"}, headers=visitor.headers)
 
     response = client.get(
         "/api/admin/chats",
@@ -193,7 +190,7 @@ def test_conversations_are_listed_most_recently_active_first(
 
     assert response.status_code == 200
     listed = [session["session_id"] for session in response.json()["sessions"]]
-    assert listed == [newer, older]
+    assert listed == [newer.session_id, older.session_id]
 
 
 def test_a_conversation_nobody_spoke_in_is_not_listed(
@@ -216,13 +213,10 @@ def test_a_conversation_nobody_spoke_in_is_not_listed(
 def test_the_list_never_carries_transcripts(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    open_session: Callable[..., str],
+    visitor_session: Callable[..., VisitorSession],
 ) -> None:
-    session_id = open_session()
-    client.post(
-        "/api/chat",
-        json={"tenant_id": BOOKING_TENANT, "session_id": session_id, "message": "My name is Dana"},
-    )
+    visitor = visitor_session()
+    client.post("/api/chat", json={"message": "My name is Dana"}, headers=visitor.headers)
 
     body = client.get(
         "/api/admin/chats",
@@ -236,16 +230,13 @@ def test_the_list_never_carries_transcripts(
 def test_one_conversation_reads_in_full(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    open_session: Callable[..., str],
+    visitor_session: Callable[..., VisitorSession],
 ) -> None:
-    session_id = open_session()
-    client.post(
-        "/api/chat",
-        json={"tenant_id": BOOKING_TENANT, "session_id": session_id, "message": "Hours?"},
-    )
+    visitor = visitor_session()
+    client.post("/api/chat", json={"message": "Hours?"}, headers=visitor.headers)
 
     response = client.get(
-        f"/api/admin/chats/{session_id}",
+        f"/api/admin/chats/{visitor.session_id}",
         params={"tenant_id": BOOKING_TENANT},
         headers=operator_headers(),
     )
@@ -257,14 +248,14 @@ def test_one_conversation_reads_in_full(
 def test_a_staff_reply_is_stored_as_a_person_speaking(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    open_session: Callable[..., str],
+    visitor_session: Callable[..., VisitorSession],
 ) -> None:
     """Distinct from `assistant`: a customer reading a promise should know who made it."""
-    session_id = open_session()
+    visitor = visitor_session()
     headers = operator_headers()
 
     response = client.post(
-        f"/api/admin/chats/{session_id}/messages",
+        f"/api/admin/chats/{visitor.session_id}/messages",
         json={"tenant_id": BOOKING_TENANT, "content": "I can be there at four."},
         headers=headers | {CSRF_HEADER: csrf_for(client, headers)},
     )
@@ -272,9 +263,7 @@ def test_a_staff_reply_is_stored_as_a_person_speaking(
     assert response.status_code == 201
     assert response.json()["message"]["role"] == "staff"
 
-    visitor_view = client.get(
-        f"/api/chat/session/{session_id}", params={"tenant_id": BOOKING_TENANT}
-    ).json()["messages"]
+    visitor_view = client.get("/api/chat/session", headers=visitor.headers).json()["messages"]
     assert visitor_view[-1]["content"] == "I can be there at four."
 
 

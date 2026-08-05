@@ -678,7 +678,7 @@ guarantees by construction.
 
 ### SEC-002 — Secure visitor sessions and tenant binding
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Security`
 - Depends on: `API-001`, `DATA-002`
@@ -696,7 +696,45 @@ guarantees by construction.
   - Expired credentials fail predictably and preserve a safe recovery path.
 - Verification:
   - Automated tests reproduce and then prevent session hijacking and tenant reassignment.
-- Completion notes: _Pending._
+- Completion notes: `services/api` now mints a signed `tc.v1.*` visitor
+  credential at `POST /api/chat/session` and authenticates every other visitor
+  route (`GET /api/chat/session`, `POST /api/chat`, `POST /api/chat/
+  confirmation`) with the `X-Visitor-Credential` header. The request models no
+  longer accept `tenant_id` or `session_id` at all (`extra="forbid"`), so a body
+  cannot move a conversation and the old URL-shaped surface is gone. The
+  credential is HMAC-SHA256-signed (core `HmacVisitorCredentialSigner`, no
+  runtime dependencies) and names exactly one tenant plus one server-issued
+  session, carries its own `exp`, and is reissued on every credentialed response
+  so an active conversation never expires. Missing/forged/expired credentials
+  all return a stable `401`; forged and missing are the indistinguishable code
+  `invalid_visitor_credential`, expiry is the recoverable
+  `visitor_credential_expired`, and the widget clears the stored token and
+  opens a fresh session. The signed token is the visitor identity that
+  `SEC-003` (rate limiting) and `PRIV-001` (customer export/delete) build on
+  via the public `VisitorCredentialSigner` port, while the DATA-002 write-only
+  client correlation field is left untouched for the action records that still
+  use it. Credentials travel only in a header (never a query string) and are
+  redacted in `str`/`repr`, so they cannot reach a log line; the signing key is
+  a required startup secret (`CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY`) that
+  the production composition, k8s manifest, deploy script, and README document,
+  and deployments/tests use at least a 32-byte value. Changed:
+  `packages/core/src/tenantchat/core/{visitor_session,errors,__init__}.py` and
+  `packages/core/tests/test_visitor_session.py`; `services/api/src/tenantchat/
+  api/{visitor,app,settings,problems,schemas}.py` and `routers/chat.py` plus
+  their tests; new `tests/security/test_visitor_session_hijacking.py`
+  (`TestSessionHijacking`, `TestTenantReassignment`) and root `conftest.py`
+  plugin wiring; the agent-runtime durability and repository integration tests;
+  frontend chat API, types, `useConversation` (credential refresh + rejection
+  recovery), `visitorData` (credential in session storage, never a URL), nginx
+  gateway, widget tests, and `.env.example`/`k8s/` secrets/docs. Verified:
+  `make check` (647 hermetic Python plus 91 frontend tests; ruff, mypy strict,
+  format, coverage, deployment-security, image-contracts all clean) and
+  `make test-database` (migrations + 27 repository + 6 agent-runtime tests on
+  disposable PostgreSQL 16), including the cross-tenant booking-record suite
+  and a credential minted by one API instance and honored by a restarted one.
+  Follow-ups: `SEC-003` consumes the credential as its per-session rate-limit
+  key; `PRIV-001` consumes it as the authenticated customer identity for
+  export/delete; `DATA-003` owns booking reservation/idempotency.
 
 ### SEC-003 — API abuse protection, CORS, and response hardening
 

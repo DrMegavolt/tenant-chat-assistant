@@ -3,9 +3,11 @@ import { describe, expect, test, vi } from "vitest";
 
 import { VisitorData, type VisitorStorage } from "src/widget/visitorData";
 import {
+  CREDENTIAL,
   TENANTS,
   jsonResponse,
   requestBodies,
+  requestCredential,
   stubBackend,
   workingBackend
 } from "tests/support/backend";
@@ -41,14 +43,16 @@ function backendWithStaffReply() {
         reply: "Hold on.",
         pending: null,
         committed: [],
-        provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+        provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+        credential: CREDENTIAL
       });
     }
     if (url.includes("/api/chat/session")) {
       return jsonResponse({
         session: { session_id: SESSION_ID },
         messages: [STAFF_MESSAGE],
-        pending: null
+        pending: null,
+        credential: CREDENTIAL
       });
     }
     return null;
@@ -103,7 +107,8 @@ describe("staff replies reaching an open widget", () => {
           reply: "Hold on.",
           pending: null,
           committed: [],
-          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
         });
       }
       if (url.includes("/api/chat/session")) {
@@ -117,7 +122,8 @@ describe("staff replies reaching an open widget", () => {
               created_at: "2026-01-01T00:00:00Z"
             }
           ],
-          pending: null
+          pending: null,
+          credential: CREDENTIAL
         });
       }
       return null;
@@ -137,7 +143,10 @@ describe("staff replies reaching an open widget", () => {
     stubBackend((url, init) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
       if (url.endsWith("/api/chat/session") && init?.method === "POST") {
-        return jsonResponse({ session: { session_id: SESSION_ID } });
+        return jsonResponse({
+          session: { session_id: SESSION_ID },
+          credential: CREDENTIAL
+        });
       }
       if (url.endsWith("/api/chat")) {
         return jsonResponse({
@@ -145,7 +154,8 @@ describe("staff replies reaching an open widget", () => {
           reply: "Hold on.",
           pending: null,
           committed: [],
-          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
         });
       }
       return Promise.reject(new Error("offline"));
@@ -184,25 +194,28 @@ describe("the widget while it waits", () => {
   });
 });
 
-describe("a stored session the API would reject", () => {
-  test("a pre-cutover session id is discarded and a fresh one minted", async () => {
+describe("a stored credential the API would reject", () => {
+  test("a pre-cutover session id is discarded and a fresh credential minted", async () => {
     // The prototype minted `web-<tenant>-<ts>-<rand>` ids; the API only
-    // accepts UUIDs, so a returning visitor holding one must not be stuck
-    // retrying a session that can never be found.
-    window.sessionStorage.setItem("tenant-chat-session-id:apex", "web-apex-1720000000-ab12cd34");
-    const minted = "11111111-2222-3333-4444-555555555555";
+    // accepts signed credentials, so a returning visitor holding one must not
+    // be stuck retrying a session that can never be found.
+    window.sessionStorage.setItem("tenant-chat-credential:apex", "web-apex-1720000000-ab12cd34");
     const fetchMock = stubBackend((url, init) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
       if (url.endsWith("/api/chat/session") && init?.method === "POST") {
-        return jsonResponse({ session: { session_id: minted } });
+        return jsonResponse({
+          session: { session_id: SESSION_ID },
+          credential: CREDENTIAL
+        });
       }
       if (url.endsWith("/api/chat")) {
         return jsonResponse({
-          session_id: minted,
+          session_id: SESSION_ID,
           reply: "Fresh start.",
           pending: null,
           committed: [],
-          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
         });
       }
       return null;
@@ -212,9 +225,60 @@ describe("a stored session the API would reject", () => {
     submitChat("Anyone there?");
 
     await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("Fresh start."));
-    const [request] = requestBodies(fetchMock, "/api/chat") as { session_id: string }[];
-    expect(request?.session_id).toBe(minted);
-    expect(window.sessionStorage.getItem("tenant-chat-session-id:apex")).toBe(minted);
+    const [request] = requestBodies(fetchMock, "/api/chat") as { message: string }[];
+    expect(request?.message).toBe("Anyone there?");
+    expect(request).not.toHaveProperty("tenant_id");
+    expect(request).not.toHaveProperty("session_id");
+    const chatCall = fetchMock.mock.calls.find(([url]) => url.endsWith("/api/chat"));
+    expect(requestCredential(chatCall?.[1])).toBe(CREDENTIAL);
+    expect(window.sessionStorage.getItem("tenant-chat-credential:apex")).toBe(CREDENTIAL);
+  });
+
+  test("a credential the API rejects is discarded and the message delivered once again", async () => {
+    // Expired or revoked credentials are a normal state, not an error: the
+    // stored token must be replaced and the visitor's message sent on the new
+    // conversation rather than dropped. The reset status announces it.
+    window.sessionStorage.setItem("tenant-chat-credential:apex", "tc.v1.stale.stale");
+    const fetchMock = stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        return jsonResponse({
+          session: { session_id: SESSION_ID },
+          credential: CREDENTIAL
+        });
+      }
+      if (url.endsWith("/api/chat")) {
+        const rejected =
+          fetchMock.mock.calls.filter(([chatUrl]) => chatUrl.endsWith("/api/chat")).length === 1;
+        if (rejected) {
+          return jsonResponse({ code: "visitor_credential_expired" }, { ok: false, status: 401 });
+        }
+        return jsonResponse({
+          session_id: SESSION_ID,
+          reply: "Delivered on a fresh session.",
+          pending: null,
+          committed: [],
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
+        });
+      }
+      return null;
+    });
+    await renderDemo();
+    expect(inWidget("#assistantStatus")?.textContent).toBe("");
+
+    submitChat("Still here?");
+
+    await waitFor(() =>
+      expect(inWidget("#messages")?.textContent).toContain("Delivered on a fresh session.")
+    );
+    expect(inWidget("#assistantStatus")?.textContent).toContain("new one has started");
+    expect(window.sessionStorage.getItem("tenant-chat-credential:apex")).toBe(CREDENTIAL);
+    const chatBodies = requestBodies(fetchMock, "/api/chat") as { message: string }[];
+    expect(chatBodies).toHaveLength(2);
+    expect(chatBodies.every((body) => body?.message === "Still here?")).toBe(true);
+    const chatCalls = fetchMock.mock.calls.filter(([url]) => url.endsWith("/api/chat"));
+    expect(requestCredential(chatCalls[1]?.[1])).toBe(CREDENTIAL);
   });
 });
 
@@ -234,10 +298,10 @@ describe("browsers that refuse storage", () => {
     vi.spyOn(window, "sessionStorage", "get").mockReturnValue(blocked as Storage);
 
     const visitor = new VisitorData("apex");
-    expect(visitor.existingSessionId()).toBeNull();
+    expect(visitor.existingCredential()).toBeNull();
 
-    visitor.recordSession("session-issued-by-server");
-    expect(visitor.existingSessionId()).toBe("session-issued-by-server");
+    visitor.recordCredential("tc.v1.payload.sig");
+    expect(visitor.existingCredential()).toBe("tc.v1.payload.sig");
 
     visitor.recordConsent("statement");
     expect(visitor.hasConsent()).toBe(true);

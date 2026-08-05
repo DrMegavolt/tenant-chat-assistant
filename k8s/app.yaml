@@ -868,6 +868,14 @@ spec:
                 secretKeyRef:
                   name: admin-gateway-credentials
                   key: token
+            # SEC-002: signs the visitor credentials the widget exchanges for
+            # session identity. Required at startup; without it the visitor
+            # routes fail closed, like the admin credentials above.
+            - name: CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: visitor-credential-signing-key
+                  key: key
             # The API applies its own credential-free CORS allowlist to the
             # visitor surface; the same origins the gateway's embed allows.
             - name: CHAT_API_ALLOWED_ORIGINS

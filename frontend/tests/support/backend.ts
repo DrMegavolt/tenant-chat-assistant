@@ -35,6 +35,9 @@ export const TENANTS: TenantDirectory = {
   }
 };
 
+/** A token the widget's shape check accepts as a server-issued credential. */
+export const CREDENTIAL = "tc.v1.testpayload.testsignature";
+
 export const AVAILABILITY_REPLY = {
   session_id: "session-1",
   reply: "",
@@ -50,7 +53,8 @@ export const AVAILABILITY_REPLY = {
     model_name: "scripted",
     graph_version: "dispatch@1",
     prompt_version: "dispatch-system@1"
-  }
+  },
+  credential: CREDENTIAL
 };
 
 export const BOOKING_CONFIRMED = {
@@ -62,7 +66,8 @@ export const BOOKING_CONFIRMED = {
     model_name: "scripted",
     graph_version: "dispatch@1",
     prompt_version: "dispatch-system@1"
-  }
+  },
+  credential: CREDENTIAL
 };
 
 export const SIMPLE_REPLY = {
@@ -74,7 +79,8 @@ export const SIMPLE_REPLY = {
     model_name: "scripted",
     graph_version: "dispatch@1",
     prompt_version: "dispatch-system@1"
-  }
+  },
+  credential: CREDENTIAL
 };
 
 export function jsonResponse(body: unknown, { ok = true, status = 200 } = {}) {
@@ -96,7 +102,11 @@ export function stubBackend(handler: RouteHandler) {
     if (handled) return handled;
     if (url.includes("/api/chat/session")) {
       // `messages` sits top-level, mirroring `ChatSessionResponse`.
-      return jsonResponse({ session: { session_id: "session-1" }, messages: [] });
+      return jsonResponse({
+        session: { session_id: "session-1" },
+        messages: [],
+        credential: CREDENTIAL
+      });
     }
     throw new Error(`unexpected request: ${url}`);
   });
@@ -106,17 +116,38 @@ export function stubBackend(handler: RouteHandler) {
 
 /** A backend that answers tenants, chat, and session minting with fixtures. */
 export function workingBackend(): RouteHandler {
-  return (url) => {
+  return (url, init) => {
     if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
-    if (url.includes("/api/chat/session") && url.includes("?tenant_id=")) {
-      return jsonResponse({ session: { session_id: "session-1" }, messages: [], pending: null });
+    if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+      return jsonResponse({
+        session: { session_id: "session-1" },
+        messages: [],
+        pending: null,
+        credential: CREDENTIAL
+      });
     }
-    if (url.endsWith("/api/chat/session"))
-      return jsonResponse({ session: { session_id: "session-1" }, messages: [] });
+    if (url.endsWith("/api/chat/session")) {
+      return jsonResponse({
+        session: { session_id: "session-1" },
+        messages: [],
+        credential: CREDENTIAL
+      });
+    }
     if (url.endsWith("/api/chat/confirmation")) return jsonResponse(BOOKING_CONFIRMED);
     if (url.endsWith("/api/chat")) return jsonResponse(AVAILABILITY_REPLY);
     return null;
   };
+}
+
+/** The `X-Visitor-Credential` header a request carried, or null. */
+export function requestCredential(init: RequestInit | undefined): string | null {
+  const headers = init?.headers;
+  if (!headers) return null;
+  if (typeof Headers !== "undefined" && headers instanceof Headers) {
+    return headers.get("X-Visitor-Credential");
+  }
+  const record = headers as Record<string, string>;
+  return record["X-Visitor-Credential"] ?? null;
 }
 
 /** The JSON body of a request, or null when it carried none. */

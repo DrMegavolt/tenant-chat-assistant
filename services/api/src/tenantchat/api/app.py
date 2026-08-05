@@ -8,6 +8,7 @@ one place for a test to substitute a fake.
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -39,8 +40,13 @@ from tenantchat.api.store import (
     IdempotencyStore,
     LeadStore,
 )
+from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER, utc_now
 from tenantchat.core.errors import DomainError
 from tenantchat.core.ports import ConversationRuntime
+from tenantchat.core.visitor_session import (
+    HmacVisitorCredentialSigner,
+    VisitorCredentialSigner,
+)
 from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpointer
 from tenantchat.orchestration.model import ChatModel
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
@@ -182,11 +188,11 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
         CORSMiddleware,
         allow_origins=list(settings.allowed_origins),
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
-        # No cookies or Authorization header travel cross-origin from the widget;
-        # visitor identity is a body-carried session token (`SEC-002`). Leaving
-        # credentials off means a permissive origin list cannot become a
-        # session-riding bug.
+        # The widget's visitor identity is a custom bearer header, so it is
+        # CORS-allowed like Content-Type is. Cookies and Authorization never
+        # travel cross-origin from the widget; leaving credentials off means a
+        # permissive origin list cannot become a session-riding bug.
+        allow_headers=["Content-Type", VISITOR_CREDENTIAL_HEADER],
         allow_credentials=False,
     )
 
@@ -306,11 +312,15 @@ def create_app(
             for name, value in (
                 ("ADMIN_GATEWAY_TOKEN", resolved.admin_gateway_token),
                 ("ADMIN_CSRF_SECRET", resolved.admin_csrf_secret),
+                (
+                    "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY",
+                    resolved.visitor_credential_signing_key,
+                ),
             )
             if not value
         ]
         if missing:
-            raise ValueError(f"the admin routes require {', '.join(missing)}")
+            raise ValueError(f"the visitor and admin routes require {', '.join(missing)}")
         database = Database.connect(
             resolved.database_url,
             DatabasePoolSettings(
@@ -334,6 +344,18 @@ def create_app(
         or idempotency_store is None
     ):
         raise RuntimeError("composition failed to provide persistence stores")
+
+    # SEC-002: the visitor credential signer. Production composition required
+    # the key above, so every real deployment signs with a shared secret it
+    # holds. A test composition without a key gets an ephemeral one: sessions
+    # minted by one test app are meaningless to the next, which is exactly the
+    # isolation a hermetic suite wants. The signer is public state so tests and
+    # `SEC-003` rate limiting can verify or mint through the same instance.
+    visitor_credentials: VisitorCredentialSigner
+    if resolved.visitor_credential_signing_key is not None:
+        visitor_credentials = HmacVisitorCredentialSigner(resolved.visitor_credential_signing_key)
+    else:
+        visitor_credentials = HmacVisitorCredentialSigner(secrets.token_urlsafe(48))
 
     bookings_for_agent, leads_for_agent = booking_store, lead_store
     handoffs_for_agent, keys_for_agent = handoff_store, idempotency_store
@@ -390,6 +412,10 @@ def create_app(
     app.state.conversation_store = conversation_store
     app.state.handoff_store = handoff_store
     app.state.idempotency_store = idempotency_store
+    app.state.visitor_credential_signer = visitor_credentials
+    # The one clock every visitor credential is verified against, so a test can
+    # move time by reassigning state rather than sleeping.
+    app.state.clock = utc_now
     app.state.conversation_runtime = (
         compose_runtime(checkpointer, effective_model)
         if effective_model is not None and checkpointer is not None

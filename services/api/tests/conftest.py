@@ -10,10 +10,14 @@ import path.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tenantchat.api.app import create_app
@@ -31,6 +35,8 @@ from tenantchat.api.store import (
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
 )
+from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
+from tenantchat.core.visitor_session import VisitorCredentialSigner
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolCall, ToolSpec
 
@@ -151,13 +157,67 @@ def operator_headers() -> Callable[..., dict[str, str]]:
 
 @pytest.fixture
 def open_session(client: TestClient) -> Callable[..., str]:
-    """Open a conversation and return its server-issued ID."""
+    """Open a conversation and return its server-issued ID.
+
+    The ID alone authorizes nothing (SEC-002): it is the session *name* inside
+    a credential. Admin tests use it to address a conversation; visitor tests
+    use the `visitor_session` fixture, which carries the credential too.
+    """
 
     def build(tenant_id: str = BOOKING_TENANT) -> str:
         response = client.post("/api/chat/session", json={"tenant_id": tenant_id})
         assert response.status_code == 201, response.text
         session_id: str = response.json()["session"]["session_id"]
         return session_id
+
+    return build
+
+
+@dataclass(frozen=True)
+class VisitorSession:
+    """An opened conversation plus the credential that authorizes it."""
+
+    tenant_id: str
+    session_id: str
+    credential: str
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {VISITOR_CREDENTIAL_HEADER: self.credential}
+
+
+@pytest.fixture
+def visitor_session(client: TestClient) -> Callable[..., VisitorSession]:
+    """Open a conversation and return everything needed to talk to it."""
+
+    def build(tenant_id: str = BOOKING_TENANT) -> VisitorSession:
+        response = client.post("/api/chat/session", json={"tenant_id": tenant_id})
+        assert response.status_code == 201, response.text
+        body = response.json()
+        return VisitorSession(
+            tenant_id=tenant_id,
+            session_id=body["session"]["session_id"],
+            credential=body["credential"],
+        )
+
+    return build
+
+
+@pytest.fixture
+def mint_credential(client: TestClient, settings: Settings) -> Callable[..., str]:
+    """Sign a credential the app will accept, for any tenant and session.
+
+    The security tests need tokens the API did not issue for a real visitor —
+    an expired one, one for a session that never opened, one for another
+    tenant — and the only way to get those is the app's own signer.
+    """
+
+    def build(tenant_id: str, session_id: str, *, ttl_seconds: int | None = None) -> str:
+        app = cast(FastAPI, client.app)
+        signer: VisitorCredentialSigner = app.state.visitor_credential_signer
+        clock: Callable[[], datetime] = app.state.clock
+        ttl = settings.visitor_credential_ttl_seconds if ttl_seconds is None else ttl_seconds
+        return signer.issue(tenant_id, uuid.UUID(session_id), now=clock(), ttl_seconds=ttl).token
 
     return build
 

@@ -76,6 +76,7 @@ def test_production_composition_persists_current_api_writes(
         database_max_overflow=0,
         admin_gateway_token="gateway-token-for-tests",
         admin_csrf_secret="csrf-secret-for-tests",
+        visitor_credential_signing_key="visitor-signing-key-for-tests-" + "x" * 16,
     )
     with TestClient(create_app(settings)) as client:
         lead = client.post(

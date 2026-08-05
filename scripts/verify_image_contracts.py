@@ -61,10 +61,6 @@ WEB_EMBED_PATH = "/embed.js"
 # the regex patterns themselves — narrowed to the shapes the API accepts.
 API_PATH_TO_GATEWAY = {
     "/api/tenants/{tenant_id}/availability": r"^/api/tenants/[a-z0-9][a-z0-9-]{0,63}/availability$",
-    "/api/chat/session/{session_id}": (
-        r"^/api/chat/session/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
-        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-    ),
 }
 PUBLIC_PROXY_PATHS = frozenset(
     {
