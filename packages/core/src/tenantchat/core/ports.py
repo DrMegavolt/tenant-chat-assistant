@@ -30,6 +30,7 @@ from typing import Protocol
 
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import ValidationError
+from tenantchat.core.privacy import ConsentGrant
 from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import TenantPolicy
 
@@ -210,6 +211,24 @@ class TenantPolicySource(Protocol):
         Raises:
             NotFoundError: no such tenant, worded so it cannot be used to
                 enumerate which tenants exist.
+        """
+        ...
+
+
+class ConsentSource(Protocol):
+    """What a session has agreed to, read where the effect happens.
+
+    `PRIV-001` gates every effect that stores contact data on a grant recorded
+    for that session. The gate lives in the idempotent services, so a replayed
+    node re-checks the same grant rather than re-recording it; this port is how
+    they read the grant without knowing where it lives.
+    """
+
+    async def consent_grant(self, tenant_id: str, session_id: str) -> ConsentGrant:
+        """The grant recorded for this session, empty when none was.
+
+        Never raises for a missing grant: an absent grant is a refusal, which
+        is the normal state before the visitor agrees.
         """
         ...
 

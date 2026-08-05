@@ -27,7 +27,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Final
+from typing import Final, Protocol
 
 from tenantchat.core.catalog import ServiceDefinition
 from tenantchat.core.contact import Contact
@@ -40,6 +40,7 @@ from tenantchat.core.errors import (
     ValidationError,
 )
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.privacy import ConsentPurpose
 from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import TenantPolicy
 
@@ -126,6 +127,21 @@ def _missing(**supplied: str) -> tuple[RequiredField, ...]:
     return tuple(RequiredField(name) for name, value in supplied.items() if not value)
 
 
+class ConsentGatedCommand(Protocol):
+    """What an action needs from a session's consent record.
+
+    Booking and lead commands both carry the purposes their tenant requires;
+    the consent gate reads this and nothing else, so the enforcement point
+    stays one helper over two commands.
+    """
+
+    @property
+    def tenant_id(self) -> str: ...
+
+    @property
+    def require_consent(self) -> frozenset[ConsentPurpose]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BookingCommand:
     """A booking the tenant permits and the domain can act on.
@@ -135,6 +151,10 @@ class BookingCommand:
     and ``slot_start``/``slot_end`` are its timezone-aware bounds, so the
     reservation later enforces "not in the past" and "one booking per slot"
     against values the caller cannot choose — only the label is caller-supplied.
+
+    ``require_consent`` is the consent gate for this action, captured at parse
+    time from the tenant policy: the command carries it so the enforcement
+    point — the idempotent service — does not need a policy lookup of its own.
     """
 
     tenant_id: str
@@ -146,6 +166,9 @@ class BookingCommand:
     slot_id: str
     slot_start: datetime
     slot_end: datetime
+    require_consent: frozenset[ConsentPurpose] = frozenset(
+        {ConsentPurpose.BOOKING, ConsentPurpose.FOLLOW_UP}
+    )
 
     @classmethod
     def parse(
@@ -230,6 +253,7 @@ class BookingCommand:
             slot_id=chosen.id,
             slot_start=chosen.start,
             slot_end=chosen.end,
+            require_consent=policy.booking_required_consent,
         )
 
 
@@ -290,6 +314,7 @@ class LeadCommand:
     address_or_zip: str
     urgency: LeadUrgency
     service_slug: str | None
+    require_consent: frozenset[ConsentPurpose] = frozenset({ConsentPurpose.FOLLOW_UP})
 
     @classmethod
     def parse(
@@ -340,4 +365,5 @@ class LeadCommand:
             address_or_zip=_clean(RequiredField.ADDRESS, address_or_zip),
             urgency=LeadUrgency.parse(urgency),
             service_slug=resolved.slug if resolved else None,
+            require_consent=policy.lead_required_consent,
         )

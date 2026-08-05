@@ -4,6 +4,8 @@ import type {
   ChatRequest,
   ChatTurnResponse,
   ConfirmationRequest,
+  ConsentGrantRequest,
+  ConsentGrantResponse,
   OpenSessionRequest,
   PendingBooking,
   ServerMessage,
@@ -194,6 +196,27 @@ export class ChatApi {
       body: JSON.stringify({ decision: body.decision })
     });
     return normalizeTurn((await ChatApi.unwrap(response, "Confirmation")) as WireTurn);
+  }
+
+  /**
+   * Record a consent grant for one session.
+   *
+   * Contact-bearing actions are refused by the backend until this has run; the
+   * widget calls it at the moment the visitor agrees, and the server derives the
+   * statement it records from the tenant's own policy rather than accepting one.
+   *
+   * @throws {Error} when the backend rejects the grant.
+   */
+  async consent(body: ConsentGrantRequest): Promise<ConsentGrantResponse> {
+    const response = await fetch(this.url("/api/chat/consent"), {
+      method: "POST",
+      headers: ChatApi.credentialHeaders(body.credential),
+      body: JSON.stringify({ purposes: body.purposes })
+    });
+    if (!response.ok) {
+      throw new Error(`Consent was not accepted (${response.status}).`);
+    }
+    return (await response.json()) as ConsentGrantResponse;
   }
 
   /** Returns null rather than throwing; transcript polling is best effort. */

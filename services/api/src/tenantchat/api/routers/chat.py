@@ -33,6 +33,7 @@ from fastapi import APIRouter, status
 from tenantchat.api.dependencies import (
     ComposedRuntime,
     Configuration,
+    Consent,
     Conversations,
     Registry,
     Runtime,
@@ -43,6 +44,8 @@ from tenantchat.api.schemas import (
     ChatSessionRequest,
     ChatSessionSummary,
     ChatTurnResponse,
+    ConsentRequest,
+    ConsentResponse,
     PendingConfirmation,
     TranscriptMessage,
     VisitorSessionResponse,
@@ -51,6 +54,7 @@ from tenantchat.api.store import ConversationStore, MessageRole
 from tenantchat.api.visitor import VisitorClock, VisitorIdentity, VisitorSigner, issue
 from tenantchat.core.errors import ConflictError
 from tenantchat.core.ports import AssistantTurn
+from tenantchat.core.privacy import ConsentPurpose, consent_statement
 from tenantchat.core.visitor_session import VisitorCredentialSigner
 
 router = APIRouter(tags=["chat"])
@@ -238,6 +242,47 @@ async def send_message(
             tenant_id=tenant_id,
             session_id=session_id,
         ),
+    )
+
+
+@router.post("/api/chat/consent", response_model=ConsentResponse)
+async def record_consent(
+    payload: ConsentRequest,
+    claims: VisitorIdentity,
+    registry: Registry,
+    conversations: Conversations,
+    consent: Consent,
+) -> ConsentResponse:
+    """Record that a visitor agreed to the purposes they are about to use.
+
+    The gateway every contact-bearing action passes: `PRIV-001` refuses to
+    store a booking or a lead until this endpoint has a grant for the session.
+    The statement is the tenant's, derived from its policy — a visitor cannot
+    agree to text the server would not also record.
+
+    Re-recording the same purposes is idempotent; recording a purpose the
+    tenant's own actions never require is permitted, because a visitor may
+    agree to more than the minimum.
+
+    Raises:
+        NotFoundError: no such tenant, conversation, or the conversation
+            belongs to another tenant.
+    """
+    tenant_id, session_id = claims.tenant_id, claims.session_id
+    policy = registry.get(tenant_id).policy
+    await conversations.get(tenant_id, session_id)
+    purposes = [ConsentPurpose(purpose) for purpose in payload.purposes]
+    statement = consent_statement(policy.name, purposes)
+    recorded = await consent.record(
+        tenant_id,
+        str(session_id),
+        purposes=purposes,
+        statement=statement,
+    )
+    return ConsentResponse(
+        purposes=[record.purpose.value for record in recorded],
+        statement=statement,
+        granted_at=max(record.granted_at for record in recorded),
     )
 
 

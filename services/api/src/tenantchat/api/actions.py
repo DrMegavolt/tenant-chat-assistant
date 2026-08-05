@@ -27,15 +27,22 @@ from tenantchat.api.store import (
     BookingAttempt,
     BookingRecord,
     BookingStore,
+    ConsentStore,
     HandoffStore,
     IdempotencyStore,
     LeadStore,
 )
-from tenantchat.core.commands import BookingCommand, HandoffCommand, LeadCommand
+from tenantchat.core.commands import (
+    BookingCommand,
+    ConsentGatedCommand,
+    HandoffCommand,
+    LeadCommand,
+)
 from tenantchat.core.errors import SlotUnavailableError
 from tenantchat.core.ports import (
     AvailabilityProvider,
     BookingConfirmation,
+    ConsentSource,
     HandoffTicket,
     IdempotencyKey,
     LeadReceipt,
@@ -52,6 +59,19 @@ def _fingerprint(*parts: str) -> str:
     return hashlib.sha256(_SEPARATOR.join(parts).encode("utf-8")).hexdigest()
 
 
+async def _require_consent(
+    consent: ConsentSource, command: ConsentGatedCommand, session_id: str
+) -> None:
+    """Refuse the action unless the session holds the consent the command needs.
+
+    Checked before the idempotency claim, so a refusal leaves no claimed key
+    behind and a retry after the visitor consents starts clean. The command
+    carries the required purposes from the policy it was parsed against.
+    """
+    grant = await consent.consent_grant(command.tenant_id, session_id)
+    grant.require(*command.require_consent)
+
+
 class RecordedBookingService:
     """Commits a booking once per idempotency key.
 
@@ -60,11 +80,20 @@ class RecordedBookingService:
     crashed attempt makes a retry wait. This service supplies the attempt's
     fingerprint and, when the reservation fails because a slot was just taken,
     refreshes the offered alternatives so the caller can re-prompt in one turn.
+
+    Consent is checked before the claim, so a refusal leaves no reservation and
+    no claimed key behind (`PRIV-001`).
     """
 
-    def __init__(self, bookings: BookingStore, availability: AvailabilityProvider) -> None:
+    def __init__(
+        self,
+        bookings: BookingStore,
+        availability: AvailabilityProvider,
+        consent: ConsentStore,
+    ) -> None:
         self._bookings = bookings
         self._availability = availability
+        self._consent = consent
 
     async def confirm(
         self,
@@ -78,9 +107,12 @@ class RecordedBookingService:
         Raises:
             NotFoundError: the conversation does not belong to this tenant.
             ConflictError: the key was used for a materially different booking.
+            ConsentRequiredError: the session has not granted every purpose the
+                booking requires.
             SlotUnavailableError: the slot is past, reserved, or wrong tenant,
                 carrying the current offers.
         """
+        await _require_consent(self._consent, command, session_id)
         attempt = BookingAttempt(
             tenant_id=command.tenant_id,
             scope=BOOKING_SCOPE,
@@ -139,9 +171,12 @@ def _confirmation(record: BookingRecord, *, replayed: bool) -> BookingConfirmati
 class RecordedLeadService:
     """Captures a lead once per idempotency key."""
 
-    def __init__(self, leads: LeadStore, idempotency: IdempotencyStore) -> None:
+    def __init__(
+        self, leads: LeadStore, idempotency: IdempotencyStore, consent: ConsentStore
+    ) -> None:
         self._leads = leads
         self._idempotency = idempotency
+        self._consent = consent
 
     async def capture(
         self,
@@ -154,9 +189,12 @@ class RecordedLeadService:
 
         Raises:
             NotFoundError: the conversation does not belong to this tenant.
+            ConsentRequiredError: the session has not granted every purpose the
+                lead requires.
             ConflictError: an attempt with this key is in flight, or the key was
                 used for a different lead.
         """
+        await _require_consent(self._consent, command, session_id)
         replay = await self._idempotency.begin(
             command.tenant_id,
             scope=LEAD_SCOPE,

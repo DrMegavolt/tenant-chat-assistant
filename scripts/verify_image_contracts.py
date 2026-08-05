@@ -67,6 +67,7 @@ PUBLIC_PROXY_PATHS = frozenset(
         "/api/tenants",
         "/api/chat",
         "/api/chat/session",
+        "/api/chat/consent",
         "/api/chat/confirmation",
         "/api/book",
         "/api/leads",

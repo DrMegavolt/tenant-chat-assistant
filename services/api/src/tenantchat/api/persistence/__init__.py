@@ -3,6 +3,10 @@
 from tenantchat.api.persistence.database import Database, DatabasePoolSettings
 from tenantchat.api.persistence.idempotency import PostgresIdempotencyStore
 from tenantchat.api.persistence.knowledge import PostgresKnowledgeStore
+from tenantchat.api.persistence.privacy import (
+    PostgresConsentStore,
+    PostgresPrivacyStore,
+)
 from tenantchat.api.persistence.repositories import (
     PostgresAuditStore,
     PostgresBookingStore,
@@ -17,10 +21,12 @@ __all__ = [
     "DatabasePoolSettings",
     "PostgresAuditStore",
     "PostgresBookingStore",
+    "PostgresConsentStore",
     "PostgresConversationStore",
     "PostgresHandoffStore",
     "PostgresIdempotencyStore",
     "PostgresKnowledgeStore",
     "PostgresLeadStore",
     "PostgresMembershipStore",
+    "PostgresPrivacyStore",
 ]

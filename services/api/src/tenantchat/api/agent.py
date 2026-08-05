@@ -33,7 +33,13 @@ from tenantchat.api.registry import (
     RegistryPolicySource,
     TenantRegistry,
 )
-from tenantchat.api.store import BookingStore, HandoffStore, IdempotencyStore, LeadStore
+from tenantchat.api.store import (
+    BookingStore,
+    ConsentStore,
+    HandoffStore,
+    IdempotencyStore,
+    LeadStore,
+)
 from tenantchat.core.ports import (
     AssistantTurn,
     AvailabilityProvider,
@@ -54,6 +60,7 @@ def build_dispatch_dependencies(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    consent: ConsentStore,
     availability: AvailabilityProvider | None = None,
 ) -> DispatchDependencies:
     """Wrap this service's adapters in the ports the graph runs against.
@@ -67,8 +74,8 @@ def build_dispatch_dependencies(
         model=model,
         policies=RegistryPolicySource(registry),
         availability=source,
-        bookings=RecordedBookingService(bookings, source),
-        leads=RecordedLeadService(leads, idempotency),
+        bookings=RecordedBookingService(bookings, source, consent),
+        leads=RecordedLeadService(leads, idempotency, consent),
         handoffs=RecordedHandoffService(handoffs, idempotency),
     )
 
@@ -81,6 +88,7 @@ def build_dispatch_runtime(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    consent: ConsentStore,
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
 ) -> DispatchRuntime:
@@ -93,6 +101,7 @@ def build_dispatch_runtime(
         handoffs=handoffs,
         idempotency=idempotency,
         availability=availability,
+        consent=consent,
     )
     return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
 
@@ -154,6 +163,7 @@ def build_conversation_runtime(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    consent: ConsentStore,
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
 ) -> GraphConversationRuntime:
@@ -166,6 +176,7 @@ def build_conversation_runtime(
             leads=leads,
             handoffs=handoffs,
             idempotency=idempotency,
+            consent=consent,
             checkpointer=checkpointer,
             availability=availability,
         )

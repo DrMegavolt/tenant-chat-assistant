@@ -26,6 +26,7 @@ from tenantchat.api.persistence.availability import (
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import BookingAttempt, MessageRole
+from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.core.commands import BookingCommand, LeadCommand
 from tenantchat.core.errors import NotFoundError, SlotUnavailableError
 from tenantchat.core.ports import IdempotencyKey
@@ -87,11 +88,32 @@ def test_production_composition_persists_current_api_writes(
         visitor_credential_signing_key="visitor-signing-key-for-tests-" + "x" * 16,
     )
     with TestClient(create_app(settings)) as client:
+        apex = client.post("/api/chat/session", json={"tenant_id": "apex"}).json()
+        apex_session = apex["session"]["session_id"]
+        clearview = client.post("/api/chat/session", json={"tenant_id": "clearview"}).json()
+        clearview_session = clearview["session"]["session_id"]
+        # Consent is named by the credential, like every other visitor route.
+        assert (
+            client.post(
+                "/api/chat/consent",
+                json={"purposes": ["follow_up"]},
+                headers={VISITOR_CREDENTIAL_HEADER: apex["credential"]},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/api/chat/consent",
+                json={"purposes": ["booking", "follow_up"]},
+                headers={VISITOR_CREDENTIAL_HEADER: clearview["credential"]},
+            ).status_code
+            == 200
+        )
         lead = client.post(
             "/api/leads",
             json={
                 "tenant_id": "apex",
-                "session_id": "api-correlation",
+                "session_id": apex_session,
                 "customer_name": "Dana Ruiz",
                 "contact": "dana@example.com",
                 "service": "HVAC",
@@ -105,7 +127,7 @@ def test_production_composition_persists_current_api_writes(
             "/api/book",
             json={
                 "tenant_id": "clearview",
-                "session_id": "api-correlation",
+                "session_id": clearview_session,
                 "customer_name": "Dana Ruiz",
                 "contact": "555-222-1919",
                 "service": "HVAC",
@@ -114,8 +136,8 @@ def test_production_composition_persists_current_api_writes(
             },
             headers={"Idempotency-Key": "repository-booking-1"},
         )
-    assert lead.status_code == 201
-    assert booking.status_code == 201
+    assert lead.status_code == 201, lead.text
+    assert booking.status_code == 201, booking.text
 
     with psycopg.connect(_psycopg_url(repository_database_url)) as connection:
         counts = connection.execute(

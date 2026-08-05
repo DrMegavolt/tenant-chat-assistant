@@ -83,6 +83,12 @@ export const SIMPLE_REPLY = {
   credential: CREDENTIAL
 };
 
+export const CONSENT_GRANTED = {
+  purposes: ["booking", "follow_up"],
+  statement: "I agree that Clearview Heating may store the details I enter.",
+  granted_at: "2026-08-04T00:00:00Z"
+};
+
 export function jsonResponse(body: unknown, { ok = true, status = 200 } = {}) {
   return Promise.resolve({ ok, status, json: () => Promise.resolve(body) });
 }
@@ -134,6 +140,7 @@ export function workingBackend(): RouteHandler {
       });
     }
     if (url.endsWith("/api/chat/confirmation")) return jsonResponse(BOOKING_CONFIRMED);
+    if (url.endsWith("/api/chat/consent")) return jsonResponse(CONSENT_GRANTED);
     if (url.endsWith("/api/chat")) return jsonResponse(AVAILABILITY_REPLY);
     return null;
   };

@@ -11,7 +11,7 @@ UV_RUN := uv run --frozen
 NPM := npm --prefix frontend
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
-	test-migrations test-repositories test-agent-runtime test-database migrate migrate-checkpoints \
+	test-migrations test-repositories test-agent-runtime test-privacy test-database migrate migrate-checkpoints \
 	dev js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
@@ -62,7 +62,10 @@ test-repositories: ## Run authoritative repository tests on isolated Postgres 16
 test-agent-runtime: ## Run durable-workflow tests against isolated Postgres 16
 	$(UV_RUN) pytest -m integration tests/agent_runtime
 
-test-database: test-migrations test-repositories test-agent-runtime ## Run all isolated Postgres suites
+test-privacy: ## Run privacy lifecycle tests against isolated Postgres 16
+	$(UV_RUN) pytest -m integration tests/privacy
+
+test-database: test-migrations test-repositories test-agent-runtime test-privacy ## Run all isolated Postgres suites
 
 migrate: ## Upgrade with the schema-owner URL (never the application URL)
 	@test -n "$${DATABASE_MIGRATION_URL}" || { echo "DATABASE_MIGRATION_URL is required"; exit 2; }

@@ -40,6 +40,9 @@ async def create_booking(
     Returns ``201`` for the first attempt and ``200`` for a replay of the same
     key, whose body names the original booking.
 
+    Storing the customer's contact is gated on the session having granted the
+    purposes the booking requires (`PRIV-001`).
+
     Raises:
         NotFoundError: no such tenant.
         BookingNotPermittedError: this tenant does not book through chat.
@@ -48,6 +51,9 @@ async def create_booking(
         UnknownServiceError: the service did not resolve against the catalog.
         SlotUnavailableError: the slot is not offered, is past, or was just
             reserved by another customer; carries the current offers.
+        ConsentRequiredError: the session has not granted every purpose the
+            booking requires. Enforced by the booking service, so the model-
+            driven tool call is gated identically.
     """
     key = IdempotencyKey.parse(idempotency_key)
     replay = await book.find_replay(payload.tenant_id, key)
@@ -74,7 +80,6 @@ async def create_booking(
             else ()
         ),
     )
-
     confirmation = await book.confirm(
         command,
         session_id=payload.session_id,

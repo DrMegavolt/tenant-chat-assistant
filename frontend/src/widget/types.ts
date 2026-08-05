@@ -110,6 +110,22 @@ export interface ChatRequest {
   message: string;
 }
 
+/** The purposes a visitor grants for one session (`POST /api/chat/consent`). */
+export interface ConsentGrantRequest {
+  /** The signed credential naming the session; the server reads no body identity. */
+  credential: string;
+  purposes: ConsentPurpose[];
+}
+
+/** What the session holds after a grant, echoed back by the server. */
+export interface ConsentGrantResponse {
+  purposes: ConsentPurpose[];
+  statement: string;
+  granted_at: string;
+}
+
+export type ConsentPurpose = "booking" | "follow_up";
+
 /** A response to a proposed booking (`POST /api/chat/confirmation`). */
 export interface ConfirmationRequest {
   decision: "approved" | "declined";

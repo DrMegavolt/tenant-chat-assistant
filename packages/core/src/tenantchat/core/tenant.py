@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from tenantchat.core.catalog import ServiceCatalog
+from tenantchat.core.privacy import ConsentPurpose, consent_statement
 
 
 class PricingPolicy(StrEnum):
@@ -47,6 +48,9 @@ class PublicTenantView:
     quick_actions: tuple[str, ...]
     booking_enabled: bool
     lead_capture_enabled: bool
+    # Published so the widget can show the sentence the visitor will be held to.
+    # World-readable by design: it is the text a consent dialog displays.
+    contact_consent_statement: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +83,17 @@ class TenantPolicy:
     approved_prices: tuple[tuple[str, str], ...] = ()
     # Private: publishing the served ZIP list lets a competitor map coverage.
     served_zips: frozenset[str] = frozenset()
+    # The purposes an action must have consent for, per action. Declared here
+    # rather than hard-coded in the commands so a tenant can relax or tighten
+    # the bar in the policy database (`FEAT-006`) without a code change.
+    booking_required_consent: frozenset[ConsentPurpose] = frozenset(
+        {ConsentPurpose.BOOKING, ConsentPurpose.FOLLOW_UP}
+    )
+    lead_required_consent: frozenset[ConsentPurpose] = frozenset({ConsentPurpose.FOLLOW_UP})
+    # Overrides the sentence the server builds from the required purposes. The
+    # default matters as much as the override: the visitor must never be shown
+    # a statement the server does not also record.
+    contact_consent_statement: str | None = None
 
     def public_view(self) -> PublicTenantView:
         """Project to the world-readable subset."""
@@ -94,6 +109,19 @@ class TenantPolicy:
             quick_actions=self.quick_actions,
             booking_enabled=self.booking_enabled,
             lead_capture_enabled=self.lead_capture_enabled,
+            contact_consent_statement=self.consent_statement(),
+        )
+
+    def consent_statement(self) -> str:
+        """The statement a visitor must have agreed to for this tenant.
+
+        The server builds the same sentence from the required purposes, so a
+        tenant that never overrides it still has a statement, and the API and
+        the widget are guaranteed to agree on the text.
+        """
+        return self.contact_consent_statement or consent_statement(
+            self.name,
+            self.booking_required_consent | self.lead_required_consent,
         )
 
     def serves_zip(self, zip_code: str) -> bool:

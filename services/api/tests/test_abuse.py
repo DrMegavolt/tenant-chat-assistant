@@ -31,11 +31,13 @@ from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     InMemoryAuditStore,
     InMemoryBookingStore,
+    InMemoryConsentStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
     InMemoryMembershipStore,
+    InMemoryPrivacyStore,
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.orchestration.checkpoints import InMemorySaver
@@ -45,14 +47,21 @@ BOOKING_TENANT = "clearview"
 
 
 def _stores() -> dict[str, Any]:
+    bookings = InMemoryBookingStore()
+    leads = InMemoryLeadStore()
+    conversations = InMemoryConversationStore()
+    handoffs = InMemoryHandoffStore()
+    consent = InMemoryConsentStore()
     return {
-        "booking_store": InMemoryBookingStore(),
-        "lead_store": InMemoryLeadStore(),
-        "conversation_store": InMemoryConversationStore(),
-        "handoff_store": InMemoryHandoffStore(),
+        "booking_store": bookings,
+        "lead_store": leads,
+        "conversation_store": conversations,
+        "handoff_store": handoffs,
         "idempotency_store": InMemoryIdempotencyStore(),
         "membership_store": InMemoryMembershipStore(),
         "audit_store": InMemoryAuditStore(),
+        "consent_store": consent,
+        "privacy_store": InMemoryPrivacyStore(conversations, bookings, leads, handoffs, consent),
     }
 
 

@@ -80,6 +80,12 @@ def booking_session(agent_database_url: str) -> Iterator[Visitor]:
     with deployment(agent_database_url, [proposal(), confirmation()]) as client:
         opened = client.post("/api/chat/session", json={"tenant_id": BOOKING_TENANT})
         visitor = Visitor(credential=opened.json()["credential"])
+        granted = client.post(
+            "/api/chat/consent",
+            json={"purposes": ["booking", "follow_up"]},
+            headers=visitor.headers,
+        )
+        assert granted.status_code == 200, granted.text
         paused = client.post(
             "/api/chat",
             headers=visitor.headers,

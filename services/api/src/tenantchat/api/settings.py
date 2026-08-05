@@ -103,6 +103,13 @@ class Settings:
     # the flag is for a developer attached to a local deployment, not for an
     # operator who wants better error messages in production.
     debug: bool = False
+    # PRIV-001: the erasure role's database. `PRIVACY_DATABASE_URL` names a
+    # login with DELETE on sessions and transcripts, which the application role
+    # deliberately lacks. The erasure and retention worker connects with it and
+    # nothing else does; absent it, the worker refuses to start.
+    privacy_database_url: str | None = None
+    privacy_database_pool_size: int = 2
+    privacy_database_max_overflow: int = 2
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -174,4 +181,7 @@ class Settings:
                 window_seconds=_int_env("CHAT_API_RATE_WINDOW_SECONDS", 60),
             ),
             debug=os.environ.get("CHAT_API_DEBUG", "").lower() == "true",
+            privacy_database_url=os.environ.get("PRIVACY_DATABASE_URL", "").strip() or None,
+            privacy_database_pool_size=_int_env("CHAT_API_PRIVACY_DATABASE_POOL_SIZE", 2),
+            privacy_database_max_overflow=_int_env("CHAT_API_PRIVACY_DATABASE_MAX_OVERFLOW", 2),
         )

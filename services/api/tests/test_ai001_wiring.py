@@ -19,11 +19,13 @@ from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     InMemoryAuditStore,
     InMemoryBookingStore,
+    InMemoryConsentStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
     InMemoryMembershipStore,
+    InMemoryPrivacyStore,
 )
 
 
@@ -77,14 +79,24 @@ def test_create_app_builds_a_model_when_llm_settings_are_present(
         admin_csrf_secret="csrf-secret",
     )
 
+    conversations = InMemoryConversationStore()
+    consent = InMemoryConsentStore()
     app = create_app(
         deployed,
         booking_store=InMemoryBookingStore(),
         lead_store=InMemoryLeadStore(),
-        conversation_store=InMemoryConversationStore(),
+        conversation_store=conversations,
         handoff_store=InMemoryHandoffStore(),
         idempotency_store=InMemoryIdempotencyStore(),
         membership_store=InMemoryMembershipStore(),
+        consent_store=consent,
+        privacy_store=InMemoryPrivacyStore(
+            conversations,
+            InMemoryBookingStore(),
+            InMemoryLeadStore(),
+            InMemoryHandoffStore(),
+            consent,
+        ),
         audit_store=InMemoryAuditStore(),
     )
 

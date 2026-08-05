@@ -19,11 +19,13 @@ from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     InMemoryAuditStore,
     InMemoryBookingStore,
+    InMemoryConsentStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
     InMemoryMembershipStore,
+    InMemoryPrivacyStore,
 )
 
 PUBLISHED_OPERATIONS = {
@@ -35,6 +37,7 @@ PUBLISHED_OPERATIONS = {
     ("post", "/api/chat"),
     ("post", "/api/chat/session"),
     ("get", "/api/chat/session"),
+    ("post", "/api/chat/consent"),
     ("post", "/api/chat/confirmation"),
     ("get", "/api/admin/csrf-token"),
     ("get", "/api/admin/tenants"),
@@ -45,6 +48,9 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/admin/bookings"),
     ("post", "/api/admin/memberships"),
     ("delete", "/api/admin/memberships"),
+    ("post", "/api/admin/privacy/export"),
+    ("post", "/api/admin/privacy/deletion-requests"),
+    ("get", "/api/admin/privacy/deletion-requests"),
 }
 
 
@@ -68,14 +74,24 @@ def test_the_published_surface_is_the_reviewed_one(client: TestClient) -> None:
 
 def test_the_schema_is_withheld_when_docs_are_disabled(settings: Settings) -> None:
     """The schema names every field and error code, which is a map worth not handing out."""
+    conversations = InMemoryConversationStore()
+    consent = InMemoryConsentStore()
     app = create_app(
         replace(settings, docs_enabled=False),
         booking_store=InMemoryBookingStore(),
         lead_store=InMemoryLeadStore(),
-        conversation_store=InMemoryConversationStore(),
+        conversation_store=conversations,
         handoff_store=InMemoryHandoffStore(),
         idempotency_store=InMemoryIdempotencyStore(),
         membership_store=InMemoryMembershipStore(),
+        consent_store=consent,
+        privacy_store=InMemoryPrivacyStore(
+            conversations,
+            InMemoryBookingStore(),
+            InMemoryLeadStore(),
+            InMemoryHandoffStore(),
+            consent,
+        ),
         audit_store=InMemoryAuditStore(),
     )
 

@@ -18,8 +18,9 @@ import asyncio
 import json
 import os
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,11 +34,14 @@ from testcontainers.postgres import PostgresContainer  # type: ignore[import-unt
 from tenantchat.api.agent import build_dispatch_dependencies, build_dispatch_runtime
 from tenantchat.api.registry import TenantRegistry, demo_offered_slots
 from tenantchat.api.store import (
+    ConsentRecord,
+    ConsentStore,
     InMemoryBookingStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
 )
+from tenantchat.core.privacy import ConsentGrant, ConsentPurpose
 from tenantchat.orchestration.checkpoints import Checkpointer, InMemorySaver
 from tenantchat.orchestration.dependencies import DispatchDependencies
 from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolCall, ToolSpec
@@ -137,6 +141,7 @@ class RuntimeHarness:
     leads: InMemoryLeadStore
     handoffs: InMemoryHandoffStore
     idempotency: InMemoryIdempotencyStore
+    consent: ConsentStore
     checkpointer: Checkpointer
 
     async def checkpointed_state(self, tenant_id: str, session_id: str) -> DispatchState:
@@ -167,6 +172,40 @@ class RuntimeHarness:
         )
 
 
+class PermissiveConsentStore:
+    """Consent that is always granted, for the graph-behavior suite.
+
+    These tests pin what the runtime commits and replays, not the consent gate
+    (`PRIV-001` tests that separately against the real store). Every session is
+    treated as having granted every purpose, so a missing grant can never mask
+    the durability behavior under test.
+    """
+
+    async def record(
+        self,
+        tenant_id: str,
+        session_id: str,
+        *,
+        purposes: Collection[ConsentPurpose],
+        statement: str,
+    ) -> tuple[ConsentRecord, ...]:
+        del tenant_id, session_id, purposes, statement
+        return ()
+
+    async def consent_grant(self, tenant_id: str, session_id: str) -> ConsentGrant:
+        return ConsentGrant(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            purposes=frozenset(ConsentPurpose),
+            statement="test",
+            granted_at=datetime.now(UTC),
+        )
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[ConsentRecord, ...]:
+        del tenant_id, session_id
+        return ()
+
+
 def build_harness(
     script: list[ModelResponse],
     *,
@@ -175,6 +214,7 @@ def build_harness(
     leads: InMemoryLeadStore | None = None,
     handoffs: InMemoryHandoffStore | None = None,
     idempotency: InMemoryIdempotencyStore | None = None,
+    consent: ConsentStore | None = None,
 ) -> RuntimeHarness:
     """Compose a runtime over in-memory adapters."""
     model = ScriptedModel(script=list(script))
@@ -182,6 +222,7 @@ def build_harness(
     lead_store = leads if leads is not None else InMemoryLeadStore()
     handoff_store = handoffs if handoffs is not None else InMemoryHandoffStore()
     key_store = idempotency if idempotency is not None else InMemoryIdempotencyStore()
+    consent_store = consent if consent is not None else PermissiveConsentStore()
     saver = checkpointer if checkpointer is not None else InMemorySaver()
 
     adapters: dict[str, Any] = {
@@ -191,6 +232,7 @@ def build_harness(
         "leads": lead_store,
         "handoffs": handoff_store,
         "idempotency": key_store,
+        "consent": consent_store,
     }
     runtime = build_dispatch_runtime(**adapters, checkpointer=saver)
     return RuntimeHarness(
@@ -205,6 +247,7 @@ def build_harness(
         leads=lead_store,
         handoffs=handoff_store,
         idempotency=key_store,
+        consent=consent_store,
         checkpointer=saver,
     )
 

@@ -20,6 +20,7 @@ from tenantchat.api.actions import (
 from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry, demo_offered_slots
 from tenantchat.api.store import (
     InMemoryBookingStore,
+    InMemoryConsentStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
@@ -27,6 +28,7 @@ from tenantchat.api.store import (
 from tenantchat.core.commands import BookingCommand, HandoffCommand, LeadCommand
 from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
 from tenantchat.core.ports import IdempotencyKey
+from tenantchat.core.privacy import ConsentPurpose
 from tenantchat.core.slots import OfferedSlot
 
 BOOKING_TENANT = "clearview"
@@ -37,6 +39,24 @@ KEY = IdempotencyKey.derive("clearview", SESSION, "book_appointment", "1", "call
 _OFFERS = demo_offered_slots("hvac")
 _OFFERED_LABEL = _OFFERS[0].label
 _OTHER_LABEL = _OFFERS[1].label
+_BOOKING_PURPOSES = frozenset({ConsentPurpose.BOOKING, ConsentPurpose.FOLLOW_UP})
+_LEAD_PURPOSES = frozenset({ConsentPurpose.FOLLOW_UP})
+
+
+def granted_consent(tenant_id: str, session_id: str = SESSION) -> InMemoryConsentStore:
+    """A consent store already holding a grant for the session and its action.
+
+    Consent is a precondition, not the thing under test: tests that are about
+    idempotency grant it up front so a refusal cannot mask a missing one.
+    """
+    store = InMemoryConsentStore()
+    purposes = _BOOKING_PURPOSES if tenant_id == BOOKING_TENANT else _LEAD_PURPOSES
+
+    async def grant() -> None:
+        await store.record(tenant_id, session_id, purposes=purposes, statement="test")
+
+    asyncio.run(grant())
+    return store
 
 
 def booking_command(**overrides: str) -> BookingCommand:
@@ -86,7 +106,7 @@ def bookings() -> Callable[[], tuple[RecordedBookingService, InMemoryBookingStor
     def build() -> tuple[RecordedBookingService, InMemoryBookingStore]:
         store = InMemoryBookingStore()
         provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
-        service = RecordedBookingService(store, provider)
+        service = RecordedBookingService(store, provider, granted_consent(BOOKING_TENANT))
         return service, store
 
     return build
@@ -122,12 +142,13 @@ class TestBookingIdempotency:
         """
         store = InMemoryBookingStore()
         provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
+        consent = granted_consent(BOOKING_TENANT)
 
         async def scenario() -> None:
-            await RecordedBookingService(store, provider).confirm(
+            await RecordedBookingService(store, provider, consent).confirm(
                 booking_command(), session_id=SESSION, idempotency_key=KEY
             )
-            replayed = await RecordedBookingService(store, provider).confirm(
+            replayed = await RecordedBookingService(store, provider, consent).confirm(
                 booking_command(), session_id=SESSION, idempotency_key=KEY
             )
 
@@ -165,7 +186,20 @@ class TestBookingIdempotency:
         self, bookings: Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]
     ) -> None:
         """The guard must not turn two real customers into one."""
-        service, store = bookings()
+        store = InMemoryBookingStore()
+        consent = InMemoryConsentStore()
+
+        async def grant() -> None:
+            await consent.record(
+                BOOKING_TENANT, SESSION, purposes=_BOOKING_PURPOSES, statement="test"
+            )
+            await consent.record(
+                BOOKING_TENANT, "session-2", purposes=_BOOKING_PURPOSES, statement="test"
+            )
+
+        asyncio.run(grant())
+        provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
+        service = RecordedBookingService(store, provider, consent)
         other = IdempotencyKey.derive("clearview", "session-2", "book_appointment", "1", "call-1")
 
         async def scenario() -> None:
@@ -190,7 +224,13 @@ class TestBookingIdempotency:
         """
         store = InMemoryBookingStore()
         provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
-        service = RecordedBookingService(store, provider)
+        consent = granted_consent(BOOKING_TENANT)
+        asyncio.run(
+            consent.record(
+                BOOKING_TENANT, "session-2", purposes=_BOOKING_PURPOSES, statement="test"
+            )
+        )
+        service = RecordedBookingService(store, provider, consent)
         other = IdempotencyKey.derive("clearview", "session-2", "book_appointment", "1", "call-2")
 
         async def scenario() -> None:
@@ -220,7 +260,9 @@ class TestBookingIdempotency:
 class TestLeadIdempotency:
     def test_a_retry_returns_the_original_lead(self) -> None:
         store = InMemoryLeadStore()
-        service = RecordedLeadService(store, InMemoryIdempotencyStore())
+        service = RecordedLeadService(
+            store, InMemoryIdempotencyStore(), granted_consent(LEAD_TENANT)
+        )
         key = IdempotencyKey.derive("apex", SESSION, "create_lead", "1", "call-1")
 
         async def scenario() -> None:

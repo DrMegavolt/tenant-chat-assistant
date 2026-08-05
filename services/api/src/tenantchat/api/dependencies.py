@@ -18,9 +18,11 @@ from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     AuditStore,
     BookingStore,
+    ConsentStore,
     ConversationStore,
     LeadStore,
     MembershipStore,
+    PrivacyStore,
 )
 from tenantchat.core.ports import AvailabilityProvider, BookingService, ConversationRuntime
 
@@ -88,6 +90,16 @@ def get_membership_store(request: Request) -> MembershipStore:
     return store
 
 
+def get_consent_store(request: Request) -> ConsentStore:
+    consent: ConsentStore = request.app.state.consent_store
+    return consent
+
+
+def get_privacy_store(request: Request) -> PrivacyStore:
+    store: PrivacyStore = request.app.state.privacy_store
+    return store
+
+
 def get_audit_store(request: Request) -> AuditStore:
     store: AuditStore = request.app.state.audit_store
     return store
@@ -105,6 +117,8 @@ Availability = Annotated[AvailabilityProvider, Depends(get_availability_provider
 Leads = Annotated[LeadStore, Depends(get_lead_store)]
 Conversations = Annotated[ConversationStore, Depends(get_conversation_store)]
 Memberships = Annotated[MembershipStore, Depends(get_membership_store)]
+Consent = Annotated[ConsentStore, Depends(get_consent_store)]
+Privacy = Annotated[PrivacyStore, Depends(get_privacy_store)]
 Audit = Annotated[AuditStore, Depends(get_audit_store)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]
 ComposedRuntime = Annotated[ConversationRuntime | None, Depends(get_composed_runtime)]
