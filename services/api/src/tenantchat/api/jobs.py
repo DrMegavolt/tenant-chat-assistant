@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -21,6 +21,23 @@ from typing import Protocol
 from tenantchat.core.errors import ConflictError, NotFoundError
 
 _SAFE_ERROR_CODE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,99}$")
+
+# A durable job's executor, as the worker registers it per kind. PEP 695 type
+# aliases are lazy, which lets this reference JobRecord before its definition.
+type JobHandler = Callable[[JobRecord], Awaitable[None]]
+
+
+class JobExecutionError(Exception):
+    """A handler failure with a safe code and an explicit retry decision.
+
+    Lives here, not in the worker module, so a handler can be defined without
+    importing the worker that runs it.
+    """
+
+    def __init__(self, error_code: str, *, retryable: bool) -> None:
+        self.error_code = error_code
+        self.retryable = retryable
+        super().__init__(error_code)
 
 
 class JobKind(StrEnum):

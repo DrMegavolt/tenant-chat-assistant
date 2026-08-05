@@ -14,6 +14,7 @@ deploy lands is the case being checked.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -61,6 +62,7 @@ def deployment(database_url: str, script: list[ModelResponse]) -> TestClient:
         admin_gateway_token="gateway-token-for-tests",
         admin_csrf_secret="csrf-secret-for-tests",
         visitor_credential_signing_key=_SIGNING_KEY,
+        ingestion_storage_root=tempfile.mkdtemp(prefix="tenantchat-agent-runtime-"),
     )
     return TestClient(create_app(settings, chat_model=ScriptedModel(script=script)))
 

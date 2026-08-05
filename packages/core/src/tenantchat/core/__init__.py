@@ -32,6 +32,13 @@ from tenantchat.core.errors import (
     ValidationError,
 )
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.indexing import (
+    INDEX_LAG_THRESHOLD,
+    GenerationStatus,
+    IndexGeneration,
+    IndexingFault,
+    IndexIntegrityFinding,
+)
 from tenantchat.core.knowledge import (
     ApprovalPlan,
     ContentChecksum,
@@ -72,6 +79,7 @@ from tenantchat.core.visitor_session import (
 )
 
 __all__ = [
+    "INDEX_LAG_THRESHOLD",
     "ApprovalPlan",
     "AssistantTurn",
     "AvailabilityProvider",
@@ -89,12 +97,16 @@ __all__ = [
     "DomainError",
     "ExpiredVisitorCredentialError",
     "ExpiryPlan",
+    "GenerationStatus",
     "HandoffCommand",
     "HandoffReason",
     "HandoffService",
     "HandoffTicket",
     "HmacVisitorCredentialSigner",
     "IdempotencyKey",
+    "IndexGeneration",
+    "IndexIntegrityFinding",
+    "IndexingFault",
     "IndexingState",
     "InvalidContactError",
     "InvalidVersionTransitionError",

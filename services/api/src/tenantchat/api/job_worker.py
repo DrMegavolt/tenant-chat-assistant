@@ -16,14 +16,23 @@ import signal
 import socket
 import sys
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import text
 
-from tenantchat.api.jobs import JobKind, JobRecord, JobStore
+from tenantchat.api.index_integrity import IndexIntegrityStore
+from tenantchat.api.ingestion import IngestionDependencies, ingestion_handler
+from tenantchat.api.jobs import (
+    JobExecutionError,
+    JobHandler,
+    JobKind,
+    JobRecord,
+    JobStore,
+)
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -31,22 +40,18 @@ from tenantchat.api.persistence import (
     PostgresJobStore,
     PostgresPrivacyStore,
 )
+from tenantchat.api.persistence.index_integrity import PostgresIndexIntegrityStore
+from tenantchat.api.persistence.knowledge import PostgresKnowledgeStore
 from tenantchat.api.privacy_worker import process_deletion_request
+from tenantchat.api.search import (
+    ElasticsearchSearchIndex,
+    EmbeddingServiceClient,
+)
 from tenantchat.api.settings import Settings
+from tenantchat.api.storage import DiskObjectStore
 from tenantchat.api.store import AuditStore, PrivacyStore
 
 logger = logging.getLogger(__name__)
-
-JobHandler = Callable[[JobRecord], Awaitable[None]]
-
-
-class JobExecutionError(Exception):
-    """A handler failure with a safe code and an explicit retry decision."""
-
-    def __init__(self, error_code: str, *, retryable: bool) -> None:
-        self.error_code = error_code
-        self.retryable = retryable
-        super().__init__(error_code)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +91,7 @@ class WorkerSettings:
 
 
 def privacy_deletion_handler(store: PrivacyStore, audit: AuditStore) -> JobHandler:
-    """Build the one REL-003-owned production handler: privacy erasure."""
+    """Build the REL-003-owned production handler: privacy erasure."""
 
     async def handle(job: JobRecord) -> None:
         raw_request_id = job.payload.get("request_id")
@@ -110,6 +115,40 @@ def privacy_deletion_handler(store: PrivacyStore, audit: AuditStore) -> JobHandl
         await process_deletion_request(request, store, audit, now=datetime.now(UTC))
 
     return handle
+
+
+def ingestion_job_handler(
+    knowledge: PostgresKnowledgeStore,
+    generations: IndexIntegrityStore,
+    settings: Settings,
+) -> JobHandler | None:
+    """Build the RAG-002 ingestion handler, or ``None`` when not configured.
+
+    Returns ``None`` (and the ingestion jobs then dead-letter with
+    ``handler_not_registered``) rather than guessing at endpoints: a partial
+    configuration is a deployment bug that must be visible as refused work,
+    not as indexing into a defaulted URL.
+    """
+    if not (
+        settings.ingestion_storage_root and settings.embedding_url and settings.elasticsearch_url
+    ):
+        return None
+    dependencies = IngestionDependencies(
+        knowledge=knowledge,
+        generations=generations,
+        storage=DiskObjectStore(Path(settings.ingestion_storage_root)),
+        index=ElasticsearchSearchIndex(
+            base_url=settings.elasticsearch_url,
+            username=settings.elasticsearch_username,
+            password=settings.elasticsearch_password,
+            index_name=settings.elasticsearch_index,
+        ),
+        embedder=EmbeddingServiceClient(
+            base_url=settings.embedding_url,
+            token=settings.embedding_token,
+        ),
+    )
+    return ingestion_handler(dependencies)
 
 
 async def _heartbeat(
@@ -244,11 +283,18 @@ async def _serve(app_settings: Settings, worker_settings: WorkerSettings) -> Non
         loop.add_signal_handler(caught, stop.set)
     try:
         privacy = PostgresPrivacyStore(read.engine, erasure.engine)
-        handlers = {
+        handlers: dict[JobKind, JobHandler] = {
             JobKind.PRIVACY_DELETION: privacy_deletion_handler(
                 privacy, PostgresAuditStore(read.engine)
             )
         }
+        ingestion = ingestion_job_handler(
+            PostgresKnowledgeStore(read.engine),
+            PostgresIndexIntegrityStore(read.engine),
+            app_settings,
+        )
+        if ingestion is not None:
+            handlers[JobKind.INGESTION] = ingestion
         await run_worker(PostgresJobStore(read.engine), handlers, worker_settings, stop)
     finally:
         await read.dispose()

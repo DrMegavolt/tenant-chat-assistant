@@ -55,6 +55,10 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/admin/jobs/{job_id}"),
     ("post", "/api/admin/jobs/{job_id}/retry"),
     ("post", "/api/admin/jobs/{job_id}/cancel"),
+    # RAG-002: the knowledge lifecycle surface FEAT-001's console builds on.
+    ("post", "/api/admin/knowledge/uploads"),
+    ("get", "/api/admin/knowledge/index-findings"),
+    ("post", "/api/admin/knowledge/index-integrity-check"),
 }
 
 

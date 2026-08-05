@@ -110,6 +110,18 @@ class Settings:
     privacy_database_url: str | None = None
     privacy_database_pool_size: int = 2
     privacy_database_max_overflow: int = 2
+    # RAG-002: the ingestion pipeline's external dependencies. None is required
+    # for the API to serve visitor routes; each is required for the surface
+    # that uses it. The worker composes the ingestion handler only when all of
+    # them are configured, so a partial configuration fails closed instead of
+    # indexing into a guessed endpoint.
+    elasticsearch_url: str | None = None
+    elasticsearch_username: str | None = None
+    elasticsearch_password: str | None = None
+    elasticsearch_index: str = "tenant-knowledge-chunks"
+    embedding_url: str | None = None
+    embedding_token: str | None = None
+    ingestion_storage_root: str | None = None
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -184,4 +196,11 @@ class Settings:
             privacy_database_url=os.environ.get("PRIVACY_DATABASE_URL", "").strip() or None,
             privacy_database_pool_size=_int_env("CHAT_API_PRIVACY_DATABASE_POOL_SIZE", 2),
             privacy_database_max_overflow=_int_env("CHAT_API_PRIVACY_DATABASE_MAX_OVERFLOW", 2),
+            elasticsearch_url=os.environ.get("ELASTICSEARCH_URL", "").strip() or None,
+            elasticsearch_username=os.environ.get("ES_USERNAME", "").strip() or None,
+            elasticsearch_password=os.environ.get("ES_PASSWORD", "").strip() or None,
+            elasticsearch_index=os.environ.get("KNOWLEDGE_INDEX", "tenant-knowledge-chunks"),
+            embedding_url=os.environ.get("EMBEDDING_URL", "").strip() or None,
+            embedding_token=os.environ.get("INGESTION_TO_EMBEDDING_TOKEN", "").strip() or None,
+            ingestion_storage_root=os.environ.get("INGESTION_STORAGE_ROOT", "").strip() or None,
         )

@@ -283,7 +283,7 @@ runbooks.
 - [ ] `REL-001` — Resilient dependency clients — `P1`
 - [x] `REL-003` — Durable background jobs and retry handling — `Done`
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
-- [ ] `RAG-002` — Secure asynchronous ingestion lifecycle — `P1`
+- [x] `RAG-002` — Secure asynchronous ingestion lifecycle — `Done`
 - [ ] `RAG-003` — Production document parsing and chunking — `P1`
 - [ ] `RAG-004` — Hybrid retrieval, reranking, and abstention — `P1`
 - [ ] `RAG-005` — Evidence and citation contract — `P1`
@@ -1494,7 +1494,7 @@ guarantees by construction.
 
 ### RAG-002 — Secure asynchronous ingestion lifecycle
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `RAG/workflow`
 - Depends on: `RAG-001`, `REL-003`, `SEC-004`
@@ -1513,7 +1513,54 @@ guarantees by construction.
   - Each Gate B index-integrity fault has a bounded safe code, identifies the affected tenant-qualified source version and index generation, and is available to `FEAT-001` and `OBS-004` without document content appearing in operational telemetry.
 - Verification:
   - Security and lifecycle tests cover path traversal, cross-tenant IDs, duplicate ingestion, mid-index failure, missing and partial index generations, count and embedding-version mismatch, index lag, and superseded content left retrievable.
-- Completion notes: _Pending._
+- Completion notes: The prototype's caller-supplied path is gone: uploads land in
+  tenant-isolated object storage (`tenantchat.api.storage`) under server-derived
+  keys built from tenant, source, checksum, and a slugified external key —
+  filename validation and key parsing both reject traversal by shape, and the
+  disk adapter re-verifies containment. A validated upload stages a draft and
+  stores bytes; approval (which `FEAT-001`'s workflow drives through
+  `submit_ingestion`) enqueues the durable `INGESTION` job, whose handler
+  (`tenantchat.api.ingestion`) scans, parses (Markdown-sections prototype,
+  pinned to `markdown-sections.v1`/`token-window.v1`), chunks, embeds through
+  the embedding-service client, and indexes chunks with their embedding model
+  and a **deterministic per-(tenant, version) index generation** — retries reuse
+  the same generation, delete its partial chunks before rewriting, and only a
+  complete, verified generation makes a version retrievable, so at-least-once
+  delivery never duplicates active chunks. Migration `0010` persists
+  `knowledge_index_generations` (parser/chunker/model, chunk counts, status —
+  the `OBS-004` component identifiers) and `knowledge_index_findings`
+  (content-free by construction). The `IndexIntegrityDetector`
+  (`tenantchat.api.index_integrity`) reports exactly the six bounded
+  `IndexingFault` codes — missing generation, partial generation, chunk-count
+  mismatch, embedding-model mismatch, lag (documented 24h threshold in
+  `tenantchat.core.indexing.INDEX_LAG_THRESHOLD`), superseded-still-retrievable
+  — each naming the tenant-qualified source version and generation, persisted by
+  a per-tenant reconcile that keeps first-detection timestamps and exposed to
+  `FEAT-001`/`OBS-004` through the admin upload, findings, and integrity-check
+  endpoints. The worker composes the ingestion handler only when storage,
+  Elasticsearch, and the embedding service are all configured (fail closed);
+  the job-worker manifest gained those credentials, a shared knowledge-storage
+  claim with the API, and SEC-004 egress to Elasticsearch and the embedding
+  service. Changed: `packages/core/src/tenantchat/core/indexing.py`,
+  `packages/core/tests/test_indexing.py`, `services/api/src/tenantchat/api/
+  {storage,search,ingestion,index_integrity}.py`, `routers/knowledge.py`,
+  `dependencies.py`, `schemas.py`, `settings.py`, `app.py`, `job_worker.py`,
+  `jobs.py`, `faults.py`, `store.py`, `persistence/{knowledge,index_integrity}.py`,
+  migration `0010_ingestion_generations`, `k8s/{app,network-policies}.yaml`,
+  `services/api/pyproject.toml` (python-multipart), `BACKLOG.md`, and the
+  migration/repository/security/unit test suites. Verified: `make check`
+  (735 Python and 93 frontend tests; lock, lint, format, mypy strict, coverage,
+  deployment-security, and image contracts clean) and `make test-database`
+  (11 migration plus 45 repository tests on disposable PostgreSQL 16,
+  including generation lifecycle, one-generation-per-version upsert, finding
+  reconcile with first-detection preservation, and cross-tenant finding
+  isolation). Follow-ups: `RAG-003` replaces the prototype parser and chunker
+  behind the pinned version identifiers; `FEAT-001` builds the approve/publish/
+  review workflow over `submit_ingestion` and the findings endpoints;
+  `RAG-004` implements the retrieval predicate in the index query that these
+  generation and chunk fields were designed for; the prototype
+  `ingestion-service` deployment and its seed job remain for the demo corpus
+  until the DEP cutover removes them.
 
 ### RAG-003 — Production document parsing and chunking
 

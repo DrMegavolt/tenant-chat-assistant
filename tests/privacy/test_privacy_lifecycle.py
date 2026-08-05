@@ -11,6 +11,7 @@ continues through the privacy pass.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import uuid
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -96,6 +97,7 @@ def deployment(database_url: str, model: PlainModel) -> TestClient:
         admin_gateway_token=GATEWAY_TOKEN,
         admin_csrf_secret=CSRF_SECRET,
         visitor_credential_signing_key=SIGNING_KEY,
+        ingestion_storage_root=tempfile.mkdtemp(prefix="tenantchat-privacy-lifecycle-"),
     )
     return TestClient(create_app(settings, chat_model=model))
 

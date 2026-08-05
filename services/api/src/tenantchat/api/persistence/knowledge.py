@@ -337,6 +337,21 @@ class PostgresKnowledgeStore:
         async with self._engine.begin() as connection:
             return await _load(connection, tenant_id, document_id, lock=False)
 
+    async def document_for_version(
+        self, tenant_id: str, version_id: uuid.UUID
+    ) -> KnowledgeDocument:
+        """Resolve the document a version belongs to, tenant-qualified.
+
+        The ingestion worker's payload names a version, and the document is
+        needed for the domain gate and the document's domain filter.
+
+        Raises:
+            NotFoundError: if the version is absent or belongs to another tenant.
+        """
+        async with self._engine.begin() as connection:
+            document_id = await _document_id_for_version(connection, tenant_id, version_id)
+            return await _load(connection, tenant_id, document_id, lock=False)
+
     async def approve(
         self, tenant_id: str, version_id: uuid.UUID, *, approved_by: str, at: datetime
     ) -> KnowledgeDocument:
@@ -475,6 +490,27 @@ class PostgresKnowledgeStore:
             _expect_one(updated.rowcount, "expire")
             return await _load(connection, tenant_id, document_id, lock=False)
 
+    async def record_indexing_started(
+        self, tenant_id: str, version_id: uuid.UUID
+    ) -> KnowledgeDocument:
+        """Record that an ingestion job has claimed this version for indexing.
+
+        Sets the ``indexing`` state the durable worker writes to, so a
+        published version waiting on the queue is visibly ``pending`` and one
+        mid-flight is visibly ``indexing`` rather than silently either.
+
+        Raises:
+            NotFoundError: absent or cross-tenant version, or a deleted document.
+            InvalidVersionTransitionError: the version is a draft or deleted.
+        """
+        return await self._record_indexing(
+            tenant_id,
+            version_id,
+            state=IndexingState.INDEXING,
+            indexed_at=None,
+            error_code=None,
+        )
+
     async def record_indexed(
         self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
     ) -> KnowledgeDocument:
@@ -599,6 +635,33 @@ class PostgresKnowledgeStore:
                     "moment": context.moment,
                     "staff": context.audience is RetrievalAudience.STAFF,
                 },
+            )
+            return tuple(_version(row) for row in result.all())
+
+    async def versions_in_state(
+        self, tenant_id: str, state: VersionState
+    ) -> tuple[DocumentVersion, ...]:
+        """Every version of one tenant currently in one state.
+
+        Feeds the index-integrity detector: published versions are checked for
+        missing, partial, mismatched, and lagging index contents, and superseded
+        versions for chunks that remain retrievable.
+
+        Raises:
+            NotFoundError: if the tenant is absent or inactive.
+        """
+        async with self._engine.begin() as connection:
+            await require_active_tenant(connection, tenant_id)
+            result = await connection.execute(
+                text(
+                    f"""
+                    SELECT {_VERSION_COLUMNS}
+                    FROM knowledge_document_versions v
+                    WHERE v.tenant_id = :tenant_id AND v.state = :state
+                    ORDER BY v.document_id, v.revision
+                    """  # noqa: S608 - interpolates a module constant, never caller input
+                ),
+                {"tenant_id": tenant_id, "state": state.value},
             )
             return tuple(_version(row) for row in result.all())
 

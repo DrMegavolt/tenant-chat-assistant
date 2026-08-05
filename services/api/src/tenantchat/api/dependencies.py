@@ -13,14 +13,18 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from tenantchat.api.faults import ChatUnavailableError
+from tenantchat.api.index_integrity import IndexIntegrityStore
 from tenantchat.api.jobs import JobStore
 from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.search import SearchIndex
 from tenantchat.api.settings import Settings
+from tenantchat.api.storage import ObjectStore
 from tenantchat.api.store import (
     AuditStore,
     BookingStore,
     ConsentStore,
     ConversationStore,
+    KnowledgeStore,
     LeadStore,
     MembershipStore,
     PrivacyStore,
@@ -111,6 +115,32 @@ def get_job_store(request: Request) -> JobStore:
     return store
 
 
+def get_knowledge_store(request: Request) -> KnowledgeStore:
+    store: KnowledgeStore = request.app.state.knowledge_store
+    return store
+
+
+def get_object_store(request: Request) -> ObjectStore:
+    store: ObjectStore = request.app.state.object_store
+    return store
+
+
+def get_generation_findings(request: Request) -> IndexIntegrityStore:
+    store: IndexIntegrityStore = request.app.state.generation_findings
+    return store
+
+
+def get_search_index(request: Request) -> SearchIndex | None:
+    """The retrieval index, or ``None`` when the deployment composed none.
+
+    ``None`` is a configuration state, not an error: the API can serve uploads
+    and findings without the index, and only the surface that must read it (the
+    integrity check) refuses.
+    """
+    index: SearchIndex | None = request.app.state.search_index
+    return index
+
+
 def get_request_id(request: Request) -> str:
     request_id: str = request.state.request_id
     return request_id
@@ -127,6 +157,10 @@ Consent = Annotated[ConsentStore, Depends(get_consent_store)]
 Privacy = Annotated[PrivacyStore, Depends(get_privacy_store)]
 Audit = Annotated[AuditStore, Depends(get_audit_store)]
 Jobs = Annotated[JobStore, Depends(get_job_store)]
+Knowledge = Annotated[KnowledgeStore, Depends(get_knowledge_store)]
+ObjectStores = Annotated[ObjectStore, Depends(get_object_store)]
+GenerationFindings = Annotated[IndexIntegrityStore, Depends(get_generation_findings)]
+SearchIndexes = Annotated[SearchIndex | None, Depends(get_search_index)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]
 ComposedRuntime = Annotated[ConversationRuntime | None, Depends(get_composed_runtime)]
 Configuration = Annotated[Settings, Depends(get_settings)]
