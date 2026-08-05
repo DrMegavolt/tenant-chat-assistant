@@ -51,6 +51,10 @@ PUBLISHED_OPERATIONS = {
     ("post", "/api/admin/privacy/export"),
     ("post", "/api/admin/privacy/deletion-requests"),
     ("get", "/api/admin/privacy/deletion-requests"),
+    ("get", "/api/admin/jobs"),
+    ("get", "/api/admin/jobs/{job_id}"),
+    ("post", "/api/admin/jobs/{job_id}/retry"),
+    ("post", "/api/admin/jobs/{job_id}/cancel"),
 }
 
 

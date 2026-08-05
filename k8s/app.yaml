@@ -813,8 +813,6 @@ spec:
       app: chat-backend
   template:
     metadata:
-      annotations:
-        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
       labels:
         app: chat-backend
         app.kubernetes.io/name: chat-backend
@@ -891,6 +889,74 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+---
+# REL-003 durable outbox worker. It shares the immutable API image but has no
+# listener or Service: only PostgreSQL can feed it work. SIGTERM stops new
+# leases and lets the bounded in-flight batch finish before the grace period.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-worker
+  namespace: llm-chat
+  labels:
+    app: job-worker
+    app.kubernetes.io/name: job-worker
+    app.kubernetes.io/instance: llm-chat
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-worker
+  template:
+    metadata:
+      labels:
+        app: job-worker
+        app.kubernetes.io/name: job-worker
+        app.kubernetes.io/instance: llm-chat
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: job-worker
+          image: registry.example.invalid/tenantchat/api@sha256:REPLACE_WITH_API_DIGEST
+          command: ["python", "-m", "tenantchat.api.job_worker"]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: databaseUrl
+            - name: PRIVACY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: privacy-database-credentials
+                  key: databaseUrl
+            - name: JOB_LEASE_SECONDS
+              value: "60"
+            - name: JOB_BATCH_SIZE
+              value: "10"
+            - name: JOB_BACKOFF_SECONDS
+              value: "5"
+            - name: JOB_BACKOFF_CAP_SECONDS
+              value: "3600"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 20m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+          readinessProbe:
+            exec:
+              command: ["python", "-m", "tenantchat.api.job_worker", "--check"]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
 ---
 # The side services expose Prometheus /metrics; the API does not yet. A
 # ServiceMonitor here would silently scrape 404s, so the API has none until

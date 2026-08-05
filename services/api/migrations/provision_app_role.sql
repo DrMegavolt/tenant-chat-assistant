@@ -54,6 +54,17 @@ SELECT format(
     'REVOKE DELETE ON TABLE public.consent_records, public.privacy_requests FROM %I',
     :'app_role'
 ) \gexec
+-- REL-003: jobs and their lifecycle events are durable evidence. Workers and
+-- operator controls update job state, but no runtime principal can erase work
+-- or rewrite the event trail.
+SELECT format(
+    'REVOKE DELETE ON TABLE public.background_jobs FROM %I',
+    :'app_role'
+) \gexec
+SELECT format(
+    'REVOKE UPDATE, DELETE ON TABLE public.background_job_events FROM %I',
+    :'app_role'
+) \gexec
 SELECT format(
     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
     'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',

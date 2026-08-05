@@ -13,6 +13,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 
 from tenantchat.api.faults import ChatUnavailableError
+from tenantchat.api.jobs import JobStore
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
@@ -105,6 +106,11 @@ def get_audit_store(request: Request) -> AuditStore:
     return store
 
 
+def get_job_store(request: Request) -> JobStore:
+    store: JobStore = request.app.state.job_store
+    return store
+
+
 def get_request_id(request: Request) -> str:
     request_id: str = request.state.request_id
     return request_id
@@ -120,6 +126,7 @@ Memberships = Annotated[MembershipStore, Depends(get_membership_store)]
 Consent = Annotated[ConsentStore, Depends(get_consent_store)]
 Privacy = Annotated[PrivacyStore, Depends(get_privacy_store)]
 Audit = Annotated[AuditStore, Depends(get_audit_store)]
+Jobs = Annotated[JobStore, Depends(get_job_store)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]
 ComposedRuntime = Annotated[ConversationRuntime | None, Depends(get_composed_runtime)]
 Configuration = Annotated[Settings, Depends(get_settings)]

@@ -15,9 +15,11 @@ from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Final
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from tenantchat.api.jobs import JobKind, payload_fingerprint
 from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import (
     BookingRecord,
@@ -662,6 +664,9 @@ class PostgresPrivacyStore:
     async def create_privacy_request(
         self, tenant_id: str, *, contact: Contact, requested_by: str
     ) -> PrivacyRequestRecord:
+        request_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        job_payload = {"request_id": str(request_id)}
         async with self._read.begin() as connection:
             await require_active_tenant(connection, tenant_id)
             result = await connection.execute(
@@ -676,12 +681,46 @@ class PostgresPrivacyStore:
                     """
                 ),
                 {
-                    "id": uuid.uuid4(),
+                    "id": request_id,
                     "tenant_id": tenant_id,
                     "kind": contact.kind.value,
                     "value": contact.value,
                     "requested_by": requested_by,
                 },
+            )
+            # The domain request and its delivery intent commit together. The
+            # route repeats `enqueue` through the injected job port so its
+            # in-memory test shape behaves identically; the unique key makes
+            # that second production call a read of this same row.
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO background_jobs
+                        (id, tenant_id, kind, payload, payload_hash, idempotency_key)
+                    VALUES
+                        (:job_id, :tenant_id, :kind,
+                         :payload,
+                         :payload_hash, :idempotency_key)
+                    """
+                ).bindparams(bindparam("payload", type_=JSONB)),
+                {
+                    "job_id": job_id,
+                    "tenant_id": tenant_id,
+                    "kind": JobKind.PRIVACY_DELETION.value,
+                    "payload": job_payload,
+                    "payload_hash": payload_fingerprint(job_payload),
+                    "idempotency_key": str(request_id),
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO background_job_events
+                        (tenant_id, job_id, event, actor_type)
+                    VALUES (:tenant_id, :job_id, 'enqueued', 'service')
+                    """
+                ),
+                {"tenant_id": tenant_id, "job_id": job_id},
             )
             return _privacy_request(result.one())
 

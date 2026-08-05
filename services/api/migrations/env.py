@@ -12,6 +12,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 config = context.config
@@ -22,11 +23,17 @@ if config.config_file_name is not None:
 
 def database_url() -> str:
     """Return the schema-owner connection string or fail before issuing DDL."""
-    url = os.environ.get("DATABASE_MIGRATION_URL")
-    if not url:
+    raw_url = os.environ.get("DATABASE_MIGRATION_URL")
+    if not raw_url:
         msg = "DATABASE_MIGRATION_URL is required for schema migrations"
         raise RuntimeError(msg)
-    return url
+    url = make_url(raw_url)
+    if url.drivername in {"postgres", "postgresql"}:
+        url = url.set(drivername="postgresql+psycopg")
+    if url.drivername != "postgresql+psycopg":
+        msg = "DATABASE_MIGRATION_URL must use PostgreSQL with the psycopg driver"
+        raise RuntimeError(msg)
+    return url.render_as_string(hide_password=False)
 
 
 def run_migrations_offline() -> None:

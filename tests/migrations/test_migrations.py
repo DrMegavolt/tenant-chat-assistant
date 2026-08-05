@@ -31,6 +31,8 @@ DOMAIN_TABLES = {
     "knowledge_document_versions",
     "consent_records",
     "privacy_requests",
+    "background_jobs",
+    "background_job_events",
 }
 TENANT_QUERY_TABLES = DOMAIN_TABLES - {"tenants"}
 
@@ -55,7 +57,10 @@ def upgrade_head(database_url: str) -> None:
 def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
     """A clean database reaches exactly head; invoking the same release step is a no-op."""
     upgrade_head(migration_database_url)
-    upgrade_head(migration_database_url)
+    # Kubernetes Secrets commonly carry the standard URL spelling. The image
+    # installs psycopg 3 (not psycopg2), so the migration boundary must select
+    # that driver explicitly instead of relying on SQLAlchemy's legacy default.
+    upgrade_head(psycopg_url(migration_database_url))
 
     engine = sa.create_engine(migration_database_url)
     inspector = sa.inspect(engine)
@@ -68,7 +73,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0008_privacy"
+    assert revision == "0009_durable_jobs"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -86,6 +91,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         "consent_purpose",
         "consent_status",
         "privacy_request_status",
+        "background_job_status",
     } <= enum_names
 
     for table in TENANT_QUERY_TABLES:
@@ -469,6 +475,14 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
             sql.SQL("REVOKE DELETE ON TABLE public.chat_sessions FROM {}").format(identifier)
         )
         owner.execute(
+            sql.SQL("REVOKE DELETE ON TABLE public.background_jobs FROM {}").format(identifier)
+        )
+        owner.execute(
+            sql.SQL("REVOKE UPDATE, DELETE ON TABLE public.background_job_events FROM {}").format(
+                identifier
+            )
+        )
+        owner.execute(
             sql.SQL(
                 "REVOKE DELETE ON TABLE public.knowledge_documents, "
                 "public.knowledge_document_versions FROM {}"
@@ -488,6 +502,45 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
         application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
         with pytest.raises(errors.InsufficientPrivilege):
             application.execute("CREATE TABLE forbidden_runtime_ddl (id integer)")
+        application.rollback()
+
+    job_id = uuid.uuid4()
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        application.execute(
+            """
+            INSERT INTO background_jobs
+                (id, tenant_id, kind, payload, payload_hash, idempotency_key)
+            VALUES (%s, %s, 'webhook', '{}', %s, 'role-test-job')
+            """,
+            (job_id, "runtime-tenant", "a" * 64),
+        )
+        application.execute(
+            """
+            INSERT INTO background_job_events (tenant_id, job_id, event, actor_type)
+            VALUES (%s, %s, 'enqueued', 'service')
+            """,
+            ("runtime-tenant", job_id),
+        )
+        application.execute(
+            "UPDATE background_jobs SET attempt_count = 1 WHERE tenant_id = %s AND id = %s",
+            ("runtime-tenant", job_id),
+        )
+        application.commit()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "UPDATE background_job_events SET event = 'succeeded' WHERE job_id = %s",
+                (job_id,),
+            )
+        application.rollback()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute("DELETE FROM background_jobs WHERE id = %s", (job_id,))
         application.rollback()
 
     with psycopg.connect(psycopg_url(migration_database_url)) as application:

@@ -34,6 +34,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 COPY --from=builder /app/.venv /app/.venv
 COPY --chown=10001:10001 alembic.ini ./
 COPY --chown=10001:10001 services/api/migrations/ services/api/migrations/
+COPY --chown=10001:10001 scripts/setup_checkpoints.py scripts/setup_checkpoints.py
 
 USER 10001:10001
 EXPOSE 8004

@@ -281,7 +281,7 @@ runbooks.
 - [ ] `AI-001` — Provider and model abstraction — `P1`
 - [ ] `AI-003` — Versioned prompt assembly and template registry — `P1`
 - [ ] `REL-001` — Resilient dependency clients — `P1`
-- [ ] `REL-003` — Durable background jobs and retry handling — `P1`
+- [x] `REL-003` — Durable background jobs and retry handling — `Done`
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
 - [ ] `RAG-002` — Secure asynchronous ingestion lifecycle — `P1`
 - [ ] `RAG-003` — Production document parsing and chunking — `P1`
@@ -1128,7 +1128,7 @@ guarantees by construction.
 
 ### REL-003 — Durable background jobs and retry handling
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Reliability/workflow`
 - Depends on: `DATA-001`, `DATA-002`
@@ -1143,7 +1143,27 @@ guarantees by construction.
   - Operators can inspect, retry, or cancel failed jobs with an audit trail.
 - Verification:
   - Restart workers mid-job and verify eventual exactly-once business effect.
-- Completion notes: _Pending._
+- Completion notes: Added ADR 0011; migration `0009_durable_jobs`; the typed job
+  state machine and PostgreSQL repository; `SKIP LOCKED` leases and heartbeats;
+  capped exponential retry, dead-letter, replay, and cancellation; immutable
+  job events; tenant-admin inspection/control APIs that never expose payloads;
+  transactional privacy-deletion enqueueing and its idempotent handler; a
+  graceful worker/readiness contract; Kubernetes deployment, credentials, and
+  network policy; the background-job runbook; and unit, security, migration,
+  repository, privacy-lifecycle, concurrent-lease, real-route, and restart-after-
+  effect tests. `make check` passes (729 Python tests, 93 frontend tests, strict
+  lint/format/type checks, coverage, deployment-security, and image contracts).
+  After restoring the local container runtime, `make test-database` also passes:
+  11 migration, 38 repository, 6 agent-runtime, and 9 privacy-lifecycle tests,
+  including enqueue/dedupe, retry/dead-letter/operator-audit, concurrent leasing,
+  and restart/exactly-once-effect coverage. The local MicroK8s release is live
+  from immutable API/worker digest `sha256:35b1f954a55015b11edf27c0eb8b61b9c05cfed1145edfdb5f5a2793e51f1aff`:
+  the combined Alembic/checkpoint migration Job completed, API and worker are
+  `1/1` ready, in-cluster health and worker checks pass, and the public gateway
+  returns HTTP 200. The 20 pre-Alembic prototype snapshots were backed up and
+  quarantined rather than imported or deleted. Follow-ups: `RAG-002`,
+  `FEAT-003`, and `FEAT-005` add ingestion, CRM, notification, and webhook
+  handlers behind this contract.
 
 ### OBS-001 — Structured logging and request correlation
 

@@ -122,7 +122,8 @@ for image in "${IMAGES[@]}"; do
       # writes tenant seeds during startup and cannot create its own tables.
       docker run --rm --network "$network" \
         --env "DATABASE_MIGRATION_URL=$database_url" \
-        --entrypoint alembic "$tag" upgrade head
+        --entrypoint sh "$tag" -eu -c \
+        'alembic upgrade head && python /app/scripts/setup_checkpoints.py'
       run_args+=(--network "$network" --env "DATABASE_URL=$database_url")
       ;;
     embedding)

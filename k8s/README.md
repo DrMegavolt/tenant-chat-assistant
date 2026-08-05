@@ -36,7 +36,7 @@ file, or commit anything under `.local/`:
 
 ```bash
 kubectl create namespace llm-chat --dry-run=client -o yaml | kubectl apply -f -
-for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials visitor-credential-signing-key; do
+for name in elastic-credentials postgres-credentials postgres-migration-credentials privacy-database-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials visitor-credential-signing-key; do
   kubectl -n llm-chat create secret generic "$name" \
     --from-env-file=".local/k8s/$name.env.example" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -175,10 +175,11 @@ policy shape to lightweight mock services, proves allowed and denied flows, and
 deletes only those namespaces. It never reads or changes `llm-chat` Secrets.
 
 `postgres-migration-credentials` contains the schema-owner URL used only by the
-one-shot `k8s/api-migration-job.yaml` release step. `deploy.sh` verifies that the
-resource exists but does not run the migration Job; the release pipeline must
-replace its image placeholder with the release digest and apply it before API
-rollout, following `docs/runbooks/database-migrations.md`.
+one-shot `k8s/api-migration-job.yaml` release step. That Job runs both Alembic
+and the idempotent LangGraph checkpoint schema setup. `deploy.sh` verifies that
+the resource exists but does not run the migration Job; the release pipeline
+must replace its image placeholder with the release digest and apply it before
+API rollout, following `docs/runbooks/database-migrations.md`.
 
 The endpoint and placeholder credentials that existed in repository history must
 be treated as exposed examples.  They were not verified as live values here.

@@ -49,6 +49,7 @@ require_key secret postgres-credentials password
 require_key secret postgres-credentials database
 require_key secret postgres-credentials databaseUrl
 require_key secret postgres-migration-credentials databaseUrl
+require_key secret privacy-database-credentials databaseUrl
 require_key secret kibana-credentials username
 require_key secret kibana-credentials password
 require_key secret llm-provider-credentials apiKey
@@ -104,9 +105,10 @@ kubectl apply -f "$ROOT_DIR/k8s/kibana-setup-job.yaml"
 kubectl -n "$NS" wait --for=condition=complete job/configure-kibana-system-user --timeout=300s
 
 kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
-kubectl -n "$NS" rollout restart deploy/web deploy/oauth2-proxy deploy/chat-backend deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
+kubectl -n "$NS" rollout restart deploy/web deploy/oauth2-proxy deploy/chat-backend deploy/job-worker deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
 kubectl -n "$NS" rollout status deploy/oauth2-proxy --timeout=180s
 kubectl -n "$NS" rollout status deploy/chat-backend --timeout=180s
+kubectl -n "$NS" rollout status deploy/job-worker --timeout=180s
 kubectl -n "$NS" rollout status deploy/web --timeout=180s
 # These names belonged to the former split-port gateway. Applying the new
 # manifests does not prune renamed resources, so remove them only after the

@@ -34,9 +34,10 @@ Alembic, call `MetaData.create_all`, or otherwise create schema.
 
 1. Take and verify a database backup. Record the current Alembic revision with
    `alembic current` using the owner URL.
-2. Run `alembic upgrade head` in a one-shot release Job using the exact immutable
-   API image that will be deployed. `k8s/api-migration-job.yaml` is the template;
-   replace its image placeholder with the release digest before applying it.
+2. Run `alembic upgrade head` and the idempotent LangGraph checkpoint setup in a
+   one-shot release Job using the exact immutable API image that will be deployed.
+   `k8s/api-migration-job.yaml` is the template; replace its image placeholder
+   with the release digest before applying it.
 3. Re-run `provision_app_role.sql`. Default privileges cover new objects created
    by the same owner, while the explicit grants also repair drift.
 4. Roll out the API using only the application-role secret. Confirm the Job has

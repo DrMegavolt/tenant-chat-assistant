@@ -19,6 +19,7 @@ Consequences, Alternatives considered.
 | [0008](0008-identity-provider.md) | Keycloak as the identity provider, with split browser and backchannel URLs | Accepted |
 | [0009](0009-react-frontend-build.md) | React and TypeScript behind a bundled build, with the embed as a published artefact | Accepted |
 | [0010](0010-telemetry-planes.md) | Two telemetry planes, with the turn record as the system of record | Accepted |
+| [0011](0011-postgres-durable-jobs.md) | PostgreSQL outbox with leased at-least-once delivery | Accepted |
 
 ## Relationship to BACKLOG.md
 
