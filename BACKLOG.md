@@ -278,7 +278,7 @@ runbooks.
 ### P1 demo-critical RAG path
 
 - [x] `ARCH-001` — Agent runtime boundary and LangGraph adoption — `Done`
-- [ ] `AI-001` — Provider and model abstraction — `P1`
+- [x] `AI-001` — Provider and model abstraction — `Done`
 - [ ] `AI-003` — Versioned prompt assembly and template registry — `P1`
 - [ ] `REL-001` — Resilient dependency clients — `P1`
 - [x] `REL-003` — Durable background jobs and retry handling — `Done`
@@ -1369,7 +1369,7 @@ guarantees by construction.
 
 ### AI-001 — Provider and model abstraction
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI platform`
 - Depends on: `API-001`, `ARCH-001`
@@ -1385,7 +1385,54 @@ guarantees by construction.
   - A provider/model change does not require changing domain workflow code.
 - Verification:
   - Contract suite passes for every configured provider adapter.
-- Completion notes: _Pending._
+- Completion notes: The provider-neutral port (`ChatModel` in
+  `packages/orchestration/src/tenantchat/orchestration/model.py`, added by
+  `ARCH-001`) now has the contract suite its acceptance criteria require:
+  `packages/orchestration/tests/test_chat_model_contract.py` runs the same
+  seven scenarios — plain chat, parsed tool calls, tool-result correlation,
+  usage/model attribution, provider failure, empty response, multi-call
+  scripts — against two adapters: the OpenAI-compatible adapter
+  (`providers/openai_compatible.py`, spoken over a fake httpx transport via a
+  new injectable `transport` seam) and the scripted double. A third provider
+  joins by adding one driver, not by editing a scenario. Secrets are pinned
+  never to reach the client: the adapter test asserts the key appears in the
+  Authorization header and nowhere else (payload, `repr`, raised exceptions),
+  and the API tests assert a configured `LLM_API_KEY` appears in no
+  visitor-visible body — including when the provider's own exception text
+  carries the key, in which case the graph publishes a handoff answer instead
+  of the failure. Model selection stays server-side: `LLM_BASE_URL`/
+  `LLM_MODEL`/`LLM_API_KEY` configure the adapter `create_app` composes, and a
+  request body that tries to name a model is rejected `422 malformed_request`
+  (`extra="forbid"`; `ChatRequest` carries only `message`). The deployed
+  composition is exercised with the real adapter in
+  `tests/agent_runtime/test_openai_compatible_runtime.py`: a full booking —
+  wire-level tool call, confirmation pause, committed reservation over the
+  production PostgreSQL stores and checkpointer — driven by
+  `OpenAICompatibleChatModel`. No domain or graph workflow code names a
+  provider: `nodes.py` calls the port, and the runtime suites pass against
+  both the scripted double and the wire adapter unchanged. The financing
+  agent's `LLM_*` environment names are preserved by `Settings`, so an
+  existing deployment configures all three clients identically. Changed:
+  `packages/orchestration/src/tenantchat/orchestration/providers/
+  openai_compatible.py` (transport seam; stale `max_tool_rounds` docstring
+  removed), `packages/orchestration/tests/test_chat_model_contract.py` (new
+  contract suite), `packages/orchestration/tests/test_openai_compatible.py`
+  (public transport injection; key-isolation test),
+  `tests/agent_runtime/test_openai_compatible_runtime.py` (new integration
+  case), `services/api/tests/test_ai001_wiring.py` (client-visible secret
+  isolation, success and provider-failure paths),
+  `services/api/tests/test_chat.py` (visitor cannot name a model), and the
+  `AI-001` index entry/status above. Verified: `make check` (747 hermetic
+  Python tests plus the frontend suite; lock, lint, format, mypy strict,
+  coverage, and deployment security clean) and `make test-agent-runtime` (7
+  integration tests on disposable PostgreSQL 16, including the new
+  adapter-driven booking). Follow-ups: the embedding contract lives with
+  `RAG-002`'s `EmbeddingProvider`/`EmbeddingResult` port in the ingestion
+  surface; streaming delivery is `FEAT-010`; per-tenant approved-model
+  selection becomes meaningful once `FEAT-006` moves tenant configuration
+  into the database, and `AI-002` owns per-tenant budgets and fallback rules;
+  `REL-001` owns retry/backoff inside the client, which this adapter
+  deliberately does not.
 
 ### AI-002 — Model safety, quotas, and cost controls
 

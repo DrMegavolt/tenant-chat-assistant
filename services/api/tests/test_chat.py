@@ -214,6 +214,27 @@ def test_a_turn_cannot_name_a_tenant_or_session_in_the_body(
     assert response.json()["code"] == "malformed_request"
 
 
+def test_a_turn_cannot_name_a_model(
+    client: TestClient, visitor_session: Callable[..., VisitorSession]
+) -> None:
+    """Model selection is deployment configuration; a body field cannot pick one.
+
+    The provider is chosen by environment and tenant policy (`AI-001`), never by
+    the caller: a visitor who could name a model could select an expensive or
+    differently-behaved one.
+    """
+    visitor = visitor_session()
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "Hello", "model": "expensive-frontier-model"},
+        headers=visitor.headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "malformed_request"
+
+
 def test_a_credential_cannot_reach_another_tenants_conversation(
     client: TestClient, visitor_session: Callable[..., VisitorSession]
 ) -> None:
