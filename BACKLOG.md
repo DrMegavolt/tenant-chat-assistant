@@ -279,7 +279,7 @@ runbooks.
 
 - [x] `ARCH-001` — Agent runtime boundary and LangGraph adoption — `Done`
 - [x] `AI-001` — Provider and model abstraction — `Done`
-- [ ] `AI-003` — Versioned prompt assembly and template registry — `P1`
+- [x] `AI-003` — Versioned prompt assembly and template registry — `Done`
 - [ ] `REL-001` — Resilient dependency clients — `P1`
 - [x] `REL-003` — Durable background jobs and retry handling — `Done`
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
@@ -1533,7 +1533,7 @@ guarantees by construction.
 
 ### AI-003 — Versioned prompt assembly and template registry
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI platform`
 - Depends on: `AI-001`, `DATA-002`
@@ -1555,7 +1555,56 @@ guarantees by construction.
   - Comparing two template versions produces a deterministic segment and binding-schema diff.
 - Verification:
   - Run prompt-assembly unit tests covering slot validation, injection attempts through tenant configuration and evidence, budget exclusion reporting, version immutability, and canonical template diffing.
-- Completion notes: _Pending._
+- Completion notes: `prompts.py`'s string concatenation is replaced by a
+  `tenantchat.orchestration.prompts` package whose assembled prompt is now the
+  only input the `ChatModel` port accepts. `dispatch-system@1` is the first
+  versioned artifact: its segments, slot schema, and bindings are code in
+  `prompts/dispatch.py`, rendering exactly the prompt the behavioral tests in
+  `packages/orchestration/tests/test_prompts.py` pin (pricing policy, booking
+  and lead toggles, ZIP privacy). The assembled-prompt type
+  (`AssembledPrompt`/`AssembledMessage`/`PromptSegment`, `model.py`) carries
+  the template ID, version, resolved bindings, and a deterministic content
+  hash, and decomposes every message into trust-marked segments: visitor turns
+  and retrieved evidence are `UNTRUSTED` by construction, the template and
+  tool results `TRUSTED` — the single seam `RAG-007` will enforce and
+  `FEAT-015` will render. Tenant customization flows through a declared slot
+  schema (`SlotKind`: tone, business facts, escalation rules, disclaimers,
+  plus code-derived policy and price slots); `TenantPolicy` gained optional
+  `assistant_tone`/`escalation_rules`/`disclaimers` defaults, and assembly
+  rejects unknown slot names, over-length values, and control characters in
+  single-line slots, so tenant input can fill a slot but never add a section.
+  The registry is append-only with sequential versions — a template change is
+  a new version, never an edit to one a stored turn record references — and
+  `diff_templates` produces a deterministic segment and binding-schema diff
+  that never sees runtime values. Assembly enforces a token/source budget
+  (`PromptBudget`, 4-char-per-token estimate pending `OBS-002` real counts):
+  the template and mandatory transcript tail (latest visitor message, pending
+  tool calls) are never excluded — an over-budget fixed part raises — and
+  every discretionary history entry and evidence passage left out is returned
+  in `AssemblyOutcome.excluded` with kind, position, reference, reason, and
+  estimated tokens, ready for `OBS-004` to persist in the trace plane.
+  `nodes.py` assembles via the registry and passes the outcome's prompt to the
+  model; `runtime.py` reports `prompt_version` from the registered template;
+  the provider adapter and every test double now speak `AssembledPrompt`, so
+  no code path can reach a provider with an unversioned prompt. `RAG-005` will
+  feed `PromptEvidence` into the graph; until then the node passes an empty
+  evidence set. Changed: `packages/orchestration/src/tenantchat/orchestration/
+  {model,nodes,runtime,__init__.py,providers/openai_compatible.py}` and the
+  new `prompts/` package, `packages/core/src/tenantchat/core/tenant.py`,
+  `packages/orchestration/tests/{test_prompts,test_chat_model_contract,
+  test_openai_compatible}.py`, new `test_prompt_{assembly,registry,diff}.py`,
+  and the `ChatModel` doubles in `tests/agent_runtime/`, `tests/privacy/`,
+  `services/api/tests/`. Verified: `make check` (907 hermetic Python tests plus
+  the frontend suite; lock, lint, format, mypy strict, coverage, deployment
+  security, and image contracts clean) and `make test-agent-runtime` (7
+  integration tests on disposable PostgreSQL 16, including the real-adapter
+  booking driven through the assembler). Follow-ups: `OBS-004` persists
+  `AssemblyOutcome.excluded` and the prompt hash in the inference trace plane;
+  `RAG-005` supplies evidence and evolves `PromptEvidence` into the citation
+  contract; `RAG-007` enforces the trusted/untrusted segment boundary;
+  `FEAT-015` renders the `TemplateDiff` and segment markings; `AI-002` tunes
+  `PromptBudget` defaults against provider token counts; `AGENT-001`'s router
+  is the first consumer of the `workflow` binding input.
 
 ### RAG-001 — Versioned knowledge content model
 

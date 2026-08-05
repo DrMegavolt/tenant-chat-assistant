@@ -45,7 +45,7 @@ from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.core.privacy import ConsentPurpose
 from tenantchat.core.visitor_session import VisitorCredentialSigner
 from tenantchat.orchestration.checkpoints import InMemorySaver
-from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolCall, ToolSpec
+from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolCall, ToolSpec
 
 # Small enough that a body-limit test can exceed it without building a megabyte.
 TEST_MAX_REQUEST_BYTES = 2048
@@ -77,12 +77,12 @@ class ScriptedModel:
     """
 
     script: list[ModelResponse]
-    calls: list[tuple[ModelMessage, ...]] = field(default_factory=list)
+    calls: list[AssembledPrompt] = field(default_factory=list)
 
     async def complete(
-        self, messages: Sequence[ModelMessage], *, tools: Sequence[ToolSpec]
+        self, prompt: AssembledPrompt, *, tools: Sequence[ToolSpec]
     ) -> ModelResponse:
-        self.calls.append(tuple(messages))
+        self.calls.append(prompt)
         return self.script[min(len(self.calls) - 1, len(self.script) - 1)]
 
 

@@ -25,7 +25,7 @@ from langgraph.types import Command
 
 from tenantchat.orchestration.graph import GRAPH_VERSION, CompiledDispatchGraph
 from tenantchat.orchestration.nodes import BookingDecision
-from tenantchat.orchestration.prompts import SYSTEM_PROMPT_VERSION
+from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
 from tenantchat.orchestration.state import CommittedAction, DispatchState, initial_state, next_turn
 
 # The visitor controls the session ID today (`SEC-002` replaces it with a
@@ -52,7 +52,9 @@ class TurnResult:
     pending: Mapping[str, object] | None
     model_name: str
     graph_version: str = GRAPH_VERSION
-    prompt_version: str = SYSTEM_PROMPT_VERSION
+    # The template the model calls in this turn were assembled from; the
+    # registry guarantees a stored reference keeps naming the same artifact.
+    prompt_version: str = DISPATCH_SYSTEM_REF
 
     @property
     def is_paused(self) -> bool:

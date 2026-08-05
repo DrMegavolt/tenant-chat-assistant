@@ -44,8 +44,15 @@ from tenantchat.core.errors import (
 from tenantchat.core.ports import IdempotencyKey
 from tenantchat.core.tenant import TenantPolicy
 from tenantchat.orchestration.dependencies import DispatchDependencies
-from tenantchat.orchestration.model import MessageRole, ModelMessage, ToolCall
-from tenantchat.orchestration.prompts import build_system_prompt
+from tenantchat.orchestration.model import MessageRole, ToolCall
+from tenantchat.orchestration.prompts import (
+    DEFAULT_BUDGET,
+    DEFAULT_REGISTRY,
+    DISPATCH_SYSTEM_TEMPLATE_ID,
+    AssemblyOutcome,
+    HistoryTurn,
+    assemble_prompt,
+)
 from tenantchat.orchestration.state import (
     CommittedAction,
     DispatchState,
@@ -62,12 +69,6 @@ logger = logging.getLogger(__name__)
 # one to spare. Past that the model is looping, and looping costs the customer
 # time they would rather spend talking to a person.
 MAX_TOOL_ROUNDS: Final = 4
-
-# How much of the conversation each model call sees. Long enough to keep a
-# multi-turn booking coherent, short enough that a long session cannot grow the
-# prompt without bound. `RAG-006` replaces the window with conversation-aware
-# retrieval.
-TRANSCRIPT_WINDOW: Final = 24
 
 
 class DispatchNode(StrEnum):
@@ -181,21 +182,29 @@ def unanswered_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
     return ()
 
 
-def _model_messages(policy: TenantPolicy, state: DispatchState) -> list[ModelMessage]:
-    window = state["transcript"][-TRANSCRIPT_WINDOW:]
-    messages = [
-        ModelMessage(role=MessageRole.SYSTEM, content=build_system_prompt(policy)),
-    ]
-    messages.extend(
-        ModelMessage(
-            role=MessageRole(entry["role"]),
-            content=entry["content"],
-            tool_calls=tuple(_restore(call) for call in entry["tool_calls"]),
-            tool_call_id=entry["tool_call_id"] or None,
-        )
-        for entry in window
+def _assemble_prompt(policy: TenantPolicy, state: DispatchState) -> AssemblyOutcome:
+    """Build the one prompt a model call may receive (`AI-003`).
+
+    The whole transcript goes in; the assembly budget decides what fits and
+    returns what it excluded rather than truncating silently. Evidence is empty
+    until `RAG-005` wires retrieval into the graph.
+    """
+    return assemble_prompt(
+        DEFAULT_REGISTRY.current(DISPATCH_SYSTEM_TEMPLATE_ID),
+        policy=policy,
+        workflow=dict(state),
+        history=[
+            HistoryTurn(
+                role=MessageRole(entry["role"]),
+                content=entry["content"],
+                tool_calls=tuple(_restore(call) for call in entry["tool_calls"]),
+                tool_call_id=entry["tool_call_id"] or None,
+            )
+            for entry in state["transcript"]
+        ],
+        evidence=(),
+        budget=DEFAULT_BUDGET,
     )
-    return messages
 
 
 class DispatchNodes:
@@ -207,10 +216,9 @@ class DispatchNodes:
     async def call_model(self, state: DispatchState) -> dict[str, Any]:
         """Ask the model what to do next."""
         policy = await self._deps.policies.policy(state["tenant_id"])
+        outcome = _assemble_prompt(policy, state)
         try:
-            response = await self._deps.model.complete(
-                _model_messages(policy, state), tools=TOOL_SPECS
-            )
+            response = await self._deps.model.complete(outcome.prompt, tools=TOOL_SPECS)
         except Exception:
             # Deliberately broad, and deliberately not retried. Whatever the
             # provider did, the customer is waiting; `REL-001` owns retry and

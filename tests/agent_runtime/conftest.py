@@ -44,7 +44,12 @@ from tenantchat.api.store import (
 from tenantchat.core.privacy import ConsentGrant, ConsentPurpose
 from tenantchat.orchestration.checkpoints import Checkpointer, InMemorySaver
 from tenantchat.orchestration.dependencies import DispatchDependencies
-from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolCall, ToolSpec
+from tenantchat.orchestration.model import (
+    AssembledPrompt,
+    ModelResponse,
+    ToolCall,
+    ToolSpec,
+)
 from tenantchat.orchestration.runtime import DispatchRuntime
 from tenantchat.orchestration.state import DispatchState
 
@@ -86,16 +91,16 @@ class ScriptedModel:
     """
 
     script: list[ModelResponse]
-    calls: list[tuple[ModelMessage, ...]] = field(default_factory=list)
+    calls: list[AssembledPrompt] = field(default_factory=list)
     failure: Exception | None = None
 
     async def complete(
         self,
-        messages: Sequence[ModelMessage],
+        prompt: AssembledPrompt,
         *,
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
-        self.calls.append(tuple(messages))
+        self.calls.append(prompt)
         if self.failure is not None:
             raise self.failure
         index = min(len(self.calls) - 1, len(self.script) - 1)
@@ -255,8 +260,8 @@ def build_harness(
 def tool_results(harness: RuntimeHarness) -> list[dict[str, object]]:
     """Every tool payload the graph sent back to the model, in order."""
     payloads = []
-    for call in harness.model.calls:
-        for message in call:
+    for prompt in harness.model.calls:
+        for message in prompt.messages:
             if message.role == "tool":
                 parsed = json.loads(message.content)
                 if parsed not in payloads:

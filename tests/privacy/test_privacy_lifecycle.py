@@ -42,7 +42,7 @@ from tenantchat.api.privacy_worker import run_pass
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.settings import Settings
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
-from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolSpec
+from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolSpec
 
 BOOKING_TENANT = "clearview"
 OTHER_TENANT = "apex"
@@ -60,12 +60,12 @@ class PlainModel:
     """A scripted model that answers questions without booking anything."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[ModelMessage, ...]] = []
+        self.calls: list[AssembledPrompt] = []
 
     async def complete(
-        self, messages: Sequence[ModelMessage], *, tools: Sequence[ToolSpec]
+        self, prompt: AssembledPrompt, *, tools: Sequence[ToolSpec]
     ) -> ModelResponse:
-        self.calls.append(tuple(messages))
+        self.calls.append(prompt)
         return ModelResponse(content="Noted, thank you.", model_name="scripted")
 
 

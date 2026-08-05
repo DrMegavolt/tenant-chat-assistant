@@ -29,8 +29,8 @@ from collections.abc import Mapping, Sequence
 import httpx
 
 from tenantchat.orchestration.model import (
+    AssembledPrompt,
     MessageRole,
-    ModelMessage,
     ModelResponse,
     ToolCall,
     ToolSpec,
@@ -59,9 +59,9 @@ def _api_tool(spec: ToolSpec) -> dict[str, object]:
     }
 
 
-def _api_messages(messages: Sequence[ModelMessage]) -> list[dict[str, object]]:
+def _api_messages(prompt: AssembledPrompt) -> list[dict[str, object]]:
     wire: list[dict[str, object]] = []
-    for message in messages:
+    for message in prompt.messages:
         entry: dict[str, object] = {"role": ROLE_TO_API[message.role], "content": message.content}
         if message.tool_calls:
             entry["tool_calls"] = [
@@ -145,11 +145,14 @@ class OpenAICompatibleChatModel:
 
     async def complete(
         self,
-        messages: Sequence[ModelMessage],
+        prompt: AssembledPrompt,
         *,
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
-        """Continue the conversation, optionally by calling tools.
+        """Complete the conversation from one assembled, versioned prompt.
+
+        The prompt is the only input the adapter accepts (`AI-003`); the wire
+        messages are derived from its segments, never from caller strings.
 
         Raises:
             httpx.HTTPError: any transport or status failure. The graph converts
@@ -157,7 +160,7 @@ class OpenAICompatibleChatModel:
         """
         payload: dict[str, object] = {
             "model": self._model,
-            "messages": _api_messages(messages),
+            "messages": _api_messages(prompt),
         }
         if tools:
             payload["tools"] = [_api_tool(spec) for spec in tools]

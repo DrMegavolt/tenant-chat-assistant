@@ -1,11 +1,17 @@
 """The model call, reduced to what a graph node needs.
 
-Deliberately smaller than any provider's API. A node needs to send a
-conversation and a tool list and get back either prose or tool calls; anything
-else — streaming, usage accounting, retries, provider selection — belongs to
-`AI-001`, which implements this port. Keeping the port this narrow is what lets
-the graph be tested against a scripted model with no network, no key, and no
-recorded fixtures.
+Deliberately smaller than any provider's API. A node needs to send an assembled
+prompt and a tool list and get back either prose or tool calls; anything else —
+streaming, usage accounting, retries, provider selection — belongs to `AI-001`,
+which implements this port. Keeping the port this narrow is what lets the graph
+be tested against a scripted model with no network, no key, and no recorded
+fixtures.
+
+The port's input is the **assembled prompt** (`AI-003`): a closed, versioned
+value carrying its template ID and version, its resolved bindings, and its
+content hash, with every message decomposed into trust-marked segments. A raw
+string conversation cannot reach a provider, because nothing a provider accepts
+is typed as one.
 
 Tool-call arguments arrive **already parsed**. Providers disagree about whether
 they emit an object or a JSON string, and a graph that has to know is a graph
@@ -14,6 +20,8 @@ that has a provider baked into it.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -57,15 +65,111 @@ class ToolCall:
     arguments: Mapping[str, object]
 
 
+class PromptRegion(StrEnum):
+    """Whether a segment's content is server-authored or visitor/external.
+
+    `RAG-007` enforces a single boundary between the two, so the marking must
+    live on the assembled type rather than in a convention: everything the
+    visitor wrote and everything retrieved from tenant knowledge is
+    ``UNTRUSTED`` by construction, and everything the server wrote is
+    ``TRUSTED``. Assembly never promotes untrusted content into a trusted
+    segment.
+    """
+
+    TRUSTED = "trusted"
+    UNTRUSTED = "untrusted"
+
+
 @dataclass(frozen=True, slots=True)
-class ModelMessage:
-    """One entry in the conversation sent to the model."""
+class PromptSegment:
+    """One region of one message, marked trusted or untrusted.
+
+    ``segment_id`` is stable within a template version so `FEAT-015` can track
+    a segment across versions, and ``text`` is the fully resolved content —
+    template text, a slot value, an evidence passage, or a visitor turn.
+    """
+
+    segment_id: str
+    region: PromptRegion
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AssembledMessage:
+    """One entry in the assembled prompt, decomposed into marked segments.
+
+    ``content`` is derived from the segments, so no path can change the text a
+    provider receives without changing the segments `RAG-007` inspects.
+    """
 
     role: MessageRole
-    content: str
+    segments: tuple[PromptSegment, ...]
     tool_calls: tuple[ToolCall, ...] = ()
     # Set on TOOL messages only: which call this is the result of.
     tool_call_id: str | None = None
+
+    @property
+    def content(self) -> str:
+        return "".join(segment.text for segment in self.segments)
+
+
+@dataclass(frozen=True, slots=True)
+class AssembledPrompt:
+    """The complete, versioned input to one model call.
+
+    Carries the template ID and version the call is attributable to, the
+    resolved slot bindings, and a content hash over the resolved content, so
+    `OBS-004` can pin a model call to the exact artifact that produced it and
+    the exact bytes the provider received.
+    """
+
+    template_id: str
+    template_version: int
+    bindings: Mapping[str, str]
+    messages: tuple[AssembledMessage, ...]
+
+    @property
+    def template_ref(self) -> str:
+        return f"{self.template_id}@{self.template_version}"
+
+    @property
+    def segments(self) -> tuple[PromptSegment, ...]:
+        """Every segment of every message, in message order."""
+        return tuple(segment for message in self.messages for segment in message.segments)
+
+    @property
+    def content_hash(self) -> str:
+        """SHA-256 over the template ref and every segment, byte for byte.
+
+        Deterministic — equal inputs produce equal hashes — and covers the
+        tool-call shape as well as the text, because both are what the provider
+        receives. Bindings are covered through the segment text: every declared
+        slot is rendered into it.
+        """
+        canonical = {
+            "template": self.template_ref,
+            "messages": [
+                {
+                    "role": message.role.value,
+                    "tool_call_id": message.tool_call_id,
+                    "tool_calls": [
+                        {
+                            "id": call.call_id,
+                            "name": call.name,
+                            "arguments": dict(call.arguments),
+                        }
+                        for call in message.tool_calls
+                    ],
+                    "segments": [
+                        [segment.segment_id, segment.region.value, segment.text]
+                        for segment in message.segments
+                    ],
+                }
+                for message in self.messages
+            ],
+        }
+        encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,11 +193,15 @@ class ChatModel(Protocol):
 
     async def complete(
         self,
-        messages: Sequence[ModelMessage],
+        prompt: AssembledPrompt,
         *,
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
-        """Continue the conversation, optionally by calling tools.
+        """Complete the conversation from one assembled, versioned prompt.
+
+        The assembled prompt is the only input: every call is attributable to
+        the template ID and version it carries, and no code path can reach a
+        provider with a prompt the registry did not assemble.
 
         Raises:
             Exception: any provider failure. The graph converts an unhandled

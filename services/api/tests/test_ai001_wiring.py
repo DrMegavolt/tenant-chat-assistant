@@ -31,7 +31,7 @@ from tenantchat.api.store import (
     InMemoryPrivacyStore,
 )
 from tenantchat.orchestration.checkpoints import InMemorySaver
-from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolSpec
+from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolSpec
 
 
 class _StubModel:
@@ -43,11 +43,11 @@ class _StubModel:
 
     async def complete(
         self,
-        messages: Sequence[ModelMessage],
+        prompt: AssembledPrompt,
         *,
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
-        del messages, tools
+        del prompt, tools
         if self._failure is not None:
             raise self._failure
         return self._response
