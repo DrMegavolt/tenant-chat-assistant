@@ -51,6 +51,42 @@ def loopback_database(database_url: str | None) -> bool:
     return host in _LOOPBACK_HOSTS
 
 
+# The cluster-internal service DNS zone. A backend named inside it is reached
+# only through the cluster's own networking; anything else is outside the
+# trust boundary `ADR-0010` draws around the trace plane.
+_IN_CLUSTER_SUFFIX = ".svc.cluster.local"
+
+
+def validate_trace_content_export(settings: Settings) -> None:
+    """Refuse a deployment that would export trace content outside the boundary.
+
+    `TRACE_CONTENT_EXPORT` is off by default. Enabling it is only legitimate
+    for a viewer inside the cluster trust boundary — a service the deployment
+    itself runs and protects with the same admin authentication as the console.
+    An external backend is refused here, at startup, so a misconfigured
+    deployment fails before any turn is recorded, never on the first export.
+
+    Raises:
+        ValueError: content export is enabled without an endpoint, or the
+            endpoint's host is neither loopback nor in-cluster service DNS.
+    """
+    if not settings.trace_content_export:
+        return
+    endpoint = settings.trace_content_export_endpoint
+    if not endpoint:
+        raise ValueError(
+            "TRACE_CONTENT_EXPORT is enabled but TRACE_CONTENT_EXPORT_ENDPOINT is not set"
+        )
+    host = (urlparse(endpoint).hostname or "").lower()
+    if host in _LOOPBACK_HOSTS or host.endswith(_IN_CLUSTER_SUFFIX):
+        return
+    raise ValueError(
+        "TRACE_CONTENT_EXPORT_ENDPOINT must name a backend inside the cluster trust "
+        f"boundary (loopback or *{_IN_CLUSTER_SUFFIX}); content export is refused for "
+        "any external backend"
+    )
+
+
 def _int_env(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 
@@ -124,6 +160,15 @@ class Settings:
     # read it). Log lines carry it so a shared log store can be split by
     # deployment; a deployment that never sets it logs as `local` until it does.
     app_env: str = "local"
+    # PRIV-002/ADR-0010: whether the inference plane may reach a trace viewer
+    # as content. Disabled by default; when enabled, `trace_content_export_endpoint`
+    # must name a viewer inside the cluster trust boundary (loopback for
+    # development, `*.svc.cluster.local` in the cluster), and `create_app`
+    # refuses to start otherwise. The application itself never exports content
+    # — the collector is the fan-out point — but the setting travels with the
+    # deployment and this process is the fail-closed enforcement point.
+    trace_content_export: bool = False
+    trace_content_export_endpoint: str | None = None
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -198,9 +243,16 @@ class Settings:
             privacy_database_url=os.environ.get("PRIVACY_DATABASE_URL", "").strip() or None,
             privacy_database_pool_size=_int_env("CHAT_API_PRIVACY_DATABASE_POOL_SIZE", 2),
             privacy_database_max_overflow=_int_env("CHAT_API_PRIVACY_DATABASE_MAX_OVERFLOW", 2),
+<<<<<<< HEAD
             log_level=os.environ.get("CHAT_API_LOG_LEVEL", "").strip() or "INFO",
             log_json=os.environ.get("CHAT_API_LOG_JSON", "true").strip().lower() != "false",
             log_access=os.environ.get("CHAT_API_LOG_ACCESS", "").lower() == "true",
             log_pseudonym_key=os.environ.get("CHAT_API_LOG_PSEUDONYM_KEY", "").strip() or None,
             app_env=os.environ.get("APP_ENV", "").strip() or "local",
+            trace_content_export=(
+                os.environ.get("TRACE_CONTENT_EXPORT", "").strip().lower() == "true"
+            ),
+            trace_content_export_endpoint=(
+                os.environ.get("TRACE_CONTENT_EXPORT_ENDPOINT", "").strip() or None
+            ),
         )

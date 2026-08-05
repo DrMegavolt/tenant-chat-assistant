@@ -118,3 +118,112 @@ spec:
     security_gate._check_workload_refs(errors, [(path, document)])
 
     assert any("CHAT_API_DEV_AUTH must never be enabled" in error for error in errors)
+
+
+def test_a_manifest_that_enables_content_export_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRIV-002: content export is operator action, never a tracked manifest value."""
+    monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+    path = tmp_path / "trace-export.yaml"
+    document = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-backend
+          env:
+            - name: TRACE_CONTENT_EXPORT
+              value: "true"
+"""
+    errors: list[str] = []
+
+    security_gate._check_trace_content_export(errors, [(path, document)])
+
+    assert any("TRACE_CONTENT_EXPORT must never be enabled" in error for error in errors)
+
+
+def test_a_manifest_that_exports_to_an_external_backend_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+    path = tmp_path / "trace-export.yaml"
+    document = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-backend
+          env:
+            - name: TRACE_CONTENT_EXPORT_ENDPOINT
+              value: "https://langfuse.example.com:4318"
+"""
+    errors: list[str] = []
+
+    security_gate._check_trace_content_export(errors, [(path, document)])
+
+    assert any("must be a literal in-cluster URL" in error for error in errors)
+
+
+def test_an_endpoint_reference_is_refused_because_it_cannot_be_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config-map reference could name anything; the gate cannot see the boundary."""
+    monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+    path = tmp_path / "trace-export.yaml"
+    document = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-backend
+          env:
+            - name: TRACE_CONTENT_EXPORT_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: trace-export
+                  key: endpoint
+"""
+    errors: list[str] = []
+
+    security_gate._check_trace_content_export(errors, [(path, document)])
+
+    assert any("must be a literal in-cluster URL" in error for error in errors)
+
+
+def test_an_in_cluster_export_endpoint_literal_passes_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+    path = tmp_path / "trace-export.yaml"
+    document = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-backend
+          env:
+            - name: TRACE_CONTENT_EXPORT_ENDPOINT
+              value: "http://trace-viewer.observability.svc.cluster.local:4318"
+"""
+    errors: list[str] = []
+
+    security_gate._check_trace_content_export(errors, [(path, document)])
+
+    assert not errors

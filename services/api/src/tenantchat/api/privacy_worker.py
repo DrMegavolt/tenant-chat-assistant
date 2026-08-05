@@ -62,7 +62,7 @@ async def process_deletion_request(
     report = (
         await store.erase_subject(request.tenant_id, sessions)
         if sessions
-        else ErasureReport(0, 0, 0, 0, 0, 0, 0)
+        else ErasureReport(0, 0, 0, 0, 0, 0, 0, 0)
     )
     await store.complete_privacy_request(request.request_id, processed_at=now)
     await audit.record(
@@ -82,6 +82,7 @@ async def process_deletion_request(
                 "handoffs_anonymized": report.handoffs_anonymized,
                 "consent_records_deleted": report.consent_records_deleted,
                 "checkpoints_deleted": report.checkpoints_deleted,
+                "turn_records_deleted": report.turn_records_deleted,
             },
         )
     )
@@ -108,7 +109,7 @@ async def run_pass(
     policy = RetentionPolicy.defaults()
     for tenant_id in registry.all():
         purge_report = await store.purge_expired(tenant_id, policy, now=now)
-        if purge_report == PurgeReport(0, 0, 0, 0):
+        if purge_report == PurgeReport(0, 0, 0, 0, 0):
             continue
         await audit.record(
             AuditEvent(
@@ -124,6 +125,7 @@ async def run_pass(
                     "messages_deleted": purge_report.messages_deleted,
                     "tool_executions_deleted": purge_report.tool_executions_deleted,
                     "consent_records_deleted": purge_report.consent_records_deleted,
+                    "turn_records_deleted": purge_report.turn_records_deleted,
                 },
             )
         )

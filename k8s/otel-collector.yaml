@@ -31,6 +31,45 @@ spec:
             endpoint: 0.0.0.0:4318
 
     processors:
+      # PRIV-002/ADR-0010: the collector is the only fan-out point, and this
+      # allowlist runs ahead of every exporter in every pipeline. Only the
+      # operational-plane attributes below survive; anything content-bearing —
+      # prompt or completion text, message bodies, retrieved document text,
+      # contact details — is dropped here, so adding a backend cannot widen
+      # what leaves the cluster. Extending this list is the reviewable act of
+      # admitting a new operational attribute; content attributes have no
+      # home on it. Content export to a trusted in-cluster viewer is a
+      # separate, gated decision (TRACE_CONTENT_EXPORT) made by an operator
+      # adding a dedicated pipeline for it — never by widening this allowlist.
+      redaction:
+        allow_attributes:
+          - service.name
+          - service.namespace
+          - service.instance.id
+          - deployment.environment
+          - k8s.*
+          - server.address
+          - server.port
+          - network.protocol.name
+          - network.protocol.version
+          - url.scheme
+          - url.path
+          - http.request.method
+          - http.response.status_code
+          - session.id
+          - tenant.id
+          - thread.id
+          - gen_ai.system
+          - gen_ai.operation.name
+          - gen_ai.error.type
+          - gen_ai.request.model
+          - gen_ai.request.temperature
+          - gen_ai.request.max_tokens
+          - gen_ai.request.top_p
+          - gen_ai.request.seed
+          - gen_ai.response.model
+          - gen_ai.response.finish_reason
+          - gen_ai.usage.*
       batch: {}
       memory_limiter:
         check_interval: 1s
@@ -48,11 +87,11 @@ spec:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, redaction, batch]
           exporters: [otlp/tempo]
         metrics:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, redaction, batch]
           exporters: [prometheus]
 ---
 apiVersion: opentelemetry.io/v1alpha1

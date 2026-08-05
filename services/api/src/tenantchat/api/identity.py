@@ -31,7 +31,11 @@ from typing import Annotated, Final
 
 from fastapi import Depends, Request
 
-from tenantchat.api.dependencies import get_membership_store
+from tenantchat.api.dependencies import (
+    get_audit_store,
+    get_membership_store,
+    get_trace_access_store,
+)
 from tenantchat.api.faults import (
     CsrfValidationError,
     ForbiddenError,
@@ -39,7 +43,13 @@ from tenantchat.api.faults import (
     UnauthenticatedError,
 )
 from tenantchat.api.settings import Settings
-from tenantchat.api.store import MembershipStore
+from tenantchat.api.store import (
+    AuditActorType,
+    AuditEvent,
+    AuditStore,
+    MembershipStore,
+    TraceAccessStore,
+)
 
 GATEWAY_TOKEN_HEADER: Final = "X-TenantChat-Gateway-Token"  # noqa: S105 - a header name
 EMAIL_HEADER: Final = "X-Auth-Email"
@@ -56,6 +66,12 @@ ROLES: Final[tuple[str, ...]] = ("viewer", "support_agent", "tenant_admin", "pla
 # it spans tenants and is decided by the provider directory, so a tenant-scoped
 # record can never confer it (see the migration's CHECK constraint).
 TENANT_ROLES: Final[tuple[str, ...]] = ("viewer", "support_agent", "tenant_admin")
+
+# PRIV-002: the dedicated role for reading turn records. Not a directory role
+# and not part of the ordered transcript hierarchy — an operator holds it as a
+# tenant-scoped grant (`trace_access_grants`), and neither a transcript role
+# nor a membership row confers it. It names the role in refusal audits.
+TRACE_READER_ROLE: Final = "trace_viewer"
 
 logger = logging.getLogger(__name__)
 
@@ -262,3 +278,58 @@ def verify_csrf(request: Request, identity: AdminIdentity, settings: Settings) -
     presented = request.headers.get(CSRF_HEADER, "").strip()
     if not presented or not hmac.compare_digest(presented, csrf_token(identity, settings)):
         raise CsrfValidationError
+
+
+def require_trace_read() -> Callable[..., Awaitable[AdminIdentity]]:
+    """Build the dependency gating every turn-record read.
+
+    The gate is the dedicated `PRIV-002` role — a tenant-scoped grant — or the
+    ``platform_admin`` ceiling. The ordered transcript hierarchy is irrelevant
+    here on purpose: a tenant admin with no trace grant is refused exactly like
+    a viewer is. The refusal is itself audited, so an operator cannot probe the
+    trace plane silently, and the detail names no tenant, so the refusal is
+    identical whether the tenant exists or not.
+
+    Raises:
+        UnauthenticatedError: no usable operator identity.
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+    """
+
+    async def dependency(
+        request: Request,
+        grants: Annotated[TraceAccessStore, Depends(get_trace_access_store)],
+        audit: Annotated[AuditStore, Depends(get_audit_store)],
+    ) -> AdminIdentity:
+        settings: Settings = request.app.state.settings
+        identity = authenticate(request, settings)
+        tenant_id = request.query_params.get("tenant_id", "")
+        if identity.role == "platform_admin" or await grants.has_access(
+            tenant_id, identity.subject
+        ):
+            return identity
+        await audit.record(
+            AuditEvent(
+                tenant_id=tenant_id,
+                actor_type=AuditActorType.STAFF,
+                principal_id=identity.subject,
+                action="trace.read_refused",
+                resource_type="turn_record",
+                resource_id=None,
+                request_id=getattr(request.state, "request_id", None),
+                details={
+                    "reason": request.query_params.get("reason", ""),
+                    "required_role": TRACE_READER_ROLE,
+                },
+            )
+        )
+        logger.warning(
+            "trace read refused",
+            extra={
+                "subject": identity.subject,
+                "role": identity.role,
+                "path": request.url.path,
+            },
+        )
+        raise ForbiddenError
+
+    return dependency

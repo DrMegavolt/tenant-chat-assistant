@@ -1265,7 +1265,7 @@ guarantees by construction.
 
 ### PRIV-002 — Inference trace data plane, retention, and access control
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Privacy/data governance`
 - Depends on: `PRIV-001`, `SEC-001`
@@ -1286,7 +1286,46 @@ guarantees by construction.
   - Expired turn records are purged automatically and the purge is observable without exposing what was purged.
 - Verification:
   - Run privacy lifecycle tests for turn-record export, expiry, and erasure; a redaction test asserting the operational plane is content-free; a startup-refusal test for misconfigured export; and an RBAC/audit test for trace access.
-- Completion notes: _Pending._
+- Completion notes: The `ADR-0010` inference plane's governance surface is
+  implemented: retention, the dedicated read role, read and refusal audit,
+  export/erasure coverage, collector redaction, and content-export gating.
+  `0010_trace_privacy.py` adds the privacy-owned envelope — `turn_records`
+  (opaque `content` jsonb `OBS-004` will populate, `recorded_at` as the
+  retention timestamp, `trace_id` for plane correlation) — plus
+  `turn_record_projections` (derived datasets such as `FEAT-008` evaluation
+  rows, cascading off their turn record so one erasure statement removes every
+  projection) and `trace_access_grants` (the dedicated `trace_viewer` role,
+  tenant-scoped and orthogonal to transcript memberships). The new
+  `DataClass.INFERENCE_TRACE` gets its own 30-day rule in
+  `tenantchat.core.privacy`, independent of and shorter than the 90-day
+  transcript rule, and `TurnRecordReadReason` closes the set of reasons a read
+  may be audited with. `PostgresPrivacyStore` now matches subject discovery
+  against turn-record content, exports the records and their projections,
+  erases them (counted in `ErasureReport`), and purges them on their own
+  schedule (counted in `PurgeReport`); the privacy worker's audit rows carry
+  the new counts, so a purge is observable without exposing what was purged.
+  The read surface is `GET /api/admin/traces/{turn_id}` behind
+  `require_trace_read` (platform-admin or a `trace_access_grants` row only;
+  refused reads are audited too) with a mandatory reason, and the grant/revoke
+  routes are platform-admin mutations like membership assignment. `k8s/otel-collector.yaml`
+  gains a `redaction` processor with an explicit operational allowlist ahead of
+  every exporter in every pipeline; `TRACE_CONTENT_EXPORT` defaults off, and
+  `create_app` refuses to start with it enabled for any endpoint outside the
+  trust boundary (loopback or `*.svc.cluster.local`), with
+  `verify_deployment_security.py` refusing a tracked manifest that enables it.
+  Classification, lawful basis, retention, and access rules are documented in
+  `docs/privacy.md` and the `inference-trace-plane` runbook. Verified: full
+  `make check` (quality gate) plus `make test-database` — `test-migrations`
+  (11, including app-role refusal on turn tables), `test-repositories` (45,
+  including 7 new turn-record/grant-store specs), `test-agent-runtime` (6),
+  `test-privacy` (13, including turn-record export with projections,
+  turn-content subject discovery, erasure with cascade verification, and
+  independent trace purge with transcript survival), plus hermetic trace-plane
+  tests (startup refusal for external backends, collector redaction structure,
+  RBAC/audit and refusal-audit contracts) and deployment-gate tests.
+  Follow-ups: `OBS-004` populates the envelope (`TurnRecordStore.record`),
+  builds the query/diagnosis/replay APIs on this governance, and selects the
+  viewer whose collector pipeline the operator path documents.
 
 ### OBS-004 — Inference trace, answer provenance, and failure attribution
 

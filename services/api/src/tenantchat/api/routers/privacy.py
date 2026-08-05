@@ -36,6 +36,8 @@ from tenantchat.api.schemas import (
     PrivacyExportResponse,
     SessionExportItem,
     TranscriptMessage,
+    TurnRecordExportItem,
+    TurnRecordProjectionExportItem,
 )
 from tenantchat.api.store import AuditActorType, AuditEvent
 from tenantchat.core.contact import Contact
@@ -111,6 +113,8 @@ async def export_subject(
         bookings=[BookingExportItem.of(record) for record in records.bookings],
         handoffs=[HandoffExportItem.of(record) for record in records.handoffs],
         consent=[ConsentExportItem.of(record) for record in records.consent],
+        turn_records=[TurnRecordExportItem.of(record) for record in records.turn_records],
+        projections=[TurnRecordProjectionExportItem.of(record) for record in records.projections],
     )
 
 

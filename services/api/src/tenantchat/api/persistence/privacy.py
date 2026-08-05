@@ -17,6 +17,7 @@ from typing import Final
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tenantchat.api.correlation import trace_id as current_trace_id
@@ -34,6 +35,8 @@ from tenantchat.api.store import (
     PrivacyRequestRecord,
     PurgeReport,
     SubjectRecords,
+    TurnRecord,
+    TurnRecordProjection,
 )
 from tenantchat.core.commands import HandoffReason, LeadUrgency
 from tenantchat.core.contact import Contact, ContactKind
@@ -154,6 +157,29 @@ def _handoff(row: object) -> HandoffRecord:
         reason=HandoffReason.parse(mapping["reason"]),
         summary=mapping["summary"] or "",
         created_at=mapping["requested_at"],
+    )
+
+
+def _turn_record(row: object) -> TurnRecord:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return TurnRecord(
+        turn_id=mapping["id"],
+        tenant_id=mapping["tenant_id"],
+        session_id=mapping["chat_session_id"],
+        trace_id=mapping["trace_id"],
+        content=dict(mapping["content"]),
+        recorded_at=mapping["recorded_at"],
+    )
+
+
+def _projection(row: object) -> TurnRecordProjection:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return TurnRecordProjection(
+        projection_id=mapping["id"],
+        tenant_id=mapping["tenant_id"],
+        turn_record_id=mapping["turn_record_id"],
+        kind=mapping["kind"],
+        created_at=mapping["created_at"],
     )
 
 
@@ -298,13 +324,19 @@ class PostgresPrivacyStore:
 
     async def sessions_for_contact(self, tenant_id: str, contact: Contact) -> tuple[uuid.UUID, ...]:
         # The canonical phone form (+15552221919) never appears verbatim in a
-        # message; compare the digits instead.
+        # message; compare the digits instead. Turn-record content is matched
+        # the same way over its JSON text: a subject's details can live in the
+        # inference plane without ever entering the transcript's message table.
         if contact.kind is ContactKind.PHONE:
             probe = contact.value.removeprefix("+1")
             message_match = "regexp_replace(m.content, '[^0-9]', '', 'g') LIKE '%' || :probe || '%'"
+            trace_match = (
+                "regexp_replace(tr.content::text, '[^0-9]', '', 'g') LIKE '%' || :probe || '%'"
+            )
         else:
             probe = contact.value.casefold()
             message_match = "m.content ILIKE '%' || :probe || '%'"
+            trace_match = "tr.content::text ILIKE '%' || :probe || '%'"
         async with self._read.begin() as connection:
             result = await connection.execute(
                 text(
@@ -320,6 +352,12 @@ class PostgresPrivacyStore:
                                 AND {message_match}
                           )
                           OR EXISTS (
+                              SELECT 1 FROM turn_records tr
+                              WHERE tr.tenant_id = s.tenant_id
+                                AND tr.chat_session_id = s.id
+                                AND {trace_match}
+                          )
+                          OR EXISTS (
                               SELECT 1 FROM leads l
                               WHERE l.tenant_id = s.tenant_id
                                 AND l.chat_session_id = s.id
@@ -333,7 +371,7 @@ class PostgresPrivacyStore:
                           )
                       )
                     ORDER BY s.last_activity_at DESC, s.id
-                    """  # noqa: S608 - message_match is one of two module-built predicates
+                    """  # noqa: S608 - message_match/trace_match are module-built predicates
                 ),
                 {"tenant_id": tenant_id, "probe": probe, "value": contact.value},
             )
@@ -344,7 +382,7 @@ class PostgresPrivacyStore:
     ) -> SubjectRecords:
         ids = self._session_ids_any(session_ids)
         if not session_ids:
-            return SubjectRecords((), (), (), (), (), ())
+            return SubjectRecords((), (), (), (), (), (), (), ())
         async with self._read.begin() as connection:
             sessions = (
                 await connection.execute(
@@ -433,6 +471,35 @@ class PostgresPrivacyStore:
                     {"tenant_id": tenant_id},
                 )
             ).all()
+            turn_records = (
+                await connection.execute(
+                    text(
+                        f"""
+                        SELECT id, tenant_id, chat_session_id, trace_id,
+                               content, recorded_at
+                        FROM turn_records
+                        WHERE tenant_id = :tenant_id AND chat_session_id = ANY({ids})
+                        ORDER BY recorded_at, id
+                        """
+                    ),
+                    {"tenant_id": tenant_id},
+                )
+            ).all()
+            projections = (
+                await connection.execute(
+                    text(
+                        f"""
+                        SELECT p.id, p.tenant_id, p.turn_record_id, p.kind, p.created_at
+                        FROM turn_record_projections p
+                        JOIN turn_records tr
+                          ON tr.tenant_id = p.tenant_id AND tr.id = p.turn_record_id
+                        WHERE p.tenant_id = :tenant_id AND tr.chat_session_id = ANY({ids})
+                        ORDER BY p.created_at, p.id
+                        """  # noqa: S608 - ids are uuid.UUID literals, not caller text
+                    ),
+                    {"tenant_id": tenant_id},
+                )
+            ).all()
         return SubjectRecords(
             sessions=tuple(_conversation(row) for row in sessions),
             messages=tuple(_message(row) for row in messages),
@@ -440,6 +507,8 @@ class PostgresPrivacyStore:
             bookings=tuple(_booking(row) for row in bookings),
             handoffs=tuple(_handoff(row) for row in handoffs),
             consent=tuple(_consent_record(row) for row in consent),
+            turn_records=tuple(_turn_record(row) for row in turn_records),
+            projections=tuple(_projection(row) for row in projections),
         )
 
     async def erase_subject(
@@ -454,7 +523,7 @@ class PostgresPrivacyStore:
         transaction, so a partial failure removes nothing.
         """
         if not session_ids:
-            return ErasureReport(0, 0, 0, 0, 0, 0, 0)
+            return ErasureReport(0, 0, 0, 0, 0, 0, 0, 0)
         ids = self._session_ids_any(session_ids)
         threads = [f"{tenant_id}:{session}" for session in session_ids]
         async with self._erasure_engine().begin() as connection:
@@ -512,6 +581,18 @@ class PostgresPrivacyStore:
                 ),
                 {"tenant_id": tenant_id},
             )
+            # The inference plane goes with the sessions: the record itself and
+            # every projection derived from it (the projection foreign key
+            # cascades, so this one statement is the whole plane).
+            turn_rows = await connection.execute(
+                text(
+                    f"""
+                    DELETE FROM turn_records
+                    WHERE tenant_id = :tenant_id AND chat_session_id = ANY({ids})
+                    """  # noqa: S608 - ids are uuid.UUID literals, not caller text
+                ),
+                {"tenant_id": tenant_id},
+            )
             session_rows = await connection.execute(
                 text(
                     f"""
@@ -536,6 +617,7 @@ class PostgresPrivacyStore:
             handoffs_anonymized=handoff_rows.rowcount or 0,
             consent_records_deleted=consent_rows.rowcount or 0,
             checkpoints_deleted=checkpoint_deleted,
+            turn_records_deleted=turn_rows.rowcount or 0,
         )
 
     async def purge_expired(
@@ -552,10 +634,25 @@ class PostgresPrivacyStore:
         its foreign key to ``messages`` is ``RESTRICT``.
         """
         transcript_age = policy.max_age(DataClass.TRANSCRIPT)
-        if transcript_age is None:
-            return PurgeReport(0, 0, 0, 0)
-        cutoff = now - transcript_age
+        trace_age = policy.max_age(DataClass.INFERENCE_TRACE)
+        if transcript_age is None and trace_age is None:
+            return PurgeReport(0, 0, 0, 0, 0)
+        turn_rows: CursorResult[object] | None = None
         async with self._erasure_engine().begin() as connection:
+            # The inference plane expires independently of the transcript and
+            # is purged first, so a trace purge can never touch transcript rows
+            # and the transcript purge below never waits on trace rows.
+            if trace_age is not None:
+                turn_rows = await connection.execute(
+                    text(
+                        "DELETE FROM turn_records "
+                        "WHERE tenant_id = :tenant_id AND recorded_at < :cutoff"
+                    ),
+                    {"tenant_id": tenant_id, "cutoff": now - trace_age},
+                )
+            if transcript_age is None:
+                return PurgeReport(0, 0, 0, 0, turn_rows.rowcount if turn_rows is not None else 0)
+            cutoff = now - transcript_age
             candidates = (
                 (
                     await connection.execute(
@@ -660,6 +757,7 @@ class PostgresPrivacyStore:
             messages_deleted=message_rows.rowcount or 0,
             tool_executions_deleted=tool_rows.rowcount or 0,
             consent_records_deleted=consent_deleted,
+            turn_records_deleted=turn_rows.rowcount if turn_rows is not None else 0,
         )
 
     async def create_privacy_request(

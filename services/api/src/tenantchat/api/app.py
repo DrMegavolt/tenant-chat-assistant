@@ -49,6 +49,8 @@ from tenantchat.api.persistence import (
     PostgresLeadStore,
     PostgresMembershipStore,
     PostgresPrivacyStore,
+    PostgresTraceAccessStore,
+    PostgresTurnRecordStore,
 )
 from tenantchat.api.persistence.availability import (
     PostgresAvailabilityProvider,
@@ -61,8 +63,18 @@ from tenantchat.api.problems import (
 )
 from tenantchat.api.redaction import install_pii_log_filter
 from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
-from tenantchat.api.routers import admin, bookings, chat, health, jobs, leads, privacy, tenants
-from tenantchat.api.settings import Settings, loopback_database
+from tenantchat.api.routers import (
+    admin,
+    bookings,
+    chat,
+    health,
+    jobs,
+    leads,
+    privacy,
+    tenants,
+    traces,
+)
+from tenantchat.api.settings import Settings, loopback_database, validate_trace_content_export
 from tenantchat.api.store import (
     AuditStore,
     BookingStore,
@@ -71,9 +83,13 @@ from tenantchat.api.store import (
     HandoffStore,
     IdempotencyStore,
     InMemoryBookingStore,
+    InMemoryTraceAccessStore,
+    InMemoryTurnRecordStore,
     LeadStore,
     MembershipStore,
     PrivacyStore,
+    TraceAccessStore,
+    TurnRecordStore,
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER, utc_now
 from tenantchat.core.errors import DomainError
@@ -280,6 +296,8 @@ def create_app(
     privacy_store: PrivacyStore | None = None,
     audit_store: AuditStore | None = None,
     job_store: JobStore | None = None,
+    turn_record_store: TurnRecordStore | None = None,
+    trace_access_store: TraceAccessStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
     rate_limit_store: RateLimitStore | None = None,
@@ -306,6 +324,12 @@ def create_app(
         audit_store: Explicit test adapter. Production builds a PostgreSQL store.
         job_store: Durable job adapter. Production always builds the PostgreSQL
             implementation; explicit HTTP tests default to an in-memory fake.
+        turn_record_store: The PRIV-002 inference-plane envelope. Production
+            builds the PostgreSQL implementation; explicit-store compositions
+            default to an in-memory fake, like the job store.
+        trace_access_store: The PRIV-002 dedicated trace-read grants. Production
+            builds the PostgreSQL implementation; explicit-store compositions
+            default to an in-memory fake.
         chat_model: The model the agent runtime calls. Injected for tests; when
             omitted, `AI-001` builds an OpenAI-compatible adapter from
             ``LLM_BASE_URL``/``LLM_MODEL``/``LLM_API_KEY`` if both the base URL
@@ -338,6 +362,11 @@ def create_app(
         level=resolved.log_level,
         json_enabled=resolved.log_json,
     )
+    # PRIV-002: fail a deployment that would export trace content to a backend
+    # outside the trust boundary before any turn is recorded, not on the first
+    # export. Refuses any external endpoint regardless of environment, so
+    # "production startup fails" is structural rather than a convention.
+    validate_trace_content_export(resolved)
     registry = TenantRegistry.seeded()
     database: Database | None = None
     privacy_database: Database | None = None
@@ -436,6 +465,8 @@ def create_app(
             erasure_engine = privacy_database.engine
         privacy_store = PostgresPrivacyStore(database.engine, erasure_engine)
         job_store = PostgresJobStore(database.engine)
+        turn_record_store = PostgresTurnRecordStore(database.engine)
+        trace_access_store = PostgresTraceAccessStore(database.engine)
 
     if (
         booking_store is None
@@ -454,6 +485,11 @@ def create_app(
         # Explicit-store compositions are unit-test shapes. A deployed app took
         # the database branch above and can never silently run an in-memory queue.
         job_store = InMemoryJobStore()
+
+    if turn_record_store is None:
+        turn_record_store = InMemoryTurnRecordStore()
+    if trace_access_store is None:
+        trace_access_store = InMemoryTraceAccessStore()
 
     # SEC-002: the visitor credential signer. Production composition required
     # the key above, so every real deployment signs with a shared secret it
@@ -571,6 +607,8 @@ def create_app(
     app.state.consent_store = consent_store
     app.state.privacy_store = privacy_store
     app.state.job_store = job_store
+    app.state.turn_record_store = turn_record_store
+    app.state.trace_access_store = trace_access_store
     app.state.visitor_credential_signer = visitor_credentials
     # The one clock every visitor credential is verified against, so a test can
     # move time by reassigning state rather than sleeping.
@@ -601,6 +639,7 @@ def create_app(
     app.include_router(chat.router)
     app.include_router(privacy.router)
     app.include_router(jobs.router)
+    app.include_router(traces.router)
     app.include_router(admin.router)
 
     return app

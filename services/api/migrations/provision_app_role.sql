@@ -65,6 +65,15 @@ SELECT format(
     'REVOKE UPDATE, DELETE ON TABLE public.background_job_events FROM %I',
     :'app_role'
 ) \gexec
+-- PRIV-002: turn records are append-only evidence of what produced an answer.
+-- The API writes them (INSERT) and reads them under the trace-reader grant,
+-- but nothing may rewrite or erase them; the erasure role owns DELETE, and a
+-- projection derived from a turn is erased by cascading off its turn record.
+SELECT format(
+    'REVOKE UPDATE, DELETE ON TABLE public.turn_records, '
+    'public.turn_record_projections FROM %I',
+    :'app_role'
+) \gexec
 SELECT format(
     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
     'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',

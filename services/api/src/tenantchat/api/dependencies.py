@@ -24,6 +24,8 @@ from tenantchat.api.store import (
     LeadStore,
     MembershipStore,
     PrivacyStore,
+    TraceAccessStore,
+    TurnRecordStore,
 )
 from tenantchat.core.ports import AvailabilityProvider, BookingService, ConversationRuntime
 
@@ -106,6 +108,16 @@ def get_audit_store(request: Request) -> AuditStore:
     return store
 
 
+def get_turn_record_store(request: Request) -> TurnRecordStore:
+    store: TurnRecordStore = request.app.state.turn_record_store
+    return store
+
+
+def get_trace_access_store(request: Request) -> TraceAccessStore:
+    store: TraceAccessStore = request.app.state.trace_access_store
+    return store
+
+
 def get_job_store(request: Request) -> JobStore:
     store: JobStore = request.app.state.job_store
     return store
@@ -126,6 +138,8 @@ Memberships = Annotated[MembershipStore, Depends(get_membership_store)]
 Consent = Annotated[ConsentStore, Depends(get_consent_store)]
 Privacy = Annotated[PrivacyStore, Depends(get_privacy_store)]
 Audit = Annotated[AuditStore, Depends(get_audit_store)]
+TurnRecords = Annotated[TurnRecordStore, Depends(get_turn_record_store)]
+TraceAccess = Annotated[TraceAccessStore, Depends(get_trace_access_store)]
 Jobs = Annotated[JobStore, Depends(get_job_store)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]
 ComposedRuntime = Annotated[ConversationRuntime | None, Depends(get_composed_runtime)]

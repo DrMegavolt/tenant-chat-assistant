@@ -677,6 +677,60 @@ class ConsentRecord:
     withdrawn_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class TurnRecord:
+    """One inference-plane row: the governed envelope `OBS-004` will populate.
+
+    ``content`` is the opaque object that holds the prompt, retrieved evidence,
+    model output, and verdicts. PRIV-002 never parses it — the schema owns the
+    envelope, `OBS-004` owns the shape — but export, erasure, and retention
+    all treat the whole record as one content-bearing unit.
+
+    ``recorded_at`` is when the turn happened, the timestamp retention purges
+    on (independently of, and shorter than, the transcript's).
+    """
+
+    turn_id: uuid.UUID
+    tenant_id: str
+    session_id: uuid.UUID
+    trace_id: str | None
+    content: dict[str, object]
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TurnRecordProjection:
+    """A derived dataset pinned to the turn record it was built from.
+
+    `FEAT-008` promotes reviewed turns into evaluation datasets here. Erasure
+    of the turn record removes every projection of it (the schema cascades),
+    which is what makes "any projection derived from the record" eraseable
+    without a second registry.
+    """
+
+    projection_id: uuid.UUID
+    tenant_id: str
+    turn_record_id: uuid.UUID
+    kind: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TraceAccessGrant:
+    """One operator's dedicated turn-record read grant for one tenant.
+
+    Deliberately separate from ``tenant_memberships``: this is the `PRIV-002`
+    role, and holding a tenant-admin membership confers no trace access. It is
+    still tenant-qualified and auditable — ``granted_by`` names the platform
+    administrator who issued it.
+    """
+
+    tenant_id: str
+    principal_subject: str
+    granted_at: datetime
+    granted_by: str
+
+
 class ConsentStore(Protocol):
     """Consent grants, keyed by tenant and session.
 
@@ -783,6 +837,168 @@ class InMemoryConsentStore:
             )
 
 
+class TurnRecordStore(Protocol):
+    """The inference-plane envelope, written and read under `PRIV-002` governance.
+
+    ``record`` is the seam `OBS-004` populates at trace-finalization time; the
+    caller supplies the opaque content object and the store stamps the id and
+    timestamp. Reads are the trace viewer's surface and are expected to be
+    audited by the caller with a `TurnRecordReadReason`.
+    """
+
+    async def record(
+        self,
+        tenant_id: str,
+        session_id: uuid.UUID,
+        *,
+        content: dict[str, object],
+        trace_id: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> TurnRecord:
+        """Append one turn record for a session.
+
+        Raises:
+            NotFoundError: the session is absent or belongs to another tenant.
+        """
+
+    async def get(self, tenant_id: str, turn_id: uuid.UUID) -> TurnRecord:
+        """One turn record, tenant-qualified.
+
+        Raises:
+            NotFoundError: no such record, or it belongs to another tenant.
+        """
+
+    async def for_session(
+        self, tenant_id: str, session_id: uuid.UUID, *, limit: int
+    ) -> tuple[TurnRecord, ...]:
+        """The session's turn records, oldest first, bounded to *limit*."""
+
+    async def projections_for_turn(
+        self, tenant_id: str, turn_id: uuid.UUID
+    ) -> tuple[TurnRecordProjection, ...]:
+        """The derived datasets pinned to one turn record (empty when none).
+
+        The schema cascades these off the turn record on erasure; this read
+        exists so the trace viewer can see what was derived from what it reads.
+        """
+
+
+class TraceAccessStore(Protocol):
+    """The `PRIV-002` dedicated role for turn-record reads.
+
+    Granting is a platform-administrator action, audited like membership
+    assignment; checking is what the trace read route gates on. Separate from
+    transcript memberships on purpose: a transcript viewer holds no trace
+    access unless granted here.
+    """
+
+    async def grant(self, tenant_id: str, subject: str, *, granted_by: str) -> TraceAccessGrant:
+        """Grant trace-read access; re-granting is an idempotent upsert."""
+
+    async def revoke(self, tenant_id: str, subject: str) -> bool:
+        """Revoke trace-read access; returns whether a grant was removed."""
+
+    async def has_access(self, tenant_id: str, subject: str) -> bool:
+        """Whether the operator may read this tenant's turn records."""
+
+    async def for_tenant(self, tenant_id: str) -> tuple[TraceAccessGrant, ...]:
+        """The tenant's current grants, for the operator console."""
+
+
+class InMemoryTurnRecordStore:
+    """A concurrency-safe fake; production composition never constructs it."""
+
+    def __init__(self) -> None:
+        self._records: dict[uuid.UUID, TurnRecord] = {}
+        self._lock = asyncio.Lock()
+
+    async def record(
+        self,
+        tenant_id: str,
+        session_id: uuid.UUID,
+        *,
+        content: dict[str, object],
+        trace_id: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> TurnRecord:
+        record = TurnRecord(
+            turn_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            content=dict(content),
+            recorded_at=recorded_at or datetime.now(UTC),
+        )
+        async with self._lock:
+            self._records[record.turn_id] = record
+        return record
+
+    async def get(self, tenant_id: str, turn_id: uuid.UUID) -> TurnRecord:
+        async with self._lock:
+            record = self._records.get(turn_id)
+        if record is None or record.tenant_id != tenant_id:
+            raise NotFoundError(detail="turn record absent or outside tenant")
+        return replace(record, content=dict(record.content))
+
+    async def for_session(
+        self, tenant_id: str, session_id: uuid.UUID, *, limit: int
+    ) -> tuple[TurnRecord, ...]:
+        async with self._lock:
+            records = [
+                replace(record, content=dict(record.content))
+                for record in self._records.values()
+                if record.tenant_id == tenant_id and record.session_id == session_id
+            ]
+        records.sort(key=lambda record: record.recorded_at)
+        return tuple(records[:limit])
+
+    async def projections_for_turn(
+        self, tenant_id: str, turn_id: uuid.UUID
+    ) -> tuple[TurnRecordProjection, ...]:
+        # The in-memory fake has no projection storage: projections are a
+        # `FEAT-008` artifact, and the PostgreSQL adapter is authoritative for
+        # them. An empty tuple keeps the hermetic read surface honest.
+        del tenant_id, turn_id
+        return ()
+
+
+class InMemoryTraceAccessStore:
+    """A concurrency-safe fake; production composition never constructs it."""
+
+    def __init__(self) -> None:
+        self._grants: dict[tuple[str, str], TraceAccessGrant] = {}
+        self._lock = asyncio.Lock()
+
+    async def grant(self, tenant_id: str, subject: str, *, granted_by: str) -> TraceAccessGrant:
+        now = datetime.now(UTC)
+        async with self._lock:
+            existing = self._grants.get((tenant_id, subject))
+            grant = TraceAccessGrant(
+                tenant_id=tenant_id,
+                principal_subject=subject,
+                granted_at=existing.granted_at if existing else now,
+                granted_by=granted_by,
+            )
+            self._grants[(tenant_id, subject)] = grant
+        return grant
+
+    async def revoke(self, tenant_id: str, subject: str) -> bool:
+        async with self._lock:
+            return self._grants.pop((tenant_id, subject), None) is not None
+
+    async def has_access(self, tenant_id: str, subject: str) -> bool:
+        async with self._lock:
+            return (tenant_id, subject) in self._grants
+
+    async def for_tenant(self, tenant_id: str) -> tuple[TraceAccessGrant, ...]:
+        async with self._lock:
+            return tuple(
+                grant
+                for (tenant, _subject), grant in sorted(self._grants.items())
+                if tenant == tenant_id
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class PrivacyRequestRecord:
     """A deletion request from an operator, fulfilled by the erasure worker.
@@ -807,7 +1023,10 @@ class SubjectRecords:
     """Everything the platform holds about one subject, assembled for export.
 
     Built by :class:`PrivacyStore` from the sessions a contact maps to; the
-    export route renders it without touching the stores again.
+    export route renders it without touching the stores again. ``turn_records``
+    and ``projections`` are the inference plane's contribution: a turn record
+    holds the same conversation's content, and a projection is derived from it,
+    so both belong in a data-subject export.
     """
 
     sessions: tuple[ConversationRecord, ...]
@@ -816,6 +1035,8 @@ class SubjectRecords:
     bookings: tuple[BookingRecord, ...]
     handoffs: tuple[HandoffRecord, ...]
     consent: tuple[ConsentRecord, ...]
+    turn_records: tuple[TurnRecord, ...]
+    projections: tuple[TurnRecordProjection, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -833,6 +1054,7 @@ class ErasureReport:
     handoffs_anonymized: int
     consent_records_deleted: int
     checkpoints_deleted: int
+    turn_records_deleted: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -842,12 +1064,16 @@ class PurgeReport:
     Counts are per data class so the audit event is a number, not a list of
     references. Idempotency keys are absent: they hold only hashes and are not
     linked to sessions, so nothing about them can be counted for a subject.
+    ``turn_records_deleted`` is the inference plane's independent, shorter
+    retention (``PRIV-002``); projections are erased by cascading off their
+    turn records and counted there.
     """
 
     sessions_deleted: int
     messages_deleted: int
     tool_executions_deleted: int
     consent_records_deleted: int
+    turn_records_deleted: int
 
 
 class PrivacyStore(Protocol):
@@ -928,12 +1154,14 @@ class InMemoryPrivacyStore:
         leads: InMemoryLeadStore,
         handoffs: InMemoryHandoffStore,
         consent: InMemoryConsentStore,
+        turn_records: InMemoryTurnRecordStore | None = None,
     ) -> None:
         self._conversations = conversations
         self._bookings = bookings
         self._leads = leads
         self._handoffs = handoffs
         self._consent = consent
+        self._turn_records = turn_records or InMemoryTurnRecordStore()
         self._requests: dict[uuid.UUID, PrivacyRequestRecord] = {}
         self._lock = asyncio.Lock()
 
@@ -956,6 +1184,10 @@ class InMemoryPrivacyStore:
                     for message in self._conversations._messages[key]
                 )
             }
+        async with self._turn_records._lock:
+            for record in self._turn_records._records.values():
+                if record.tenant_id == tenant_id and self._matches(contact, str(record.content)):
+                    sessions.add(record.session_id)
         for booking in self._bookings._records:
             if booking.tenant_id == tenant_id and self._matches(contact, booking.contact.value):
                 sessions.add(uuid.UUID(booking.session_id))
@@ -1002,6 +1234,12 @@ class InMemoryPrivacyStore:
                 for record in self._consent._records.values()
                 if record.tenant_id == tenant_id and record.session_id in wanted
             ),
+            turn_records=tuple(
+                record
+                for record in self._turn_records._records.values()
+                if record.tenant_id == tenant_id and str(record.session_id) in wanted
+            ),
+            projections=(),
         )
 
     async def erase_subject(
@@ -1019,6 +1257,13 @@ class InMemoryPrivacyStore:
                 if key[0] == tenant_id and key[1] in wanted:
                     del self._consent._records[key]
                     consent_records_deleted += 1
+        async with self._turn_records._lock:
+            turn_records_deleted = 0
+            for turn_id in list(self._turn_records._records):
+                record = self._turn_records._records[turn_id]
+                if record.tenant_id == tenant_id and str(record.session_id) in wanted:
+                    del self._turn_records._records[turn_id]
+                    turn_records_deleted += 1
         bookings = len(
             [
                 r
@@ -1059,14 +1304,30 @@ class InMemoryPrivacyStore:
             handoffs_anonymized=handoffs,
             consent_records_deleted=consent_records_deleted,
             checkpoints_deleted=0,
+            turn_records_deleted=turn_records_deleted,
         )
 
     async def purge_expired(
         self, tenant_id: str, policy: RetentionPolicy, *, now: datetime
     ) -> PurgeReport:
         transcript_age = policy.max_age(DataClass.TRANSCRIPT)
+        trace_age = policy.max_age(DataClass.INFERENCE_TRACE)
+        if transcript_age is None and trace_age is None:
+            return PurgeReport(0, 0, 0, 0, 0)
+        async with self._turn_records._lock:
+            trace_cutoff = now - trace_age if trace_age is not None else None
+            turn_records_deleted = 0
+            for turn_id in list(self._turn_records._records):
+                record = self._turn_records._records[turn_id]
+                if (
+                    record.tenant_id == tenant_id
+                    and trace_cutoff is not None
+                    and record.recorded_at < trace_cutoff
+                ):
+                    del self._turn_records._records[turn_id]
+                    turn_records_deleted += 1
         if transcript_age is None:
-            return PurgeReport(0, 0, 0, 0)
+            return PurgeReport(0, 0, 0, 0, turn_records_deleted)
         cutoff = now - transcript_age
         async with self._conversations._lock:
             purgeable = [
@@ -1097,6 +1358,7 @@ class InMemoryPrivacyStore:
             messages_deleted=messages_deleted,
             tool_executions_deleted=0,
             consent_records_deleted=consent_records_deleted,
+            turn_records_deleted=turn_records_deleted,
         )
 
     async def create_privacy_request(
