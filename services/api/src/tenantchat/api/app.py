@@ -22,22 +22,29 @@ from tenantchat.api.faults import TransportError
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
+    PostgresAuditStore,
     PostgresBookingStore,
+    PostgresConsentStore,
     PostgresConversationStore,
     PostgresHandoffStore,
     PostgresIdempotencyStore,
     PostgresLeadStore,
+    PostgresPrivacyStore,
 )
 from tenantchat.api.problems import PROBLEM_CONTENT_TYPE, handle_domain_error
+from tenantchat.api.redaction import install_pii_log_filter
 from tenantchat.api.registry import TenantRegistry
-from tenantchat.api.routers import admin, bookings, chat, health, leads, tenants
+from tenantchat.api.routers import admin, bookings, chat, health, leads, privacy, tenants
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
+    AuditStore,
     BookingStore,
+    ConsentStore,
     ConversationStore,
     HandoffStore,
     IdempotencyStore,
     LeadStore,
+    PrivacyStore,
 )
 from tenantchat.core.errors import DomainError
 from tenantchat.core.ports import ConversationRuntime
@@ -240,12 +247,15 @@ def create_app(
     conversation_store: ConversationStore | None = None,
     handoff_store: HandoffStore | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    consent_store: ConsentStore | None = None,
+    privacy_store: PrivacyStore | None = None,
+    audit_store: AuditStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
 ) -> FastAPI:
     """Build the application.
 
-    The five stores are injected together or not at all. A mixture would run
+    The stores are injected together or not at all. A mixture would run
     half the request against a test double and half against PostgreSQL, which is
     the configuration most likely to make a passing test mean nothing.
 
@@ -256,6 +266,10 @@ def create_app(
         conversation_store: Explicit test adapter. Production builds PostgreSQL stores.
         handoff_store: Explicit test adapter. Production builds PostgreSQL stores.
         idempotency_store: Explicit test adapter. Production builds PostgreSQL stores.
+        consent_store: Explicit test adapter. Production builds PostgreSQL stores.
+        privacy_store: Explicit test adapter. Production composes one over the
+            application engine plus the erasure role's engine.
+        audit_store: Explicit test adapter. Production builds a PostgreSQL store.
         chat_model: The model the agent runtime calls. Injected for tests; when
             omitted, `AI-001` builds an OpenAI-compatible adapter from
             ``LLM_BASE_URL``/``LLM_MODEL``/``LLM_API_KEY`` if both the base URL
@@ -271,6 +285,7 @@ def create_app(
     resolved = settings or Settings.from_environment()
     registry = TenantRegistry.seeded()
     database: Database | None = None
+    privacy_database: Database | None = None
     # AI-001: a provider adapter built from settings for the production
     # composition. Tests inject `chat_model` explicitly and leave this None; a
     # production deployment without a model configured also leaves it None so
@@ -291,6 +306,9 @@ def create_app(
         conversation_store,
         handoff_store,
         idempotency_store,
+        consent_store,
+        privacy_store,
+        audit_store,
     )
     if any(store is None for store in supplied):
         if any(store is not None for store in supplied):
@@ -325,6 +343,24 @@ def create_app(
         conversation_store = PostgresConversationStore(database.engine)
         handoff_store = PostgresHandoffStore(database.engine)
         idempotency_store = PostgresIdempotencyStore(database.engine)
+        consent_store = PostgresConsentStore(database.engine)
+        audit_store = PostgresAuditStore(database.engine)
+        # The erasure engine is optional here: it exists for the worker, and the
+        # API never calls the operations that need it. A deployment without
+        # PRIVACY_DATABASE_URL serves export and the queue but runs no erasure.
+        erasure_engine = None
+        if resolved.privacy_database_url is not None:
+            privacy_database = Database.connect(
+                resolved.privacy_database_url,
+                DatabasePoolSettings(
+                    size=resolved.privacy_database_pool_size,
+                    max_overflow=resolved.privacy_database_max_overflow,
+                    timeout_seconds=resolved.database_pool_timeout_seconds,
+                    recycle_seconds=resolved.database_pool_recycle_seconds,
+                ),
+            )
+            erasure_engine = privacy_database.engine
+        privacy_store = PostgresPrivacyStore(database.engine, erasure_engine)
 
     if (
         booking_store is None
@@ -332,11 +368,15 @@ def create_app(
         or conversation_store is None
         or handoff_store is None
         or idempotency_store is None
+        or consent_store is None
+        or privacy_store is None
+        or audit_store is None
     ):
         raise RuntimeError("composition failed to provide persistence stores")
 
     bookings_for_agent, leads_for_agent = booking_store, lead_store
     handoffs_for_agent, keys_for_agent = handoff_store, idempotency_store
+    consent_for_agent = consent_store
 
     def compose_runtime(saver: Checkpointer, model: ChatModel) -> ConversationRuntime:
         return build_conversation_runtime(
@@ -346,6 +386,7 @@ def create_app(
             leads=leads_for_agent,
             handoffs=handoffs_for_agent,
             idempotency=keys_for_agent,
+            consent=consent_for_agent,
             checkpointer=saver,
         )
 
@@ -358,6 +399,8 @@ def create_app(
                     (record.policy.tenant_id, record.policy.name)
                     for record in registry.all().values()
                 )
+            if privacy_database is not None:
+                closing.push_async_callback(privacy_database.dispose)
             # Owned provider clients are closed with the app. An injected test
             # model is the caller's to clean up, not the app's.
             if owned_model is not None:
@@ -390,6 +433,9 @@ def create_app(
     app.state.conversation_store = conversation_store
     app.state.handoff_store = handoff_store
     app.state.idempotency_store = idempotency_store
+    app.state.consent_store = consent_store
+    app.state.privacy_store = privacy_store
+    app.state.audit_store = audit_store
     app.state.conversation_runtime = (
         compose_runtime(checkpointer, effective_model)
         if effective_model is not None and checkpointer is not None
@@ -400,6 +446,7 @@ def create_app(
     app.state.chat_model = effective_model
 
     _install_middleware(app, resolved)
+    install_pii_log_filter()
 
     app.add_exception_handler(DomainError, handle_domain_error)
     app.add_exception_handler(TransportError, _handle_api_fault)
@@ -411,6 +458,7 @@ def create_app(
     app.include_router(bookings.router)
     app.include_router(leads.router)
     app.include_router(chat.router)
+    app.include_router(privacy.router)
     app.include_router(admin.router)
 
     return app

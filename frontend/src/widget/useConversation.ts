@@ -16,7 +16,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatApi } from "src/widget/api";
 import type { ChatTurnResponse, TenantConfig, TranscriptEntry } from "src/widget/types";
 import type { VisitorData } from "src/widget/visitorData";
-import { consentStatement } from "src/widget/visitorData";
 
 const POLL_INTERVAL_MS = 2500;
 const PROACTIVE_DELAY_MS = 12000;
@@ -168,6 +167,20 @@ export function useConversation({
     const session = await api.openSession({ tenantId });
     visitor.recordSession(session.sessionId);
     sessionRef.current = session.sessionId;
+    // A lead can be captured from the very first message the visitor sends, so
+    // the follow-up purpose is granted when the conversation opens; the booking
+    // purpose is granted separately at the confirmation, where the consent
+    // checkbox lives. Granting is best-effort: the server refuses the action if
+    // it is missing, and the refusal is the visitor's next signal.
+    try {
+      await api.consent({
+        tenantId,
+        sessionId: session.sessionId,
+        purposes: ["follow_up"]
+      });
+    } catch {
+      // The turn that follows surfaces the refusal; do not fail the session.
+    }
     return session.sessionId;
   }, [api, tenantId, visitor]);
 
@@ -244,9 +257,17 @@ export function useConversation({
       try {
         // Approving submits the visitor's name, address, and contact, so it is
         // also the moment consent is given (the confirmation gated the approve
-        // button on the consent checkbox).
+        // button on the consent checkbox). The grant is recorded server-side
+        // before the confirmation is submitted, because the backend refuses to
+        // store a booking without it; the statement echoed back is the one the
+        // tenant's policy published.
         if (decision === "approved") {
-          visitor.recordConsent(consentStatement(config.name));
+          const granted = await api.consent({
+            tenantId,
+            sessionId,
+            purposes: ["booking", "follow_up"]
+          });
+          visitor.recordConsent(granted.statement);
         }
         const payload = await api.confirm({ tenantId, sessionId, decision });
         // The visitor has answered the pending question; drop the confirmation
@@ -268,7 +289,7 @@ export function useConversation({
         setSending(false);
       }
     },
-    [api, applyTurn, config.name, setEntries, setSending, tenantId, visitor]
+    [api, applyTurn, setEntries, setSending, tenantId, visitor]
   );
 
   const forget = useCallback(() => {

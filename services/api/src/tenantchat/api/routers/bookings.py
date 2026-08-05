@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from tenantchat.api.dependencies import Bookings, Registry
+from tenantchat.api.dependencies import Bookings, Consent, Registry
 from tenantchat.api.schemas import BookingRequest, BookingResponse
 from tenantchat.core.commands import BookingCommand
 
@@ -26,12 +26,16 @@ async def create_booking(
     payload: BookingRequest,
     registry: Registry,
     bookings: Bookings,
+    consent: Consent,
 ) -> BookingResponse:
     """Book an offered slot.
 
     Not yet idempotent: a retried request books twice. `DATA-003` adds the
     provider-backed slot reservation and idempotency transaction that close that
     gap. This endpoint currently persists the accepted static-slot result only.
+
+    Storing the customer's contact is gated on the session having granted the
+    purposes the booking requires (`PRIV-001`).
 
     Raises:
         NotFoundError: no such tenant.
@@ -40,6 +44,8 @@ async def create_booking(
         InvalidContactError: the contact is not a valid email or NANP number.
         UnknownServiceError: the service did not resolve against the catalog.
         SlotUnavailableError: the slot is not currently offered.
+        ConsentRequiredError: the session has not granted every purpose the
+            booking requires.
     """
     record = registry.get(payload.tenant_id)
     resolved = record.policy.catalog.resolve(payload.service)
@@ -56,5 +62,7 @@ async def create_booking(
         # the two errors, rather than a confusing "slot unavailable".
         offered_slots=record.offered_slots(resolved.slug) if resolved else (),
     )
+    grant = await consent.consent_grant(payload.tenant_id, payload.session_id)
+    grant.require(*command.require_consent)
 
     return BookingResponse.of(await bookings.record(command, session_id=payload.session_id))

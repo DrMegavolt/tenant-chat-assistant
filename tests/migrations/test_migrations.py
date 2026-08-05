@@ -27,6 +27,8 @@ DOMAIN_TABLES = {
     "knowledge_sources",
     "knowledge_documents",
     "knowledge_document_versions",
+    "consent_records",
+    "privacy_requests",
 }
 TENANT_QUERY_TABLES = DOMAIN_TABLES - {"tenants"}
 
@@ -64,7 +66,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0004_agent_runtime"
+    assert revision == "0005_privacy"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -79,6 +81,9 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         "knowledge_version_state",
         "knowledge_indexing_state",
         "knowledge_visibility",
+        "consent_purpose",
+        "consent_status",
+        "privacy_request_status",
     } <= enum_names
 
     for table in TENANT_QUERY_TABLES:
@@ -124,6 +129,18 @@ def test_composite_foreign_keys_reject_cross_tenant_records(
                 VALUES (%s, %s, %s, 1, 'visitor', 'hello')
                 """,
                 (message_id, "tenant-b", session_id),
+            )
+        connection.rollback()
+        # A consent grant is attached to the same composite key, so a grant
+        # recorded under tenant B against tenant A's session must fail too.
+        with pytest.raises(errors.ForeignKeyViolation):
+            connection.execute(
+                """
+                INSERT INTO consent_records
+                    (id, tenant_id, chat_session_id, purpose, statement)
+                VALUES (%s, %s, %s, 'booking', 'I agree.')
+                """,
+                (uuid.uuid4(), "tenant-b", session_id),
             )
         connection.rollback()
 

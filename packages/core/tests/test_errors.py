@@ -21,6 +21,7 @@ from tenantchat.core.errors import (
 )
 from tenantchat.core.fields import RequiredField
 from tenantchat.core.lifecycle import VersionState
+from tenantchat.core.privacy import ConsentPurpose, ConsentRequiredError
 
 # Strings that must never surface in printable output. Modelled on what really
 # ends up in `detail`: connection strings, credentials, internal hostnames, and
@@ -47,6 +48,7 @@ EXTRA_ARGS: dict[type[DomainError], dict[str, object]] = {
         "current": VersionState.DRAFT,
         "permitted": (VersionState.APPROVED,),
     },
+    ConsentRequiredError: {"missing_purposes": (ConsentPurpose.BOOKING,)},
 }
 
 

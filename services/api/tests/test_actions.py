@@ -20,6 +20,7 @@ from tenantchat.api.actions import (
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.store import (
     InMemoryBookingStore,
+    InMemoryConsentStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
@@ -27,11 +28,31 @@ from tenantchat.api.store import (
 from tenantchat.core.commands import BookingCommand, HandoffCommand, LeadCommand
 from tenantchat.core.errors import ConflictError, NotFoundError
 from tenantchat.core.ports import IdempotencyKey
+from tenantchat.core.privacy import ConsentPurpose
 
 BOOKING_TENANT = "clearview"
 LEAD_TENANT = "apex"
 SESSION = "session-1"
 KEY = IdempotencyKey.derive("clearview", SESSION, "book_appointment", "1", "call-1")
+
+_BOOKING_PURPOSES = frozenset({ConsentPurpose.BOOKING, ConsentPurpose.FOLLOW_UP})
+_LEAD_PURPOSES = frozenset({ConsentPurpose.FOLLOW_UP})
+
+
+def granted_consent(tenant_id: str, session_id: str = SESSION) -> InMemoryConsentStore:
+    """A consent store already holding a grant for the session and its action.
+
+    Consent is a precondition, not the thing under test: tests that are about
+    idempotency grant it up front so a refusal cannot mask a missing one.
+    """
+    store = InMemoryConsentStore()
+    purposes = _BOOKING_PURPOSES if tenant_id == BOOKING_TENANT else _LEAD_PURPOSES
+
+    async def grant() -> None:
+        await store.record(tenant_id, session_id, purposes=purposes, statement="test")
+
+    asyncio.run(grant())
+    return store
 
 
 def booking_command(**overrides: str) -> BookingCommand:
@@ -69,7 +90,8 @@ def handoff_command(**overrides: str) -> HandoffCommand:
 def bookings() -> Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]:
     def build() -> tuple[RecordedBookingService, InMemoryBookingStore]:
         store = InMemoryBookingStore()
-        return RecordedBookingService(store, InMemoryIdempotencyStore()), store
+        consent = granted_consent(BOOKING_TENANT)
+        return RecordedBookingService(store, InMemoryIdempotencyStore(), consent), store
 
     return build
 
@@ -104,12 +126,13 @@ class TestBookingIdempotency:
         """
         store = InMemoryBookingStore()
         keys = InMemoryIdempotencyStore()
+        consent = granted_consent(BOOKING_TENANT)
 
         async def scenario() -> None:
-            await RecordedBookingService(store, keys).confirm(
+            await RecordedBookingService(store, keys, consent).confirm(
                 booking_command(), session_id=SESSION, idempotency_key=KEY
             )
-            replayed = await RecordedBookingService(store, keys).confirm(
+            replayed = await RecordedBookingService(store, keys, consent).confirm(
                 booking_command(), session_id=SESSION, idempotency_key=KEY
             )
 
@@ -147,7 +170,19 @@ class TestBookingIdempotency:
         self, bookings: Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]
     ) -> None:
         """The guard must not turn two real customers into one."""
-        service, store = bookings()
+        store = InMemoryBookingStore()
+        consent = InMemoryConsentStore()
+
+        async def grant() -> None:
+            await consent.record(
+                BOOKING_TENANT, SESSION, purposes=_BOOKING_PURPOSES, statement="test"
+            )
+            await consent.record(
+                BOOKING_TENANT, "session-2", purposes=_BOOKING_PURPOSES, statement="test"
+            )
+
+        asyncio.run(grant())
+        service = RecordedBookingService(store, InMemoryIdempotencyStore(), consent)
         other = IdempotencyKey.derive("clearview", "session-2", "book_appointment", "1", "call-1")
 
         async def scenario() -> None:
@@ -162,7 +197,9 @@ class TestBookingIdempotency:
 class TestLeadIdempotency:
     def test_a_retry_returns_the_original_lead(self) -> None:
         store = InMemoryLeadStore()
-        service = RecordedLeadService(store, InMemoryIdempotencyStore())
+        service = RecordedLeadService(
+            store, InMemoryIdempotencyStore(), granted_consent(LEAD_TENANT)
+        )
         key = IdempotencyKey.derive("apex", SESSION, "create_lead", "1", "call-1")
 
         async def scenario() -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from tenantchat.api.dependencies import Leads, Registry
+from tenantchat.api.dependencies import Consent, Leads, Registry
 from tenantchat.api.schemas import LeadRequest, LeadResponse
 from tenantchat.core.commands import LeadCommand
 
@@ -25,14 +25,20 @@ async def create_lead(
     payload: LeadRequest,
     registry: Registry,
     leads: Leads,
+    consent: Consent,
 ) -> LeadResponse:
     """Capture a request for a human callback.
+
+    Storing a contact value is gated on the session having granted the purpose
+    the lead requires (`PRIV-001`), the same gate the agent path enforces.
 
     Raises:
         NotFoundError: no such tenant.
         LeadCaptureNotPermittedError: this tenant does not capture leads.
         MissingRequiredFieldsError: a required field was empty.
         InvalidContactError: the contact is not a valid email or NANP number.
+        ConsentRequiredError: the session has not granted the purpose the lead
+            requires.
     """
     record = registry.get(payload.tenant_id)
 
@@ -45,5 +51,7 @@ async def create_lead(
         address_or_zip=payload.address_or_zip,
         urgency=payload.urgency,
     )
+    grant = await consent.consent_grant(payload.tenant_id, payload.session_id)
+    grant.require(*command.require_consent)
 
     return LeadResponse.of(await leads.record(command, session_id=payload.session_id))

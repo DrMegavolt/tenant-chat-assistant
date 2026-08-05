@@ -792,7 +792,7 @@ guarantees by construction.
 
 ### PRIV-001 — PII classification, consent, retention, export, and deletion
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Privacy/data governance`
 - Depends on: `DATA-001`, `SEC-001`, `SEC-002`
@@ -810,7 +810,38 @@ guarantees by construction.
   - Contact actions cannot proceed without the configured consent state.
 - Verification:
   - Privacy lifecycle integration tests cover consent, export, expiration, deletion, and audit records.
-- Completion notes: _Pending._
+- Completion notes: PII classification, the consent gate, configurable
+  retention, authenticated export/erasure, and operational-plane redaction are
+  implemented and verified. The classification and permitted uses live in
+  `tenantchat.core.privacy` (data classes, purposes, statement, retention rules,
+  anonymization sentinels), mirrored for operators in `docs/privacy.md`.
+  Consent is a server-owned grant (`POST /api/chat/consent`) keyed per session
+  and purpose; the idempotent booking and lead services enforce it through the
+  `ConsentSource` port, so a replayed node re-checks instead of re-recording.
+  `0005_privacy.py` adds `consent_records` and the `privacy_requests` queue and
+  widens `audit_events.resource_id` so privacy events can name a class or kind.
+  Export assembles everything the platform holds about one contact (sessions,
+  messages, leads, bookings, handoffs, consent) for one tenant only; the
+  erasure worker (`privacy_worker.py`) fulfills queue requests and purges
+  expired transcripts, emitting per-request and per-tenant audited counts.
+  Erasure runs only under the `PRIVACY_DATABASE_URL` role, which is the sole
+  role granted `DELETE` on sessions/transcripts/consent and is revoked from the
+  app role (`provision_app_role.sql` / `provision_privacy_role.sql`); the app
+  role cannot delete privacy records, and the audit table is append-only for
+  every role. `redaction.py` scrubs free text and tool-event JSON trees, and a
+  root-logger filter installed at composition root redacts an accidental
+  f-string as a second line of defence against the ADR-0010 invariant. The
+  widget grants `follow_up` at open and `booking` only at the gated
+  confirmation, showing the statement the server records. Verified: full
+  `make check` (quality gate) plus real-Postgres 16 suites — `test-privacy`
+  (9 lifecycle tests: consent refusal and grant, one-subject export with
+  same- and cross-tenant negatives, deletion fulfillment with row-level and
+  audit assertions, expired-transcript purge with audited counts, and
+  unauthorized-principal error contracts), `test-migrations` (11), 
+  `test-repositories` (27), `test-agent-runtime` (6). Follow-ups: tenant-scoped
+  RBAC for privacy surfaces and the erasure queue page live with `SEC-001`;
+  inference-trace content export/erasure and retention are `PRIV-002`, which
+  extends this task's export/erasure to turn records.
 
 ### DEP-001 — Immutable, reproducible application images
 

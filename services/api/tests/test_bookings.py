@@ -120,6 +120,7 @@ class TestPolicyAndCompleteness:
             "/api/book",
             json={
                 "tenant_id": "clearview",
+                "session_id": "session-test",
                 "service": "HVAC",
                 "slot": offered[0],
                 "customer_name": "Dana Ruiz",

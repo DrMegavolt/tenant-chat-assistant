@@ -47,6 +47,13 @@ class Settings:
     llm_model: str | None = None
     llm_api_key: str = ""
     llm_timeout_seconds: int = 120
+    # PRIV-001: the erasure role's database. `PRIVACY_DATABASE_URL` names a
+    # login with DELETE on sessions and transcripts, which the application role
+    # deliberately lacks. The erasure and retention worker connects with it and
+    # nothing else does; absent it, the worker refuses to start.
+    privacy_database_url: str | None = None
+    privacy_database_pool_size: int = 2
+    privacy_database_max_overflow: int = 2
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -89,4 +96,11 @@ class Settings:
             llm_model=os.environ.get("LLM_MODEL", "").strip() or None,
             llm_api_key=os.environ.get("LLM_API_KEY", "").strip(),
             llm_timeout_seconds=int(os.environ.get("LLM_TIMEOUT_SECONDS", "120")),
+            privacy_database_url=os.environ.get("PRIVACY_DATABASE_URL", "").strip() or None,
+            privacy_database_pool_size=int(
+                os.environ.get("CHAT_API_PRIVACY_DATABASE_POOL_SIZE", "2")
+            ),
+            privacy_database_max_overflow=int(
+                os.environ.get("CHAT_API_PRIVACY_DATABASE_MAX_OVERFLOW", "2")
+            ),
         )

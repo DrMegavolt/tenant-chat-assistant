@@ -19,7 +19,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from tenantchat.api.store import BookingRecord, ConversationRecord, LeadRecord, MessageRecord
+from tenantchat.api.store import (
+    BookingRecord,
+    ConsentRecord,
+    ConversationRecord,
+    HandoffRecord,
+    LeadRecord,
+    MessageRecord,
+    PrivacyRequestRecord,
+)
 from tenantchat.core.ports import AssistantTurn
 from tenantchat.core.tenant import PublicTenantView
 
@@ -349,3 +357,187 @@ class StaffMessageResponse(BaseModel):
 
 class CsrfTokenResponse(BaseModel):
     csrf_token: str
+
+
+class ConsentRequest(_Request):
+    """A visitor recording consent for contact-bearing purposes.
+
+    ``purposes`` is closed and bounded: only the two the platform knows how to
+    state, and at most both of them. The statement is not taken from the
+    visitor — the server derives it from the tenant's policy, so the recorded
+    text is always the one the tenant published.
+    """
+
+    tenant_id: str = _TENANT_ID
+    session_id: uuid.UUID
+    purposes: list[Literal["booking", "follow_up"]] = Field(min_length=1, max_length=2)
+
+
+class ConsentResponse(BaseModel):
+    """What the session now holds, echoed back so the widget can show it."""
+
+    purposes: list[str]
+    statement: str
+    granted_at: datetime
+
+
+class ContactQuery(_Request):
+    """An operator naming a subject for export or erasure."""
+
+    tenant_id: str = _TENANT_ID
+    # Wider than the domain's contact bound on purpose: the operator pastes
+    # from a CRM and the domain parser applies the real limits.
+    contact: str = Field(min_length=3, max_length=320)
+
+
+class SessionExportItem(BaseModel):
+    session_id: uuid.UUID
+    status: str
+    outcome: str
+    started_at: datetime
+    last_activity_at: datetime
+
+    @classmethod
+    def of(cls, record: ConversationRecord) -> SessionExportItem:
+        return cls(
+            session_id=record.session_id,
+            status=record.status,
+            outcome=record.outcome,
+            started_at=record.started_at,
+            last_activity_at=record.last_activity_at,
+        )
+
+
+class LeadExportItem(BaseModel):
+    lead_id: str
+    created_at: datetime
+    customer_name: str
+    contact: str
+    service: str
+    summary: str
+    address_or_zip: str
+    urgency: str
+
+    @classmethod
+    def of(cls, record: LeadRecord) -> LeadExportItem:
+        return cls(
+            lead_id=record.lead_id,
+            created_at=record.created_at,
+            customer_name=record.customer_name,
+            contact=record.contact.value,
+            service=record.service,
+            summary=record.summary,
+            address_or_zip=record.address_or_zip,
+            urgency=record.urgency.value,
+        )
+
+
+class BookingExportItem(BaseModel):
+    booking_id: str
+    created_at: datetime
+    customer_name: str
+    contact: str
+    address: str
+    service: str
+    slot: str
+
+    @classmethod
+    def of(cls, record: BookingRecord) -> BookingExportItem:
+        return cls(
+            booking_id=record.booking_id,
+            created_at=record.created_at,
+            customer_name=record.customer_name,
+            contact=record.contact.value,
+            address=record.address,
+            service=record.service_name,
+            slot=record.slot,
+        )
+
+
+class HandoffExportItem(BaseModel):
+    handoff_id: str
+    created_at: datetime
+    reason: str
+    summary: str
+
+    @classmethod
+    def of(cls, record: HandoffRecord) -> HandoffExportItem:
+        return cls(
+            handoff_id=record.handoff_id,
+            created_at=record.created_at,
+            reason=record.reason.value,
+            summary=record.summary,
+        )
+
+
+class ConsentExportItem(BaseModel):
+    purpose: str
+    status: str
+    statement: str
+    granted_at: datetime
+    withdrawn_at: datetime | None
+
+    @classmethod
+    def of(cls, record: ConsentRecord) -> ConsentExportItem:
+        return cls(
+            purpose=record.purpose.value,
+            status=record.status.value,
+            statement=record.statement,
+            granted_at=record.granted_at,
+            withdrawn_at=record.withdrawn_at,
+        )
+
+
+class PrivacyExportResponse(BaseModel):
+    """Everything the platform holds about one subject.
+
+    Deliberately complete: an export that omitted a table would be an export
+    that looks done. The response is not tenant-scoped beyond the requested
+    tenant — the operator asked for one tenant's record of a subject.
+    """
+
+    tenant_id: str
+    contact_kind: str
+    contact_value: str
+    requested_by: str
+    generated_at: datetime
+    sessions: list[SessionExportItem]
+    messages: list[TranscriptMessage]
+    leads: list[LeadExportItem]
+    bookings: list[BookingExportItem]
+    handoffs: list[HandoffExportItem]
+    consent: list[ConsentExportItem]
+
+
+class DeletionRequestResponse(BaseModel):
+    """One row of the erasure queue.
+
+    The contact is echoed in canonical form: the operator who filed the
+    request needs to know it was filed against the right number.
+    """
+
+    request_id: uuid.UUID
+    tenant_id: str
+    status: str
+    contact_kind: str
+    contact_value: str
+    requested_by: str
+    requested_at: datetime
+    processed_at: datetime | None
+
+    @classmethod
+    def of(cls, record: PrivacyRequestRecord) -> DeletionRequestResponse:
+        return cls(
+            request_id=record.request_id,
+            tenant_id=record.tenant_id,
+            status=record.status,
+            contact_kind=record.contact_kind,
+            contact_value=record.contact_value,
+            requested_by=record.requested_by,
+            requested_at=record.requested_at,
+            processed_at=record.processed_at,
+        )
+
+
+class DeletionRequestsResponse(BaseModel):
+    requests: list[DeletionRequestResponse]

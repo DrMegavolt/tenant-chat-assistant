@@ -33,7 +33,13 @@ from tenantchat.api.registry import (
     RegistryPolicySource,
     TenantRegistry,
 )
-from tenantchat.api.store import BookingStore, HandoffStore, IdempotencyStore, LeadStore
+from tenantchat.api.store import (
+    BookingStore,
+    ConsentStore,
+    HandoffStore,
+    IdempotencyStore,
+    LeadStore,
+)
 from tenantchat.core.ports import AssistantTurn, CommittedEffect
 from tenantchat.orchestration.checkpoints import Checkpointer
 from tenantchat.orchestration.dependencies import DispatchDependencies
@@ -50,14 +56,15 @@ def build_dispatch_dependencies(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    consent: ConsentStore,
 ) -> DispatchDependencies:
     """Wrap this service's adapters in the ports the graph runs against."""
     return DispatchDependencies(
         model=model,
         policies=RegistryPolicySource(registry),
         availability=RegistryAvailabilityProvider(registry),
-        bookings=RecordedBookingService(bookings, idempotency),
-        leads=RecordedLeadService(leads, idempotency),
+        bookings=RecordedBookingService(bookings, idempotency, consent),
+        leads=RecordedLeadService(leads, idempotency, consent),
         handoffs=RecordedHandoffService(handoffs, idempotency),
     )
 
@@ -70,6 +77,7 @@ def build_dispatch_runtime(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    consent: ConsentStore,
     checkpointer: Checkpointer,
 ) -> DispatchRuntime:
     """Build the runtime one deployment will serve conversations from."""
@@ -80,6 +88,7 @@ def build_dispatch_runtime(
         leads=leads,
         handoffs=handoffs,
         idempotency=idempotency,
+        consent=consent,
     )
     return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
 
@@ -141,6 +150,7 @@ def build_conversation_runtime(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    consent: ConsentStore,
     checkpointer: Checkpointer,
 ) -> GraphConversationRuntime:
     """Build the runtime the HTTP layer serves conversations from."""
@@ -152,6 +162,7 @@ def build_conversation_runtime(
             leads=leads,
             handoffs=handoffs,
             idempotency=idempotency,
+            consent=consent,
             checkpointer=checkpointer,
         )
     )

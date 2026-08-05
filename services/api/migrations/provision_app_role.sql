@@ -45,6 +45,15 @@ SELECT format(
     'public.knowledge_document_versions FROM %I',
     :'app_role'
 ) \gexec
+-- PRIV-001: the deletion queue and the consent record are the evidence a
+-- rights request was filed and answered. An operator who can delete them can
+-- make an erasure unverifiable, so the application role cannot touch them; the
+-- erasure role owns DELETE on the rows themselves, and privacy_requests is
+-- updated only by the worker.
+SELECT format(
+    'REVOKE DELETE ON TABLE public.consent_records, public.privacy_requests FROM %I',
+    :'app_role'
+) \gexec
 SELECT format(
     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
     'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',

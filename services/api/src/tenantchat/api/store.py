@@ -9,7 +9,9 @@ the fakes in this module are injected only by hermetic tests.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -22,9 +24,17 @@ from tenantchat.core.commands import (
     LeadCommand,
     LeadUrgency,
 )
-from tenantchat.core.contact import Contact
+from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.errors import ConflictError, NotFoundError
 from tenantchat.core.ports import IdempotencyKey
+from tenantchat.core.privacy import (
+    ANONYMIZED_NAME,
+    ConsentGrant,
+    ConsentPurpose,
+    ConsentStatus,
+    DataClass,
+    RetentionPolicy,
+)
 
 
 def _reference(prefix: str) -> str:
@@ -406,3 +416,531 @@ class InMemoryIdempotencyStore:
             self._attempts[index] = _Attempt(
                 fingerprint=existing.fingerprint, response=dict(response)
             )
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentRecord:
+    """One purpose granted (or withdrawn) by one session."""
+
+    record_id: uuid.UUID
+    tenant_id: str
+    session_id: str
+    purpose: ConsentPurpose
+    status: ConsentStatus
+    statement: str
+    granted_at: datetime
+    withdrawn_at: datetime | None
+
+
+class ConsentStore(Protocol):
+    """Consent grants, keyed by tenant and session.
+
+    A session grants purposes under the statement the server derived from the
+    tenant's policy; the store is what the idempotent services read through
+    :class:`~tenantchat.core.ports.ConsentSource` when a contact-bearing action
+    is about to commit.
+    """
+
+    async def record(
+        self,
+        tenant_id: str,
+        session_id: str,
+        *,
+        purposes: Collection[ConsentPurpose],
+        statement: str,
+    ) -> tuple[ConsentRecord, ...]:
+        """Record a grant, replacing any earlier grant of the same purpose.
+
+        Idempotent per session and purpose: re-recording the same purposes
+        returns the existing grant rather than stacking duplicates.
+        """
+
+    async def consent_grant(self, tenant_id: str, session_id: str) -> ConsentGrant:
+        """The grant a session currently holds, empty when none was recorded.
+
+        Only ``granted`` purposes count; a withdrawn purpose is absent from
+        the returned grant.
+        """
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[ConsentRecord, ...]:
+        """The full consent history for one session, for export and audit."""
+
+
+class InMemoryConsentStore:
+    """An explicit API test fake, never the production source of truth."""
+
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, str, ConsentPurpose], ConsentRecord] = {}
+        self._lock = asyncio.Lock()
+
+    async def record(
+        self,
+        tenant_id: str,
+        session_id: str,
+        *,
+        purposes: Collection[ConsentPurpose],
+        statement: str,
+    ) -> tuple[ConsentRecord, ...]:
+        now = datetime.now(UTC)
+        async with self._lock:
+            recorded: list[ConsentRecord] = []
+            for purpose in purposes:
+                key = (tenant_id, session_id, purpose)
+                existing = self._records.get(key)
+                if existing is not None and existing.status is ConsentStatus.GRANTED:
+                    recorded.append(existing)
+                    continue
+                record = ConsentRecord(
+                    record_id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    purpose=purpose,
+                    status=ConsentStatus.GRANTED,
+                    statement=statement,
+                    granted_at=now,
+                    withdrawn_at=None,
+                )
+                self._records[key] = record
+                recorded.append(record)
+        return tuple(recorded)
+
+    async def consent_grant(self, tenant_id: str, session_id: str) -> ConsentGrant:
+        async with self._lock:
+            granted = [
+                record
+                for (tenant, session, _purpose), record in self._records.items()
+                if tenant == tenant_id
+                and session == session_id
+                and record.status is ConsentStatus.GRANTED
+            ]
+        if not granted:
+            return ConsentGrant(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                purposes=frozenset(),
+                statement="",
+                granted_at=datetime.min.replace(tzinfo=UTC),
+            )
+        return ConsentGrant(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            purposes=frozenset(record.purpose for record in granted),
+            statement=granted[0].statement,
+            granted_at=max(record.granted_at for record in granted),
+        )
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[ConsentRecord, ...]:
+        async with self._lock:
+            return tuple(
+                record
+                for (tenant, session, _purpose), record in self._records.items()
+                if tenant == tenant_id and session == session_id
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PrivacyRequestRecord:
+    """A deletion request from an operator, fulfilled by the erasure worker.
+
+    ``contact_value`` is the canonical form the worker searches on, and it is
+    anonymized when the request completes so the queue itself does not hoard
+    contact details indefinitely.
+    """
+
+    request_id: uuid.UUID
+    tenant_id: str
+    status: str
+    contact_kind: str
+    contact_value: str
+    requested_by: str
+    requested_at: datetime
+    processed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectRecords:
+    """Everything the platform holds about one subject, assembled for export.
+
+    Built by :class:`PrivacyStore` from the sessions a contact maps to; the
+    export route renders it without touching the stores again.
+    """
+
+    sessions: tuple[ConversationRecord, ...]
+    messages: tuple[MessageRecord, ...]
+    leads: tuple[LeadRecord, ...]
+    bookings: tuple[BookingRecord, ...]
+    handoffs: tuple[HandoffRecord, ...]
+    consent: tuple[ConsentRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ErasureReport:
+    """Rows removed (or anonymized) by one deletion-request run.
+
+    The audit event for a completed request carries these counts, which is
+    what makes a deletion auditable without a deletion log table.
+    """
+
+    sessions_deleted: int
+    messages_deleted: int
+    leads_anonymized: int
+    bookings_anonymized: int
+    handoffs_anonymized: int
+    consent_records_deleted: int
+    checkpoints_deleted: int
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeReport:
+    """What the retention worker removed in one pass.
+
+    Counts are per data class so the audit event is a number, not a list of
+    references. Idempotency keys are absent: they hold only hashes and are not
+    linked to sessions, so nothing about them can be counted for a subject.
+    """
+
+    sessions_deleted: int
+    messages_deleted: int
+    tool_executions_deleted: int
+    consent_records_deleted: int
+
+
+class PrivacyStore(Protocol):
+    """Subject discovery, export assembly, erasure, and retention purge.
+
+    Erasure and purge are the only operations here that run under the
+    erasure role's credentials (see ``provision_privacy_role.sql``): the
+    application role is granted no ``DELETE`` on sessions or transcripts, so
+    these effects cannot be caused through the API.
+    """
+
+    async def sessions_for_contact(self, tenant_id: str, contact: Contact) -> tuple[uuid.UUID, ...]:
+        """Every session that holds a record for this contact, newest first.
+
+        Matches on the canonical contact value across leads, bookings, and
+        transcript content.
+        """
+
+    async def subject_records(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> SubjectRecords:
+        """Everything stored for the named sessions, for export."""
+
+    async def erase_subject(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> ErasureReport:
+        """Remove all rows for the sessions, irreversibly.
+
+        Deletes rows rather than anonymizing them where the role permits;
+        leads and bookings are anonymized instead, because the schema makes
+        them the tenant's business records and keeps foreign keys that a row
+        delete would violate.
+        """
+
+    async def purge_expired(
+        self, tenant_id: str, policy: RetentionPolicy, *, now: datetime
+    ) -> PurgeReport:
+        """Remove the tenant's expired records, and the sessions that then hold
+        nothing but the shell.
+
+        ``now`` is passed in so a test can pin the clock; the worker calls
+        this with the current time, once per tenant, so each purge is an
+        auditable per-tenant event.
+        """
+
+    async def create_privacy_request(
+        self, tenant_id: str, *, contact: Contact, requested_by: str
+    ) -> PrivacyRequestRecord:
+        """Queue a deletion request for the erasure worker."""
+
+    async def pending_privacy_requests(self) -> tuple[PrivacyRequestRecord, ...]:
+        """Requests the erasure worker has not finished, oldest first."""
+
+    async def complete_privacy_request(
+        self, request_id: uuid.UUID, *, processed_at: datetime
+    ) -> None:
+        """Mark a request fulfilled and anonymize its contact value."""
+
+    async def fail_privacy_request(self, request_id: uuid.UUID) -> None:
+        """Mark a request failed so an operator can see it did not run."""
+
+    async def requests_for_tenant(self, tenant_id: str) -> tuple[PrivacyRequestRecord, ...]:
+        """The tenant's deletion requests, newest first, for the operator queue."""
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEventRecord:
+    """One append-only audit row.
+
+    ``details`` is a JSON-serializable object — counts and identifiers, never
+    content. `ADR-0010` keeps customer words in the inference plane, and the
+    audit table is on the operational side of that line.
+    """
+
+    tenant_id: str
+    actor_type: str
+    principal_id: str | None
+    action: str
+    resource_type: str
+    resource_id: str
+    details: dict[str, object]
+
+
+class AuditStore(Protocol):
+    """Append-only audit events; nothing here ever updates or deletes.
+
+    The table's grants revoke ``UPDATE`` and ``DELETE`` from every role, which
+    is what makes the worker's deletion and purge events auditable after the
+    fact.
+    """
+
+    async def record(self, event: AuditEventRecord) -> None: ...
+
+
+class InMemoryAuditStore:
+    """An explicit API test fake, never the production source of truth."""
+
+    def __init__(self) -> None:
+        self.events: list[AuditEventRecord] = []
+
+    async def record(self, event: AuditEventRecord) -> None:
+        self.events.append(event)
+
+
+class InMemoryPrivacyStore:
+    """An explicit API test fake over the other in-memory stores.
+
+    Reaches into its sibling fakes because subject discovery spans them; the
+    PostgreSQL implementation answers the same questions in SQL. Construction
+    mirrors what ``create_app`` wires for the same stores.
+    """
+
+    def __init__(
+        self,
+        conversations: InMemoryConversationStore,
+        bookings: InMemoryBookingStore,
+        leads: InMemoryLeadStore,
+        handoffs: InMemoryHandoffStore,
+        consent: InMemoryConsentStore,
+    ) -> None:
+        self._conversations = conversations
+        self._bookings = bookings
+        self._leads = leads
+        self._handoffs = handoffs
+        self._consent = consent
+        self._requests: dict[uuid.UUID, PrivacyRequestRecord] = {}
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _matches(contact: Contact, text: str) -> bool:
+        # The canonical phone form (+15552221919) never appears verbatim in a
+        # message; compare the digits instead.
+        if contact.kind is ContactKind.PHONE:
+            return contact.value.removeprefix("+1") in re.sub(r"\D", "", text)
+        return contact.value.casefold() in text.casefold()
+
+    async def sessions_for_contact(self, tenant_id: str, contact: Contact) -> tuple[uuid.UUID, ...]:
+        async with self._conversations._lock:
+            sessions = {
+                key[1]
+                for key in self._conversations._messages
+                if key[0] == tenant_id
+                and any(
+                    self._matches(contact, message.content)
+                    for message in self._conversations._messages[key]
+                )
+            }
+        for booking in self._bookings._records:
+            if booking.tenant_id == tenant_id and self._matches(contact, booking.contact.value):
+                sessions.add(uuid.UUID(booking.session_id))
+        for lead in self._leads._records:
+            if lead.tenant_id == tenant_id and self._matches(contact, lead.contact.value):
+                sessions.add(uuid.UUID(lead.session_id))
+        return tuple(sorted(sessions, key=str))
+
+    async def subject_records(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> SubjectRecords:
+        wanted = {str(session) for session in session_ids}
+        sessions = [
+            record
+            for (tenant, session), record in self._conversations._sessions.items()
+            if tenant == tenant_id and str(session) in wanted
+        ]
+        messages = [
+            message
+            for (tenant, session), entries in self._conversations._messages.items()
+            if tenant == tenant_id and str(session) in wanted
+            for message in entries
+        ]
+        return SubjectRecords(
+            sessions=tuple(sessions),
+            messages=tuple(messages),
+            leads=tuple(
+                record
+                for record in self._leads._records
+                if record.tenant_id == tenant_id and record.session_id in wanted
+            ),
+            bookings=tuple(
+                record
+                for record in self._bookings._records
+                if record.tenant_id == tenant_id and record.session_id in wanted
+            ),
+            handoffs=tuple(
+                record
+                for record in self._handoffs._records
+                if record.tenant_id == tenant_id and record.session_id in wanted
+            ),
+            consent=tuple(
+                record
+                for record in self._consent._records.values()
+                if record.tenant_id == tenant_id and record.session_id in wanted
+            ),
+        )
+
+    async def erase_subject(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> ErasureReport:
+        wanted = {str(session) for session in session_ids}
+        async with self._conversations._lock:
+            for tenant, session in list(self._conversations._messages):
+                if tenant == tenant_id and str(session) in wanted:
+                    del self._conversations._messages[(tenant, session)]
+                    self._conversations._sessions.pop((tenant, session), None)
+        async with self._consent._lock:
+            consent_records_deleted = 0
+            for key in list(self._consent._records):
+                if key[0] == tenant_id and key[1] in wanted:
+                    del self._consent._records[key]
+                    consent_records_deleted += 1
+        bookings = len(
+            [
+                r
+                for r in self._bookings._records
+                if r.tenant_id == tenant_id and r.session_id in wanted
+            ]
+        )
+        leads = len(
+            [r for r in self._leads._records if r.tenant_id == tenant_id and r.session_id in wanted]
+        )
+        handoffs = len(
+            [
+                r
+                for r in self._handoffs._records
+                if r.tenant_id == tenant_id and r.session_id in wanted
+            ]
+        )
+        self._bookings._records = [
+            r
+            for r in self._bookings._records
+            if not (r.tenant_id == tenant_id and r.session_id in wanted)
+        ]
+        self._leads._records = [
+            r
+            for r in self._leads._records
+            if not (r.tenant_id == tenant_id and r.session_id in wanted)
+        ]
+        self._handoffs._records = [
+            r
+            for r in self._handoffs._records
+            if not (r.tenant_id == tenant_id and r.session_id in wanted)
+        ]
+        return ErasureReport(
+            sessions_deleted=len(wanted),
+            messages_deleted=0,
+            leads_anonymized=leads,
+            bookings_anonymized=bookings,
+            handoffs_anonymized=handoffs,
+            consent_records_deleted=consent_records_deleted,
+            checkpoints_deleted=0,
+        )
+
+    async def purge_expired(
+        self, tenant_id: str, policy: RetentionPolicy, *, now: datetime
+    ) -> PurgeReport:
+        transcript_age = policy.max_age(DataClass.TRANSCRIPT)
+        if transcript_age is None:
+            return PurgeReport(0, 0, 0, 0)
+        cutoff = now - transcript_age
+        async with self._conversations._lock:
+            purgeable = [
+                key
+                for key, records in self._conversations._messages.items()
+                if key[0] == tenant_id and any(record.created_at < cutoff for record in records)
+            ]
+            messages_deleted = sum(
+                len(records)
+                for key, records in self._conversations._messages.items()
+                if key in purgeable
+            )
+            sessions_deleted = 0
+            for key in purgeable:
+                if key in self._conversations._sessions:
+                    self._conversations._sessions.pop(key, None)
+                    sessions_deleted += 1
+                del self._conversations._messages[key]
+        async with self._consent._lock:
+            purged_sessions = {str(key[1]) for key in purgeable}
+            consent_records_deleted = 0
+            for grant_key in list(self._consent._records):
+                if grant_key[1] in purged_sessions:
+                    del self._consent._records[grant_key]
+                    consent_records_deleted += 1
+        return PurgeReport(
+            sessions_deleted=sessions_deleted,
+            messages_deleted=messages_deleted,
+            tool_executions_deleted=0,
+            consent_records_deleted=consent_records_deleted,
+        )
+
+    async def create_privacy_request(
+        self, tenant_id: str, *, contact: Contact, requested_by: str
+    ) -> PrivacyRequestRecord:
+        record = PrivacyRequestRecord(
+            request_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            status="pending",
+            contact_kind=contact.kind.value,
+            contact_value=contact.value,
+            requested_by=requested_by,
+            requested_at=datetime.now(UTC),
+            processed_at=None,
+        )
+        async with self._lock:
+            self._requests[record.request_id] = record
+        return record
+
+    async def pending_privacy_requests(self) -> tuple[PrivacyRequestRecord, ...]:
+        async with self._lock:
+            return tuple(record for record in self._requests.values() if record.status == "pending")
+
+    async def complete_privacy_request(
+        self, request_id: uuid.UUID, *, processed_at: datetime
+    ) -> None:
+        async with self._lock:
+            record = self._requests.get(request_id)
+            if record is None:
+                raise NotFoundError(detail="no privacy request with this id")
+            self._requests[request_id] = replace(
+                record,
+                status="completed",
+                processed_at=processed_at,
+                contact_value=ANONYMIZED_NAME,
+            )
+
+    async def fail_privacy_request(self, request_id: uuid.UUID) -> None:
+        async with self._lock:
+            record = self._requests.get(request_id)
+            if record is None:
+                raise NotFoundError(detail="no privacy request with this id")
+            self._requests[request_id] = replace(
+                record, status="failed", processed_at=datetime.now(UTC)
+            )
+
+    async def requests_for_tenant(self, tenant_id: str) -> tuple[PrivacyRequestRecord, ...]:
+        async with self._lock:
+            records = [
+                record for record in self._requests.values() if record.tenant_id == tenant_id
+            ]
+        records.sort(key=lambda record: record.requested_at, reverse=True)
+        return tuple(records)

@@ -22,7 +22,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from tenantchat.api.dependencies import ComposedRuntime, Conversations, Registry, Runtime
+from tenantchat.api.dependencies import ComposedRuntime, Consent, Conversations, Registry, Runtime
 from tenantchat.api.schemas import (
     BookingConfirmationRequest,
     ChatRequest,
@@ -30,12 +30,15 @@ from tenantchat.api.schemas import (
     ChatSessionResponse,
     ChatSessionSummary,
     ChatTurnResponse,
+    ConsentRequest,
+    ConsentResponse,
     PendingConfirmation,
     TranscriptMessage,
 )
 from tenantchat.api.store import ConversationStore, MessageRole
 from tenantchat.core.errors import ConflictError
 from tenantchat.core.ports import AssistantTurn
+from tenantchat.core.privacy import ConsentPurpose, consent_statement
 
 router = APIRouter(tags=["chat"])
 
@@ -161,6 +164,46 @@ async def send_message(
     await _record_answer(conversations, payload.tenant_id, payload.session_id, turn)
 
     return ChatTurnResponse.of(payload.session_id, turn)
+
+
+@router.post("/api/chat/consent", response_model=ConsentResponse)
+async def record_consent(
+    payload: ConsentRequest,
+    registry: Registry,
+    conversations: Conversations,
+    consent: Consent,
+) -> ConsentResponse:
+    """Record that a visitor agreed to the purposes they are about to use.
+
+    The gateway every contact-bearing action passes: `PRIV-001` refuses to
+    store a booking or a lead until this endpoint has a grant for the session.
+    The statement is the tenant's, derived from its policy — a visitor cannot
+    agree to text the server would not also record.
+
+    Re-recording the same purposes is idempotent; recording a purpose the
+    tenant's own actions never require is permitted, because a visitor may
+    agree to more than the minimum.
+
+    Raises:
+        NotFoundError: no such tenant, conversation, or the conversation
+            belongs to another tenant.
+    """
+    registry.get(payload.tenant_id)
+    await conversations.get(payload.tenant_id, payload.session_id)
+    policy = registry.get(payload.tenant_id).policy
+    purposes = [ConsentPurpose(purpose) for purpose in payload.purposes]
+    statement = consent_statement(policy.name, purposes)
+    recorded = await consent.record(
+        payload.tenant_id,
+        str(payload.session_id),
+        purposes=purposes,
+        statement=statement,
+    )
+    return ConsentResponse(
+        purposes=[record.purpose.value for record in recorded],
+        statement=statement,
+        granted_at=max(record.granted_at for record in recorded),
+    )
 
 
 @router.post("/api/chat/confirmation", response_model=ChatTurnResponse)

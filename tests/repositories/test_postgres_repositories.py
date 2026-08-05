@@ -78,11 +78,39 @@ def test_production_composition_persists_current_api_writes(
         admin_csrf_secret="csrf-secret-for-tests",
     )
     with TestClient(create_app(settings)) as client:
+        apex_session = client.post("/api/chat/session", json={"tenant_id": "apex"}).json()[
+            "session"
+        ]["session_id"]
+        clearview_session = client.post(
+            "/api/chat/session", json={"tenant_id": "clearview"}
+        ).json()["session"]["session_id"]
+        assert (
+            client.post(
+                "/api/chat/consent",
+                json={
+                    "tenant_id": "apex",
+                    "session_id": apex_session,
+                    "purposes": ["follow_up"],
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                "/api/chat/consent",
+                json={
+                    "tenant_id": "clearview",
+                    "session_id": clearview_session,
+                    "purposes": ["booking", "follow_up"],
+                },
+            ).status_code
+            == 200
+        )
         lead = client.post(
             "/api/leads",
             json={
                 "tenant_id": "apex",
-                "session_id": "api-correlation",
+                "session_id": apex_session,
                 "customer_name": "Dana Ruiz",
                 "contact": "dana@example.com",
                 "service": "HVAC",
@@ -93,7 +121,7 @@ def test_production_composition_persists_current_api_writes(
             "/api/book",
             json={
                 "tenant_id": "clearview",
-                "session_id": "api-correlation",
+                "session_id": clearview_session,
                 "customer_name": "Dana Ruiz",
                 "contact": "555-222-1919",
                 "service": "HVAC",
@@ -101,8 +129,8 @@ def test_production_composition_persists_current_api_writes(
                 "address": "12 Alder Court, Portland, OR 97205",
             },
         )
-    assert lead.status_code == 201
-    assert booking.status_code == 201
+    assert lead.status_code == 201, lead.text
+    assert booking.status_code == 201, booking.text
 
     with psycopg.connect(_psycopg_url(repository_database_url)) as connection:
         counts = connection.execute(

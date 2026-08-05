@@ -10,6 +10,7 @@ import path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
@@ -25,12 +26,16 @@ from tenantchat.api.identity import (
 )
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
+    InMemoryAuditStore,
     InMemoryBookingStore,
+    InMemoryConsentStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
+    InMemoryPrivacyStore,
 )
+from tenantchat.core.privacy import ConsentPurpose
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolCall, ToolSpec
 
@@ -101,14 +106,38 @@ def client(settings: Settings, model: ScriptedModel) -> Iterator[TestClient]:
     """A client over a freshly built app, so stored records never leak between tests."""
     # `raise_server_exceptions=False` returns the 500 an operator would see
     # instead of re-raising, which would hide whether the handler ran at all.
+    conversations = InMemoryConversationStore()
+    consent = InMemoryConsentStore()
+
+    async def grant_fixture_session() -> None:
+        # The shared booking/lead fixtures post against this fixed session id,
+        # and those tests are about the booking contract, not the consent gate
+        # (`PRIV-001` tests the gate against its own controlled stores). Grant
+        # the purposes both tenants' actions need so a missing grant cannot
+        # mask a validation or policy result.
+        await consent.record(
+            "clearview", "session-test", purposes=set(ConsentPurpose), statement="test"
+        )
+        await consent.record("apex", "session-test", purposes=set(ConsentPurpose), statement="test")
+
+    asyncio.run(grant_fixture_session())
     with TestClient(
         create_app(
             settings,
             booking_store=InMemoryBookingStore(),
             lead_store=InMemoryLeadStore(),
-            conversation_store=InMemoryConversationStore(),
+            conversation_store=conversations,
             handoff_store=InMemoryHandoffStore(),
             idempotency_store=InMemoryIdempotencyStore(),
+            consent_store=consent,
+            privacy_store=InMemoryPrivacyStore(
+                conversations,
+                InMemoryBookingStore(),
+                InMemoryLeadStore(),
+                InMemoryHandoffStore(),
+                consent,
+            ),
+            audit_store=InMemoryAuditStore(),
             chat_model=model,
             checkpointer=InMemorySaver(),
         ),
@@ -120,14 +149,25 @@ def client(settings: Settings, model: ScriptedModel) -> Iterator[TestClient]:
 @pytest.fixture
 def modelless_client(settings: Settings) -> Iterator[TestClient]:
     """The deployment `AI-001` has not reached yet: stores, but no model."""
+    conversations = InMemoryConversationStore()
+    consent = InMemoryConsentStore()
     with TestClient(
         create_app(
             settings,
             booking_store=InMemoryBookingStore(),
             lead_store=InMemoryLeadStore(),
-            conversation_store=InMemoryConversationStore(),
+            conversation_store=conversations,
             handoff_store=InMemoryHandoffStore(),
             idempotency_store=InMemoryIdempotencyStore(),
+            consent_store=consent,
+            privacy_store=InMemoryPrivacyStore(
+                conversations,
+                InMemoryBookingStore(),
+                InMemoryLeadStore(),
+                InMemoryHandoffStore(),
+                consent,
+            ),
+            audit_store=InMemoryAuditStore(),
         ),
         raise_server_exceptions=False,
     ) as test_client:
@@ -151,12 +191,21 @@ def operator_headers() -> Callable[..., dict[str, str]]:
 
 @pytest.fixture
 def open_session(client: TestClient) -> Callable[..., str]:
-    """Open a conversation and return its server-issued ID."""
+    """Open a conversation with consent granted, and return its server-issued ID."""
 
     def build(tenant_id: str = BOOKING_TENANT) -> str:
         response = client.post("/api/chat/session", json={"tenant_id": tenant_id})
         assert response.status_code == 201, response.text
         session_id: str = response.json()["session"]["session_id"]
+        granted = client.post(
+            "/api/chat/consent",
+            json={
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "purposes": ["booking", "follow_up"],
+            },
+        )
+        assert granted.status_code == 200, granted.text
         return session_id
 
     return build
