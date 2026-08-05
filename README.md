@@ -33,9 +33,10 @@ and the operator console over the domain rules in `packages/core`.
 `packages/orchestration` holds the LangGraph agent runtime (`ARCH-001`): a
 versioned dispatcher graph that pauses for a customer to confirm a booking,
 survives a process restart, and commits only through idempotent domain services.
-Chat is served over that runtime, and a deployment answers turns once `AI-001`
-supplies the model provider adapter — until then the chat routes report
-themselves unavailable rather than guessing. The `DEP-001` cutover is shipped:
+Chat is served over that runtime through the `AI-001` provider abstraction: a
+deployment composes the OpenAI-compatible adapter from its `LLM_*` environment
+and answers turns, and a deployment with no model configured reports the chat
+routes unavailable rather than guessing. The `DEP-001` cutover is shipped:
 the deployed `api` image is `services/api`, the prototype `server.py` and its
 image are gone, and the gateway forwards exactly the API's visitor routes. Claim
 3 above is designed and specified, not yet built; the planning artifacts below

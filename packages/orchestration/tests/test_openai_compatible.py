@@ -46,8 +46,9 @@ def _run(
     """Drive one `complete` against a fake transport and return the response."""
 
     async def invoke() -> ModelResponse:
-        adapter = OpenAICompatibleChatModel(base_url="http://provider/v1", model="local-model")
-        adapter._client = httpx.AsyncClient(transport=handler)
+        adapter = OpenAICompatibleChatModel(
+            base_url="http://provider/v1", model="local-model", transport=handler
+        )
         return await adapter.complete(messages, tools=tools)
 
     return asyncio.run(invoke())
@@ -69,9 +70,11 @@ def test_sends_chat_completions_request_shape() -> None:
 
     async def invoke() -> ModelResponse:
         adapter = OpenAICompatibleChatModel(
-            base_url="http://provider/v1", model="local-model", api_key="secret"
+            base_url="http://provider/v1",
+            model="local-model",
+            api_key="secret",
+            transport=httpx.MockTransport(handler),
         )
-        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         return await adapter.complete(
             [
                 ModelMessage(role=MessageRole.SYSTEM, content="You are helpful."),
@@ -83,6 +86,34 @@ def test_sends_chat_completions_request_shape() -> None:
     with_adapter = asyncio.run(invoke())
     assert with_adapter.content == "hi"
     assert with_adapter.tool_calls == ()
+
+
+def test_the_api_key_reaches_the_authorization_header_and_nowhere_else() -> None:
+    """The secret travels only where the provider expects it.
+
+    The payload, the adapter's own representation, and the exceptions it raises
+    must never echo the key: a client-visible error or a log line built from
+    any of them would publish a credential.
+    """
+    secret = "super-secret-key"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == f"Bearer {secret}"
+        assert secret not in json.dumps(json.loads(request.content))
+        return httpx.Response(401, json={"error": secret})
+
+    adapter = OpenAICompatibleChatModel(
+        base_url="http://provider/v1",
+        model="local-model",
+        api_key=secret,
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert secret not in repr(adapter)
+    assert secret not in str(adapter)
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        asyncio.run(adapter.complete([ModelMessage(role=MessageRole.USER, content="hi")], tools=()))
+    assert secret not in str(raised.value)
 
 
 def test_omits_auth_header_when_no_key_is_configured() -> None:

@@ -116,7 +116,8 @@ class OpenAICompatibleChatModel:
             unauthenticated endpoint (e.g. llama.cpp) keeps working.
         timeout_seconds: Per-request timeout; a provider that exceeds it fails
             the call, which the graph turns into a handoff.
-        max_tool_rounds: Sanity bound on tool calls accepted in one response.
+        transport: Optional httpx transport, which is how the contract suite
+            exercises the adapter against a fake endpoint with no network.
     """
 
     def __init__(
@@ -126,12 +127,13 @@ class OpenAICompatibleChatModel:
         model: str,
         api_key: str = "",
         timeout_seconds: int = 120,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key = api_key
         self._timeout = httpx.Timeout(timeout_seconds)
-        self._client = httpx.AsyncClient(timeout=self._timeout)
+        self._client = httpx.AsyncClient(timeout=self._timeout, transport=transport)
 
     @property
     def model(self) -> str:

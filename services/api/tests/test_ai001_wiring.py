@@ -10,9 +10,12 @@ permanently unavailable after the cutover.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from tenantchat.api.app import create_app
 from tenantchat.api.settings import Settings
@@ -27,6 +30,27 @@ from tenantchat.api.store import (
     InMemoryMembershipStore,
     InMemoryPrivacyStore,
 )
+from tenantchat.orchestration.checkpoints import InMemorySaver
+from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolSpec
+
+
+class _StubModel:
+    """Answers every call with one fixed response, or fails with a fixed error."""
+
+    def __init__(self, response: ModelResponse, *, failure: Exception | None = None) -> None:
+        self._response = response
+        self._failure = failure
+
+    async def complete(
+        self,
+        messages: Sequence[ModelMessage],
+        *,
+        tools: Sequence[ToolSpec],
+    ) -> ModelResponse:
+        del messages, tools
+        if self._failure is not None:
+            raise self._failure
+        return self._response
 
 
 def test_settings_read_the_shared_llm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,3 +128,94 @@ def test_create_app_builds_a_model_when_llm_settings_are_present(
     # The owned adapter exists (it is not None) even though no runtime is
     # composed here because no checkpointer was injected. The runtime composition
     # requires a checkpointer and is exercised by the conversation tests.
+
+
+def _deployed_app(monkeypatch: pytest.MonkeyPatch, model: _StubModel, *, secret: str) -> FastAPI:
+    """The production composition with a configured provider secret and one stub."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://model:1234/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen")
+    monkeypatch.setenv("LLM_API_KEY", secret)
+
+    settings = Settings.from_environment()
+    deployed = replace(
+        settings,
+        allowed_origins=("http://127.0.0.1:8000",),
+        admin_gateway_token="gateway-token",
+        admin_csrf_secret="csrf-secret",
+    )
+
+    conversations = InMemoryConversationStore()
+    consent = InMemoryConsentStore()
+    return create_app(
+        deployed,
+        booking_store=InMemoryBookingStore(),
+        lead_store=InMemoryLeadStore(),
+        conversation_store=conversations,
+        handoff_store=InMemoryHandoffStore(),
+        idempotency_store=InMemoryIdempotencyStore(),
+        membership_store=InMemoryMembershipStore(),
+        consent_store=consent,
+        privacy_store=InMemoryPrivacyStore(
+            conversations,
+            InMemoryBookingStore(),
+            InMemoryLeadStore(),
+            InMemoryHandoffStore(),
+            consent,
+        ),
+        audit_store=InMemoryAuditStore(),
+        chat_model=model,
+        checkpointer=InMemorySaver(),
+    )
+
+
+def test_a_configured_provider_secret_never_reaches_a_client_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LLM_API_KEY the deployment runs with appears in no visitor-visible body.
+
+    ``Settings`` holds the key, and the turn response is built from the turn,
+    not from settings — this pins that boundary by asserting on the actual
+    response bodies the widget renders, success and transcript alike.
+    """
+    secret = "provider-secret-xyz"
+    model = _StubModel(ModelResponse(content="We are open until 7pm.", model_name="qwen"))
+    app = _deployed_app(monkeypatch, model, secret=secret)
+
+    with TestClient(app) as client:
+        opened = client.post("/api/chat/session", json={"tenant_id": "clearview"})
+        headers = {"X-Visitor-Credential": opened.json()["credential"]}
+        turn = client.post("/api/chat", json={"message": "Hours?"}, headers=headers)
+        transcript = client.get("/api/chat/session", headers=headers)
+
+    assert turn.status_code == 200
+    assert turn.json()["reply"] == "We are open until 7pm."
+    assert secret not in turn.text
+    assert secret not in transcript.text
+
+
+def test_a_failed_provider_turn_publishes_no_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even an exception that carries the key cannot reach the visitor.
+
+    The provider failure is turned into a human handoff; the answer text is the
+    only thing published. A client-visible error carrying the key would be a
+    credential leak, so the hostile exception message here is the test.
+    """
+    secret = "provider-secret-xyz"
+    model = _StubModel(
+        ModelResponse(content=""),
+        failure=RuntimeError(f"provider refused; key material {secret}"),
+    )
+    app = _deployed_app(monkeypatch, model, secret=secret)
+
+    with TestClient(app) as client:
+        opened = client.post("/api/chat/session", json={"tenant_id": "clearview"})
+        headers = {"X-Visitor-Credential": opened.json()["credential"]}
+        turn = client.post("/api/chat", json={"message": "Hello"}, headers=headers)
+        transcript = client.get("/api/chat/session", headers=headers)
+
+    assert turn.status_code == 200
+    assert "passed it to the team" in turn.json()["reply"]
+    assert secret not in turn.text
+    assert secret not in transcript.text
