@@ -32,7 +32,7 @@ from tenantchat.api.dependencies import (
     SearchIndexes,
     get_settings,
 )
-from tenantchat.api.faults import SearchIndexUnavailableError
+from tenantchat.api.faults import SearchIndexUnavailableError, StorageUnavailableError
 from tenantchat.api.identity import (
     AdminIdentity,
     authorize_tenant_access,
@@ -112,6 +112,8 @@ async def upload_knowledge(
     """
     await _authorize_mutation(request, identity, memberships, tenant_id)
     validated_filename(file.filename or "")
+    if object_stores is None:
+        raise StorageUnavailableError
 
     if file.content_type not in _ACCEPTED_MEDIA_TYPES:
         raise ValidationError(detail="upload media type is not accepted")

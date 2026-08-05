@@ -495,11 +495,19 @@ def create_app(
         trace_access_store = PostgresTraceAccessStore(database.engine)
         knowledge_store = PostgresKnowledgeStore(database.engine)
         generation_findings = PostgresIndexIntegrityStore(database.engine)
-        if not resolved.ingestion_storage_root:
-            raise ValueError(
-                "INGESTION_STORAGE_ROOT is required for tenant-isolated upload storage"
-            )
-        object_store = DiskObjectStore(Path(resolved.ingestion_storage_root))
+        # The upload surface exists only where the ingestion pipeline exists. A
+        # deployment that configured no ingestion dependency gets no object
+        # store either, and the upload route answers `storage_unavailable` —
+        # the same fail-closed shape the search-index surface uses, and the
+        # same condition the worker requires before composing an ingestion
+        # handler. Requiring the root unconditionally would make an unrelated
+        # booking-only deployment refuse to start.
+        if resolved.elasticsearch_url is not None or resolved.embedding_url is not None:
+            if not resolved.ingestion_storage_root:
+                raise ValueError(
+                    "INGESTION_STORAGE_ROOT is required for tenant-isolated upload storage"
+                )
+            object_store = DiskObjectStore(Path(resolved.ingestion_storage_root))
         if resolved.elasticsearch_url is not None:
             search_index = ElasticsearchSearchIndex(
                 base_url=resolved.elasticsearch_url,

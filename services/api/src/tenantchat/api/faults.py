@@ -94,3 +94,17 @@ class SearchIndexUnavailableError(TransportError):
     status = 503
     code = "search_index_unavailable"
     message = "This deployment has no retrieval index."
+
+
+class StorageUnavailableError(TransportError):
+    """The deployment has no isolated upload storage configured.
+
+    Mirrors ``SearchIndexUnavailableError``: without the ingestion
+    dependencies no tenant's file can be safely isolated, so the upload
+    surface reports the capability as absent rather than staging bytes into a
+    process-local store a real deployment must never have.
+    """
+
+    status = 503
+    code = "storage_unavailable"
+    message = "This deployment has no knowledge upload storage."

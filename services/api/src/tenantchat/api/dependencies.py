@@ -132,8 +132,14 @@ def get_knowledge_store(request: Request) -> KnowledgeStore:
     return store
 
 
-def get_object_store(request: Request) -> ObjectStore:
-    store: ObjectStore = request.app.state.object_store
+def get_object_store(request: Request) -> ObjectStore | None:
+    """Tenant-isolated upload storage, or ``None`` when no ingestion
+    dependency was configured.
+
+    ``None`` mirrors ``get_search_index``: the capability is absent, not
+    broken, and only the surface that must persist bytes refuses.
+    """
+    store: ObjectStore | None = request.app.state.object_store
     return store
 
 
@@ -172,7 +178,7 @@ TurnRecords = Annotated[TurnRecordStore, Depends(get_turn_record_store)]
 TraceAccess = Annotated[TraceAccessStore, Depends(get_trace_access_store)]
 Jobs = Annotated[JobStore, Depends(get_job_store)]
 Knowledge = Annotated[KnowledgeStore, Depends(get_knowledge_store)]
-ObjectStores = Annotated[ObjectStore, Depends(get_object_store)]
+ObjectStores = Annotated[ObjectStore | None, Depends(get_object_store)]
 GenerationFindings = Annotated[IndexIntegrityStore, Depends(get_generation_findings)]
 SearchIndexes = Annotated[SearchIndex | None, Depends(get_search_index)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]

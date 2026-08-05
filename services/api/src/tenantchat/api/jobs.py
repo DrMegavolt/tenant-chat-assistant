@@ -39,6 +39,7 @@ class JobExecutionError(Exception):
         self.retryable = retryable
         super().__init__(error_code)
 
+
 # Correlation fields are attribution, not work: an enqueuer mints a fresh
 # trace for every HTTP request, so a retried enqueue of the same job must not
 # look like different work just because the trace changed (`OBS-001`).
