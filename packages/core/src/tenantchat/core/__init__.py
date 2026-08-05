@@ -18,8 +18,10 @@ from tenantchat.core.errors import (
     BookingNotPermittedError,
     ConflictError,
     DomainError,
+    ExpiredVisitorCredentialError,
     InvalidContactError,
     InvalidVersionTransitionError,
+    InvalidVisitorCredentialError,
     LeadCaptureNotPermittedError,
     MissingRequiredFieldsError,
     NotFoundError,
@@ -61,6 +63,12 @@ from tenantchat.core.ports import (
     TenantPolicySource,
 )
 from tenantchat.core.tenant import PricingPolicy, PublicTenantView, TenantPolicy
+from tenantchat.core.visitor_session import (
+    HmacVisitorCredentialSigner,
+    VisitorCredential,
+    VisitorCredentialSigner,
+    VisitorSessionClaims,
+)
 
 __all__ = [
     "ApprovalPlan",
@@ -78,15 +86,18 @@ __all__ = [
     "ConversationRuntime",
     "DocumentVersion",
     "DomainError",
+    "ExpiredVisitorCredentialError",
     "ExpiryPlan",
     "HandoffCommand",
     "HandoffReason",
     "HandoffService",
     "HandoffTicket",
+    "HmacVisitorCredentialSigner",
     "IdempotencyKey",
     "IndexingState",
     "InvalidContactError",
     "InvalidVersionTransitionError",
+    "InvalidVisitorCredentialError",
     "KnowledgeDocument",
     "KnowledgeDomain",
     "KnowledgeSource",
@@ -116,5 +127,8 @@ __all__ = [
     "ValidationError",
     "VersionState",
     "Visibility",
+    "VisitorCredential",
+    "VisitorCredentialSigner",
+    "VisitorSessionClaims",
     "normalize_term",
 ]

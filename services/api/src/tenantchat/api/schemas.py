@@ -32,11 +32,11 @@ from tenantchat.core.tenant import PublicTenantView
 # Generous outer bounds. The domain applies the meaningful limits.
 _TENANT_ID = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
 # A correlation label, never an identity. It is client-supplied, so it must not
-# be used to authorize a read or to bind a record to a visitor — `SEC-002`
-# replaces it with a server-issued session token that can carry that weight.
-# DATA-002 uses it only to group write-only action records inside one tenant;
-# it never authorizes a read or selects a transcript, which keeps the weak value
-# from becoming an identity boundary.
+# be used to authorize a read or to bind a record to a visitor. DATA-002 uses it
+# only to group write-only action records inside one tenant; it never
+# authorizes a read or selects a transcript, which keeps the weak value from
+# becoming an identity boundary. The chat routes no longer accept one at all:
+# their identity is the `X-Visitor-Credential` header (SEC-002).
 _SESSION_ID = Field(default="", max_length=128)
 _SHORT_TEXT = Field(default="", max_length=512)
 _LONG_TEXT = Field(default="", max_length=4096)
@@ -175,23 +175,21 @@ class ChatSessionRequest(_Request):
 class ChatRequest(_Request):
     """One visitor turn.
 
-    ``session_id`` is the server-issued conversation ID from
-    ``POST /api/chat/session``, not a label the visitor invented. It is
-    unguessable, which is what lets it name a conversation at all; `SEC-002`
-    replaces it with a signed visitor credential that can also carry an
-    expiry and survive being copied out of a URL.
+    The conversation is named by the ``X-Visitor-Credential`` header, not by
+    fields in the body: the credential is server-issued, bound to exactly one
+    tenant and session, and unguessable without the signing key (SEC-002). A
+    body field cannot move a turn between tenants.
     """
 
-    tenant_id: str = _TENANT_ID
-    session_id: uuid.UUID
     message: str = _MESSAGE
 
 
 class BookingConfirmationRequest(_Request):
-    """The customer's answer to a booking the assistant proposed."""
+    """The customer's answer to a booking the assistant proposed.
 
-    tenant_id: str = _TENANT_ID
-    session_id: uuid.UUID
+    The conversation is named by the credential header, like ``ChatRequest``.
+    """
+
     # A closed set rather than a boolean: an omitted or misspelled field on a
     # boolean would read as "declined", and a silently declined booking looks to
     # the customer exactly like an assistant that ignored them.
@@ -267,6 +265,10 @@ class ChatTurnResponse(BaseModel):
     ``pending`` and ``reply`` are alternatives: a turn that stopped to ask
     something has no answer yet, and the conversation continues at
     ``POST /api/chat/confirmation``.
+
+    ``credential`` is a freshly reissued visitor token: it names the same
+    tenant and session the caller presented and replaces it, so an active
+    conversation never lets its credential expire (SEC-002).
     """
 
     session_id: uuid.UUID
@@ -274,9 +276,15 @@ class ChatTurnResponse(BaseModel):
     pending: PendingConfirmation | None
     committed: list[CommittedActionSummary]
     provenance: TurnProvenance
+    credential: str
 
     @classmethod
-    def of(cls, session_id: uuid.UUID, turn: AssistantTurn) -> ChatTurnResponse:
+    def of(
+        cls,
+        session_id: uuid.UUID,
+        turn: AssistantTurn,
+        credential: str,
+    ) -> ChatTurnResponse:
         return cls(
             session_id=session_id,
             reply=turn.answer,
@@ -292,6 +300,7 @@ class ChatTurnResponse(BaseModel):
                 graph_version=turn.graph_version,
                 prompt_version=turn.prompt_version,
             ),
+            credential=credential,
         )
 
 
@@ -341,6 +350,17 @@ class ChatSessionResponse(BaseModel):
     session: ChatSessionSummary
     messages: list[TranscriptMessage]
     pending: PendingConfirmation | None = None
+
+
+class VisitorSessionResponse(ChatSessionResponse):
+    """A conversation as the visitor reads it, plus a fresh credential.
+
+    Distinct from ``ChatSessionResponse`` on purpose: the credential names the
+    conversation, so only the visitor routes may return one. The admin routes
+    share the parent model and never carry a credential field (SEC-002).
+    """
+
+    credential: str
 
 
 class AdminSessionsResponse(BaseModel):

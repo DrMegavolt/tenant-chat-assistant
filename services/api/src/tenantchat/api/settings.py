@@ -71,6 +71,14 @@ class Settings:
     llm_model: str | None = None
     llm_api_key: str = ""
     llm_timeout_seconds: int = 120
+    # SEC-002: the key that signs visitor credentials, and their lifetime. The
+    # key is required by the production composition — a deployment without it
+    # cannot open sessions (fail closed), exactly like the admin credentials.
+    # The TTL bounds how long a credential works without renewal; every
+    # credentialed chat response reissues one, so an actively used conversation
+    # never expires while an abandoned one becomes unusable after the TTL.
+    visitor_credential_signing_key: str | None = None
+    visitor_credential_ttl_seconds: int = 24 * 60 * 60
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -122,4 +130,11 @@ class Settings:
             llm_model=os.environ.get("LLM_MODEL", "").strip() or None,
             llm_api_key=os.environ.get("LLM_API_KEY", "").strip(),
             llm_timeout_seconds=int(os.environ.get("LLM_TIMEOUT_SECONDS", "120")),
+            visitor_credential_signing_key=os.environ.get(
+                "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY", ""
+            ).strip()
+            or None,
+            visitor_credential_ttl_seconds=int(
+                os.environ.get("CHAT_API_VISITOR_CREDENTIAL_TTL_SECONDS", "86400")
+            ),
         )

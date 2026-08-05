@@ -151,6 +151,29 @@ class NotFoundError(DomainError):
     message = "That record was not found."
 
 
+class InvalidVisitorCredentialError(DomainError):
+    """A presented visitor credential is not one this server issued.
+
+    The ``detail`` never says *why* the token was rejected — the reason is a
+    forgery probe's free intelligence — and the message is stable so clients can
+    branch on the ``code`` and clear their stored credential.
+    """
+
+    code = "invalid_visitor_credential"
+    message = "Your session is no longer recognized. Please refresh to start again."
+
+
+class ExpiredVisitorCredentialError(DomainError):
+    """A visitor credential was genuine but past its expiry.
+
+    The conversation row is untouched; the visitor just needs a fresh
+    credential for it.
+    """
+
+    code = "visitor_credential_expired"
+    message = "Your session has expired. Please refresh to continue."
+
+
 class ConflictError(DomainError):
     """The action collided with concurrent state, such as a slot already taken."""
 

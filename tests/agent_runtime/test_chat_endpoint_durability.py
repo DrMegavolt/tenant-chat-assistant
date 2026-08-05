@@ -15,12 +15,14 @@ deploy lands is the case being checked.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tenantchat.api.app import create_app
 from tenantchat.api.settings import Settings
+from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.orchestration.model import ModelResponse
 from tests.agent_runtime.conftest import (
     BOOKING_TENANT,
@@ -31,6 +33,8 @@ from tests.agent_runtime.conftest import (
 )
 
 pytestmark = pytest.mark.integration
+
+_SIGNING_KEY = "a" * 64
 
 
 def proposal() -> ModelResponse:
@@ -56,46 +60,48 @@ def deployment(database_url: str, script: list[ModelResponse]) -> TestClient:
         database_max_overflow=0,
         admin_gateway_token="gateway-token-for-tests",
         admin_csrf_secret="csrf-secret-for-tests",
+        visitor_credential_signing_key=_SIGNING_KEY,
     )
     return TestClient(create_app(settings, chat_model=ScriptedModel(script=script)))
 
 
+@dataclass
+class Visitor:
+    credential: str
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {VISITOR_CREDENTIAL_HEADER: self.credential}
+
+
 @pytest.fixture
-def booking_session(agent_database_url: str) -> Iterator[str]:
+def booking_session(agent_database_url: str) -> Iterator[Visitor]:
     """A conversation paused on a booking confirmation, by an instance now gone."""
     with deployment(agent_database_url, [proposal(), confirmation()]) as client:
         opened = client.post("/api/chat/session", json={"tenant_id": BOOKING_TENANT})
-        session_id: str = opened.json()["session"]["session_id"]
+        visitor = Visitor(credential=opened.json()["credential"])
         paused = client.post(
             "/api/chat",
-            json={
-                "tenant_id": BOOKING_TENANT,
-                "session_id": session_id,
-                "message": "Book HVAC for Monday",
-            },
+            headers=visitor.headers,
+            json={"message": "Book HVAC for Monday"},
         )
         assert paused.status_code == 200, paused.text
         assert paused.json()["pending"]["slot"] == OFFERED_SLOT
         assert paused.json()["committed"] == []
-    yield session_id
+    yield visitor
 
 
 def test_a_booking_paused_before_a_restart_is_confirmed_after_it(
-    agent_database_url: str, booking_session: str
+    agent_database_url: str, booking_session: Visitor
 ) -> None:
     with deployment(agent_database_url, [confirmation()]) as restarted:
-        pending = restarted.get(
-            f"/api/chat/session/{booking_session}", params={"tenant_id": BOOKING_TENANT}
-        )
+        pending = restarted.get("/api/chat/session", headers=booking_session.headers)
         assert pending.json()["pending"]["slot"] == OFFERED_SLOT
 
         response = restarted.post(
             "/api/chat/confirmation",
-            json={
-                "tenant_id": BOOKING_TENANT,
-                "session_id": booking_session,
-                "decision": "approved",
-            },
+            headers=booking_session.headers,
+            json={"decision": "approved"},
         )
 
     assert response.status_code == 200
@@ -106,13 +112,11 @@ def test_a_booking_paused_before_a_restart_is_confirmed_after_it(
 
 
 def test_a_transcript_written_by_one_instance_is_read_by_the_next(
-    agent_database_url: str, booking_session: str
+    agent_database_url: str, booking_session: Visitor
 ) -> None:
     """The store is the record, so what was said outlives the process that heard it."""
     with deployment(agent_database_url, [confirmation()]) as restarted:
-        response = restarted.get(
-            f"/api/chat/session/{booking_session}", params={"tenant_id": BOOKING_TENANT}
-        )
+        response = restarted.get("/api/chat/session", headers=booking_session.headers)
 
     messages = response.json()["messages"]
     assert [(entry["role"], entry["content"]) for entry in messages] == [

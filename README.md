@@ -178,8 +178,8 @@ operator action.
 | `GET /api/tenants/{id}/availability?service=` | Slots currently offered, and the list booking validates against. |
 | `POST /api/book` | Books an offered slot. |
 | `POST /api/leads` | Captures a callback request. |
-| `POST /api/chat/session` | Opens a conversation and returns the server-issued ID. |
-| `GET /api/chat/session/{id}?tenant_id=` | The transcript, and anything the conversation is waiting on. |
+| `POST /api/chat/session` | Opens a conversation and returns its signed visitor credential. |
+| `GET /api/chat/session` | The transcript the `X-Visitor-Credential` header names, and anything it is waiting on. |
 | `POST /api/chat` | Answers one visitor turn through the agent runtime. |
 | `POST /api/chat/confirmation` | Approves or declines a booking the assistant proposed. |
 | `GET /api/admin/chats?tenant_id=` | Operator console: conversations with a transcript, newest first. |
@@ -190,6 +190,16 @@ operator action.
 A booking proposed by the assistant is not committed when it is proposed. The
 turn pauses, `POST /api/chat` returns `pending` instead of a reply, and nothing
 is written until `POST /api/chat/confirmation` carries the customer's answer.
+
+The visitor surface authenticates with a signed `X-Visitor-Credential` header
+minted by `POST /api/chat/session` (SEC-002). The token names exactly one tenant
+and session; requests carry no `tenant_id` or `session_id`, so a body field
+cannot move a conversation and a leaked session UUID authorizes nothing. Every
+credentialed response reissues the credential, so an active conversation never
+expires. The credential is a bearer secret: it travels in a header, never a
+query string or a log line. Deployment must provide the
+`CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY` secret or visitor routes fail closed
+at startup, like the admin credentials below.
 
 Admin routes require the identity headers the gateway injects plus the shared
 `ADMIN_GATEWAY_TOKEN`, and staff replies additionally require the CSRF token.

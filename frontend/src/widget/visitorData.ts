@@ -6,15 +6,15 @@
  * this module owns only what the widget itself keeps and what it lets the
  * visitor delete.
  *
- * The conversation ID is server-issued (``POST /api/chat/session``): this module
- * stores whatever the backend returned, it never invents one. `SEC-002`
- * replaces this stored value with a signed visitor credential that can also
- * carry an expiry and survive being copied out of a URL.
+ * The conversation identity is the server-issued visitor credential
+ * (``POST /api/chat/session``): this module stores whatever the backend
+ * returned and never invents one. A credential is a bearer token, so it is
+ * kept in session storage only — never in a URL, a cookie, or any log.
  */
 
 import type { ConsentRecord } from "src/widget/types";
 
-const SESSION_KEY = "tenant-chat-session-id";
+const CREDENTIAL_KEY = "tenant-chat-credential";
 const CONSENT_KEY = "tenant-chat-consent";
 
 /** The subset of the Storage interface this module uses. */
@@ -77,23 +77,24 @@ export class VisitorData {
   }
 
   /**
-   * The conversation id already issued to this visitor, without issuing one.
+   * The credential already issued to this visitor, without issuing one.
    *
    * Background work — polling for staff replies — must use this rather than a
    * minting call: a visitor who opened the page and typed nothing has not
-   * started a conversation, and writing an id for them would leave an
-   * identifier in their browser they never asked for.
+   * started a conversation, and writing a credential for them would leave a
+   * token in their browser they never asked for.
    *
-   * The stored value is trusted only if the widget's UUID check accepts it; a
-   * pre-cutover id from the prototype is not a session the API will accept.
+   * The stored value is trusted only if the widget's shape check accepts it; a
+   * pre-cutover session id from the prototype is not a credential the API will
+   * accept.
    */
-  existingSessionId(): string | null {
-    return this.storage.getItem(this.key(SESSION_KEY));
+  existingCredential(): string | null {
+    return this.storage.getItem(this.key(CREDENTIAL_KEY));
   }
 
-  /** Persist a session ID the backend issued for this tenant. */
-  recordSession(sessionId: string): void {
-    this.storage.setItem(this.key(SESSION_KEY), sessionId);
+  /** Persist a visitor credential the backend issued for this tenant. */
+  recordCredential(credential: string): void {
+    this.storage.setItem(this.key(CREDENTIAL_KEY), credential);
   }
 
   hasConsent(): boolean {
@@ -113,7 +114,7 @@ export class VisitorData {
 
   /** Erase every trace of this tenant's conversation from the browser. */
   clear(): void {
-    for (const prefix of [SESSION_KEY, CONSENT_KEY]) {
+    for (const prefix of [CREDENTIAL_KEY, CONSENT_KEY]) {
       this.storage.removeItem(this.key(prefix));
     }
   }

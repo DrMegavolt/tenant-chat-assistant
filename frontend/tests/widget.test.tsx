@@ -4,9 +4,11 @@ import { describe, expect, test } from "vitest";
 import { mountWidget } from "src/widget/mount";
 import {
   AVAILABILITY_REPLY,
+  CREDENTIAL,
   TENANTS,
   jsonResponse,
   requestBodies,
+  requestCredential,
   stubBackend,
   workingBackend
 } from "tests/support/backend";
@@ -50,7 +52,11 @@ describe("widget initialization", () => {
     stubBackend((url) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
       if (url.endsWith("/api/chat/session")) {
-        return jsonResponse({ session: { session_id: "session-apex" }, messages: [] });
+        return jsonResponse({
+          session: { session_id: "session-apex" },
+          messages: [],
+          credential: CREDENTIAL
+        });
       }
       if (url.endsWith("/api/chat")) {
         return jsonResponse({
@@ -58,7 +64,8 @@ describe("widget initialization", () => {
           reply: "Noted.",
           pending: null,
           committed: [],
-          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" }
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
         });
       }
       return null;
@@ -67,8 +74,8 @@ describe("widget initialization", () => {
 
     submitChat("Hello from Apex");
     await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("Noted."));
-    const apexSession = window.sessionStorage.getItem("tenant-chat-session-id:apex");
-    expect(apexSession).toBe("session-apex");
+    const apexCredential = window.sessionStorage.getItem("tenant-chat-credential:apex");
+    expect(apexCredential).toBe(CREDENTIAL);
 
     selectTenant("Clearview Heating");
 
@@ -78,9 +85,9 @@ describe("widget initialization", () => {
 
     submitChat("Hello from Clearview");
     await waitFor(() =>
-      expect(window.sessionStorage.getItem("tenant-chat-session-id:clearview")).toBe("session-apex")
+      expect(window.sessionStorage.getItem("tenant-chat-credential:clearview")).toBe(CREDENTIAL)
     );
-    expect(window.sessionStorage.getItem("tenant-chat-session-id:apex")).toBe(apexSession);
+    expect(window.sessionStorage.getItem("tenant-chat-credential:apex")).toBe(apexCredential);
   });
 
   test("the standalone embed needs nothing from the host page but a mount element", async () => {
@@ -144,7 +151,11 @@ describe("chat and booking contracts", () => {
         return jsonResponse({ tenants: TENANTS });
       }
       if (url === "https://chat.example.test/api/chat/session" && init?.method === "POST") {
-        return jsonResponse({ session: { session_id: "session-clearview" }, messages: [] });
+        return jsonResponse({
+          session: { session_id: "session-clearview" },
+          messages: [],
+          credential: CREDENTIAL
+        });
       }
       if (url === "https://chat.example.test/api/chat" && init?.method === "POST") {
         return jsonResponse({
@@ -165,38 +176,43 @@ describe("chat and booking contracts", () => {
       expect(inWidget("#messages")?.textContent).toContain("I found one opening.");
     });
     const [request] = requestBodies(fetchMock, "/api/chat") as {
-      tenant_id: string;
-      session_id: string;
       message: string;
     }[];
-    expect(request?.tenant_id).toBe("clearview");
-    expect(request?.session_id).toBe("session-clearview");
     expect(request?.message).toBe("I need HVAC help");
+    expect(request).not.toHaveProperty("tenant_id");
+    expect(request).not.toHaveProperty("session_id");
+    const chatCall = fetchMock.mock.calls.find(([url]) => url.endsWith("/api/chat"));
+    expect(requestCredential(chatCall?.[1])).toBe(CREDENTIAL);
   });
 
   test("renders a booking confirmation and commits it on approval", async () => {
     const fetchMock = stubBackend(workingBackend());
     await renderDemo();
 
-    const confirmation = await openBookingConfirmation();
-    expect(confirmation.textContent).toContain("Confirm your booking");
-    expect(confirmation.textContent).toContain("HVAC");
-    expect(confirmation.textContent).toContain("Tomorrow 09:00");
+    const confirmationCard = await openBookingConfirmation();
+    expect(confirmationCard.textContent).toContain("Confirm your booking");
+    expect(confirmationCard.textContent).toContain("HVAC");
+    expect(confirmationCard.textContent).toContain("Tomorrow 09:00");
 
-    const approve = [...confirmation.querySelectorAll("button")].find((b) =>
+    const approve = [...confirmationCard.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Confirm booking")
     )!;
-    const consent = confirmation.querySelector<HTMLInputElement>("#bookingConfirmConsent")!;
+    const consent = confirmationCard.querySelector<HTMLInputElement>("#bookingConfirmConsent")!;
     expect(consent.checked).toBe(false);
     fireEvent.click(consent);
     fireEvent.click(approve);
 
     await waitFor(() => expect(inWidget(".booking-confirmation-card")).toBeNull());
-    expect(requestBodies(fetchMock, "/api/chat/confirmation")[0]).toMatchObject({
-      tenant_id: "clearview",
-      session_id: "session-1",
-      decision: "approved"
-    });
+    const [confirmationBody] = requestBodies(fetchMock, "/api/chat/confirmation") as {
+      decision: string;
+    }[];
+    expect(confirmationBody?.decision).toBe("approved");
+    expect(confirmationBody).not.toHaveProperty("tenant_id");
+    expect(confirmationBody).not.toHaveProperty("session_id");
+    const confirmCall = fetchMock.mock.calls.find(([url]) =>
+      url.endsWith("/api/chat/confirmation")
+    );
+    expect(requestCredential(confirmCall?.[1])).toBe(CREDENTIAL);
     expect(inWidget("#messages")?.textContent).toContain("Your appointment is booked.");
   });
 
@@ -204,7 +220,11 @@ describe("chat and booking contracts", () => {
     stubBackend((url) => {
       if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
       if (url.endsWith("/api/chat/session")) {
-        return jsonResponse({ session: { session_id: "session-1" }, messages: [] });
+        return jsonResponse({
+          session: { session_id: "session-1" },
+          messages: [],
+          credential: CREDENTIAL
+        });
       }
       if (url.endsWith("/api/chat")) return jsonResponse({}, { ok: false, status: 500 });
       return null;

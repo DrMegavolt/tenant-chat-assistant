@@ -39,6 +39,22 @@ export function resolveApiBaseUrl(mountElement: HTMLElement | null = null): stri
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+/** The header that carries the server-issued visitor credential (SEC-002). */
+export const VISITOR_CREDENTIAL_HEADER = "X-Visitor-Credential";
+
+/**
+ * The backend rejected the presented credential — missing, forged, or expired.
+ * The caller can recover by opening a fresh session.
+ */
+export class CredentialRejectedError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Visitor credential rejected with ${status}`);
+    this.status = status;
+  }
+}
+
 /** Wire shapes the FastAPI backend actually returns (snake_case). */
 interface WireTurn {
   session_id: string;
@@ -52,10 +68,12 @@ interface WireTurn {
   } | null;
   committed: Array<{ action: string; reference: string; replayed: boolean }>;
   provenance: { model_name: string; graph_version: string; prompt_version: string };
+  credential: string;
 }
 
 interface WireSession {
   session: { session_id: string };
+  credential: string;
   messages?: Array<{
     message_id: string;
     role: WireMessageRole;
@@ -89,7 +107,8 @@ function normalizeTurn(wire: WireTurn): ChatTurnResponse {
       reference: c.reference,
       replayed: c.replayed
     })),
-    provenance
+    provenance,
+    credential: wire.credential
   };
 }
 
@@ -124,10 +143,11 @@ export class ChatApi {
   }
 
   /**
-   * Open a conversation and return the server-issued session ID.
+   * Open a conversation and return the server-issued session and credential.
    *
-   * The ID is minted by the backend, never chosen by the visitor, so an
-   * unguessable value is what lets it name a conversation at all (`SEC-002`).
+   * The credential is minted by the backend, never chosen by the visitor, so
+   * an unguessable signed value is what lets it name a conversation at all
+   * (`SEC-002`).
    *
    * @throws {Error} when the backend cannot open a session.
    */
@@ -141,51 +161,47 @@ export class ChatApi {
       throw new Error(`Unable to open a conversation (${response.status}).`);
     }
     const payload = (await response.json()) as WireSession;
-    return { sessionId: payload.session.session_id };
+    return { sessionId: payload.session.session_id, credential: payload.credential };
+  }
+
+  private static credentialHeaders(credential: string): HeadersInit {
+    return { ...JSON_HEADERS, [VISITOR_CREDENTIAL_HEADER]: credential };
+  }
+
+  private static async unwrap(response: Response, label: string): Promise<unknown> {
+    if (!response.ok) {
+      if (response.status === 401) throw new CredentialRejectedError(response.status);
+      throw new Error(`${label} failed with ${response.status}`);
+    }
+    return response.json();
   }
 
   /** @throws {Error} when the backend rejects the turn. */
-  async chat(body: ChatRequest): Promise<ChatTurnResponse> {
+  async chat(credential: string, body: ChatRequest): Promise<ChatTurnResponse> {
     const response = await fetch(this.url("/api/chat"), {
       method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({
-        tenant_id: body.tenantId,
-        session_id: body.sessionId,
-        message: body.message
-      })
+      headers: ChatApi.credentialHeaders(credential),
+      body: JSON.stringify({ message: body.message })
     });
-    if (!response.ok) {
-      throw new Error(`Chat request failed with ${response.status}`);
-    }
-    return normalizeTurn((await response.json()) as WireTurn);
+    return normalizeTurn((await ChatApi.unwrap(response, "Chat request")) as WireTurn);
   }
 
   /** Answer a booking the assistant proposed, approving or declining it. */
-  async confirm(body: ConfirmationRequest): Promise<ChatTurnResponse> {
+  async confirm(credential: string, body: ConfirmationRequest): Promise<ChatTurnResponse> {
     const response = await fetch(this.url("/api/chat/confirmation"), {
       method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({
-        tenant_id: body.tenantId,
-        session_id: body.sessionId,
-        decision: body.decision
-      })
+      headers: ChatApi.credentialHeaders(credential),
+      body: JSON.stringify({ decision: body.decision })
     });
-    if (!response.ok) {
-      throw new Error(`Confirmation failed with ${response.status}`);
-    }
-    return normalizeTurn((await response.json()) as WireTurn);
+    return normalizeTurn((await ChatApi.unwrap(response, "Confirmation")) as WireTurn);
   }
 
   /** Returns null rather than throwing; transcript polling is best effort. */
-  async session(sessionId: string, tenantId: string): Promise<SessionSnapshot | null> {
+  async session(credential: string): Promise<SessionSnapshot | null> {
     try {
-      const response = await fetch(
-        this.url(
-          `/api/chat/session/${encodeURIComponent(sessionId)}?tenant_id=${encodeURIComponent(tenantId)}`
-        )
-      );
+      const response = await fetch(this.url("/api/chat/session"), {
+        headers: { [VISITOR_CREDENTIAL_HEADER]: credential }
+      });
       if (!response.ok) return null;
       const wire = (await response.json()) as WireSession;
       const pending: PendingBooking | null = wire.pending
@@ -199,6 +215,7 @@ export class ChatApi {
         : null;
       return {
         sessionId: wire.session.session_id,
+        credential: wire.credential,
         messages: normalizeMessages(wire),
         pending
       };

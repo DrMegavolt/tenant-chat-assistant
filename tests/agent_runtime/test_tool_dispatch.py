@@ -250,8 +250,8 @@ def test_a_provider_failure_becomes_a_handoff_rather_than_a_retry() -> None:
 def test_two_tenants_using_the_same_session_id_do_not_share_a_conversation() -> None:
     """Thread keys are tenant-qualified, so a guessed session ID reaches nothing.
 
-    Until `SEC-002` issues visitor credentials the session ID is client-supplied,
-    which makes a collision — accidental or deliberate — a question of when.
+    `SEC-002` credentials are bound to one tenant and session, but this
+    invariant is what keeps even a client-supplied value harmless.
     """
     harness = build_harness([ModelResponse(content="First tenant answer.", model_name="scripted")])
 

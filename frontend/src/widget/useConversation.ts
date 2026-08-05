@@ -6,14 +6,17 @@
  * switching tenants remounts it and this state starts clean rather than being
  * torn down field by field.
  *
- * The conversation is a single server-issued session (`POST /api/chat/session`
- * mints the ID; this hook only persists it), and a booking is not committed
- * until the visitor approves the assistant's proposed `pending` confirmation.
+ * The conversation is named by a server-issued visitor credential
+ * (`POST /api/chat/session` mints it; every response reissues one, so an
+ * active conversation never lets its credential expire), and a booking is not
+ * committed until the visitor approves the assistant's proposed `pending`
+ * confirmation.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ChatApi } from "src/widget/api";
+import { CredentialRejectedError } from "src/widget/api";
 import type { ChatTurnResponse, TenantConfig, TranscriptEntry } from "src/widget/types";
 import type { VisitorData } from "src/widget/visitorData";
 import { consentStatement } from "src/widget/visitorData";
@@ -23,11 +26,11 @@ const PROACTIVE_DELAY_MS = 12000;
 
 const EMAIL_PATTERN = /[\w.+-]+@[\w.-]+\.\w+/;
 const PHONE_PATTERN = /(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CREDENTIAL_PATTERN = /^tc\.v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
-/** A server-issued session ID, or null for anything else. */
-function isValidSessionId(id: string | null): id is string {
-  return id !== null && UUID_PATTERN.test(id);
+/** A server-issued visitor credential, or null for anything else. */
+function isValidCredential(credential: string | null): credential is string {
+  return credential !== null && CREDENTIAL_PATTERN.test(credential);
 }
 
 const WAITING_STATUS = "Waiting for the assistant to reply.";
@@ -111,7 +114,7 @@ export function useConversation({
   const proactiveTimer = useRef<number | null>(null);
   const proactiveShown = useRef(false);
   const isSendingRef = useRef(false);
-  const sessionRef = useRef<string | null>(visitor.existingSessionId());
+  const credentialRef = useRef<string | null>(visitor.existingCredential());
 
   const clearProactiveTimer = useCallback(() => {
     if (proactiveTimer.current !== null) {
@@ -151,29 +154,43 @@ export function useConversation({
   const setSending = useCallback((sending: boolean) => {
     isSendingRef.current = sending;
     setIsSending(sending);
-    setStatus(sending ? WAITING_STATUS : "");
+    // The reset announcement outlives the retry that follows it: clearing it
+    // would hide from the visitor that their old conversation was discarded.
+    setStatus((current) =>
+      sending ? WAITING_STATUS : current === RESET_STATUS ? RESET_STATUS : ""
+    );
   }, []);
 
   /**
-   * Obtain (or reuse) the server-issued session ID for this tenant.
+   * Obtain (or reuse) the visitor credential for this tenant.
    *
-   * A stored value the server never minted — the prototype's
-   * `web-<tenant>-<ts>-<rand>` shape, for example — is not retried forever:
-   * the API rejects it and this widget would only ever show the failure
-   * bubble. Any value that is not a UUID is discarded and a fresh session is
-   * minted.
+   * A stored value the server never issued — the prototype's
+   * `web-<tenant>-<ts>-<rand>` session id, for example — is not retried
+   * forever: the API rejects it and this widget would only ever show the
+   * failure bubble. Any value that is not a credential is discarded and a
+   * fresh one is minted.
    */
-  const ensureSession = useCallback(async (): Promise<string> => {
-    if (isValidSessionId(sessionRef.current)) return sessionRef.current;
+  const ensureCredential = useCallback(async (): Promise<string> => {
+    if (isValidCredential(credentialRef.current)) return credentialRef.current;
     const session = await api.openSession({ tenantId });
-    visitor.recordSession(session.sessionId);
-    sessionRef.current = session.sessionId;
-    return session.sessionId;
+    visitor.recordCredential(session.credential);
+    credentialRef.current = session.credential;
+    return session.credential;
   }, [api, tenantId, visitor]);
+
+  /** Replace the stored credential with the one a response reissued. */
+  const refreshCredential = useCallback(
+    (credential: string) => {
+      credentialRef.current = credential;
+      visitor.recordCredential(credential);
+    },
+    [visitor]
+  );
 
   /** Append one turn's assistant output (tool events + reply/confirmation). */
   const applyTurn = useCallback(
     (payload: ChatTurnResponse) => {
+      refreshCredential(payload.credential);
       const appended: TranscriptEntry[] = [];
       if (payload.pending) {
         appended.push({
@@ -197,7 +214,7 @@ export function useConversation({
       );
       scheduleProactiveNudge();
     },
-    [scheduleProactiveNudge, setEntries]
+    [refreshCredential, scheduleProactiveNudge, setEntries]
   );
 
   const send = useCallback(
@@ -212,34 +229,72 @@ export function useConversation({
       ]);
       setSending(true);
 
-      try {
-        const sessionId = await ensureSession();
-        const payload = await api.chat({ tenantId, sessionId, message: text });
+      const deliver = async (credential: string) => {
+        const payload = await api.chat(credential, { message: text });
         applyTurn(payload);
-      } catch {
-        setEntries((previous) => [
-          ...previous,
-          {
-            kind: "message",
-            id: nextId("assistant"),
-            role: "assistant",
-            source: "assistant",
-            text: CHAT_FAILURE
+      };
+
+      try {
+        const credential = await ensureCredential();
+        await deliver(credential);
+      } catch (error) {
+        if (error instanceof CredentialRejectedError) {
+          // The stored credential is gone or forged; discard it and start a
+          // fresh conversation, then deliver the message once with the new one.
+          visitor.clear();
+          credentialRef.current = null;
+          setStatus(RESET_STATUS);
+          try {
+            const fresh = await api.openSession({ tenantId });
+            visitor.recordCredential(fresh.credential);
+            credentialRef.current = fresh.credential;
+            await deliver(fresh.credential);
+          } catch {
+            setEntries((previous) => [
+              ...previous,
+              {
+                kind: "message",
+                id: nextId("assistant"),
+                role: "assistant",
+                source: "assistant",
+                text: CHAT_FAILURE
+              }
+            ]);
           }
-        ]);
+        } else {
+          setEntries((previous) => [
+            ...previous,
+            {
+              kind: "message",
+              id: nextId("assistant"),
+              role: "assistant",
+              source: "assistant",
+              text: CHAT_FAILURE
+            }
+          ]);
+        }
       } finally {
         setSending(false);
       }
     },
-    [api, applyTurn, clearProactiveTimer, ensureSession, setEntries, setSending, tenantId]
+    [
+      api,
+      applyTurn,
+      clearProactiveTimer,
+      ensureCredential,
+      setEntries,
+      setSending,
+      tenantId,
+      visitor
+    ]
   );
 
   /** Answer a booking the assistant proposed and is waiting on. */
   const decide = useCallback(
     async (decision: "approved" | "declined") => {
       if (isSendingRef.current) return;
-      const sessionId = sessionRef.current;
-      if (!sessionId) return;
+      const credential = credentialRef.current;
+      if (!isValidCredential(credential)) return;
       setSending(true);
       try {
         // Approving submits the visitor's name, address, and contact, so it is
@@ -248,7 +303,7 @@ export function useConversation({
         if (decision === "approved") {
           visitor.recordConsent(consentStatement(config.name));
         }
-        const payload = await api.confirm({ tenantId, sessionId, decision });
+        const payload = await api.confirm(credential, { decision });
         // The visitor has answered the pending question; drop the confirmation
         // card before showing what the answer produced.
         setEntries((previous) => previous.filter((entry) => entry.kind !== "booking"));
@@ -268,14 +323,14 @@ export function useConversation({
         setSending(false);
       }
     },
-    [api, applyTurn, config.name, setEntries, setSending, tenantId, visitor]
+    [api, applyTurn, config.name, setEntries, setSending, visitor]
   );
 
   const forget = useCallback(() => {
     visitor.clear();
     seenServerMessageIds.current.clear();
     proactiveShown.current = false;
-    sessionRef.current = null;
+    credentialRef.current = null;
     clearProactiveTimer();
     setEntries(() => [welcomeEntry(config)]);
     setUnreadStaffCount(0);
@@ -290,9 +345,10 @@ export function useConversation({
   // messages already rendered as part of the turn that produced them.
   useEffect(() => {
     const poll = async () => {
-      const sessionId = visitor.existingSessionId();
-      if (!isValidSessionId(sessionId)) return;
-      const session = await api.session(sessionId, tenantId);
+      const credential = visitor.existingCredential();
+      if (!isValidCredential(credential)) return;
+      const session = await api.session(credential);
+      if (session) refreshCredential(session.credential);
       const staff = (session?.messages ?? []).filter(
         (message) =>
           message.role === "staff" && !seenServerMessageIds.current.has(message.messageId)
@@ -314,7 +370,7 @@ export function useConversation({
 
     const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [api, isOpen, setEntries, tenantId, visitor]);
+  }, [api, isOpen, refreshCredential, setEntries, visitor]);
 
   return { entries, isSending, status, unreadStaffCount, send, decide, forget, markRead };
 }

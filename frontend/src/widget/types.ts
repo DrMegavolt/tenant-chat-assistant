@@ -40,9 +40,14 @@ export type WireMessageRole = "visitor" | "assistant" | "staff" | "system" | "to
  */
 export type MessageSource = "user" | "assistant" | "admin" | "proactive";
 
-/** A server-issued conversation identity (`POST /api/chat/session`). */
+/**
+ * A server-issued conversation identity (`POST /api/chat/session`). The
+ * credential is the signed token that names the conversation on later
+ * requests; the session id is for display and provenance only.
+ */
 export interface ServerSession {
   sessionId: string;
+  credential: string;
 }
 
 /** The server's view of one transcript message (`TranscriptMessage`). */
@@ -97,17 +102,16 @@ export interface OpenSessionRequest {
   tenantId: string;
 }
 
-/** A request to send one visitor turn (`POST /api/chat`). */
+/**
+ * A request to send one visitor turn (`POST /api/chat`). The conversation is
+ * named by the `X-Visitor-Credential` header, never by body fields.
+ */
 export interface ChatRequest {
-  tenantId: string;
-  sessionId: string;
   message: string;
 }
 
 /** A response to a proposed booking (`POST /api/chat/confirmation`). */
 export interface ConfirmationRequest {
-  tenantId: string;
-  sessionId: string;
   decision: "approved" | "declined";
 }
 
@@ -118,6 +122,8 @@ export interface ChatTurnResponse {
   pending: PendingBooking | null;
   committed: CommittedAction[];
   provenance: TurnProvenance;
+  /** A freshly reissued token that names the same conversation (SEC-002). */
+  credential: string;
 }
 
 export interface ConsentRecord {
@@ -134,6 +140,7 @@ export interface BookingContact {
 
 export interface SessionSnapshot {
   sessionId: string;
+  credential: string;
   messages?: ServerMessage[];
   pending?: PendingBooking | null;
 }

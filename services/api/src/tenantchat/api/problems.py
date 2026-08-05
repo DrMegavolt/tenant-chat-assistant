@@ -29,7 +29,9 @@ from fastapi.responses import JSONResponse
 from tenantchat.core.errors import (
     ConflictError,
     DomainError,
+    ExpiredVisitorCredentialError,
     InvalidVersionTransitionError,
+    InvalidVisitorCredentialError,
     MissingRequiredFieldsError,
     NotFoundError,
     PolicyViolationError,
@@ -44,6 +46,12 @@ logger = logging.getLogger(__name__)
 
 # Most specific first: the first match wins, so a subclass must precede its base.
 _STATUS_BY_TYPE: Final[tuple[tuple[type[DomainError], int], ...]] = (
+    # 401 rather than 400: presenting no credential, an unverifiable one, or an
+    # expired one is an authentication failure. The codes stay distinct
+    # (`invalid_visitor_credential` vs `visitor_credential_expired`) so a client
+    # can tell a terminal rejection from a recoverable one (SEC-002).
+    (InvalidVisitorCredentialError, 401),
+    (ExpiredVisitorCredentialError, 401),
     # 422 rather than 400: the body parsed fine, its contents were unacceptable.
     (ValidationError, 422),
     # 403 rather than 404: the tenant exists and the request is well-formed; the

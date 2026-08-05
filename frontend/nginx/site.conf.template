@@ -102,10 +102,10 @@ server {
     # --- Visitor API: proxy to Python public listener ------------------------
     # Exact matches mirror the API's visitor routes one-to-one.  Path-parameter
     # routes use regex locations narrowed to the shapes the API accepts (a slug
-    # tenant ID, a UUID session ID), so a newly similar backend path cannot be
-    # published by accident.  A new backend route is unreachable from the
-    # internet until it is listed here.  `tests/test_web_gateway.py` asserts
-    # this location list equals the API's visitor surface exactly.
+    # tenant ID), so a newly similar backend path cannot be published by
+    # accident.  A new backend route is unreachable from the internet until it
+    # is listed here.  `tests/test_web_gateway.py` asserts this location list
+    # equals the API's visitor surface exactly.
     location = /api/tenants {
         if ($request_method = OPTIONS) {
             add_header Vary Origin always;
@@ -142,7 +142,7 @@ server {
             add_header Vary Origin always;
             add_header Access-Control-Allow-Origin $widget_cors_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Allow-Headers "Content-Type, X-Visitor-Credential" always;
             add_header Access-Control-Max-Age 86400 always;
             return 204;
         }
@@ -156,22 +156,7 @@ server {
             add_header Vary Origin always;
             add_header Access-Control-Allow-Origin $widget_cors_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
-            add_header Access-Control-Max-Age 86400 always;
-            return 204;
-        }
-        add_header Access-Control-Allow-Origin $widget_cors_origin always;
-        add_header Vary Origin always;
-        proxy_pass ${CHAT_BACKEND_ORIGIN};
-    }
-
-    # The transcript poll: session IDs are server-issued UUIDs.
-    location ~ "^/api/chat/session/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" {
-        if ($request_method = OPTIONS) {
-            add_header Vary Origin always;
-            add_header Access-Control-Allow-Origin $widget_cors_origin always;
-            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Allow-Headers "Content-Type, X-Visitor-Credential" always;
             add_header Access-Control-Max-Age 86400 always;
             return 204;
         }
@@ -185,7 +170,7 @@ server {
             add_header Vary Origin always;
             add_header Access-Control-Allow-Origin $widget_cors_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Allow-Headers "Content-Type, X-Visitor-Credential" always;
             add_header Access-Control-Max-Age 86400 always;
             return 204;
         }

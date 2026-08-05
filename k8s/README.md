@@ -36,7 +36,7 @@ file, or commit anything under `.local/`:
 
 ```bash
 kubectl create namespace llm-chat --dry-run=client -o yaml | kubectl apply -f -
-for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials; do
+for name in elastic-credentials postgres-credentials postgres-migration-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials visitor-credential-signing-key; do
   kubectl -n llm-chat create secret generic "$name" \
     --from-env-file=".local/k8s/$name.env.example" \
     --dry-run=client -o yaml | kubectl apply -f -

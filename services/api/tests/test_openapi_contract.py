@@ -34,7 +34,7 @@ PUBLISHED_OPERATIONS = {
     ("post", "/api/leads"),
     ("post", "/api/chat"),
     ("post", "/api/chat/session"),
-    ("get", "/api/chat/session/{session_id}"),
+    ("get", "/api/chat/session"),
     ("post", "/api/chat/confirmation"),
     ("get", "/api/admin/csrf-token"),
     ("get", "/api/admin/tenants"),

@@ -216,6 +216,18 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
         dev_auth = _env_block(chat, "CHAT_API_DEV_AUTH")
         if re.search(r"^\s*value:\s*[\"']?true[\"']?\s*$", dev_auth, re.MULTILINE):
             errors.append("chat-backend: CHAT_API_DEV_AUTH must never be enabled in a deployment")
+        # SEC-002: without the signing key every visitor route fails closed at
+        # startup, so a deployment that forgets it loses the widget, not the
+        # visitors' conversations.
+        _require_env_ref(
+            errors,
+            chat,
+            "chat-backend",
+            "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY",
+            "secretKeyRef",
+            "visitor-credential-signing-key",
+            "key",
+        )
 
     for workload in ("financing-agent", "ingestion-service"):
         dependency_document = workload_documents.get(workload)

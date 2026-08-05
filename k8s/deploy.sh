@@ -78,6 +78,10 @@ require_present_key configmap widget-cors-origins origins
 require_key secret admin-csrf-secret secret
 require_key secret admin-gateway-credentials token
 
+# SEC-002: signs the visitor credentials the widget exchanges for identity;
+# without it the visitor routes fail closed at startup.
+require_key secret visitor-credential-signing-key key
+
 # The OpenTelemetry operator is a cluster prerequisite managed by platform
 # automation. Fetching a mutable remote manifest during an application deploy
 # would bypass image-digest review and make this release non-reproducible.
