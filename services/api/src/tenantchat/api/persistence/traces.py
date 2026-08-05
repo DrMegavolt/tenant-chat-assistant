@@ -1,0 +1,228 @@
+"""PostgreSQL adapters for the PRIV-002 inference plane.
+
+``PostgresTurnRecordStore`` is the envelope `OBS-004` will populate: it writes
+the opaque content object and reads it back for the trace viewer. The erasure
+and retention of these rows deliberately stay in :mod:`tenantchat.api.persistence.privacy`,
+which runs under the erasure role — the application role holds no ``DELETE`` on
+``turn_records`` or ``turn_record_projections`` (see ``provision_app_role.sql``).
+
+``PostgresTraceAccessStore`` is the dedicated read role, a grant table rather
+than a membership role: it is tenant-qualified, audited on grant and revoke by
+the calling route, and orthogonal to transcript memberships.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import bindparam, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from tenantchat.api.persistence.tenancy import require_active_tenant
+from tenantchat.api.store import TraceAccessGrant, TurnRecord, TurnRecordProjection
+from tenantchat.core.errors import NotFoundError
+
+_MAX_TRACE_LIST_LIMIT = 200
+
+
+def _turn_record(row: object) -> TurnRecord:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return TurnRecord(
+        turn_id=mapping["id"],
+        tenant_id=mapping["tenant_id"],
+        session_id=mapping["chat_session_id"],
+        trace_id=mapping["trace_id"],
+        content=dict(mapping["content"]),
+        recorded_at=mapping["recorded_at"],
+    )
+
+
+def _grant(row: object) -> TraceAccessGrant:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return TraceAccessGrant(
+        tenant_id=mapping["tenant_id"],
+        principal_subject=mapping["principal_subject"],
+        granted_at=mapping["granted_at"],
+        granted_by=mapping["granted_by"],
+    )
+
+
+def _projection(row: object) -> TurnRecordProjection:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return TurnRecordProjection(
+        projection_id=mapping["id"],
+        tenant_id=mapping["tenant_id"],
+        turn_record_id=mapping["turn_record_id"],
+        kind=mapping["kind"],
+        created_at=mapping["created_at"],
+    )
+
+
+class PostgresTurnRecordStore:
+    """The turn-record envelope over the application role's engine."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def record(
+        self,
+        tenant_id: str,
+        session_id: uuid.UUID,
+        *,
+        content: dict[str, object],
+        trace_id: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> TurnRecord:
+        try:
+            async with self._engine.begin() as connection:
+                # The session row must exist and belong to the tenant; the
+                # composite foreign key is the second half of that proof.
+                await require_active_tenant(connection, tenant_id)
+                result = await connection.execute(
+                    text(
+                        """
+                        INSERT INTO turn_records
+                            (id, tenant_id, chat_session_id, trace_id, content, recorded_at)
+                        VALUES
+                            (:id, :tenant_id, :session_id, :trace_id, :content, :recorded_at)
+                        RETURNING id, tenant_id, chat_session_id, trace_id, content, recorded_at
+                        """
+                    ).bindparams(bindparam("content", type_=JSONB)),
+                    {
+                        "id": uuid.uuid4(),
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "trace_id": trace_id,
+                        "content": content,
+                        "recorded_at": recorded_at or datetime.now(UTC),
+                    },
+                )
+                return _turn_record(result.one())
+        except IntegrityError as exc:
+            # A session that belongs to another tenant is indistinguishable
+            # from one that never existed, and the SQL DETAIL must not become
+            # an exception message anyone logs.
+            raise NotFoundError(detail="session absent or outside tenant") from exc
+
+    async def get(self, tenant_id: str, turn_id: uuid.UUID) -> TurnRecord:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id, tenant_id, chat_session_id, trace_id, content, recorded_at
+                    FROM turn_records
+                    WHERE tenant_id = :tenant_id AND id = :turn_id
+                    """
+                ),
+                {"tenant_id": tenant_id, "turn_id": turn_id},
+            )
+            row = result.first()
+        if row is None:
+            raise NotFoundError(detail="turn record absent or outside tenant")
+        return _turn_record(row)
+
+    async def for_session(
+        self, tenant_id: str, session_id: uuid.UUID, *, limit: int
+    ) -> tuple[TurnRecord, ...]:
+        bounded = min(limit, _MAX_TRACE_LIST_LIMIT)
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id, tenant_id, chat_session_id, trace_id, content, recorded_at
+                    FROM turn_records
+                    WHERE tenant_id = :tenant_id AND chat_session_id = :session_id
+                    ORDER BY recorded_at, id
+                    LIMIT :limit
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_id": session_id, "limit": bounded},
+            )
+            return tuple(_turn_record(row) for row in result.all())
+
+    async def projections_for_turn(
+        self, tenant_id: str, turn_id: uuid.UUID
+    ) -> tuple[TurnRecordProjection, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id, tenant_id, turn_record_id, kind, created_at
+                    FROM turn_record_projections
+                    WHERE tenant_id = :tenant_id AND turn_record_id = :turn_id
+                    ORDER BY created_at, id
+                    """
+                ),
+                {"tenant_id": tenant_id, "turn_id": turn_id},
+            )
+            return tuple(_projection(row) for row in result.all())
+
+
+class PostgresTraceAccessStore:
+    """The dedicated trace-read grant, tenant-qualified like a membership."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def grant(self, tenant_id: str, subject: str, *, granted_by: str) -> TraceAccessGrant:
+        async with self._engine.begin() as connection:
+            await require_active_tenant(connection, tenant_id)
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO trace_access_grants
+                        (tenant_id, principal_subject, granted_by)
+                    VALUES
+                        (:tenant_id, :subject, :granted_by)
+                    ON CONFLICT (tenant_id, principal_subject)
+                    DO UPDATE SET granted_by = EXCLUDED.granted_by
+                    RETURNING tenant_id, principal_subject, granted_at, granted_by
+                    """
+                ),
+                {"tenant_id": tenant_id, "subject": subject, "granted_by": granted_by},
+            )
+            return _grant(result.one())
+
+    async def revoke(self, tenant_id: str, subject: str) -> bool:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    DELETE FROM trace_access_grants
+                    WHERE tenant_id = :tenant_id AND principal_subject = :subject
+                    """
+                ),
+                {"tenant_id": tenant_id, "subject": subject},
+            )
+            return (result.rowcount or 0) > 0
+
+    async def has_access(self, tenant_id: str, subject: str) -> bool:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT 1 FROM trace_access_grants
+                    WHERE tenant_id = :tenant_id AND principal_subject = :subject
+                    """
+                ),
+                {"tenant_id": tenant_id, "subject": subject},
+            )
+            return result.first() is not None
+
+    async def for_tenant(self, tenant_id: str) -> tuple[TraceAccessGrant, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT tenant_id, principal_subject, granted_at, granted_by
+                    FROM trace_access_grants
+                    WHERE tenant_id = :tenant_id
+                    ORDER BY principal_subject
+                    """
+                ),
+                {"tenant_id": tenant_id},
+            )
+            return tuple(_grant(row) for row in result.all())

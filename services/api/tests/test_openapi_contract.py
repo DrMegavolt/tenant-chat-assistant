@@ -55,6 +55,13 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/admin/jobs/{job_id}"),
     ("post", "/api/admin/jobs/{job_id}/retry"),
     ("post", "/api/admin/jobs/{job_id}/cancel"),
+    # PRIV-002: the inference-plane surface. Reads are gated by the dedicated
+    # trace-read grant and audited per read; grant and revoke are platform-admin
+    # mutations like membership assignment.
+    ("get", "/api/admin/traces/{turn_id}"),
+    ("get", "/api/admin/trace-access"),
+    ("post", "/api/admin/trace-access"),
+    ("delete", "/api/admin/trace-access"),
 }
 
 

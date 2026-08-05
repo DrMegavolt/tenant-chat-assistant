@@ -35,6 +35,7 @@ from tenantchat.api.persistence import (
     PostgresAuditStore,
     PostgresJobStore,
     PostgresPrivacyStore,
+    PostgresTurnRecordStore,
 )
 from tenantchat.api.privacy_worker import run_pass
 from tenantchat.api.registry import TenantRegistry
@@ -537,3 +538,248 @@ def test_expired_transcripts_are_purged_with_audited_counts(
 
 async def _dispose(database: Database) -> None:
     await database.dispose()
+
+
+def plant_turn_records(
+    database_url: str,
+    tenant_id: str,
+    session_id: str,
+    *,
+    contact: str,
+    recorded_at: datetime | None = None,
+) -> uuid.UUID:
+    """One inference-plane record naming the subject, via the `OBS-004` seam.
+
+    Written through ``PostgresTurnRecordStore`` exactly as the trace
+    finalizer will write it, so the retention and erasure tests pin the
+    repository's contract, not a test's private INSERT.
+    """
+    database = Database.connect(database_url, TEST_POOL)
+    try:
+        turn = asyncio.run(
+            PostgresTurnRecordStore(database.engine).record(
+                tenant_id,
+                uuid.UUID(session_id),
+                trace_id="trace-for-privacy-tests",
+                content={
+                    "prompt": f"Please call {contact} back",
+                    "evidence": ["document-1"],
+                    "output": "Noted, thank you.",
+                },
+                recorded_at=recorded_at,
+            )
+        )
+    finally:
+        asyncio.run(_dispose(database))
+    return turn.turn_id
+
+
+def plant_projection(database_url: str, tenant_id: str, turn_record_id: uuid.UUID) -> uuid.UUID:
+    """A derived dataset row pinned to the turn, the `FEAT-008` shape."""
+    projection_id = uuid.uuid4()
+    with psycopg.connect(_libpq(database_url)) as connection:
+        connection.execute(
+            """
+            INSERT INTO turn_record_projections (id, tenant_id, turn_record_id, kind)
+            VALUES (%s, %s, %s, 'eval_dataset')
+            """,
+            (projection_id, tenant_id, turn_record_id),
+        )
+    return projection_id
+
+
+def test_an_export_includes_turn_records_and_their_projections(
+    client: TestClient, privacy_database_url: str
+) -> None:
+    """The inference plane is the subject's data, so the export must hold it.
+
+    A subject's prompt and the dataset derived from it are a data-subject
+    export's whole point: omitting them would make the export look complete
+    while the words were still on disk.
+    """
+    dana_session, _ = plant_subject(client, BOOKING_TENANT, DANA_PHONE)
+    boris_session, _ = plant_subject(client, BOOKING_TENANT, BORIS_PHONE)
+    dana_turn = plant_turn_records(
+        privacy_database_url, BOOKING_TENANT, dana_session, contact=DANA_PHONE
+    )
+    boris_turn = plant_turn_records(
+        privacy_database_url, BOOKING_TENANT, boris_session, contact=BORIS_PHONE
+    )
+    plant_projection(privacy_database_url, BOOKING_TENANT, dana_turn)
+
+    response = client.post(
+        "/api/admin/privacy/export",
+        headers=_csrf_headers(client, "tenant_admin"),
+        json={"tenant_id": BOOKING_TENANT, "contact": DANA_PHONE},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert [item["turn_id"] for item in body["turn_records"]] == [str(dana_turn)]
+    exported = body["turn_records"][0]
+    assert exported["trace_id"] == "trace-for-privacy-tests"
+    assert DANA_PHONE in exported["content"]["prompt"]
+    assert [item["kind"] for item in body["projections"]] == ["eval_dataset"]
+    assert body["projections"][0]["turn_record_id"] == str(dana_turn)
+    assert str(boris_turn) not in [item["turn_id"] for item in body["turn_records"]]
+
+
+def test_a_session_is_found_through_turn_record_content_only(
+    client: TestClient, privacy_database_url: str
+) -> None:
+    """Subject discovery reaches the inference plane, not just the transcript.
+
+    A contact can live in a prompt or a retrieved chunk without ever appearing
+    in a message row; an erasure that searched only messages would leave the
+    subject's words behind in the plane that exists to hold them.
+    """
+    visitor = open_session_with_consent(client, OTHER_TENANT, ["follow_up"])
+    session_id = visitor.session_id
+    turn = plant_turn_records(privacy_database_url, OTHER_TENANT, session_id, contact=DANA_PHONE)
+
+    response = client.post(
+        "/api/admin/privacy/export",
+        headers=_csrf_headers(client, "tenant_admin"),
+        json={"tenant_id": OTHER_TENANT, "contact": DANA_PHONE},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert {item["turn_id"] for item in body["turn_records"]} == {str(turn)}
+    assert session_id in {item["session_id"] for item in body["sessions"]}
+
+
+def test_an_erasure_request_removes_turn_records_and_derived_projections(
+    client: TestClient, privacy_database_url: str
+) -> None:
+    """Erasure reaches the whole inference plane and the removal is verifiable.
+
+    The projection rows are removed by cascading off their turn records: one
+    deletion statement covers the record and everything derived from it, and
+    the audit row carries the count so a completed request is provable.
+    """
+    dana_session, _ = plant_subject(client, BOOKING_TENANT, DANA_PHONE)
+    dana_turn = plant_turn_records(
+        privacy_database_url, BOOKING_TENANT, dana_session, contact=DANA_PHONE
+    )
+    plant_projection(privacy_database_url, BOOKING_TENANT, dana_turn)
+
+    filed = client.post(
+        "/api/admin/privacy/deletion-requests",
+        headers=_csrf_headers(client, "platform_admin"),
+        json={"tenant_id": BOOKING_TENANT, "contact": DANA_PHONE},
+    )
+    assert filed.status_code == 201, filed.text
+
+    database = Database.connect(privacy_database_url, TEST_POOL)
+    try:
+
+        async def worker_pass() -> int:
+            privacy = PostgresPrivacyStore(database.engine, database.engine)
+            return await run_once(
+                PostgresJobStore(database.engine),
+                {
+                    JobKind.PRIVACY_DELETION: privacy_deletion_handler(
+                        privacy, PostgresAuditStore(database.engine)
+                    )
+                },
+                WorkerSettings(
+                    worker_id="privacy-worker-test",
+                    batch_size=1,
+                    lease_duration=timedelta(seconds=30),
+                ),
+            )
+
+        completed = asyncio.run(worker_pass())
+    finally:
+        asyncio.run(_dispose(database))
+    assert completed == 1
+
+    with psycopg.connect(_libpq(privacy_database_url)) as connection:
+        turn_count = _scalar(
+            connection,
+            "SELECT count(*) FROM turn_records WHERE tenant_id = %s AND id = %s",
+            (BOOKING_TENANT, dana_turn),
+        )
+        projection_count = _scalar(
+            connection,
+            "SELECT count(*) FROM turn_record_projections WHERE tenant_id = %s",
+            (BOOKING_TENANT,),
+        )
+        assert (turn_count, projection_count) == (0, 0)
+
+        erased = _row(
+            connection,
+            """
+            SELECT details FROM audit_events
+            WHERE tenant_id = %s AND action = 'privacy.erased'
+            ORDER BY occurred_at DESC LIMIT 1
+            """,
+            (BOOKING_TENANT,),
+        )
+        assert erased[0]["turn_records_deleted"] == 1
+
+
+def test_expired_turn_records_are_purged_while_the_transcript_survives(
+    client: TestClient, privacy_database_url: str
+) -> None:
+    """Trace retention is independent of, and shorter than, transcript retention.
+
+    A turn record past its 30-day rule is purged while the 90-day transcript
+    it derived from is untouched, and the purge is observable as a count — not
+    as a list of what was purged.
+    """
+    now = datetime(2026, 8, 5, tzinfo=UTC)
+    visitor = open_session_with_consent(client, BOOKING_TENANT, ["follow_up"])
+    turn = client.post(
+        "/api/chat",
+        json={"message": "What hours are you open?"},
+        headers=visitor.headers,
+    )
+    assert turn.status_code == 200, turn.text
+    expired_turn = plant_turn_records(
+        privacy_database_url,
+        BOOKING_TENANT,
+        visitor.session_id,
+        contact=DANA_PHONE,
+        recorded_at=now - timedelta(days=40),
+    )
+
+    database = Database.connect(privacy_database_url, TEST_POOL)
+    try:
+
+        async def worker_pass() -> int:
+            return await run_pass(
+                TenantRegistry.seeded(),
+                PostgresPrivacyStore(database.engine, database.engine),
+                PostgresAuditStore(database.engine),
+                now=now,
+            )
+
+        asyncio.run(worker_pass())
+    finally:
+        asyncio.run(_dispose(database))
+
+    with psycopg.connect(_libpq(privacy_database_url)) as connection:
+        expired_turns = _scalar(
+            connection,
+            "SELECT count(*) FROM turn_records WHERE tenant_id = %s AND id = %s",
+            (BOOKING_TENANT, expired_turn),
+        )
+        surviving_messages = _scalar(
+            connection,
+            "SELECT count(*) FROM messages WHERE chat_session_id = %s",
+            (uuid.UUID(visitor.session_id),),
+        )
+        assert expired_turns == 0
+        assert surviving_messages == 2
+
+        purge_row = _row(
+            connection,
+            "SELECT details FROM audit_events WHERE action = %s AND tenant_id = %s",
+            ("privacy.retention_purged", BOOKING_TENANT),
+        )
+        details = purge_row[0]
+        assert details["turn_records_deleted"] == 1
+        assert details["messages_deleted"] == 0
+        assert "turn_id" not in str(details) and "prompt" not in str(details)

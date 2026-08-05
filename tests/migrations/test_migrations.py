@@ -33,6 +33,9 @@ DOMAIN_TABLES = {
     "privacy_requests",
     "background_jobs",
     "background_job_events",
+    "turn_records",
+    "turn_record_projections",
+    "trace_access_grants",
 }
 TENANT_QUERY_TABLES = DOMAIN_TABLES - {"tenants"}
 
@@ -73,7 +76,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0009_durable_jobs"
+    assert revision == "0010_trace_privacy"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -488,6 +491,12 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
                 "public.knowledge_document_versions FROM {}"
             ).format(identifier)
         )
+        owner.execute(
+            sql.SQL(
+                "REVOKE UPDATE, DELETE ON TABLE public.turn_records, "
+                "public.turn_record_projections FROM {}"
+            ).format(identifier)
+        )
         owner.execute(sql.SQL("REVOKE CREATE ON SCHEMA public FROM {}").format(identifier))
 
     with psycopg.connect(psycopg_url(migration_database_url)) as application:
@@ -649,3 +658,47 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
                 ("runtime-tenant",),
             )
         application.rollback()
+
+    # PRIV-002: the inference plane is append-only for the application role.
+    # The API writes and reads turn records, but must not be able to rewrite
+    # or erase evidence of what produced an answer; DELETE lives with the
+    # erasure role, and projections are erased by cascading off their turn.
+    # Each refusal gets a fresh connection: relation ACLs are cached per
+    # session, so reusing one connection after a refused statement can see a
+    # stale snapshot (the established pattern in this test).
+    with psycopg.connect(psycopg_url(migration_database_url)) as owner:
+        turn_id = uuid.uuid4()
+        owner.execute(
+            "INSERT INTO turn_records (id, tenant_id, chat_session_id, content, recorded_at) "
+            "VALUES (%s, 'runtime-tenant', %s, '{}', now())",
+            (turn_id, session_id),
+        )
+        owner.execute(
+            "INSERT INTO turn_record_projections (id, tenant_id, turn_record_id, kind) "
+            "VALUES (%s, 'runtime-tenant', %s, 'eval_dataset')",
+            (uuid.uuid4(), turn_id),
+        )
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "DELETE FROM turn_records WHERE tenant_id = %s AND id = %s",
+                ("runtime-tenant", turn_id),
+            )
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "UPDATE turn_records SET content = '{}' WHERE tenant_id = %s AND id = %s",
+                ("runtime-tenant", turn_id),
+            )
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "DELETE FROM turn_record_projections WHERE tenant_id = %s AND turn_record_id = %s",
+                ("runtime-tenant", turn_id),
+            )

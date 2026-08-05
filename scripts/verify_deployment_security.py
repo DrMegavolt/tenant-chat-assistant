@@ -154,6 +154,37 @@ def _scan_source_documents(errors: list[str], documents: list[tuple[Path, str]])
                 )
 
 
+def _check_trace_content_export(errors: list[str], documents: list[tuple[Path, str]]) -> None:
+    """PRIV-002: content export stays off in tracked deployment inputs.
+
+    The application refuses to start with content export enabled for a backend
+    outside the cluster trust boundary, and this gate refuses a manifest that
+    enables it in the first place: the only supported path is an operator
+    consciously editing the collector config and the deployment environment to
+    point at an in-cluster viewer behind admin authentication.
+    """
+    for path, document in documents:
+        label = f"{path.relative_to(ROOT)}"
+        enabled = _env_block(document, "TRACE_CONTENT_EXPORT")
+        if re.search(r"^\s*value:\s*[\"']?true[\"']?\s*$", enabled, re.MULTILINE):
+            errors.append(f"{label}: TRACE_CONTENT_EXPORT must never be enabled in a manifest")
+        endpoint = _env_block(document, "TRACE_CONTENT_EXPORT_ENDPOINT")
+        if not endpoint:
+            continue
+        # The endpoint must be a literal in-cluster URL. A reference cannot be
+        # verified statically, and an external literal is the exact deployment
+        # `ADR-0010` refuses — the application also refuses both at startup.
+        if not re.search(
+            r"^\s*value:\s*[\"']?https?://[a-z0-9.-]+\.svc\.cluster\.local(?::\d+)?[\"']?\s*$",
+            endpoint,
+            re.MULTILINE,
+        ):
+            errors.append(
+                f"{label}: TRACE_CONTENT_EXPORT_ENDPOINT must be a literal in-cluster URL "
+                "(*.svc.cluster.local); the trust boundary cannot be verified otherwise"
+            )
+
+
 def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -> None:
     workload_documents: dict[str, str] = {}
     # The side services read APP_ENV through the shared runtime_security module.
@@ -390,6 +421,7 @@ def verify() -> tuple[int, int]:
 
     _scan_source_documents(errors, documents)
     _check_workload_refs(errors, documents)
+    _check_trace_content_export(errors, documents)
     _check_examples(errors)
     _check_client_authentication(errors)
 

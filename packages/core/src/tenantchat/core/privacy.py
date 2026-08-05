@@ -67,6 +67,10 @@ class DataClass(StrEnum):
     LEAD = "lead"
     HANDOFF = "handoff"
     CONSENT = "consent"
+    # PRIV-002/ADR-0010: the inference plane, one row per conversation turn.
+    # Shorter-lived than the transcript by design, narrowly authorized, and
+    # audited on every read (see `TurnRecordReadReason`).
+    INFERENCE_TRACE = "inference_trace"
 
 
 # The documentation a data-subject rights request starts from: which classes of
@@ -80,6 +84,14 @@ PERMITTED_USES: Final[dict[str, tuple[str, ...]]] = {
     DataClass.LEAD.value: ("staff follow-up",),
     DataClass.HANDOFF.value: ("staff takeover of the conversation",),
     DataClass.CONSENT.value: ("proving consent and withdrawal",),
+    # The inference plane is a derived copy of the conversation's content for
+    # the purposes of answering-quality analysis and incident investigation.
+    # It is governed separately from the transcript: shorter retention, a
+    # dedicated access role, and a mandatory read reason.
+    DataClass.INFERENCE_TRACE.value: (
+        "answering-quality analysis",
+        "incident investigation",
+    ),
 }
 
 
@@ -156,6 +168,9 @@ class ConsentGrant:
 
 
 _DEFAULT_TRANSCRIPT_RETENTION: Final = timedelta(days=90)
+# PRIV-002: turn records are content-bearing and therefore shorter-lived than
+# the transcript they derive from. One policy rule, independently purgeable.
+_DEFAULT_TRACE_RETENTION: Final = timedelta(days=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +197,10 @@ class RetentionPolicy:
     database, and this type is the shape that migration will fill from.
     """
 
-    rules: tuple[RetentionRule, ...] = (RetentionRule(DataClass.TRANSCRIPT),)
+    rules: tuple[RetentionRule, ...] = (
+        RetentionRule(DataClass.TRANSCRIPT),
+        RetentionRule(DataClass.INFERENCE_TRACE, _DEFAULT_TRACE_RETENTION),
+    )
 
     @classmethod
     def defaults(cls) -> RetentionPolicy:
@@ -204,6 +222,20 @@ class RetentionPolicy:
         if rule is None:
             return False
         return now - recorded_at >= rule
+
+
+class TurnRecordReadReason(StrEnum):
+    """Why one operator read one turn record, recorded on every read.
+
+    A closed set rather than a free string so an audit trail cannot carry a
+    reason nobody agreed to, and so a dashboard can group reads by cause. The
+    `PRIV-002` read surface refuses a request without one of these.
+    """
+
+    QUALITY_REVIEW = "quality_review"
+    INCIDENT_INVESTIGATION = "incident_investigation"
+    SUBJECT_REQUEST = "subject_request"
+    TENANT_SUPPORT = "tenant_support"
 
 
 # Replacement values for irreversible anonymization. ``erased`` reads as

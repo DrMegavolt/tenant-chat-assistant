@@ -29,6 +29,13 @@ SELECT format(
     'public.chat_sessions TO %I',
     :'privacy_role'
 ) \gexec
+-- PRIV-002: the worker purges expired turn records and fulfills erasure of a
+-- subject's turn records; projections derived from a turn cascade with it.
+SELECT format(
+    'GRANT SELECT, DELETE ON TABLE public.turn_records, '
+    'public.turn_record_projections TO %I',
+    :'privacy_role'
+) \gexec
 SELECT format(
     'GRANT UPDATE ON TABLE public.privacy_requests TO %I',
     :'privacy_role'

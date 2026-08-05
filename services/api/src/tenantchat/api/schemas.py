@@ -29,6 +29,9 @@ from tenantchat.api.store import (
     MessageRecord,
     PrivacyRequestRecord,
     TenantMembership,
+    TraceAccessGrant,
+    TurnRecord,
+    TurnRecordProjection,
 )
 from tenantchat.core.ports import AssistantTurn, BookingConfirmation
 from tenantchat.core.tenant import PublicTenantView
@@ -641,6 +644,49 @@ class ConsentExportItem(BaseModel):
         )
 
 
+class TurnRecordExportItem(BaseModel):
+    """One inference-plane record, exported because it holds the subject's data.
+
+    ``content`` is the full opaque object `OBS-004` will populate — prompt,
+    retrieved evidence, model output, verdicts. An export that omitted it would
+    omit the subject's words; an export that truncated it would look complete.
+    """
+
+    turn_id: uuid.UUID
+    session_id: uuid.UUID
+    trace_id: str | None
+    recorded_at: datetime
+    content: dict[str, object]
+
+    @classmethod
+    def of(cls, record: TurnRecord) -> TurnRecordExportItem:
+        return cls(
+            turn_id=record.turn_id,
+            session_id=record.session_id,
+            trace_id=record.trace_id,
+            recorded_at=record.recorded_at,
+            content=record.content,
+        )
+
+
+class TurnRecordProjectionExportItem(BaseModel):
+    """A derived dataset row pinned to an exported turn record."""
+
+    projection_id: uuid.UUID
+    turn_record_id: uuid.UUID
+    kind: str
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: TurnRecordProjection) -> TurnRecordProjectionExportItem:
+        return cls(
+            projection_id=record.projection_id,
+            turn_record_id=record.turn_record_id,
+            kind=record.kind,
+            created_at=record.created_at,
+        )
+
+
 class PrivacyExportResponse(BaseModel):
     """Everything the platform holds about one subject.
 
@@ -660,6 +706,8 @@ class PrivacyExportResponse(BaseModel):
     bookings: list[BookingExportItem]
     handoffs: list[HandoffExportItem]
     consent: list[ConsentExportItem]
+    turn_records: list[TurnRecordExportItem]
+    projections: list[TurnRecordProjectionExportItem]
 
 
 class DeletionRequestResponse(BaseModel):
@@ -694,6 +742,68 @@ class DeletionRequestResponse(BaseModel):
 
 class DeletionRequestsResponse(BaseModel):
     requests: list[DeletionRequestResponse]
+
+
+class TraceAccessRequest(_Request):
+    """A platform administrator naming an operator for the trace-read role."""
+
+    tenant_id: str = _TENANT_ID
+    subject: str = Field(min_length=1, max_length=200)
+
+
+class TraceAccessResponse(BaseModel):
+    """One tenant-scoped trace-read grant, as it was recorded."""
+
+    tenant_id: str
+    subject: str
+    granted_at: datetime
+    granted_by: str
+
+    @classmethod
+    def of(cls, grant: TraceAccessGrant) -> TraceAccessResponse:
+        return cls(
+            tenant_id=grant.tenant_id,
+            subject=grant.principal_subject,
+            granted_at=grant.granted_at,
+            granted_by=grant.granted_by,
+        )
+
+
+class TraceAccessesResponse(BaseModel):
+    grants: list[TraceAccessResponse]
+
+
+class TraceReadResponse(BaseModel):
+    """One turn record as the trace viewer reads it, with its projections.
+
+    The response carries the full content: this is the one surface where the
+    inference plane is readable, gated by the dedicated role and audited to an
+    actor, turn, and reason on every read.
+    """
+
+    turn_id: uuid.UUID
+    tenant_id: str
+    session_id: uuid.UUID
+    trace_id: str | None
+    recorded_at: datetime
+    content: dict[str, object]
+    projections: list[TurnRecordProjectionExportItem]
+
+    @classmethod
+    def of(
+        cls,
+        record: TurnRecord,
+        projections: tuple[TurnRecordProjection, ...] = (),
+    ) -> TraceReadResponse:
+        return cls(
+            turn_id=record.turn_id,
+            tenant_id=record.tenant_id,
+            session_id=record.session_id,
+            trace_id=record.trace_id,
+            recorded_at=record.recorded_at,
+            content=record.content,
+            projections=[TurnRecordProjectionExportItem.of(item) for item in projections],
+        )
 
 
 class JobControlRequest(_Request):
