@@ -9,8 +9,8 @@ from collections.abc import Callable
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from tenantchat.api.app import REQUEST_ID_HEADER, _handle_unexpected_error
-from tenantchat.api.problems import problem_response
+from tenantchat.api.app import _handle_unexpected_error
+from tenantchat.api.problems import REQUEST_ID_HEADER, problem_response
 from tenantchat.core.errors import InvalidVersionTransitionError
 from tenantchat.core.lifecycle import VersionState
 

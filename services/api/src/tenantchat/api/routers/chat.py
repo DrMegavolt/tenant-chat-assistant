@@ -160,7 +160,10 @@ async def read_session(
 
     Answers from the store rather than the checkpoint, so a returning visitor
     sees the same transcript after a deployment that discarded in-flight runs.
-    The pending question is the one thing only the runtime knows.
+    The pending question is the one thing only the runtime knows. The transcript
+    is truncated to the most recent messages: the widget renders the tail of a
+    conversation anyway, and an unauthenticated session read must not be able
+    to grow without bound (`SEC-003`).
 
     The session is read under the credential's tenant and session — nothing in
     the query string names it, so the transcript cannot be linked from a URL.
@@ -171,7 +174,9 @@ async def read_session(
     tenant_id, session_id = claims.tenant_id, claims.session_id
     registry.get(tenant_id)
     record = await conversations.get(tenant_id, session_id)
-    messages = await conversations.transcript(tenant_id, session_id)
+    messages = (await conversations.transcript(tenant_id, session_id))[
+        -settings.max_history_messages :
+    ]
     pending = None if runtime is None else await runtime.pending(tenant_id, str(session_id))
 
     return VisitorSessionResponse(

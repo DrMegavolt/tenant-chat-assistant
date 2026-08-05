@@ -41,6 +41,10 @@ from tenantchat.core.errors import (
 )
 
 PROBLEM_CONTENT_TYPE: Final = "application/problem+json"
+# Every response carries the request ID in this header, and problem documents
+# repeat it in the body, so a visitor reporting a failure can be matched to
+# the log line that holds the operator detail.
+REQUEST_ID_HEADER: Final = "X-Request-Id"
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +119,38 @@ def problem_response(
     return JSONResponse(
         status_code=resolved_status,
         content=document,
+        media_type=PROBLEM_CONTENT_TYPE,
+    )
+
+
+def transport_problem(
+    *,
+    status: int,
+    code: str,
+    title: str,
+    detail: str,
+    request_id: str,
+    **extensions: object,
+) -> JSONResponse:
+    """A problem document for failures that never became a ``DomainError``.
+
+    The API-layer failures — a guard refusing a request, a handler mapping a
+    transport fault — share the RFC 9457 shape with domain errors so a client
+    parses one document. ``detail`` and the extensions are the only values that
+    reach the caller, so everything passed here must be safe to publish.
+    """
+    return JSONResponse(
+        status_code=status,
+        content={
+            "type": f"/problems/{code}",
+            "title": title,
+            "status": status,
+            "detail": detail,
+            "code": code,
+            "requestId": request_id,
+        }
+        | extensions,
+        headers={REQUEST_ID_HEADER: request_id},
         media_type=PROBLEM_CONTENT_TYPE,
     )
 
