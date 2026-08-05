@@ -24,6 +24,7 @@ DOMAIN_TABLES = {
     "handoffs",
     "idempotency_keys",
     "audit_events",
+    "tenant_memberships",
     "knowledge_sources",
     "knowledge_documents",
     "knowledge_document_versions",
@@ -64,7 +65,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0004_agent_runtime"
+    assert revision == "0005_tenant_memberships"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -526,5 +527,54 @@ def test_application_role_can_write_rows_but_cannot_create_schema(
             application.execute(
                 "DELETE FROM knowledge_documents WHERE tenant_id = %s AND id = %s",
                 ("runtime-tenant", knowledge_document_id),
+            )
+        application.rollback()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        # The API assigns, re-assigns (upsert), and revokes membership rows
+        # (SEC-001), so the runtime role owns that DML like any domain row.
+        application.execute(
+            """
+            INSERT INTO tenant_memberships (tenant_id, principal_subject, role)
+            VALUES (%s, 'operator-1', 'viewer')
+            """,
+            ("runtime-tenant",),
+        )
+        application.execute(
+            """
+            UPDATE tenant_memberships SET role = 'support_agent', updated_at = now()
+            WHERE tenant_id = %s AND principal_subject = 'operator-1'
+            """,
+            ("runtime-tenant",),
+        )
+        application.execute(
+            """
+            DELETE FROM tenant_memberships
+            WHERE tenant_id = %s AND principal_subject = 'operator-1'
+            """,
+            ("runtime-tenant",),
+        )
+        application.commit()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        # audit_events is append-only: recording is INSERT, rewriting is refused.
+        application.execute(
+            """
+            INSERT INTO audit_events
+                (tenant_id, actor_type, principal_id, action, resource_type, request_id)
+            VALUES (%s, 'staff', 'operator-1', 'membership_assigned', 'tenant_membership', 'req-1')
+            """,
+            ("runtime-tenant",),
+        )
+        application.commit()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as application:
+        application.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role_name)))
+        with pytest.raises(errors.InsufficientPrivilege):
+            application.execute(
+                "UPDATE audit_events SET details = '{}' WHERE tenant_id = %s",
+                ("runtime-tenant",),
             )
         application.rollback()

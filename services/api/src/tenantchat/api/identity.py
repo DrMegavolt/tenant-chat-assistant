@@ -1,4 +1,4 @@
-"""Operator identity, as it arrives from the authenticating gateway.
+"""Operator identity and tenant-scoped authorization (SEC-001).
 
 The API never speaks OIDC. The gateway completes the login, and nginx forwards
 what oauth2-proxy established as three headers, alongside a shared token that
@@ -10,10 +10,14 @@ The service re-checks the role rather than trusting the gateway's routing. A
 proxy rule is a deployment artifact that can be edited, reordered, or bypassed by
 a second ingress; the role check here travels with the route it protects.
 
-Tenant-scoped authorization — which tenants *this* operator may read — is
-`SEC-001` and is not implemented. Every authenticated operator can currently read
-every tenant's conversations, which is why the routes using this module are not
-exposed to the public internet.
+Tenant scoping is a second authority on top of the gateway's. The gateway maps
+provider groups to one coarse directory role; the membership table (SEC-001)
+decides what each operator may do *inside* a tenant. The effective role for a
+tenant is the tighter of the two, so a membership row can narrow an operator's
+access but never widen it beyond their directory role — the identity provider
+remains the privilege ceiling. `platform_admin` is the exception: it spans every
+tenant by definition and is granted only by the directory role, never by a
+membership row.
 """
 
 from __future__ import annotations
@@ -21,14 +25,21 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Final
+from typing import Annotated, Final
 
-from fastapi import Request
+from fastapi import Depends, Request
 
-from tenantchat.api.faults import CsrfValidationError, ForbiddenError, UnauthenticatedError
+from tenantchat.api.dependencies import get_membership_store
+from tenantchat.api.faults import (
+    CsrfValidationError,
+    ForbiddenError,
+    TenantAccessDeniedError,
+    UnauthenticatedError,
+)
 from tenantchat.api.settings import Settings
+from tenantchat.api.store import MembershipStore
 
 GATEWAY_TOKEN_HEADER: Final = "X-TenantChat-Gateway-Token"  # noqa: S105 - a header name
 EMAIL_HEADER: Final = "X-Auth-Email"
@@ -37,7 +48,14 @@ SUBJECT_HEADER: Final = "X-Auth-Subject"
 CSRF_HEADER: Final = "X-CSRF-Token"
 
 # Ordered by privilege; each role holds everything the roles before it hold.
+# `platform_admin` is the one role that is also a tenant in its own right: it
+# grants access to every tenant, which no per-tenant membership row can.
 ROLES: Final[tuple[str, ...]] = ("viewer", "support_agent", "tenant_admin", "platform_admin")
+
+# Roles a membership row may grant. `platform_admin` is deliberately absent:
+# it spans tenants and is decided by the provider directory, so a tenant-scoped
+# record can never confer it (see the migration's CHECK constraint).
+TENANT_ROLES: Final[tuple[str, ...]] = ("viewer", "support_agent", "tenant_admin")
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +68,8 @@ class AdminIdentity:
     records should carry. ``email`` is personal data: it is reachable as an
     attribute for a record that is meant to hold it, and never appears in this
     object's string forms, so an f-string in a log statement cannot leak one.
+    ``role`` is the directory role the gateway mapped from provider groups; the
+    per-tenant role is resolved per request from the membership store.
     """
 
     subject: str
@@ -70,6 +90,11 @@ class AdminIdentity:
 def authenticate(request: Request, settings: Settings) -> AdminIdentity:
     """Read the operator identity the gateway established.
 
+    With ``settings.dev_auth`` the gateway token is not required — the explicit
+    local-development mode trusts the identity headers directly. The production
+    composition refuses to start in that mode against a non-loopback database,
+    so a deployment cannot accidentally run it.
+
     Raises:
         UnauthenticatedError: the deployment has no gateway token configured,
             the presented token did not match, an identity header was missing,
@@ -80,7 +105,10 @@ def authenticate(request: Request, settings: Settings) -> AdminIdentity:
     # An unconfigured deployment fails closed. The alternative — treating an
     # absent token as "no gateway in front of us, so trust the headers" — is the
     # configuration mistake that turns the admin API into an open one.
-    if not expected or not hmac.compare_digest(presented, expected):
+    gateway_ok = False
+    if expected is not None:
+        gateway_ok = hmac.compare_digest(presented, expected)
+    if not gateway_ok and not settings.dev_auth:
         raise UnauthenticatedError
 
     subject = request.headers.get(SUBJECT_HEADER, "").strip()
@@ -116,6 +144,89 @@ def require_role(minimum: str) -> Callable[[Request], AdminIdentity]:
                 },
             )
             raise ForbiddenError
+        return identity
+
+    return dependency
+
+
+def effective_role(identity: AdminIdentity, membership_role: str | None) -> str | None:
+    """The role an operator actually holds inside one tenant.
+
+    ``platform_admin`` is granted by the directory and spans every tenant. Any
+    other operator is bound by the tighter of their directory role and their
+    membership row, so an assignment can restrict access but never grant more
+    than the identity provider allows.
+    """
+    if identity.role == "platform_admin":
+        return "platform_admin"
+    if membership_role is None:
+        return None
+    return min((identity.role, membership_role), key=ROLES.index)
+
+
+async def authorize_tenant_access(
+    identity: AdminIdentity,
+    memberships: MembershipStore,
+    tenant_id: str,
+    *,
+    minimum: str,
+    path: str,
+) -> AdminIdentity:
+    """Refuse a tenant-scoped operation this operator may not perform.
+
+    The membership check happens before anything else touches the tenant: no
+    tenant record is looked up, so the refusal is identical whether the tenant
+    exists or not, and the detail names no tenant ID.
+
+    Raises:
+        ForbiddenError: the operator's effective role is below *minimum*.
+        TenantAccessDeniedError: no membership row grants access to this tenant.
+    """
+    membership_role = await memberships.role_for(tenant_id, identity.subject)
+    effective = effective_role(identity, membership_role)
+    if effective is None:
+        logger.warning(
+            "tenant-scoped access refused",
+            extra={"subject": identity.subject, "role": identity.role, "path": path},
+        )
+        raise TenantAccessDeniedError
+    if ROLES.index(effective) < ROLES.index(minimum):
+        logger.warning(
+            "tenant-scoped authorization refused",
+            extra={
+                "subject": identity.subject,
+                "role": identity.role,
+                "effective_role": effective,
+                "required_role": minimum,
+                "path": path,
+            },
+        )
+        raise ForbiddenError
+    return identity
+
+
+def tenant_scoped(
+    minimum: str,
+) -> Callable[
+    [Request, Annotated[MembershipStore, Depends(get_membership_store)]], Awaitable[AdminIdentity]
+]:
+    """Build a dependency for GET-style routes carrying ``tenant_id`` in the query.
+
+    Raises:
+        ValueError: at import time, if *minimum* is not a defined role.
+    """
+    if minimum not in ROLES:
+        raise ValueError(f"{minimum!r} is not one of {ROLES}")
+
+    async def dependency(
+        request: Request, memberships: Annotated[MembershipStore, Depends(get_membership_store)]
+    ) -> AdminIdentity:
+        settings: Settings = request.app.state.settings
+        identity = authenticate(request, settings)
+        tenant_id = request.query_params.get("tenant_id", "")
+        await authorize_tenant_access(
+            identity, memberships, tenant_id, minimum=minimum, path=request.url.path
+        )
         return identity
 
     return dependency

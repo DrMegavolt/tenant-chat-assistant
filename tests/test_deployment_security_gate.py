@@ -90,3 +90,31 @@ spec:
     security_gate._scan_source_documents(errors, [(path, document)])
 
     assert any("LLM_API_KEY has a literal" in error for error in errors)
+
+
+def test_chat_backend_deployment_rejects_development_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-001: a manifest that turns off gateway auth is a manifest the gate refuses."""
+    monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+    path = tmp_path / "chat-backend.yaml"
+    document = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-backend
+          env:
+            - name: CHAT_API_DEV_AUTH
+              value: "true"
+"""
+    errors: list[str] = []
+
+    security_gate._check_workload_refs(errors, [(path, document)])
+
+    assert any("CHAT_API_DEV_AUTH must never be enabled" in error for error in errors)

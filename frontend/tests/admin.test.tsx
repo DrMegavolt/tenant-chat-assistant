@@ -48,17 +48,25 @@ const DETAIL: SessionDetail = {
   toolEvents: [{ name: "create_lead", result: { leadId: "lead-1" } }]
 };
 
-/** A console backed by two sessions, with the newest one selected. */
+/** A console backed by two tenants and two sessions, with the newest selected. */
 function stubAdminBackend() {
   const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
-    if (url.endsWith("/api/admin/chats")) {
+    if (url.endsWith("/api/admin/tenants")) {
+      return jsonResponse({
+        tenants: [
+          { tenantId: "apex", name: "Apex Home Services", role: "support_agent" },
+          { tenantId: "clearview", name: "Clearview Heating", role: "support_agent" }
+        ]
+      });
+    }
+    if (url.includes("/api/admin/chats?")) {
       return jsonResponse({ sessions: [SUMMARY, ARCHIVED] });
     }
     if (url.includes("/api/admin/chats/")) {
       const session = url.includes(ARCHIVED.sessionId) ? { ...ARCHIVED, messages: [] } : DETAIL;
       return jsonResponse({ session });
     }
-    if (url.endsWith("/api/admin/csrf-token")) return jsonResponse({ csrfToken: "token-1" });
+    if (url.endsWith("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "token-1" });
     throw new Error(`unexpected request: ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -142,8 +150,36 @@ describe("the chat queue", () => {
     const posted = fetchMock.mock.calls.find(([url]) => url.endsWith("/messages"))!;
     const init = posted[1] as RequestInit;
     expect((init.headers as Record<string, string>)["X-CSRF-Token"]).toBe("token-1");
-    expect(requestBody(init)).toEqual({ content: "On my way" });
+    expect(requestBody(init)).toEqual({ tenant_id: "apex", content: "On my way" });
     expect(screen.getByLabelText<HTMLInputElement>("Staff message").value).toBe("");
+  });
+
+  test("every tenant-scoped request carries the open tenant", async () => {
+    const fetchMock = stubAdminBackend();
+    await renderConsole();
+
+    await waitFor(() => {
+      const chatList = fetchMock.mock.calls.find(([url]) => url.includes("/api/admin/chats?"));
+      expect(chatList?.[0]).toContain("tenant_id=apex");
+    });
+    await waitFor(() => {
+      const detail = fetchMock.mock.calls.find(([url]) =>
+        url.includes("/api/admin/chats/web-apex-1")
+      );
+      expect(detail?.[0]).toContain("tenant_id=apex");
+    });
+  });
+
+  test("switching tenants opens the other tenant's queue", async () => {
+    const fetchMock = stubAdminBackend();
+    await renderConsole();
+
+    fireEvent.change(screen.getByLabelText("Tenant"), { target: { value: "clearview" } });
+
+    await waitFor(() => {
+      const switched = fetchMock.mock.calls.find(([url]) => url.includes("tenant_id=clearview"));
+      expect(switched).toBeTruthy();
+    });
   });
 });
 

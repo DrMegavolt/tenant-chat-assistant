@@ -19,7 +19,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from tenantchat.api.store import BookingRecord, ConversationRecord, LeadRecord, MessageRecord
+from tenantchat.api.store import (
+    BookingRecord,
+    ConversationRecord,
+    LeadRecord,
+    MessageRecord,
+    TenantMembership,
+)
 from tenantchat.core.ports import AssistantTurn
 from tenantchat.core.tenant import PublicTenantView
 
@@ -341,6 +347,116 @@ class AdminSessionsResponse(BaseModel):
     sessions: list[ChatSessionSummary]
     # Echoed so a caller can tell a full page from the end of the list.
     limit: int
+
+
+class AdminTenantSummary(BaseModel):
+    """One tenant an operator is allowed to work, with the role they hold."""
+
+    tenant_id: str
+    name: str
+    role: str
+
+
+class AdminTenantsResponse(BaseModel):
+    tenants: list[AdminTenantSummary]
+
+
+class AdminLead(BaseModel):
+    """A captured lead as an authorized operator reads it.
+
+    Deliberately richer than the visitor-facing :class:`LeadResponse`: the
+    contact value is PII, and it is shown only on this authenticated,
+    tenant-scoped surface.
+    """
+
+    lead_id: str
+    tenant_id: str
+    session_id: str
+    customer_name: str
+    contact: str
+    service: str
+    service_slug: str | None
+    summary: str
+    address_or_zip: str
+    urgency: str
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: LeadRecord) -> AdminLead:
+        return cls(
+            lead_id=record.lead_id,
+            tenant_id=record.tenant_id,
+            session_id=record.session_id,
+            customer_name=record.customer_name,
+            contact=record.contact.display,
+            service=record.service,
+            service_slug=record.service_slug,
+            summary=record.summary,
+            address_or_zip=record.address_or_zip,
+            urgency=record.urgency.value,
+            created_at=record.created_at,
+        )
+
+
+class AdminLeadsResponse(BaseModel):
+    leads: list[AdminLead]
+
+
+class AdminBooking(BaseModel):
+    booking_id: str
+    tenant_id: str
+    session_id: str
+    customer_name: str
+    contact: str
+    service: str
+    slot: str
+    address: str
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: BookingRecord) -> AdminBooking:
+        return cls(
+            booking_id=record.booking_id,
+            tenant_id=record.tenant_id,
+            session_id=record.session_id,
+            customer_name=record.customer_name,
+            contact=record.contact.display,
+            service=record.service_name,
+            slot=record.slot,
+            address=record.address,
+            created_at=record.created_at,
+        )
+
+
+class AdminBookingsResponse(BaseModel):
+    bookings: list[AdminBooking]
+
+
+class MembershipRequest(_Request):
+    """Per-tenant role assignment (SEC-001).
+
+    ``role`` is a closed set of the three tenant roles. ``platform_admin`` is
+    deliberately unassignable: it spans tenants and is decided by the identity
+    provider's groups, so a tenant-scoped record cannot confer it.
+    """
+
+    tenant_id: str = _TENANT_ID
+    subject: str = Field(min_length=1, max_length=200)
+    role: Literal["viewer", "support_agent", "tenant_admin"]
+
+
+class MembershipResponse(BaseModel):
+    tenant_id: str
+    subject: str
+    role: str
+
+    @classmethod
+    def of(cls, record: TenantMembership) -> MembershipResponse:
+        return cls(
+            tenant_id=record.tenant_id,
+            subject=record.principal_subject,
+            role=record.role,
+        )
 
 
 class StaffMessageResponse(BaseModel):

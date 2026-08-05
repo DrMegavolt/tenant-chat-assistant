@@ -10,6 +10,7 @@ import path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
@@ -25,11 +26,13 @@ from tenantchat.api.identity import (
 )
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
+    InMemoryAuditStore,
     InMemoryBookingStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
+    InMemoryMembershipStore,
 )
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolCall, ToolSpec
@@ -41,7 +44,12 @@ TEST_GATEWAY_TOKEN = "gateway-token-for-tests"
 TEST_CSRF_SECRET = "csrf-secret-for-tests"
 
 BOOKING_TENANT = "clearview"
+LEAD_TENANT = "apex"
 OFFERED_SLOT = "Mon Jul 1, 2:00 PM"
+
+# The default operator every test uses; it is a support agent in both seeded
+# tenants unless a test re-seeds the membership store.
+TEST_OPERATOR_SUBJECT = "operator-7"
 
 
 @dataclass
@@ -87,7 +95,29 @@ def settings() -> Settings:
         docs_enabled=True,
         admin_gateway_token=TEST_GATEWAY_TOKEN,
         admin_csrf_secret=TEST_CSRF_SECRET,
+        dev_auth=False,
     )
+
+
+@pytest.fixture
+def membership_store() -> InMemoryMembershipStore:
+    """The operator is a support agent in both seeded tenants by default."""
+    store = InMemoryMembershipStore()
+    for tenant_id in (BOOKING_TENANT, LEAD_TENANT):
+        asyncio.run(
+            store.assign(
+                tenant_id=tenant_id,
+                subject=TEST_OPERATOR_SUBJECT,
+                role="support_agent",
+            )
+        )
+    return store
+
+
+@pytest.fixture
+def audit_store() -> InMemoryAuditStore:
+    """A fresh accountability log per test, so rows never leak between tests."""
+    return InMemoryAuditStore()
 
 
 @pytest.fixture
@@ -97,7 +127,12 @@ def model() -> ScriptedModel:
 
 
 @pytest.fixture
-def client(settings: Settings, model: ScriptedModel) -> Iterator[TestClient]:
+def client(
+    settings: Settings,
+    model: ScriptedModel,
+    membership_store: InMemoryMembershipStore,
+    audit_store: InMemoryAuditStore,
+) -> Iterator[TestClient]:
     """A client over a freshly built app, so stored records never leak between tests."""
     # `raise_server_exceptions=False` returns the 500 an operator would see
     # instead of re-raising, which would hide whether the handler ran at all.
@@ -109,6 +144,8 @@ def client(settings: Settings, model: ScriptedModel) -> Iterator[TestClient]:
             conversation_store=InMemoryConversationStore(),
             handoff_store=InMemoryHandoffStore(),
             idempotency_store=InMemoryIdempotencyStore(),
+            membership_store=membership_store,
+            audit_store=audit_store,
             chat_model=model,
             checkpointer=InMemorySaver(),
         ),
@@ -118,7 +155,10 @@ def client(settings: Settings, model: ScriptedModel) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def modelless_client(settings: Settings) -> Iterator[TestClient]:
+def modelless_client(
+    settings: Settings,
+    membership_store: InMemoryMembershipStore,
+) -> Iterator[TestClient]:
     """The deployment `AI-001` has not reached yet: stores, but no model."""
     with TestClient(
         create_app(
@@ -128,6 +168,8 @@ def modelless_client(settings: Settings) -> Iterator[TestClient]:
             conversation_store=InMemoryConversationStore(),
             handoff_store=InMemoryHandoffStore(),
             idempotency_store=InMemoryIdempotencyStore(),
+            membership_store=membership_store,
+            audit_store=InMemoryAuditStore(),
         ),
         raise_server_exceptions=False,
     ) as test_client:
