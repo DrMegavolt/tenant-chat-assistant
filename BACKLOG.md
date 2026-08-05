@@ -266,13 +266,13 @@ runbooks.
 - [x] `DATA-001` — Normalized schema and migration framework — `Done`
 - [x] `API-001` — Production API runtime and typed contracts — `Done`
 - [x] `DATA-002` — Server-authoritative repositories and concurrency control — `Done`
-- [ ] `DATA-003` — Transactional, idempotent booking — `P0`
+- [x] `DATA-003` — Transactional, idempotent booking — `Done`
 - [x] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
-- [ ] `SEC-002` — Secure visitor sessions and tenant binding — `P0`
+- [x] `SEC-002` — Secure visitor sessions and tenant binding — `Done`
 - [x] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
 - [x] `SEC-004` — Service authentication and Kubernetes network boundaries — `Done`
 - [x] `SEC-005` — Secret management and credential removal — `P0`
-- [ ] `PRIV-001` — PII classification, consent, retention, export, and deletion — `P0`
+- [x] `PRIV-001` — PII classification, consent, retention, export, and deletion — `Done`
 - [x] `DEP-001` — Immutable, reproducible application images — `Done`
 
 ### P1 demo-critical RAG path
