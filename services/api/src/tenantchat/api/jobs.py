@@ -22,6 +22,11 @@ from tenantchat.core.errors import ConflictError, NotFoundError
 
 _SAFE_ERROR_CODE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,99}$")
 
+# Correlation fields are attribution, not work: an enqueuer mints a fresh
+# trace for every HTTP request, so a retried enqueue of the same job must not
+# look like different work just because the trace changed (`OBS-001`).
+_CORRELATION_PAYLOAD_KEYS: frozenset[str] = frozenset({"trace_id"})
+
 
 class JobKind(StrEnum):
     """Foundation-owned job classes; dependent tasks supply most handlers."""
@@ -86,8 +91,15 @@ class JobEvent:
 
 
 def payload_fingerprint(payload: Mapping[str, object]) -> str:
-    """Stable hash used to reject an idempotency key reused for new work."""
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Stable hash used to reject an idempotency key reused for new work.
+
+    Correlation keys are excluded before hashing so a retried enqueue with a
+    fresh trace ID still deduplicates to the original job.
+    """
+    normalized = {
+        key: value for key, value in payload.items() if key not in _CORRELATION_PAYLOAD_KEYS
+    }
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 

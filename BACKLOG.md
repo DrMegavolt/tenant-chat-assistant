@@ -1167,7 +1167,7 @@ guarantees by construction.
 
 ### OBS-001 — Structured logging and request correlation
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Observability`
 - Depends on: `API-001`, `PRIV-001`
@@ -1182,7 +1182,39 @@ guarantees by construction.
   - Log volume and retention are configurable.
 - Verification:
   - Automated redaction tests and a documented trace walkthrough pass.
-- Completion notes: _Pending._
+- Completion notes: Structured JSON logging with server-minted request and
+  trace IDs, tenant pseudonyms, and centralized redaction are implemented and
+  verified. `tenantchat.api.correlation` is the correlation context: a
+  pure-ASGI `CorrelationMiddleware` mints the request ID and trace ID per
+  request (client-supplied IDs are never trusted), binds them in a
+  contextvar so every in-request log line — router, agent runtime, tool —
+  inherits them, echoes them on every response, and emits an opt-in access
+  line; `bind_tenant` attaches the keyed HMAC tenant pseudonym once a
+  verified visitor credential names the tenant (the claims dependency was
+  made a coroutine so the binding lands in the request's task, not a
+  threadpool copy). `tenantchat.api.logging_setup` is the structured plane:
+  a JSON formatter with the fixed contract fields (timestamp, level, service,
+  environment, logger, event, correlation, safe error codes), a strict extra
+  allowlist so unknown `extra` keys cannot become log content, and
+  `configure_logging` at both composition roots (API and job worker) that
+  absorbs uvicorn's own loggers into one stream. `PiiLogFilter` now also
+  scrubs formatted tracebacks, not just messages and args. Background jobs
+  continue the enqueuing request's trace: enqueuers store `trace_id` in the
+  job payload, `payload_fingerprint` treats it as attribution rather than
+  work so retried enqueues still deduplicate, and the worker binds the
+  payload's request ID, trace, and tenant pseudonym per job execution.
+  Internal-service propagation is the `correlation_headers()` contract;
+  financing-agent and ingestion forward `X-Request-Id`/`X-Trace-Id` to the
+  embedding hop. Volume is configurable via `CHAT_API_LOG_LEVEL`,
+  `CHAT_API_LOG_JSON`, and `CHAT_API_LOG_ACCESS`; retention is documented as
+  the Loki knobs in `k8s/observability-drilldown-fixes.yaml`. The walkthrough
+  is `docs/runbooks/trace-walkthrough.md`. `make check` passes (756 Python
+  tests, 93 frontend tests, strict lint/format/type checks, coverage,
+  deployment security, image contracts), and `make test-database` passes:
+  11 migration, 38 repository, 6 agent-runtime, and 9 privacy-lifecycle
+  tests. Follow-ups: set `APP_ENV` for the API and worker containers in
+  `k8s/app.yaml` (the side services already set it), and route future
+  RAG/financing calls through `correlation_headers()`.
 
 ### OBS-002 — LLM, RAG, tool, and business metrics
 

@@ -79,16 +79,21 @@ class TestRetrievalFilters:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         captured: dict[str, Any] = {}
+        embed_calls: list[tuple[Any, ...]] = []
 
         def fake_post(url: str, **kwargs: Any) -> FakeSearchResponse:
             captured["url"] = url
             captured.update(kwargs)
             return FakeSearchResponse()
 
-        monkeypatch.setattr(financing, "embed_query", lambda _query: [0.25, 0.75])
+        def fake_embed(*args: Any) -> list[float]:
+            embed_calls.append(args)
+            return [0.25, 0.75]
+
+        monkeypatch.setattr(financing, "embed_query", fake_embed)
         monkeypatch.setattr(financing.requests, "post", fake_post)
 
-        chunks = financing.search_chunks("apex", "Can I finance a repair?")
+        chunks = financing.search_chunks("apex", "Can I finance a repair?", "req-1", "trace-1")
 
         assert captured["url"].endswith("/tenant-knowledge-chunks/_search")
         assert captured["json"]["knn"]["filter"] == [
@@ -97,6 +102,8 @@ class TestRetrievalFilters:
             {"term": {"active": True}},
         ]
         assert captured["json"]["knn"]["query_vector"] == [0.25, 0.75]
+        # The correlation IDs the caller supplied ride along to the embedding hop.
+        assert embed_calls == [("Can I finance a repair?", "req-1", "trace-1")]
         assert chunks == [
             {
                 "title": "Financing Options",
@@ -110,7 +117,9 @@ class TestRetrievalFilters:
         class MissingIndexResponse(FakeSearchResponse):
             status_code = 404
 
-        monkeypatch.setattr(financing, "embed_query", lambda _query: [1.0])
+        monkeypatch.setattr(
+            financing, "embed_query", lambda _query, _request_id=None, _trace_id=None: [1.0]
+        )
         monkeypatch.setattr(
             financing.requests, "post", lambda *_args, **_kwargs: MissingIndexResponse()
         )

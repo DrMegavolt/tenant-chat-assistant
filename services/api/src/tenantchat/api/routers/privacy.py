@@ -15,11 +15,13 @@ value when the worker finishes, so a page of history does not hoard details.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
+from tenantchat.api.correlation import trace_id as current_trace_id
 from tenantchat.api.dependencies import Audit, Jobs, Privacy, Registry, RequestId, get_settings
 from tenantchat.api.identity import AdminIdentity, require_role, verify_csrf
 from tenantchat.api.jobs import JobKind
@@ -142,11 +144,15 @@ async def request_deletion(
         payload.tenant_id, contact=contact, requested_by=identity.subject
     )
     # The job key is the durable domain request ID. A retry of this HTTP path or
-    # a process crash after enqueue can only resolve the same work item.
+    # a process crash after enqueue can only resolve the same work item. The
+    # trace lets the worker's lines line up under the enqueuing request's.
     await jobs.enqueue(
         payload.tenant_id,
         kind=JobKind.PRIVACY_DELETION,
-        payload={"request_id": str(record.request_id)},
+        payload={
+            "request_id": str(record.request_id),
+            "trace_id": current_trace_id() or uuid.uuid4().hex,
+        },
         idempotency_key=str(record.request_id),
     )
     await audit.record(

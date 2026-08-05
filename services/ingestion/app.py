@@ -100,11 +100,16 @@ def parse_doc(path: Path) -> Dict[str, str]:
     return {"title": title, "section": section, "text": "\n".join(lines)}
 
 
-def embed(texts: List[str]) -> Dict:
+def embed(texts: List[str], request_id: Optional[str] = None, trace_id: Optional[str] = None) -> Dict:
+    headers = internal_bearer_headers(EMBEDDING_TOKEN)
+    if request_id:
+        headers["X-Request-Id"] = request_id
+    if trace_id:
+        headers["X-Trace-Id"] = trace_id
     response = requests.post(
         f"{EMBEDDING_URL.rstrip('/')}/embed",
         json={"texts": texts},
-        headers=internal_bearer_headers(EMBEDDING_TOKEN),
+        headers=headers,
         timeout=300,
     )
     response.raise_for_status()
@@ -181,7 +186,11 @@ def metrics():
 
 
 @app.post("/ingest", dependencies=[Depends(require_ingestion_caller)])
-def ingest(request: IngestRequest):
+def ingest(
+    request: IngestRequest,
+    x_request_id: Optional[str] = Header(default=None, alias="X-Request-Id"),
+    x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
+):
     started = time.time()
     base = Path(request.path) if request.path else DOCS_PATH / request.tenantId / request.domain
     files = sorted(path for path in base.glob("*.md") if path.is_file())
@@ -201,7 +210,7 @@ def ingest(request: IngestRequest):
         INGESTIONS.labels(domain=request.domain, status="empty").inc()
         return {"indexed": 0, "files": 0, "message": f"No markdown docs found in {base}"}
 
-    embedding_payload = embed(chunks_to_embed)
+    embedding_payload = embed(chunks_to_embed, x_request_id, x_trace_id)
     vectors = embedding_payload["embeddings"]
     create_index(embedding_payload["dimensions"])
 

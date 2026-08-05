@@ -110,6 +110,20 @@ class Settings:
     privacy_database_url: str | None = None
     privacy_database_pool_size: int = 2
     privacy_database_max_overflow: int = 2
+    # OBS-001: the structured log plane. `log_json` shapes the stream, `level`
+    # bounds volume (a production deployment runs DEBUG only when it must),
+    # `log_access` is the per-request access line, off by default for the same
+    # reason, and `log_pseudonym_key` makes tenant pseudonyms irreversible.
+    # Services that share a log store must share the key, or the same tenant
+    # gets a different pseudonym in each service's lines.
+    log_level: str = "INFO"
+    log_json: bool = True
+    log_access: bool = False
+    log_pseudonym_key: str | None = None
+    # The deployment environment (`APP_ENV`, as the side services already
+    # read it). Log lines carry it so a shared log store can be split by
+    # deployment; a deployment that never sets it logs as `local` until it does.
+    app_env: str = "local"
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -184,4 +198,9 @@ class Settings:
             privacy_database_url=os.environ.get("PRIVACY_DATABASE_URL", "").strip() or None,
             privacy_database_pool_size=_int_env("CHAT_API_PRIVACY_DATABASE_POOL_SIZE", 2),
             privacy_database_max_overflow=_int_env("CHAT_API_PRIVACY_DATABASE_MAX_OVERFLOW", 2),
+            log_level=os.environ.get("CHAT_API_LOG_LEVEL", "").strip() or "INFO",
+            log_json=os.environ.get("CHAT_API_LOG_JSON", "true").strip().lower() != "false",
+            log_access=os.environ.get("CHAT_API_LOG_ACCESS", "").lower() == "true",
+            log_pseudonym_key=os.environ.get("CHAT_API_LOG_PSEUDONYM_KEY", "").strip() or None,
+            app_env=os.environ.get("APP_ENV", "").strip() or "local",
         )

@@ -24,6 +24,7 @@ no transcript.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -58,6 +59,26 @@ from tenantchat.core.privacy import ConsentPurpose, consent_statement
 from tenantchat.core.visitor_session import VisitorCredentialSigner
 
 router = APIRouter(tags=["chat"])
+
+logger = logging.getLogger(__name__)
+
+
+def _log_turn(turn: AssistantTurn) -> None:
+    """The operational record of one completed turn.
+
+    Versions and the bounded action enum only (`ADR-0010`): the answer, the
+    pending question, and the model's reasoning are content and belong to the
+    inference plane. The correlation context supplies the request ID, trace ID,
+    and tenant pseudonym.
+    """
+    logger.info(
+        "chat turn completed",
+        extra={
+            "graph_version": turn.graph_version,
+            "prompt_version": turn.prompt_version,
+            "committed_actions": [effect.action for effect in turn.committed],
+        },
+    )
 
 
 async def _record_answer(
@@ -231,6 +252,7 @@ async def send_message(
 
     turn = await runtime.send(tenant_id, str(session_id), payload.message)
     await _record_answer(conversations, tenant_id, session_id, turn)
+    _log_turn(turn)
 
     return ChatTurnResponse.of(
         session_id,
@@ -319,6 +341,7 @@ async def confirm_booking(
 
     turn = await runtime.resume(tenant_id, session_key, approved=payload.decision == "approved")
     await _record_answer(conversations, tenant_id, session_id, turn)
+    _log_turn(turn)
 
     return ChatTurnResponse.of(
         session_id,
