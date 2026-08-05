@@ -224,7 +224,7 @@ remaining production business workflows, and completed runbooks.
 - [ ] `DATA-003` — Transactional, idempotent booking — `P0`
 - [ ] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
 - [ ] `SEC-002` — Secure visitor sessions and tenant binding — `P0`
-- [ ] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
+- [x] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
 - [x] `SEC-004` — Service authentication and Kubernetes network boundaries — `Done`
 - [x] `SEC-005` — Secret management and credential removal — `P0`
 - [ ] `PRIV-001` — PII classification, consent, retention, export, and deletion — `P0`
@@ -700,7 +700,7 @@ guarantees by construction.
 
 ### SEC-003 — API abuse protection, CORS, and response hardening
 
-- Status: `In Progress` (CORS and response hardening complete; rate limiting remains)
+- Status: `Done`
 - Priority: `P0`
 - Type: `Security/reliability`
 - Depends on: `API-001`, `SEC-002`
@@ -720,8 +720,33 @@ guarantees by construction.
 - Completion notes: Replaced wildcard CORS with an explicit widget origin
   allowlist configured via `WIDGET_ALLOWED_ORIGINS`. The nginx gateway emits
   `Vary: Origin`, handles OPTIONS preflight, and never allows admin routes
-  through CORS. Widget requests are credential-free by design. Rate limiting
-  and per-IP/per-tenant limits remain dependent on `API-001`.
+  through CORS. Widget requests are credential-free by design.
+- Completion notes (remaining slice): Added pure-ASGI request guards in
+  `services/api/src/tenantchat/api/guards.py`: body-size limit (declared and
+  chunked), fixed-window rate limits plus per-process concurrency budgets per
+  IP/tenant/session, and a buffered response-size cap. Budgets are counted in
+  `rate_limit_counters` (migration `0005_api_abuse_protection`) with an atomic
+  sweep-and-upsert shared across replicas, falling back to
+  `InMemoryRateLimitStore` in development/tests. Refusals are RFC 9457 problem
+  documents (`code`, `requestId`, `limitScope`, `maxBytes`, `retryAfterSeconds`)
+  with a `Retry-After` bounded by the window, and identity keys never reach a
+  body or a log line. `default_visitor_identity` keys the session budget on the
+  opaque server-issued `session_id` as the `SEC-002` seam. Hardened responses:
+  security headers on every response (nosniff, no framing, no referrer,
+  no-store), transcript reads truncated to `max_history_messages` (default 100),
+  unexpected errors publish exception text only under `CHAT_API_DEBUG`,
+  validation failures never echo rejected input, and raw tool args/results
+  remain in the checkpoint/inference plane only (never the store or responses).
+  New settings: `CHAT_API_MAX_RESPONSE_BYTES`, `CHAT_API_MAX_HISTORY_MESSAGES`,
+  `CHAT_API_DEBUG`, `CHAT_API_{IP,TENANT,SESSION}_{RATE_LIMIT,CONCURRENCY}`,
+  `CHAT_API_RATE_WINDOW_SECONDS`; all documented in `.env.example`.
+  Verification: `services/api/tests/test_abuse.py` (19 tests: bursts,
+  concurrency, chunked bodies, response caps, security headers, history cap,
+  schema bounds, CORS surface, no key/log leakage) plus
+  `tests/repositories/test_rate_limit_store.py` (per-key counting, sweep,
+  cross-process no-lost-updates). `make check` passes. Follow-ups: `OBS-002`
+  should export rate-refusal counters; `SEC-002` replaces the session-keyed
+  extractor with signed visitor credentials.
 
 ### SEC-004 — Service authentication and Kubernetes network boundaries
 

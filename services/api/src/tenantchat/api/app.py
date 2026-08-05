@@ -19,6 +19,18 @@ from fastapi.responses import JSONResponse, Response
 
 from tenantchat.api.agent import build_conversation_runtime
 from tenantchat.api.faults import TransportError
+from tenantchat.api.guards import (
+    BodySizeLimitMiddleware,
+    RateLimitMiddleware,
+    ResponseSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
+from tenantchat.api.limits import (
+    InMemoryRateLimitStore,
+    RateLimitStore,
+    VisitorIdentityExtractor,
+    default_visitor_identity,
+)
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -28,7 +40,12 @@ from tenantchat.api.persistence import (
     PostgresIdempotencyStore,
     PostgresLeadStore,
 )
-from tenantchat.api.problems import PROBLEM_CONTENT_TYPE, handle_domain_error
+from tenantchat.api.persistence.rate_limits import PostgresRateLimitStore
+from tenantchat.api.problems import (
+    REQUEST_ID_HEADER,
+    handle_domain_error,
+    transport_problem,
+)
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.routers import admin, bookings, chat, health, leads, tenants
 from tenantchat.api.settings import Settings
@@ -45,7 +62,6 @@ from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpoi
 from tenantchat.orchestration.model import ChatModel
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
 
-REQUEST_ID_HEADER = "X-Request-Id"
 ADMIN_PATH_PREFIX = "/api/admin/"
 
 _CORS_RESPONSE_HEADERS = (
@@ -58,32 +74,6 @@ _CORS_RESPONSE_HEADERS = (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _problem(
-    *,
-    status: int,
-    code: str,
-    title: str,
-    detail: str,
-    request_id: str,
-    **extensions: object,
-) -> JSONResponse:
-    """A problem document for failures that never became a ``DomainError``."""
-    return JSONResponse(
-        status_code=status,
-        content={
-            "type": f"/problems/{code}",
-            "title": title,
-            "status": status,
-            "detail": detail,
-            "code": code,
-            "requestId": request_id,
-        }
-        | extensions,
-        headers={REQUEST_ID_HEADER: request_id},
-        media_type=PROBLEM_CONTENT_TYPE,
-    )
 
 
 async def _handle_request_validation_error(request: Request, exc: Exception) -> JSONResponse:
@@ -101,7 +91,7 @@ async def _handle_request_validation_error(request: Request, exc: Exception) -> 
         for error in exc.errors()
     ]
 
-    return _problem(
+    return transport_problem(
         status=422,
         code="malformed_request",
         title="RequestValidationError",
@@ -124,7 +114,7 @@ async def _handle_api_fault(request: Request, exc: Exception) -> JSONResponse:
         "request refused",
         extra={"code": exc.code, "request_id": request_id, "path": request.url.path},
     )
-    return _problem(
+    return transport_problem(
         status=exc.status,
         code=exc.code,
         title=type(exc).__name__,
@@ -138,45 +128,51 @@ async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResp
 
     The response says nothing beyond the request ID: an unexpected exception's
     message is written for a developer and routinely contains connection strings,
-    query fragments, or row data.
+    query fragments, or row data. ``CHAT_API_DEBUG`` is the explicit opt-out —
+    a development deployment publishes the message so a breakpoint-free debug
+    session works against a real stack.
     """
     request_id = getattr(request.state, "request_id", "-")
     logger.exception("unhandled error", extra={"request_id": request_id, "path": request.url.path})
-    return _problem(
+    # A handler can be invoked with a bare Request in tests; the app's settings
+    # are the opt-in for publishing exception text, so their absence must not
+    # itself blow up the handler.
+    app = request.scope.get("app", None)
+    settings: Settings | None = getattr(app.state, "settings", None) if app is not None else None
+    detail = (
+        f"{type(exc).__name__}: {exc}"
+        if settings is not None and settings.debug
+        else ("The request could not be completed.")
+    )
+    return transport_problem(
         status=500,
         code="internal_error",
         title="InternalServerError",
-        detail="The request could not be completed.",
+        detail=detail,
         request_id=request_id,
     )
 
 
-def _install_middleware(app: FastAPI, settings: Settings) -> None:
-    @app.middleware("http")
-    async def enforce_body_limit(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        """Reject oversized bodies before they are read.
-
-        Content-Length only. A chunked upload declares no length and slips past
-        this, which is why the ingress in `DEP-003` also sets a body limit — this
-        check exists so the bound holds when the app is reached directly.
-        """
-        declared = request.headers.get("content-length")
-        if (
-            declared is not None
-            and declared.isdigit()
-            and int(declared) > settings.max_request_bytes
-        ):
-            return _problem(
-                status=413,
-                code="request_too_large",
-                title="RequestTooLarge",
-                detail="The request body was larger than this endpoint accepts.",
-                request_id=getattr(request.state, "request_id", "-"),
-                maxBytes=settings.max_request_bytes,
-            )
-        return await call_next(request)
+def _install_middleware(
+    app: FastAPI,
+    settings: Settings,
+    rate_limit_store: RateLimitStore,
+    visitor_identity: VisitorIdentityExtractor,
+) -> None:
+    # Starlette wraps the most recently registered middleware around the earlier
+    # layers, so the registration order below is inner-to-outer:
+    # response-size -> rate/concurrency -> body-size -> CORS -> confine -> id.
+    # The three guards sit inside CORS so their 413/429 documents carry the
+    # same cross-origin headers as a success; the body guard must sit outside
+    # the rate guard because it produces the bytes the rate guard keys on.
+    app.add_middleware(ResponseSizeLimitMiddleware, max_bytes=settings.max_response_bytes)
+    app.add_middleware(
+        RateLimitMiddleware,
+        policy=settings.rate_limits,
+        store=rate_limit_store,
+        identity=visitor_identity,
+    )
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     app.add_middleware(
         CORSMiddleware,
@@ -211,6 +207,11 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
                     del response.headers[header]
         return response
 
+    # Registered last so it wraps everything registered so far: the security
+    # header posture applies to guard refusals and handler errors as well as
+    # successful responses.
+    app.add_middleware(SecurityHeadersMiddleware)
+
     # Starlette wraps the most recently registered middleware around the earlier
     # layers. Register request correlation last so even an early body-limit or
     # CORS response receives the same usable ID as an endpoint response.
@@ -242,6 +243,8 @@ def create_app(
     idempotency_store: IdempotencyStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
+    rate_limit_store: RateLimitStore | None = None,
+    visitor_identity: VisitorIdentityExtractor | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -263,6 +266,15 @@ def create_app(
             the chat routes report themselves unavailable.
         checkpointer: Execution-state store for the agent runtime. Production
             opens a PostgreSQL checkpointer over ``DATABASE_URL`` during startup.
+        rate_limit_store: Shared rate-limit accounting. Injected for tests;
+            production composes a ``PostgresRateLimitStore`` over the same
+            engine the stores use, which is what keeps a budget meaningful
+            across replicas. ``InMemoryRateLimitStore`` is the test/development
+            fallback and is correct for one process only.
+        visitor_identity: Maps each request to the ip/tenant/session keys its
+            budgets are counted against. `SEC-002` replaces the default with
+            an extractor that reads its signed visitor credential; the default
+            uses the body's and path's ``session_id``.
 
     Raises:
         ValueError: the stores were injected in part, or production composition
@@ -335,6 +347,18 @@ def create_app(
     ):
         raise RuntimeError("composition failed to provide persistence stores")
 
+    # A shared store follows the database the stores already use; the
+    # in-memory fallback is the single-process development shape. Whichever is
+    # composed, the middleware talks to it through the same port, so the
+    # replication decision is made in exactly one place.
+    if rate_limit_store is None:
+        rate_limit_store = (
+            PostgresRateLimitStore(database.engine)
+            if database is not None
+            else InMemoryRateLimitStore()
+        )
+    effective_identity = visitor_identity or default_visitor_identity
+
     bookings_for_agent, leads_for_agent = booking_store, lead_store
     handoffs_for_agent, keys_for_agent = handoff_store, idempotency_store
 
@@ -399,7 +423,7 @@ def create_app(
     # composition chose without reaching into construction internals (`AI-001`).
     app.state.chat_model = effective_model
 
-    _install_middleware(app, resolved)
+    _install_middleware(app, resolved, rate_limit_store, effective_identity)
 
     app.add_exception_handler(DomainError, handle_domain_error)
     app.add_exception_handler(TransportError, _handle_api_fault)
