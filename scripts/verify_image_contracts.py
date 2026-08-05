@@ -373,8 +373,16 @@ def verify_manifests(errors: list[str]) -> None:
     if re.search(r"mountPath:\s*/app\b", app):
         errors.append("k8s/app.yaml: application source must come from the image, not /app mounts")
     migration = (ROOT / "k8s/api-migration-job.yaml").read_text(encoding="utf-8")
-    if '["alembic", "upgrade", "head"]' not in migration or "uv run" in migration:
-        errors.append("k8s/api-migration-job.yaml: migration must use bundled API runtime directly")
+    if (
+        '["/bin/sh", "-eu", "-c"]' not in migration
+        or "alembic upgrade head" not in migration
+        or "python /app/scripts/setup_checkpoints.py" not in migration
+        or "uv run" in migration
+    ):
+        errors.append(
+            "k8s/api-migration-job.yaml: domain and checkpoint migrations must use "
+            "the bundled API runtime directly"
+        )
 
 
 def verify_model(errors: list[str]) -> None:

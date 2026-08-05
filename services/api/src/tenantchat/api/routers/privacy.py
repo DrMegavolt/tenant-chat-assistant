@@ -20,8 +20,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from tenantchat.api.dependencies import Audit, Privacy, Registry, RequestId, get_settings
+from tenantchat.api.dependencies import Audit, Jobs, Privacy, Registry, RequestId, get_settings
 from tenantchat.api.identity import AdminIdentity, require_role, verify_csrf
+from tenantchat.api.jobs import JobKind
 from tenantchat.api.schemas import (
     BookingExportItem,
     ConsentExportItem,
@@ -121,6 +122,7 @@ async def request_deletion(
     payload: ContactQuery,
     registry: Registry,
     privacy: Privacy,
+    jobs: Jobs,
     audit: Audit,
     request_id: RequestId,
 ) -> DeletionRequestResponse:
@@ -138,6 +140,14 @@ async def request_deletion(
     contact = Contact.parse(payload.contact)
     record = await privacy.create_privacy_request(
         payload.tenant_id, contact=contact, requested_by=identity.subject
+    )
+    # The job key is the durable domain request ID. A retry of this HTTP path or
+    # a process crash after enqueue can only resolve the same work item.
+    await jobs.enqueue(
+        payload.tenant_id,
+        kind=JobKind.PRIVACY_DELETION,
+        payload={"request_id": str(record.request_id)},
+        idempotency_key=str(record.request_id),
     )
     await audit.record(
         AuditEvent(

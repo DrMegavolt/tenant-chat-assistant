@@ -19,6 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tenantchat.api.jobs import JobEvent, JobRecord
 from tenantchat.api.store import (
     BookingRecord,
     ConsentRecord,
@@ -693,3 +694,77 @@ class DeletionRequestResponse(BaseModel):
 
 class DeletionRequestsResponse(BaseModel):
     requests: list[DeletionRequestResponse]
+
+
+class JobControlRequest(_Request):
+    """Tenant binding for an operator mutation; the URL names the job only."""
+
+    tenant_id: str = _TENANT_ID
+
+
+class AdminJob(BaseModel):
+    """Safe job metadata. Payloads may contain PII and never reach this plane."""
+
+    job_id: uuid.UUID
+    tenant_id: str
+    kind: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+    replay_count: int
+    available_at: datetime
+    lease_expires_at: datetime | None
+    last_error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+    @classmethod
+    def of(cls, record: JobRecord) -> AdminJob:
+        return cls(
+            job_id=record.job_id,
+            tenant_id=record.tenant_id,
+            kind=record.kind.value,
+            status=record.status.value,
+            attempt_count=record.attempt_count,
+            max_attempts=record.max_attempts,
+            replay_count=record.replay_count,
+            available_at=record.available_at,
+            lease_expires_at=record.lease_expires_at,
+            last_error_code=record.last_error_code,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            completed_at=record.completed_at,
+        )
+
+
+class AdminJobEvent(BaseModel):
+    event_id: int
+    event: str
+    actor_type: str
+    actor_id: str | None
+    request_id: str | None
+    details: dict[str, object]
+    occurred_at: datetime
+
+    @classmethod
+    def of(cls, record: JobEvent) -> AdminJobEvent:
+        return cls(
+            event_id=record.event_id,
+            event=record.event.value,
+            actor_type=record.actor_type,
+            actor_id=record.actor_id,
+            request_id=record.request_id,
+            details=record.details,
+            occurred_at=record.occurred_at,
+        )
+
+
+class AdminJobsResponse(BaseModel):
+    jobs: list[AdminJob]
+    limit: int
+
+
+class AdminJobDetailResponse(BaseModel):
+    job: AdminJob
+    events: list[AdminJobEvent]

@@ -27,6 +27,7 @@ from tenantchat.api.guards import (
     ResponseSizeLimitMiddleware,
     SecurityHeadersMiddleware,
 )
+from tenantchat.api.jobs import InMemoryJobStore, JobStore
 from tenantchat.api.limits import (
     InMemoryRateLimitStore,
     RateLimitStore,
@@ -42,6 +43,7 @@ from tenantchat.api.persistence import (
     PostgresConversationStore,
     PostgresHandoffStore,
     PostgresIdempotencyStore,
+    PostgresJobStore,
     PostgresLeadStore,
     PostgresMembershipStore,
     PostgresPrivacyStore,
@@ -58,7 +60,7 @@ from tenantchat.api.problems import (
 )
 from tenantchat.api.redaction import install_pii_log_filter
 from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
-from tenantchat.api.routers import admin, bookings, chat, health, leads, privacy, tenants
+from tenantchat.api.routers import admin, bookings, chat, health, jobs, leads, privacy, tenants
 from tenantchat.api.settings import Settings, loopback_database
 from tenantchat.api.store import (
     AuditStore,
@@ -266,6 +268,7 @@ def create_app(
     consent_store: ConsentStore | None = None,
     privacy_store: PrivacyStore | None = None,
     audit_store: AuditStore | None = None,
+    job_store: JobStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
     rate_limit_store: RateLimitStore | None = None,
@@ -290,6 +293,8 @@ def create_app(
         privacy_store: Explicit test adapter. Production composes one over the
             application engine plus the erasure role's engine.
         audit_store: Explicit test adapter. Production builds a PostgreSQL store.
+        job_store: Durable job adapter. Production always builds the PostgreSQL
+            implementation; explicit HTTP tests default to an in-memory fake.
         chat_model: The model the agent runtime calls. Injected for tests; when
             omitted, `AI-001` builds an OpenAI-compatible adapter from
             ``LLM_BASE_URL``/``LLM_MODEL``/``LLM_API_KEY`` if both the base URL
@@ -411,6 +416,7 @@ def create_app(
             )
             erasure_engine = privacy_database.engine
         privacy_store = PostgresPrivacyStore(database.engine, erasure_engine)
+        job_store = PostgresJobStore(database.engine)
 
     if (
         booking_store is None
@@ -424,6 +430,11 @@ def create_app(
         or audit_store is None
     ):
         raise RuntimeError("composition failed to provide persistence stores")
+
+    if job_store is None:
+        # Explicit-store compositions are unit-test shapes. A deployed app took
+        # the database branch above and can never silently run an in-memory queue.
+        job_store = InMemoryJobStore()
 
     # SEC-002: the visitor credential signer. Production composition required
     # the key above, so every real deployment signs with a shared secret it
@@ -540,6 +551,7 @@ def create_app(
     app.state.audit_store = audit_store
     app.state.consent_store = consent_store
     app.state.privacy_store = privacy_store
+    app.state.job_store = job_store
     app.state.visitor_credential_signer = visitor_credentials
     # The one clock every visitor credential is verified against, so a test can
     # move time by reassigning state rather than sleeping.
@@ -569,6 +581,7 @@ def create_app(
     app.include_router(leads.router)
     app.include_router(chat.router)
     app.include_router(privacy.router)
+    app.include_router(jobs.router)
     app.include_router(admin.router)
 
     return app

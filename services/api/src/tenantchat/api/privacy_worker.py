@@ -39,6 +39,7 @@ from tenantchat.api.store import (
     AuditEvent,
     AuditStore,
     ErasureReport,
+    PrivacyRequestRecord,
     PrivacyStore,
     PurgeReport,
 )
@@ -46,6 +47,44 @@ from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.privacy import RetentionPolicy
 
 _URL_VARIABLE: Final = "PRIVACY_DATABASE_URL"
+
+
+async def process_deletion_request(
+    request: PrivacyRequestRecord,
+    store: PrivacyStore,
+    audit: AuditStore,
+    *,
+    now: datetime,
+) -> None:
+    """Fulfil one idempotent deletion request and record its bounded outcome."""
+    contact = Contact(kind=ContactKind(request.contact_kind), value=request.contact_value)
+    sessions = await store.sessions_for_contact(request.tenant_id, contact)
+    report = (
+        await store.erase_subject(request.tenant_id, sessions)
+        if sessions
+        else ErasureReport(0, 0, 0, 0, 0, 0, 0)
+    )
+    await store.complete_privacy_request(request.request_id, processed_at=now)
+    await audit.record(
+        AuditEvent(
+            tenant_id=request.tenant_id,
+            actor_type=AuditActorType.SERVICE,
+            principal_id=None,
+            action="privacy.erased",
+            resource_type="privacy_request",
+            resource_id=request.request_id,
+            request_id=None,
+            details={
+                "sessions_deleted": report.sessions_deleted,
+                "messages_deleted": report.messages_deleted,
+                "leads_anonymized": report.leads_anonymized,
+                "bookings_anonymized": report.bookings_anonymized,
+                "handoffs_anonymized": report.handoffs_anonymized,
+                "consent_records_deleted": report.consent_records_deleted,
+                "checkpoints_deleted": report.checkpoints_deleted,
+            },
+        )
+    )
 
 
 async def run_pass(
@@ -63,35 +102,7 @@ async def run_pass(
     now = now or datetime.now(UTC)
     completed = 0
     for request in await store.pending_privacy_requests():
-        contact = Contact(kind=ContactKind(request.contact_kind), value=request.contact_value)
-        sessions = await store.sessions_for_contact(request.tenant_id, contact)
-        report = (
-            await store.erase_subject(request.tenant_id, sessions)
-            if sessions
-            else ErasureReport(0, 0, 0, 0, 0, 0, 0)
-        )
-        await store.complete_privacy_request(request.request_id, processed_at=now)
-        await audit.record(
-            AuditEvent(
-                tenant_id=request.tenant_id,
-                actor_type=AuditActorType.SERVICE,
-                principal_id=None,
-                action="privacy.erased",
-                resource_type="privacy_request",
-                resource_id=request.request_id,
-                # The worker runs on a schedule, not on an HTTP request.
-                request_id=None,
-                details={
-                    "sessions_deleted": report.sessions_deleted,
-                    "messages_deleted": report.messages_deleted,
-                    "leads_anonymized": report.leads_anonymized,
-                    "bookings_anonymized": report.bookings_anonymized,
-                    "handoffs_anonymized": report.handoffs_anonymized,
-                    "consent_records_deleted": report.consent_records_deleted,
-                    "checkpoints_deleted": report.checkpoints_deleted,
-                },
-            )
-        )
+        await process_deletion_request(request, store, audit, now=now)
         completed += 1
 
     policy = RetentionPolicy.defaults()

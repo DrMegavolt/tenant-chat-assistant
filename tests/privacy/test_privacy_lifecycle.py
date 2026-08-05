@@ -4,8 +4,8 @@ retention, and the audit trail that makes each one answerable.
 One disposable database is migrated and then shared across these tests; each
 test opens fresh conversation sessions so stored records never leak between
 them. The API surface is driven through `create_app` exactly as a deployment
-composes it, and the worker is driven through ``run_pass`` because that is the
-code a CronJob runs.
+composes it. Deletion runs through REL-003's leased worker; scheduled retention
+continues through the privacy pass.
 """
 
 from __future__ import annotations
@@ -27,10 +27,13 @@ from tenantchat.api.identity import (
     ROLE_HEADER,
     SUBJECT_HEADER,
 )
+from tenantchat.api.job_worker import WorkerSettings, privacy_deletion_handler, run_once
+from tenantchat.api.jobs import JobKind
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
     PostgresAuditStore,
+    PostgresJobStore,
     PostgresPrivacyStore,
 )
 from tenantchat.api.privacy_worker import run_pass
@@ -370,10 +373,19 @@ def test_a_deletion_request_is_fulfilled_and_audited(
     try:
 
         async def worker_pass() -> int:
-            return await run_pass(
-                TenantRegistry.seeded(),
-                PostgresPrivacyStore(database.engine, database.engine),
-                PostgresAuditStore(database.engine),
+            privacy = PostgresPrivacyStore(database.engine, database.engine)
+            return await run_once(
+                PostgresJobStore(database.engine),
+                {
+                    JobKind.PRIVACY_DELETION: privacy_deletion_handler(
+                        privacy, PostgresAuditStore(database.engine)
+                    )
+                },
+                WorkerSettings(
+                    worker_id="privacy-worker-test",
+                    batch_size=1,
+                    lease_duration=timedelta(seconds=30),
+                ),
             )
 
         completed = asyncio.run(worker_pass())
@@ -430,6 +442,18 @@ def test_a_deletion_request_is_fulfilled_and_audited(
         )
         assert request_row[0] == "completed"
         assert request_row[1] == "erased"
+
+        job_status = _row(
+            connection,
+            """
+            SELECT status, idempotency_key
+            FROM background_jobs
+            WHERE tenant_id = %s AND kind = 'privacy_deletion'
+              AND payload->>'request_id' = %s
+            """,
+            (BOOKING_TENANT, request_id),
+        )
+        assert job_status == ("succeeded", request_id)
 
         actions = [
             row[0]

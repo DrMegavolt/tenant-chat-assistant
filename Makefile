@@ -12,7 +12,7 @@ NPM := npm --prefix frontend
 
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations test-repositories test-agent-runtime test-privacy test-database migrate migrate-checkpoints \
-	dev js-install js-lint js-format \
+	dev worker js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check keycloak-render keycloak-lint arch-validate arch-build clean
@@ -142,6 +142,9 @@ check: lock-check lint format-check typecheck js-lint js-typecheck js-format-che
 api: ## Run services/api under uvicorn (the production server command)
 	$(UV_RUN) uvicorn --factory tenantchat.api.app:create_app \
 		--host $${CHAT_API_HOST:-127.0.0.1} --port $${CHAT_API_PORT:-8080}
+
+worker: ## Run the durable background-job worker
+	$(UV_RUN) python -m tenantchat.api.job_worker
 
 up: ## Start local dependencies (Postgres, Elasticsearch)
 	docker compose up -d --wait

@@ -28,7 +28,11 @@ spec:
           image: registry.example.invalid/tenantchat/api@sha256:REPLACE_WITH_API_DIGEST
           imagePullPolicy: IfNotPresent
           workingDir: /app
-          command: ["alembic", "upgrade", "head"]
+          command: ["/bin/sh", "-eu", "-c"]
+          args:
+            - |
+              alembic upgrade head
+              python /app/scripts/setup_checkpoints.py
           env:
             - name: DATABASE_MIGRATION_URL
               valueFrom:
