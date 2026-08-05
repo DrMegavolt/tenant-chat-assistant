@@ -29,12 +29,16 @@ from tenantchat.api.actions import (
     RecordedLeadService,
 )
 from tenantchat.api.registry import (
-    RegistryAvailabilityProvider,
+    DemoAvailabilityProvider,
     RegistryPolicySource,
     TenantRegistry,
 )
 from tenantchat.api.store import BookingStore, HandoffStore, IdempotencyStore, LeadStore
-from tenantchat.core.ports import AssistantTurn, CommittedEffect
+from tenantchat.core.ports import (
+    AssistantTurn,
+    AvailabilityProvider,
+    CommittedEffect,
+)
 from tenantchat.orchestration.checkpoints import Checkpointer
 from tenantchat.orchestration.dependencies import DispatchDependencies
 from tenantchat.orchestration.graph import compile_dispatch_graph
@@ -50,13 +54,20 @@ def build_dispatch_dependencies(
     leads: LeadStore,
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
+    availability: AvailabilityProvider | None = None,
 ) -> DispatchDependencies:
-    """Wrap this service's adapters in the ports the graph runs against."""
+    """Wrap this service's adapters in the ports the graph runs against.
+
+    ``availability`` defaults to the in-process demo provider so a test harness
+    can omit it; the production composition passes the database-backed provider
+    explicitly rather than silently falling back to a fake.
+    """
+    source = availability or DemoAvailabilityProvider(registry)
     return DispatchDependencies(
         model=model,
         policies=RegistryPolicySource(registry),
-        availability=RegistryAvailabilityProvider(registry),
-        bookings=RecordedBookingService(bookings, idempotency),
+        availability=source,
+        bookings=RecordedBookingService(bookings, source),
         leads=RecordedLeadService(leads, idempotency),
         handoffs=RecordedHandoffService(handoffs, idempotency),
     )
@@ -71,6 +82,7 @@ def build_dispatch_runtime(
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
     checkpointer: Checkpointer,
+    availability: AvailabilityProvider | None = None,
 ) -> DispatchRuntime:
     """Build the runtime one deployment will serve conversations from."""
     dependencies = build_dispatch_dependencies(
@@ -80,6 +92,7 @@ def build_dispatch_runtime(
         leads=leads,
         handoffs=handoffs,
         idempotency=idempotency,
+        availability=availability,
     )
     return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
 
@@ -142,6 +155,7 @@ def build_conversation_runtime(
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
     checkpointer: Checkpointer,
+    availability: AvailabilityProvider | None = None,
 ) -> GraphConversationRuntime:
     """Build the runtime the HTTP layer serves conversations from."""
     return GraphConversationRuntime(
@@ -153,5 +167,6 @@ def build_conversation_runtime(
             handoffs=handoffs,
             idempotency=idempotency,
             checkpointer=checkpointer,
+            availability=availability,
         )
     )

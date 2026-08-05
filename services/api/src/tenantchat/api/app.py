@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from tenantchat.api.actions import RecordedBookingService
 from tenantchat.api.agent import build_conversation_runtime
 from tenantchat.api.faults import TransportError
 from tenantchat.api.persistence import (
@@ -28,8 +29,12 @@ from tenantchat.api.persistence import (
     PostgresIdempotencyStore,
     PostgresLeadStore,
 )
+from tenantchat.api.persistence.availability import (
+    PostgresAvailabilityProvider,
+    seed_demo_availability,
+)
 from tenantchat.api.problems import PROBLEM_CONTENT_TYPE, handle_domain_error
-from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
 from tenantchat.api.routers import admin, bookings, chat, health, leads, tenants
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
@@ -37,10 +42,11 @@ from tenantchat.api.store import (
     ConversationStore,
     HandoffStore,
     IdempotencyStore,
+    InMemoryBookingStore,
     LeadStore,
 )
 from tenantchat.core.errors import DomainError
-from tenantchat.core.ports import ConversationRuntime
+from tenantchat.core.ports import AvailabilityProvider, ConversationRuntime
 from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpointer
 from tenantchat.orchestration.model import ChatModel
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
@@ -242,6 +248,7 @@ def create_app(
     idempotency_store: IdempotencyStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
+    availability_provider: AvailabilityProvider | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -263,6 +270,8 @@ def create_app(
             the chat routes report themselves unavailable.
         checkpointer: Execution-state store for the agent runtime. Production
             opens a PostgreSQL checkpointer over ``DATABASE_URL`` during startup.
+        availability_provider: What the tenant is currently offering. Explicit
+            test adapter; production builds the PostgreSQL-backed fake provider.
 
     Raises:
         ValueError: the stores were injected in part, or production composition
@@ -335,6 +344,27 @@ def create_app(
     ):
         raise RuntimeError("composition failed to provide persistence stores")
 
+    if availability_provider is None:
+        # In production the offers come from the same database the bookings land
+        # in; with injected test stores there is no database, so fall back to the
+        # deterministic in-process provider.
+        if database is not None:
+            availability_provider = PostgresAvailabilityProvider(database.engine)
+        else:
+            availability_provider = DemoAvailabilityProvider(
+                registry,
+                # The in-memory provider has no SQL, so the booking store tells
+                # it which slots are no longer bookable — the same exclusion the
+                # Postgres provider expresses with ``NOT EXISTS``.
+                taken=(
+                    booking_store.taken_slot_ids
+                    if isinstance(booking_store, InMemoryBookingStore)
+                    else None
+                ),
+            )
+
+    booking_service = RecordedBookingService(booking_store, availability_provider)
+
     bookings_for_agent, leads_for_agent = booking_store, lead_store
     handoffs_for_agent, keys_for_agent = handoff_store, idempotency_store
 
@@ -347,6 +377,7 @@ def create_app(
             handoffs=handoffs_for_agent,
             idempotency=keys_for_agent,
             checkpointer=saver,
+            availability=availability_provider,
         )
 
     @asynccontextmanager
@@ -358,6 +389,9 @@ def create_app(
                     (record.policy.tenant_id, record.policy.name)
                     for record in registry.all().values()
                 )
+                # Seed the database-backed fake provider now that tenant rows
+                # exist; idempotent, so a restart does not duplicate slots.
+                await seed_demo_availability(database.engine, registry)
             # Owned provider clients are closed with the app. An injected test
             # model is the caller's to clean up, not the app's.
             if owned_model is not None:
@@ -390,6 +424,8 @@ def create_app(
     app.state.conversation_store = conversation_store
     app.state.handoff_store = handoff_store
     app.state.idempotency_store = idempotency_store
+    app.state.booking_service = booking_service
+    app.state.availability_provider = availability_provider
     app.state.conversation_runtime = (
         compose_runtime(checkpointer, effective_model)
         if effective_model is not None and checkpointer is not None

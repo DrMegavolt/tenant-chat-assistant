@@ -15,16 +15,17 @@ Field bounds are enforced here for the same reason. The API edge bounds request
 bodies too, and that is not redundant: a graph node calling with model-generated
 text never passes through it.
 
-What is deliberately absent: persistence, idempotency keys, and transactions. A
-command says the request is well-formed and permitted, not that it is unique or
-durable. `DATA-002` persists accepted current actions; reserving a real calendar
-slot transactionally and making retries replay-safe remains `DATA-003`.
+What is deliberately absent: persistence, idempotency keys, and the calendar
+reservation. A command says the request is well-formed and permitted, not that
+it is unique or durable — the adapter behind :class:`~tenantchat.core.ports.BookingService`
+reserves the slot and makes retries replay-safe in one transaction (`DATA-003`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final
 
@@ -39,6 +40,7 @@ from tenantchat.core.errors import (
     ValidationError,
 )
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import TenantPolicy
 
 # Generous enough for any real value, tight enough that a runaway model response
@@ -129,10 +131,10 @@ class BookingCommand:
     """A booking the tenant permits and the domain can act on.
 
     ``slot`` is the label the customer picked, checked against what the tenant
-    was offering. It is still a display string rather than a provider slot ID
-    with a start time, so "not in the past" and "belongs to this tenant's
-    calendar" are not yet enforceable — those arrive with the availability
-    provider in `DATA-003`.
+    was offering. ``slot_id`` is the provider's stable identity for that slot
+    and ``slot_start``/``slot_end`` are its timezone-aware bounds, so the
+    reservation later enforces "not in the past" and "one booking per slot"
+    against values the caller cannot choose — only the label is caller-supplied.
     """
 
     tenant_id: str
@@ -141,6 +143,9 @@ class BookingCommand:
     address: str
     service: ServiceDefinition
     slot: str
+    slot_id: str
+    slot_start: datetime
+    slot_end: datetime
 
     @classmethod
     def parse(
@@ -152,7 +157,7 @@ class BookingCommand:
         address: str,
         service: str,
         slot: str,
-        offered_slots: Collection[str],
+        offered_slots: Collection[OfferedSlot],
     ) -> BookingCommand:
         """Check policy, completeness, contact, service, and slot in that order.
 
@@ -160,18 +165,19 @@ class BookingCommand:
         so before the customer is asked to hand over a phone number and a home
         address, so a refused action collects no PII it has no use for.
 
-        ``offered_slots`` is what the tenant was offering for this service, and a
-        slot outside it is refused. Passing it in rather than reading it off the
-        policy is what keeps this rule intact when `DATA-003` swaps the source
-        from static configuration to a live calendar: the rule stays here, only
-        the caller changes.
+        ``offered_slots`` is what the tenant is offering for this service, and a
+        slot outside it is refused — as is a slot whose window has already
+        passed. Passing the structured offers in rather than reading them off
+        the policy is what keeps these rules intact when the source swaps from
+        static configuration to the live calendar: the rules stay here, only the
+        caller changes.
 
         Raises:
             BookingNotPermittedError: this tenant does not book through chat.
             MissingRequiredFieldsError: one or more required fields were empty.
             InvalidContactError: the contact is not a valid email or NANP number.
             UnknownServiceError: the service did not resolve against the catalog.
-            SlotUnavailableError: the slot was not among those offered.
+            SlotUnavailableError: the slot is not offered, or is already past.
             ValidationError: a field exceeded its length bound.
         """
         if not policy.booking_enabled:
@@ -201,11 +207,17 @@ class BookingCommand:
                 detail=f"{cleaned_service!r} did not resolve for tenant {policy.tenant_id}",
             )
 
-        offers = tuple(offered_slots)
-        if cleaned_slot not in offers:
+        offers = tuple(slot.label for slot in offered_slots)
+        chosen = next((slot for slot in offered_slots if slot.label == cleaned_slot), None)
+        if chosen is None:
             raise SlotUnavailableError(
                 offered=offers,
                 detail=f"{cleaned_slot!r} not offered for {resolved.slug}",
+            )
+        if chosen.start <= datetime.now(UTC):
+            raise SlotUnavailableError(
+                offered=offers,
+                detail=f"{cleaned_slot!r} has already passed",
             )
 
         return cls(
@@ -214,7 +226,10 @@ class BookingCommand:
             contact=parsed_contact,
             address=cleaned_address,
             service=resolved,
-            slot=cleaned_slot,
+            slot=chosen.label,
+            slot_id=chosen.id,
+            slot_start=chosen.start,
+            slot_end=chosen.end,
         )
 
 

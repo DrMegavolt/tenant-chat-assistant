@@ -16,7 +16,7 @@ from tenantchat.api.faults import ChatUnavailableError
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import BookingStore, ConversationStore, LeadStore
-from tenantchat.core.ports import ConversationRuntime
+from tenantchat.core.ports import AvailabilityProvider, BookingService, ConversationRuntime
 
 
 def get_registry(request: Request) -> TenantRegistry:
@@ -57,6 +57,16 @@ def get_booking_store(request: Request) -> BookingStore:
     return store
 
 
+def get_booking_service(request: Request) -> BookingService:
+    service: BookingService = request.app.state.booking_service
+    return service
+
+
+def get_availability_provider(request: Request) -> AvailabilityProvider:
+    provider: AvailabilityProvider = request.app.state.availability_provider
+    return provider
+
+
 def get_lead_store(request: Request) -> LeadStore:
     store: LeadStore = request.app.state.lead_store
     return store
@@ -74,6 +84,8 @@ def get_request_id(request: Request) -> str:
 
 Registry = Annotated[TenantRegistry, Depends(get_registry)]
 Bookings = Annotated[BookingStore, Depends(get_booking_store)]
+BookingActions = Annotated[BookingService, Depends(get_booking_service)]
+Availability = Annotated[AvailabilityProvider, Depends(get_availability_provider)]
 Leads = Annotated[LeadStore, Depends(get_lead_store)]
 Conversations = Annotated[ConversationStore, Depends(get_conversation_store)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]

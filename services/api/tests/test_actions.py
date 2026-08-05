@@ -17,7 +17,7 @@ from tenantchat.api.actions import (
     RecordedHandoffService,
     RecordedLeadService,
 )
-from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry, demo_offered_slots
 from tenantchat.api.store import (
     InMemoryBookingStore,
     InMemoryHandoffStore,
@@ -25,13 +25,18 @@ from tenantchat.api.store import (
     InMemoryLeadStore,
 )
 from tenantchat.core.commands import BookingCommand, HandoffCommand, LeadCommand
-from tenantchat.core.errors import ConflictError, NotFoundError
+from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
 from tenantchat.core.ports import IdempotencyKey
+from tenantchat.core.slots import OfferedSlot
 
 BOOKING_TENANT = "clearview"
 LEAD_TENANT = "apex"
 SESSION = "session-1"
 KEY = IdempotencyKey.derive("clearview", SESSION, "book_appointment", "1", "call-1")
+
+_OFFERS = demo_offered_slots("hvac")
+_OFFERED_LABEL = _OFFERS[0].label
+_OTHER_LABEL = _OFFERS[1].label
 
 
 def booking_command(**overrides: str) -> BookingCommand:
@@ -41,11 +46,22 @@ def booking_command(**overrides: str) -> BookingCommand:
         "contact": "555-222-1919",
         "address": "12 Alder Court, Portland, OR 97205",
         "service": "HVAC",
-        "slot": "Mon Jul 1, 2:00 PM",
+        "slot": _OFFERED_LABEL,
     } | overrides
-    return BookingCommand.parse(
-        record.policy, offered_slots=record.offered_slots("hvac"), **arguments
-    )
+    return BookingCommand.parse(record.policy, offered_slots=_OFFERS, **arguments)
+
+
+def booking_command_from(offers: tuple[OfferedSlot, ...], **overrides: str) -> BookingCommand:
+    """Parse against a caller-supplied offer set, so slot IDs line up with the provider."""
+    record = TenantRegistry.seeded().get(BOOKING_TENANT)
+    arguments = {
+        "customer_name": "Dana Ruiz",
+        "contact": "555-222-1919",
+        "address": "12 Alder Court, Portland, OR 97205",
+        "service": "HVAC",
+        "slot": offers[0].label,
+    } | overrides
+    return BookingCommand.parse(record.policy, offered_slots=offers, **arguments)
 
 
 def lead_command(**overrides: str) -> LeadCommand:
@@ -69,7 +85,9 @@ def handoff_command(**overrides: str) -> HandoffCommand:
 def bookings() -> Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]:
     def build() -> tuple[RecordedBookingService, InMemoryBookingStore]:
         store = InMemoryBookingStore()
-        return RecordedBookingService(store, InMemoryIdempotencyStore()), store
+        provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
+        service = RecordedBookingService(store, provider)
+        return service, store
 
     return build
 
@@ -103,13 +121,13 @@ class TestBookingIdempotency:
         stop working.
         """
         store = InMemoryBookingStore()
-        keys = InMemoryIdempotencyStore()
+        provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
 
         async def scenario() -> None:
-            await RecordedBookingService(store, keys).confirm(
+            await RecordedBookingService(store, provider).confirm(
                 booking_command(), session_id=SESSION, idempotency_key=KEY
             )
-            replayed = await RecordedBookingService(store, keys).confirm(
+            replayed = await RecordedBookingService(store, provider).confirm(
                 booking_command(), session_id=SESSION, idempotency_key=KEY
             )
 
@@ -143,7 +161,7 @@ class TestBookingIdempotency:
 
         asyncio.run(scenario())
 
-    def test_two_sessions_with_different_keys_both_book(
+    def test_two_sessions_with_different_keys_on_different_slots_both_book(
         self, bookings: Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]
     ) -> None:
         """The guard must not turn two real customers into one."""
@@ -152,9 +170,49 @@ class TestBookingIdempotency:
 
         async def scenario() -> None:
             await service.confirm(booking_command(), session_id=SESSION, idempotency_key=KEY)
-            await service.confirm(booking_command(), session_id="session-2", idempotency_key=other)
+            await service.confirm(
+                booking_command(slot=_OTHER_LABEL),
+                session_id="session-2",
+                idempotency_key=other,
+            )
 
             assert len(await store.for_tenant(BOOKING_TENANT)) == 2
+
+        asyncio.run(scenario())
+
+    def test_two_concurrent_attempts_on_one_slot_produce_one_booking(self) -> None:
+        """`DATA-003` acceptance: exactly one confirmed booking per slot.
+
+        Two customers reading the same availability and submitting at once race
+        for the slot; the uniqueness reservation lets exactly one through and
+        the loser gets a stable ``slot_unavailable`` with the refreshed offers,
+        from which the just-taken slot is gone.
+        """
+        store = InMemoryBookingStore()
+        provider = DemoAvailabilityProvider(TenantRegistry.seeded(), taken=store.taken_slot_ids)
+        service = RecordedBookingService(store, provider)
+        other = IdempotencyKey.derive("clearview", "session-2", "book_appointment", "1", "call-2")
+
+        async def scenario() -> None:
+            offers = await provider.offered_slots(BOOKING_TENANT, "hvac")
+            first, second = await asyncio.gather(
+                service.confirm(
+                    booking_command_from(offers), session_id=SESSION, idempotency_key=KEY
+                ),
+                service.confirm(
+                    booking_command_from(offers),
+                    session_id="session-2",
+                    idempotency_key=other,
+                ),
+                return_exceptions=True,
+            )
+
+            outcomes = [r for r in (first, second) if not isinstance(r, BaseException)]
+            refusals = [r for r in (first, second) if isinstance(r, SlotUnavailableError)]
+            assert len(outcomes) == 1
+            assert len(refusals) == 1
+            assert refusals[0].offered and offers[0].label not in refusals[0].offered
+            assert len(await store.for_tenant(BOOKING_TENANT)) == 1
 
         asyncio.run(scenario())
 
@@ -215,8 +273,8 @@ class TestIdempotencyStoreContract:
         """An attempt that crashed mid-flight must not be silently retried.
 
         Safe rather than convenient: the alternative is a second write while the
-        first may still land. `DATA-003` removes the window by committing the
-        claim and the booking in one transaction.
+        first may still land. `DATA-003` removes the window for bookings by
+        committing the claim and the booking in one transaction.
         """
         store = InMemoryIdempotencyStore()
 

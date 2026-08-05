@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import (
+    BookingAttempt,
+    BookingOutcome,
     BookingRecord,
     ConversationRecord,
     HandoffRecord,
@@ -25,7 +30,8 @@ from tenantchat.core.commands import (
     LeadUrgency,
 )
 from tenantchat.core.contact import Contact
-from tenantchat.core.errors import ConflictError, NotFoundError
+from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
+from tenantchat.core.slots import OfferedSlot
 
 
 def _conversation(row: object) -> ConversationRecord:
@@ -60,6 +66,93 @@ def _message(row: object) -> MessageRecord:
 def _lead_urgency(value: str) -> LeadUrgency:
     legacy = {"low": "flexible", "normal": "unknown", "high": "today"}
     return LeadUrgency(legacy.get(value, value))
+
+
+def _booking_from_row(row: object) -> BookingRecord:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return BookingRecord(
+        booking_id=mapping["reference"],
+        tenant_id=mapping["tenant_id"],
+        session_id=str(mapping["chat_session_id"]),
+        customer_name=mapping["customer_name"],
+        contact=Contact.parse(mapping["contact_value"]),
+        address=mapping["service_address"],
+        service_slug=mapping["service_slug"],
+        service_name=mapping["service_label"],
+        slot=mapping["slot_label"],
+        slot_id=str(mapping["slot_id"]),
+        slot_start=mapping["slot_start"],
+        slot_end=mapping["slot_end"],
+        created_at=mapping["created_at"],
+    )
+
+
+async def _booking_by_reference(
+    connection: AsyncConnection, tenant_id: str, reference: str
+) -> BookingRecord:
+    result = await connection.execute(
+        text(
+            """
+            SELECT reference, tenant_id, chat_session_id, customer_name,
+                   contact_value, service_address, service_slug, service_label,
+                   slot_label, slot_id, slot_start, slot_end, created_at
+            FROM bookings
+            WHERE tenant_id = :tenant_id AND reference = :reference
+            """
+        ),
+        {"tenant_id": tenant_id, "reference": reference},
+    )
+    return _booking_from_row(result.one())
+
+
+async def _offered_labels(
+    connection: AsyncConnection, tenant_id: str, service_slug: str
+) -> tuple[str, ...]:
+    """Labels currently offered for a service, excluding past and claimed slots.
+
+    ``id`` is left empty on the synthesized slots: only ``label`` is wanted
+    here, and the id is irrelevant for display and for the reservation.
+    """
+    result = await connection.execute(
+        text(
+            """
+            SELECT slot_start, slot_end
+            FROM availability_slots
+            WHERE tenant_id = :tenant_id
+              AND service_slug = :service_slug
+              AND slot_end > now()
+              AND NOT EXISTS (
+                  SELECT 1 FROM bookings
+                  WHERE bookings.tenant_id = availability_slots.tenant_id
+                    AND bookings.slot_id = availability_slots.id
+                    AND bookings.status = 'confirmed'
+              )
+            ORDER BY slot_start
+            """
+        ),
+        {"tenant_id": tenant_id, "service_slug": service_slug},
+    )
+    return tuple(
+        OfferedSlot(id="", service_slug=service_slug, start=row.slot_start, end=row.slot_end).label
+        for row in result.all()
+    )
+
+
+async def _offered_labels_on_new(
+    engine: AsyncEngine, tenant_id: str, service_slug: str
+) -> tuple[str, ...]:
+    """Refresh offers on a connection that is not mid-aborted-transaction."""
+    async with engine.begin() as connection:
+        return await _offered_labels(connection, tenant_id, service_slug)
+
+
+class _ReservationLostError(Exception):
+    """Internal rollback sentinel for a lost reservation slot race."""
+
+    def __init__(self, tenant_id: str, service_slug: str) -> None:
+        self.tenant_id = tenant_id
+        self.service_slug = service_slug
+        super().__init__()
 
 
 async def _action_session(
@@ -486,64 +579,212 @@ class PostgresHandoffStore:
 
 
 class PostgresBookingStore:
-    """Durably records current static-slot bookings; DATA-003 reserves real slots."""
+    """Reserves and confirms a slot in one transaction, deduplicated by key.
+
+    `DATA-003` collapses the idempotency claim and the booking write that the
+    lead and handoff stores still keep separate. There is no in-flight window: a
+    concurrent retry of the same key blocks on the claim insert and then reads
+    the committed response, and a concurrent attempt on the same slot collides
+    on the unique index that allows one confirmed booking per slot. The whole
+    attempt — claim, reservation, booking, completion — commits or rolls back
+    together.
+
+    The idempotency response stores only the reference, never customer details:
+    a replay re-reads the booking row it names, so PII does not accumulate in a
+    table whose purpose is key-to-result mapping.
+    """
+
+    _PROVIDER = "demo-db-fake-availability"
+    _SCOPE = "booking"
+    _RETENTION = timedelta(days=7)
 
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
 
-    async def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord:
-        booking_uuid = uuid.uuid4()
-        reference = f"BK-{booking_uuid.hex.upper()}"
-        async with self._engine.begin() as connection:
-            authoritative_session_id = await _action_session(
-                connection, command.tenant_id, session_id
-            )
-            result = await connection.execute(
-                text(
-                    """
-                    INSERT INTO bookings
-                        (id, tenant_id, chat_session_id, status, reference,
-                         service_slug, service_label, provider_name, slot_label,
-                         customer_name, contact_kind, contact_value, service_address,
-                         confirmed_at)
-                    VALUES
-                        (:id, :tenant_id, :session_id, 'confirmed', :reference,
-                         :service_slug, :service_label, 'prototype-static-availability',
-                         :slot_label, :customer_name, :contact_kind, :contact_value,
-                         :service_address, now())
-                    RETURNING created_at
-                    """
-                ),
-                {
-                    "id": booking_uuid,
-                    "tenant_id": command.tenant_id,
-                    "session_id": authoritative_session_id,
-                    "reference": reference,
-                    "service_slug": command.service.slug,
-                    "service_label": command.service.display_name,
-                    "slot_label": command.slot,
-                    "customer_name": command.customer_name,
-                    "contact_kind": command.contact.kind.value,
-                    "contact_value": command.contact.value,
-                    "service_address": command.address,
-                },
-            )
-            created_at = result.scalar_one()
-            await _advance_action_session(
-                connection, command.tenant_id, authoritative_session_id, "booked"
-            )
-        return BookingRecord(
-            booking_id=reference,
-            tenant_id=command.tenant_id,
-            session_id=str(authoritative_session_id),
-            customer_name=command.customer_name,
-            contact=command.contact,
-            address=command.address,
-            service_slug=command.service.slug,
-            service_name=command.service.display_name,
-            slot=command.slot,
-            created_at=created_at,
-        )
+    @staticmethod
+    def _hash(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    async def confirm(
+        self,
+        command: BookingCommand,
+        *,
+        session_id: str,
+        attempt: BookingAttempt,
+    ) -> BookingOutcome:
+        """Reserve and confirm the slot, deduplicating by the attempt key.
+
+        Raises:
+            NotFoundError: the tenant or conversation is absent/outside tenant.
+            ConflictError: the key was used for a different booking, or a crashed
+                attempt left it in flight.
+            SlotUnavailableError: the slot is past or already reserved, carrying
+                the current offers so the caller can re-prompt.
+        """
+        key_hash = self._hash(attempt.key.value)
+        try:
+            async with self._engine.begin() as connection:
+                await require_active_tenant(connection, attempt.tenant_id)
+                claimed = await connection.execute(
+                    text(
+                        """
+                        INSERT INTO idempotency_keys
+                            (id, tenant_id, scope, key_hash, request_hash, status, expires_at)
+                        VALUES
+                            (:id, :tenant_id, :scope, :key_hash, :request_hash,
+                             'in_progress', :expires_at)
+                        ON CONFLICT (tenant_id, scope, key_hash) DO NOTHING
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "tenant_id": attempt.tenant_id,
+                        "scope": attempt.scope,
+                        "key_hash": key_hash,
+                        "request_hash": attempt.request_hash,
+                        "expires_at": datetime.now(UTC) + self._RETENTION,
+                    },
+                )
+                if claimed.scalar_one_or_none() is None:
+                    existing = await connection.execute(
+                        text(
+                            """
+                            SELECT request_hash, status, response
+                            FROM idempotency_keys
+                            WHERE tenant_id = :tenant_id
+                              AND scope = :scope AND key_hash = :key_hash
+                            """
+                        ),
+                        {
+                            "tenant_id": attempt.tenant_id,
+                            "scope": attempt.scope,
+                            "key_hash": key_hash,
+                        },
+                    )
+                    row = existing.one()
+                    if row.request_hash != attempt.request_hash:
+                        raise ConflictError(
+                            detail=f"idempotency key reused for a different {attempt.scope}"
+                        )
+                    if row.status != "completed" or row.response is None:
+                        raise ConflictError(
+                            detail=f"an earlier {attempt.scope} attempt is still in flight"
+                        )
+                    record = await _booking_by_reference(
+                        connection, attempt.tenant_id, str(row.response["reference"])
+                    )
+                    return BookingOutcome(record=record, replayed=True)
+
+                slot = await connection.execute(
+                    text(
+                        """
+                        SELECT slot_start, slot_end
+                        FROM availability_slots
+                        WHERE tenant_id = :tenant_id AND id = :slot_id
+                        """
+                    ),
+                    {"tenant_id": attempt.tenant_id, "slot_id": command.slot_id},
+                )
+                slot_row = slot.one_or_none()
+                if slot_row is None or slot_row.slot_end <= datetime.now(UTC):
+                    raise SlotUnavailableError(
+                        offered=await _offered_labels(
+                            connection, attempt.tenant_id, command.service.slug
+                        ),
+                        detail=f"{command.slot!r} is not currently bookable",
+                    )
+
+                authoritative_session_id = await _action_session(
+                    connection, attempt.tenant_id, session_id
+                )
+                booking_uuid = uuid.uuid4()
+                reference = f"BK-{booking_uuid.hex.upper()}"
+                try:
+                    result = await connection.execute(
+                        text(
+                            """
+                            INSERT INTO bookings
+                                (id, tenant_id, chat_session_id, status, reference,
+                                 service_slug, service_label, provider_name, slot_id,
+                                 slot_label, slot_start, slot_end, customer_name,
+                                 contact_kind, contact_value, service_address, confirmed_at)
+                            VALUES
+                                (:id, :tenant_id, :session_id, 'confirmed', :reference,
+                                 :service_slug, :service_label, :provider, :slot_id,
+                                 :slot_label, :slot_start, :slot_end, :customer_name,
+                                 :contact_kind, :contact_value, :service_address, now())
+                            RETURNING created_at
+                            """
+                        ),
+                        {
+                            "id": booking_uuid,
+                            "tenant_id": attempt.tenant_id,
+                            "session_id": authoritative_session_id,
+                            "reference": reference,
+                            "service_slug": command.service.slug,
+                            "service_label": command.service.display_name,
+                            "provider": self._PROVIDER,
+                            "slot_id": command.slot_id,
+                            "slot_label": command.slot,
+                            "slot_start": command.slot_start,
+                            "slot_end": command.slot_end,
+                            "customer_name": command.customer_name,
+                            "contact_kind": command.contact.kind.value,
+                            "contact_value": command.contact.value,
+                            "service_address": command.address,
+                        },
+                    )
+                except IntegrityError as error:
+                    raise _ReservationLostError(attempt.tenant_id, command.service.slug) from error
+
+                created_at = result.scalar_one()
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE idempotency_keys
+                        SET status = 'completed', response = :response, completed_at = now()
+                        WHERE tenant_id = :tenant_id AND scope = :scope
+                          AND key_hash = :key_hash AND status = 'in_progress'
+                        """
+                    ).bindparams(bindparam("response", type_=JSONB)),
+                    {
+                        "tenant_id": attempt.tenant_id,
+                        "scope": attempt.scope,
+                        "key_hash": key_hash,
+                        "response": {
+                            "reference": reference,
+                            "service_slug": command.service.slug,
+                            "slot": command.slot,
+                        },
+                    },
+                )
+                await _advance_action_session(
+                    connection, attempt.tenant_id, authoritative_session_id, "booked"
+                )
+                return BookingOutcome(
+                    record=BookingRecord(
+                        booking_id=reference,
+                        tenant_id=attempt.tenant_id,
+                        session_id=str(authoritative_session_id),
+                        customer_name=command.customer_name,
+                        contact=command.contact,
+                        address=command.address,
+                        service_slug=command.service.slug,
+                        service_name=command.service.display_name,
+                        slot=command.slot,
+                        slot_id=command.slot_id,
+                        slot_start=command.slot_start,
+                        slot_end=command.slot_end,
+                        created_at=created_at,
+                    ),
+                    replayed=False,
+                )
+        except _ReservationLostError as lost:
+            offers = await _offered_labels_on_new(self._engine, lost.tenant_id, lost.service_slug)
+            raise SlotUnavailableError(
+                offered=offers, detail="that slot was just reserved by another customer"
+            ) from None
 
     async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]:
         async with self._engine.begin() as connection:
@@ -552,7 +793,8 @@ class PostgresBookingStore:
                     """
                     SELECT reference, tenant_id, chat_session_id, customer_name,
                            contact_value, service_address, service_slug,
-                           service_label, slot_label, created_at
+                           service_label, slot_label, slot_id, slot_start, slot_end,
+                           created_at
                     FROM bookings
                     WHERE tenant_id = :tenant_id
                     ORDER BY created_at, id
@@ -561,18 +803,26 @@ class PostgresBookingStore:
                 {"tenant_id": tenant_id},
             )
             rows = result.all()
-        return tuple(
-            BookingRecord(
-                booking_id=row.reference,
-                tenant_id=row.tenant_id,
-                session_id=str(row.chat_session_id),
-                customer_name=row.customer_name,
-                contact=Contact.parse(row.contact_value),
-                address=row.service_address,
-                service_slug=row.service_slug,
-                service_name=row.service_label,
-                slot=row.slot_label,
-                created_at=row.created_at,
+        return tuple(_booking_from_row(row) for row in rows)
+
+    async def replay(self, tenant_id: str, scope: str, key: str) -> BookingRecord | None:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT response
+                    FROM idempotency_keys
+                    WHERE tenant_id = :tenant_id AND scope = :scope
+                      AND key_hash = :key_hash AND status = 'completed'
+                    """
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "scope": scope,
+                    "key_hash": self._hash(key),
+                },
             )
-            for row in rows
-        )
+            row = result.one_or_none()
+            if row is None or row.response is None:
+                return None
+            return await _booking_by_reference(connection, tenant_id, row.response["reference"])

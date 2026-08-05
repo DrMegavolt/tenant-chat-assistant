@@ -23,9 +23,18 @@ from __future__ import annotations
 import hashlib
 from typing import Final
 
-from tenantchat.api.store import BookingStore, HandoffStore, IdempotencyStore, LeadStore
+from tenantchat.api.store import (
+    BookingAttempt,
+    BookingRecord,
+    BookingStore,
+    HandoffStore,
+    IdempotencyStore,
+    LeadStore,
+)
 from tenantchat.core.commands import BookingCommand, HandoffCommand, LeadCommand
+from tenantchat.core.errors import SlotUnavailableError
 from tenantchat.core.ports import (
+    AvailabilityProvider,
     BookingConfirmation,
     HandoffTicket,
     IdempotencyKey,
@@ -44,11 +53,18 @@ def _fingerprint(*parts: str) -> str:
 
 
 class RecordedBookingService:
-    """Commits a booking once per idempotency key."""
+    """Commits a booking once per idempotency key.
 
-    def __init__(self, bookings: BookingStore, idempotency: IdempotencyStore) -> None:
+    The claim, the slot reservation, and the booking write all happen inside the
+    store's single transaction (`DATA-003`), so there is no window where a
+    crashed attempt makes a retry wait. This service supplies the attempt's
+    fingerprint and, when the reservation fails because a slot was just taken,
+    refreshes the offered alternatives so the caller can re-prompt in one turn.
+    """
+
+    def __init__(self, bookings: BookingStore, availability: AvailabilityProvider) -> None:
         self._bookings = bookings
-        self._idempotency = idempotency
+        self._availability = availability
 
     async def confirm(
         self,
@@ -61,47 +77,63 @@ class RecordedBookingService:
 
         Raises:
             NotFoundError: the conversation does not belong to this tenant.
-            ConflictError: an attempt with this key is in flight, or the key was
-                used for a different booking.
+            ConflictError: the key was used for a materially different booking.
+            SlotUnavailableError: the slot is past, reserved, or wrong tenant,
+                carrying the current offers.
         """
-        replay = await self._idempotency.begin(
-            command.tenant_id,
+        attempt = BookingAttempt(
+            tenant_id=command.tenant_id,
             scope=BOOKING_SCOPE,
             key=idempotency_key,
-            fingerprint=_fingerprint(
+            request_hash=_fingerprint(
                 session_id,
                 command.customer_name,
                 command.contact.value,
                 command.address,
                 command.service.slug,
-                command.slot,
+                command.slot_id,
             ),
         )
-        if replay is not None:
-            return BookingConfirmation(
-                reference=str(replay["reference"]),
-                service_slug=str(replay["service_slug"]),
-                slot=str(replay["slot"]),
-                replayed=True,
+        try:
+            outcome = await self._bookings.confirm(command, session_id=session_id, attempt=attempt)
+        except SlotUnavailableError:
+            refreshed = tuple(
+                slot.label
+                for slot in await self._availability.offered_slots(
+                    command.tenant_id, command.service.slug
+                )
             )
+            raise SlotUnavailableError(offered=refreshed) from None
+        return _confirmation(outcome.record, replayed=outcome.replayed)
 
-        record = await self._bookings.record(command, session_id=session_id)
-        await self._idempotency.complete(
-            command.tenant_id,
-            scope=BOOKING_SCOPE,
-            key=idempotency_key,
-            response={
-                "reference": record.booking_id,
-                "service_slug": record.service_slug,
-                "slot": record.slot,
-            },
-        )
-        return BookingConfirmation(
-            reference=record.booking_id,
-            service_slug=record.service_slug,
-            slot=record.slot,
-            replayed=False,
-        )
+    async def find_replay(
+        self, tenant_id: str, idempotency_key: IdempotencyKey
+    ) -> BookingConfirmation | None:
+        """Return the original confirmation if this key already booked, else ``None``.
+
+        A caller checks this before re-validating the request: a replay names the
+        slot the same attempt already took, so that slot is no longer offered and
+        would otherwise be refused as if it were a brand-new booking.
+        """
+        record = await self._bookings.replay(tenant_id, BOOKING_SCOPE, idempotency_key.value)
+        if record is None:
+            return None
+        return _confirmation(record, replayed=True)
+
+
+def _confirmation(record: BookingRecord, *, replayed: bool) -> BookingConfirmation:
+    """Project a stored booking onto the domain confirmation a replay needs."""
+    return BookingConfirmation(
+        reference=record.booking_id,
+        service_slug=record.service_slug,
+        service_name=record.service_name,
+        slot=record.slot,
+        customer_name=record.customer_name,
+        contact=record.contact.display,
+        address=record.address,
+        created_at=record.created_at,
+        replayed=replayed,
+    )
 
 
 class RecordedLeadService:

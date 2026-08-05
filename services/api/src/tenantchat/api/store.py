@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -23,7 +24,7 @@ from tenantchat.core.commands import (
     LeadUrgency,
 )
 from tenantchat.core.contact import Contact
-from tenantchat.core.errors import ConflictError, NotFoundError
+from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
 from tenantchat.core.ports import IdempotencyKey
 
 
@@ -75,6 +76,9 @@ class BookingRecord:
     service_slug: str
     service_name: str
     slot: str
+    slot_id: str
+    slot_start: datetime
+    slot_end: datetime
     created_at: datetime
 
 
@@ -134,8 +138,59 @@ class ConversationStore(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class BookingAttempt:
+    """The identity of one intended booking: its idempotency key and fingerprint.
+
+    Everything needed to distinguish "this is the same attempt again" from "this
+    is a new attempt" in one value, so the reservation can claim the key and
+    commit the booking in the same transaction.
+    """
+
+    tenant_id: str
+    scope: str
+    key: IdempotencyKey
+    request_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class BookingOutcome:
+    """What a booking attempt produced: the committed record, and whether it was a retry."""
+
+    record: BookingRecord
+    replayed: bool
+
+
 class BookingStore(Protocol):
-    async def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord: ...
+    async def confirm(
+        self,
+        command: BookingCommand,
+        *,
+        session_id: str,
+        attempt: BookingAttempt,
+    ) -> BookingOutcome:
+        """Reserve and confirm the slot once per attempt, in one transaction.
+
+        The idempotency claim, the slot reservation, and the booking write
+        commit together (`DATA-003`), so a retry returns the original record and
+        a racing attempt on the same slot loses to the uniqueness constraint.
+
+        Raises:
+            NotFoundError: the tenant or conversation is absent/outside tenant.
+            ConflictError: the key was used for a materially different booking.
+            SlotUnavailableError: the slot is past, reserved, or wrong tenant.
+        """
+        ...
+
+    async def replay(self, tenant_id: str, scope: str, key: str) -> BookingRecord | None:
+        """The committed booking this key produced, or ``None`` if it never booked.
+
+        Read with the tenant so a key minted for one tenant can never resolve
+        another's booking. Used by
+        :meth:`~tenantchat.api.actions.RecordedBookingService.find_replay` so a
+        repeated key is answered before the slot is re-validated.
+        """
+        ...
 
     async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]: ...
 
@@ -283,15 +338,79 @@ class InMemoryConversationStore:
 
 
 class InMemoryBookingStore:
-    """An explicit API test fake, never the production source of truth."""
+    """An explicit API test fake, never the production source of truth.
 
-    def __init__(self) -> None:
+    Mirrors the single-transaction contract of the PostgreSQL store: the attempt
+    is claimed, the slot reserved, and the booking recorded under one lock, so a
+    retry returns the original record and a racing attempt on the same slot is
+    refused. ``offered_slots`` feeds the current labels into a slot conflict so
+    the caller can re-prompt with real alternatives.
+    """
+
+    def __init__(self, offered_slots: Callable[[str, str], Sequence[str]] | None = None) -> None:
         self._records: list[BookingRecord] = []
+        self._attempts: dict[tuple[str, str, str], tuple[str, BookingRecord]] = {}
+        self._taken: set[tuple[str, str]] = set()
+        self._lock = asyncio.Lock()
+        self._offered_slots = offered_slots or (lambda _tenant, _service: ())
 
-    async def record(self, command: BookingCommand, *, session_id: str) -> BookingRecord:
-        booking = BookingRecord(
+    def taken_slot_ids(self, tenant_id: str) -> frozenset[str]:
+        """Slot IDs this tenant has a confirmed booking for.
+
+        Read as a snapshot field rather than under the lock: asyncio never
+        interleaves a synchronous read mid-await, so a lock would serialize
+        readers that are not competing.
+        """
+        return frozenset(slot_id for owner, slot_id in self._taken if owner == tenant_id)
+
+    async def confirm(
+        self,
+        command: BookingCommand,
+        *,
+        session_id: str,
+        attempt: BookingAttempt,
+    ) -> BookingOutcome:
+        async with self._lock:
+            index = (attempt.tenant_id, attempt.scope, attempt.key.value)
+            existing = self._attempts.get(index)
+            if existing is not None:
+                fingerprint, prior = existing
+                if fingerprint != attempt.request_hash:
+                    raise ConflictError(
+                        detail=f"idempotency key reused for a different {attempt.scope}"
+                    )
+                return BookingOutcome(record=prior, replayed=True)
+
+            if command.slot_start <= datetime.now(UTC):
+                raise SlotUnavailableError(
+                    offered=tuple(self._offered_slots(attempt.tenant_id, command.service.slug)),
+                    detail=f"{command.slot!r} has already passed",
+                )
+            if any(
+                record.tenant_id == attempt.tenant_id and record.slot_id == command.slot_id
+                for record in self._records
+            ):
+                raise SlotUnavailableError(
+                    offered=tuple(self._offered_slots(attempt.tenant_id, command.service.slug)),
+                    detail=f"{command.slot!r} is already reserved",
+                )
+
+            record = self._booking(command, session_id, attempt)
+            self._records.append(record)
+            self._attempts[index] = (attempt.request_hash, record)
+            self._taken.add((attempt.tenant_id, command.slot_id))
+            return BookingOutcome(record=record, replayed=False)
+
+    async def replay(self, tenant_id: str, scope: str, key: str) -> BookingRecord | None:
+        booked = self._attempts.get((tenant_id, scope, key))
+        return booked[1] if booked is not None else None
+
+    def _booking(
+        self, command: BookingCommand, session_id: str, attempt: BookingAttempt
+    ) -> BookingRecord:
+        return BookingRecord(
             booking_id=_reference("BK"),
-            tenant_id=command.tenant_id,
+            tenant_id=attempt.tenant_id,
             session_id=session_id,
             customer_name=command.customer_name,
             contact=command.contact,
@@ -299,10 +418,11 @@ class InMemoryBookingStore:
             service_slug=command.service.slug,
             service_name=command.service.display_name,
             slot=command.slot,
+            slot_id=command.slot_id,
+            slot_start=command.slot_start,
+            slot_end=command.slot_end,
             created_at=datetime.now(UTC),
         )
-        self._records.append(booking)
-        return booking
 
     async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]:
         return tuple(record for record in self._records if record.tenant_id == tenant_id)

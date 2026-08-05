@@ -21,7 +21,11 @@ class TestProblemDocumentShape:
     def test_domain_errors_use_the_problem_media_type(
         self, client: TestClient, booking_payload: PayloadBuilder
     ) -> None:
-        response = client.post("/api/book", json=booking_payload(contact="0001234567"))
+        response = client.post(
+            "/api/book",
+            json=booking_payload(contact="0001234567"),
+            headers={"Idempotency-Key": "problem-1"},
+        )
 
         assert response.headers["content-type"].startswith("application/problem+json")
 
@@ -29,7 +33,11 @@ class TestProblemDocumentShape:
         self, client: TestClient, booking_payload: PayloadBuilder
     ) -> None:
         """Clients branch on `code`; it is part of the public contract."""
-        body = client.post("/api/book", json=booking_payload(contact="0001234567")).json()
+        body = client.post(
+            "/api/book",
+            json=booking_payload(contact="0001234567"),
+            headers={"Idempotency-Key": "problem-2"},
+        ).json()
 
         assert body["code"] == "invalid_contact"
         assert body["type"] == "/problems/invalid_contact"
@@ -38,7 +46,11 @@ class TestProblemDocumentShape:
     def test_problem_detail_is_prose_a_visitor_can_be_shown(
         self, client: TestClient, booking_payload: PayloadBuilder
     ) -> None:
-        body = client.post("/api/book", json=booking_payload(contact="0001234567")).json()
+        body = client.post(
+            "/api/book",
+            json=booking_payload(contact="0001234567"),
+            headers={"Idempotency-Key": "problem-2"},
+        ).json()
 
         assert body["detail"] == (
             "Provide a valid email address or a complete 10-digit US phone number "
@@ -56,7 +68,11 @@ class TestOperatorDetailIsNotPublished:
         resolved service slug. The response may carry the current offers, which
         are server-owned, but not that operator string.
         """
-        response = client.post("/api/book", json=booking_payload(slot="Sun Jul 7, 3:00 AM"))
+        response = client.post(
+            "/api/book",
+            json=booking_payload(slot="Sun Jul 7, 3:00 AM"),
+            headers={"Idempotency-Key": "problem-3"},
+        )
 
         assert "not offered for" not in response.text
 
@@ -94,7 +110,11 @@ class TestRequestCorrelation:
         self, client: TestClient, booking_payload: PayloadBuilder
     ) -> None:
         """A visitor reporting a failure can be matched to the log line."""
-        response = client.post("/api/book", json=booking_payload(contact="0001234567"))
+        response = client.post(
+            "/api/book",
+            json=booking_payload(contact="0001234567"),
+            headers={"Idempotency-Key": "problem-1"},
+        )
 
         assert response.json()["requestId"] == response.headers[REQUEST_ID_HEADER]
 

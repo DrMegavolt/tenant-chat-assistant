@@ -20,7 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from tenantchat.api.store import BookingRecord, ConversationRecord, LeadRecord, MessageRecord
-from tenantchat.core.ports import AssistantTurn
+from tenantchat.core.ports import AssistantTurn, BookingConfirmation
 from tenantchat.core.tenant import PublicTenantView
 
 # Generous outer bounds. The domain applies the meaningful limits.
@@ -91,6 +91,24 @@ class BookingResponse(BaseModel):
             contact=record.contact.display,
             address=record.address,
             created_at=record.created_at,
+        )
+
+    @classmethod
+    def build(cls, confirmation: BookingConfirmation) -> BookingResponse:
+        """Project a confirmation back to the caller.
+
+        Reads the echo fields off the confirmation so a replay presents the
+        booking exactly as it was committed, not as the repeated request typed
+        it (the contact in canonical form, the service's real name).
+        """
+        return cls(
+            booking_id=confirmation.reference,
+            service=confirmation.service_name,
+            slot=confirmation.slot,
+            customer_name=confirmation.customer_name,
+            contact=confirmation.contact,
+            address=confirmation.address,
+            created_at=confirmation.created_at,
         )
 
 
