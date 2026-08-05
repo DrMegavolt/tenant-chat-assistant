@@ -82,11 +82,16 @@ def require_chat_backend(authorization: Optional[str] = Header(default=None)) ->
         )
 
 
-def embed_query(query: str) -> List[float]:
+def embed_query(query: str, request_id: Optional[str] = None, trace_id: Optional[str] = None) -> List[float]:
+    headers = internal_bearer_headers(EMBEDDING_TOKEN)
+    if request_id:
+        headers["X-Request-Id"] = request_id
+    if trace_id:
+        headers["X-Trace-Id"] = trace_id
     response = requests.post(
         f"{EMBEDDING_URL.rstrip('/')}/embed",
         json={"texts": [query]},
-        headers=internal_bearer_headers(EMBEDDING_TOKEN),
+        headers=headers,
         timeout=120,
     )
     response.raise_for_status()
@@ -99,8 +104,10 @@ def es_auth():
     return None
 
 
-def search_chunks(tenant_id: str, query: str) -> List[Dict[str, Any]]:
-    vector = embed_query(query)
+def search_chunks(
+    tenant_id: str, query: str, request_id: Optional[str] = None, trace_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    vector = embed_query(query, request_id, trace_id)
     body = {
         "size": TOP_K,
         "knn": {
@@ -198,10 +205,14 @@ def metrics():
 
 
 @app.post("/answer", dependencies=[Depends(require_chat_backend)])
-def answer(request: AnswerRequest):
+def answer(
+    request: AnswerRequest,
+    x_request_id: Optional[str] = Header(default=None, alias="X-Request-Id"),
+    x_trace_id: Optional[str] = Header(default=None, alias="X-Trace-Id"),
+):
     started = time.time()
     try:
-        chunks = search_chunks(request.tenantId, request.query)
+        chunks = search_chunks(request.tenantId, request.query, x_request_id, x_trace_id)
         llm_answer = call_llm(request.query, chunks)
         answer_text = llm_answer or fallback_answer(chunks)
         REQUESTS.labels(status="ok").inc()

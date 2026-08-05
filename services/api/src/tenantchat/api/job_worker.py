@@ -23,7 +23,15 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
+from tenantchat.api.correlation import (
+    CorrelationContext,
+    bind,
+    context_extra,
+    reset,
+    tenant_pseudonym,
+)
 from tenantchat.api.jobs import JobKind, JobRecord, JobStore
+from tenantchat.api.logging_setup import configure_logging, resolve_service
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -57,6 +65,9 @@ class WorkerSettings:
     batch_size: int = 10
     backoff_base: timedelta = timedelta(seconds=5)
     backoff_cap: timedelta = timedelta(hours=1)
+    # The shared key tenant pseudonyms derive from; must match the API's, or a
+    # job line and the request that enqueued it name the tenant differently.
+    log_pseudonym_key: str | None = None
 
     def __post_init__(self) -> None:
         if not self.worker_id or len(self.worker_id) > 200:
@@ -82,6 +93,7 @@ class WorkerSettings:
             batch_size=int(os.environ.get("JOB_BATCH_SIZE", "10")),
             backoff_base=timedelta(seconds=float(os.environ.get("JOB_BACKOFF_SECONDS", "5"))),
             backoff_cap=timedelta(seconds=float(os.environ.get("JOB_BACKOFF_CAP_SECONDS", "3600"))),
+            log_pseudonym_key=os.environ.get("CHAT_API_LOG_PSEUDONYM_KEY", "").strip() or None,
         )
 
 
@@ -142,6 +154,24 @@ async def execute_job(
     heartbeat = asyncio.create_task(_heartbeat(jobs, job.job_id, settings, stopped))
     retryable = True
     error_code: str | None = None
+    # The correlation context is the enqueuing request's when the payload
+    # carries it (the enqueuer's trace); otherwise the job itself is the unit
+    # of work and names its own trace. The request ID is the durable domain
+    # request the enqueuer stored, so a handler's lines tie back to the
+    # operator action that filed the work.
+    payload = job.payload
+    raw_trace = payload.get("trace_id")
+    raw_request = payload.get("request_id")
+    trace = raw_trace if isinstance(raw_trace, str) and raw_trace else str(job.job_id)
+    request = raw_request if isinstance(raw_request, str) and raw_request else str(job.job_id)
+    bind(
+        CorrelationContext(
+            request_id=request,
+            trace_id=trace,
+            tenant_id=job.tenant_id,
+            tenant_pseudonym=tenant_pseudonym(job.tenant_id, key=settings.log_pseudonym_key),
+        )
+    )
     try:
         handler = handlers.get(job.kind)
         if handler is None:
@@ -155,7 +185,11 @@ async def execute_job(
         # bodies, and credentials. The durable record gets only a stable code.
         logger.error(
             "background job handler failed",
-            extra={"job_id": str(job.job_id), "error_code": "handler_unexpected"},
+            extra={
+                "job_id": str(job.job_id),
+                "error_code": "handler_unexpected",
+                **context_extra(),
+            },
         )
         error_code = "handler_unexpected"
     finally:
@@ -164,6 +198,10 @@ async def execute_job(
 
     if error_code is None:
         await jobs.succeed(job.job_id, worker_id=settings.worker_id)
+        logger.info(
+            "background job succeeded",
+            extra={"job_id": str(job.job_id), **context_extra()},
+        )
     else:
         await jobs.fail(
             job.job_id,
@@ -173,6 +211,7 @@ async def execute_job(
             backoff_base=settings.backoff_base,
             backoff_cap=settings.backoff_cap,
         )
+    reset()
 
 
 async def run_once(
@@ -206,7 +245,7 @@ async def run_worker(
             # failed is reclaimed after expiry and its effect deduplicates.
             logger.error(
                 "background job polling paused",
-                extra={"error_code": "job_store_unavailable"},
+                extra={"error_code": "job_store_unavailable", **context_extra()},
             )
             with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=settings.poll_interval)
@@ -275,6 +314,12 @@ async def _check(app_settings: Settings) -> None:
 def main() -> int:
     try:
         app_settings = Settings.from_environment()
+        configure_logging(
+            service=resolve_service("chat-job-worker"),
+            environment=app_settings.app_env,
+            level=app_settings.log_level,
+            json_enabled=app_settings.log_json,
+        )
         if sys.argv[1:] == ["--check"]:
             asyncio.run(_check(app_settings))
         else:

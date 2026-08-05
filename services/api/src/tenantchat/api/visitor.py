@@ -22,6 +22,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from tenantchat.api.correlation import bind_tenant
 from tenantchat.core.errors import InvalidVisitorCredentialError
 from tenantchat.core.visitor_session import (
     VisitorCredentialSigner,
@@ -47,8 +48,12 @@ def get_visitor_clock(request: Request) -> Callable[[], datetime]:
     return clock
 
 
-def get_visitor_claims(request: Request) -> VisitorSessionClaims:
+async def get_visitor_claims(request: Request) -> VisitorSessionClaims:
     """The identity a presented credential authenticates, or a 401.
+
+    Coroutine (rather than a plain callable) so the tenant binding below lands
+    in the request's task: FastAPI runs a sync dependency in a threadpool
+    whose context-variable writes are discarded when the thread ends.
 
     Raises:
         InvalidVisitorCredentialError: no credential, an unverifiable one, or a
@@ -60,7 +65,15 @@ def get_visitor_claims(request: Request) -> VisitorSessionClaims:
     token = request.headers.get(VISITOR_CREDENTIAL_HEADER)
     if token is None:
         raise InvalidVisitorCredentialError(detail="no visitor credential presented")
-    return get_visitor_signer(request).verify(token, now=get_visitor_clock(request)())
+    claims = get_visitor_signer(request).verify(token, now=get_visitor_clock(request)())
+    # The tenant is now known from a verified credential, so the correlation
+    # context can carry its pseudonym (`OBS-001`). Imported here: `settings`
+    # imports `limits`, which imports this module's header constant.
+    from tenantchat.api.settings import Settings
+
+    settings: Settings = request.app.state.settings
+    bind_tenant(claims.tenant_id, key=settings.log_pseudonym_key)
+    return claims
 
 
 def issue(

@@ -19,6 +19,7 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from tenantchat.api.correlation import trace_id as current_trace_id
 from tenantchat.api.jobs import JobKind, payload_fingerprint
 from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import (
@@ -666,7 +667,12 @@ class PostgresPrivacyStore:
     ) -> PrivacyRequestRecord:
         request_id = uuid.uuid4()
         job_id = uuid.uuid4()
-        job_payload = {"request_id": str(request_id)}
+        # The trace of the enqueuing request rides the payload (and is excluded
+        # from the work fingerprint), so the worker logs under the same trace.
+        job_payload = {
+            "request_id": str(request_id),
+            "trace_id": current_trace_id() or uuid.uuid4().hex,
+        }
         async with self._read.begin() as connection:
             await require_active_tenant(connection, tenant_id)
             result = await connection.execute(

@@ -9,17 +9,18 @@ from __future__ import annotations
 
 import logging
 import secrets
-import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tenantchat.api.actions import RecordedBookingService
 from tenantchat.api.agent import build_conversation_runtime
+from tenantchat.api.correlation import CorrelationMiddleware
 from tenantchat.api.faults import TransportError
 from tenantchat.api.guards import (
     BodySizeLimitMiddleware,
@@ -34,6 +35,7 @@ from tenantchat.api.limits import (
     VisitorIdentityExtractor,
     credential_visitor_identity,
 )
+from tenantchat.api.logging_setup import SERVICE_NAME, configure_logging, resolve_service
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -54,7 +56,6 @@ from tenantchat.api.persistence.availability import (
 )
 from tenantchat.api.persistence.rate_limits import PostgresRateLimitStore
 from tenantchat.api.problems import (
-    REQUEST_ID_HEADER,
     handle_domain_error,
     transport_problem,
 )
@@ -97,6 +98,42 @@ _CORS_RESPONSE_HEADERS = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class AdminCorsConfineMiddleware:
+    """Keep the operator console off the cross-origin surface.
+
+    The origin allowlist exists for the widget, which is embedded on tenant
+    sites and cross-origin by design. An admin route reached from one of those
+    origins would arrive through the gateway carrying gateway-supplied
+    identity, so without this the allowlist would decide who may read another
+    tenant's transcripts.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        original_send = send
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start" and scope.get("path", "").startswith(
+                ADMIN_PATH_PREFIX
+            ):
+                message = {
+                    **message,
+                    "headers": [
+                        (name, value)
+                        for name, value in message.get("headers", [])
+                        if name.decode("latin-1").lower() not in _CORS_RESPONSE_HEADERS
+                    ],
+                }
+            await original_send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 async def _handle_request_validation_error(request: Request, exc: Exception) -> JSONResponse:
@@ -210,25 +247,11 @@ def _install_middleware(
     )
 
     # Registered after the CORS layer so it runs outside it, on the way out,
-    # after those headers have been added.
-    @app.middleware("http")
-    async def confine_cors_to_the_visitor_surface(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        """Keep the operator console off the cross-origin surface.
-
-        The origin allowlist exists for the widget, which is embedded on tenant
-        sites and cross-origin by design. An admin route reached from one of
-        those origins would arrive through the gateway carrying gateway-supplied
-        identity, so without this the allowlist would decide who may read
-        another tenant's transcripts.
-        """
-        response = await call_next(request)
-        if request.url.path.startswith(ADMIN_PATH_PREFIX):
-            for header in _CORS_RESPONSE_HEADERS:
-                if header in response.headers:
-                    del response.headers[header]
-        return response
+    # after those headers have been added. Pure ASGI, not `BaseHTTPMiddleware`:
+    # the latter runs the application in a child task whose context-variable
+    # writes are discarded, which would lose the correlation tenant binding
+    # (`OBS-001`).
+    app.add_middleware(AdminCorsConfineMiddleware)
 
     # Registered last so it wraps everything registered so far: the security
     # header posture applies to guard refusals and handler errors as well as
@@ -237,23 +260,11 @@ def _install_middleware(
 
     # Starlette wraps the most recently registered middleware around the earlier
     # layers. Register request correlation last so even an early body-limit or
-    # CORS response receives the same usable ID as an endpoint response.
-    @app.middleware("http")
-    async def assign_request_id(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        """Give every request an ID and echo it back.
-
-        Generated here rather than accepted from the caller: an ID supplied by an
-        unauthenticated client can be repeated across requests or forged to match
-        someone else's, which makes it useless for correlation and misleading in
-        an audit trail. `OBS-001` extends this to accept a trusted upstream
-        header once there is an authenticated edge to trust.
-        """
-        request.state.request_id = uuid.uuid4().hex
-        response = await call_next(request)
-        response.headers[REQUEST_ID_HEADER] = request.state.request_id
-        return response
+    # CORS response receives the same usable IDs as an endpoint response. The
+    # IDs are always server-minted: an ID supplied by an unauthenticated client
+    # can be repeated or forged, which makes it useless for correlation and
+    # misleading in an audit trail.
+    app.add_middleware(CorrelationMiddleware, log_access=settings.log_access)
 
 
 def create_app(
@@ -319,6 +330,14 @@ def create_app(
             is missing a setting it cannot run without.
     """
     resolved = settings or Settings.from_environment()
+    # The log plane is configured before anything else can log: the first line
+    # the process emits is already structured and carries the service name.
+    configure_logging(
+        service=resolve_service(SERVICE_NAME),
+        environment=resolved.app_env,
+        level=resolved.log_level,
+        json_enabled=resolved.log_json,
+    )
     registry = TenantRegistry.seeded()
     database: Database | None = None
     privacy_database: Database | None = None

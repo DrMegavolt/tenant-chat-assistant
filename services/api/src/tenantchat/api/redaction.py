@@ -74,10 +74,10 @@ class PiiLogFilter(logging.Filter):
     """Strip phone numbers and email addresses from every log record.
 
     Defense in depth for the one rule that has no test: an accidental f-string
-    that interpolates a contact value. The record's ``msg`` and the
-    string-valued ``args`` are scrubbed before any handler formats them, so
-    the record that reaches the sink never carries a dialable number or an
-    address.
+    that interpolates a contact value. The record's ``msg``, the string-valued
+    ``args``, and the formatted traceback are scrubbed before any handler
+    formats them, so the record that reaches the sink never carries a dialable
+    number or an address.
 
     Installed on the root logger's *handlers* by the composition root, not on
     the logger itself: a logger consults its own filters only for records
@@ -97,6 +97,13 @@ class PiiLogFilter(logging.Filter):
                 key: redact_text(value) if isinstance(value, str) else value
                 for key, value in args.items()
             }
+        if record.exc_info is not None:
+            # A traceback can quote the exception message, which for an
+            # unexpected failure routinely contains a contact or a credential.
+            # Materializing it here lets every handler downstream format the
+            # scrubbed text instead of the raw exception.
+            record.exc_text = redact_text(logging.Formatter().formatException(record.exc_info))
+            record.exc_info = None
         return True
 
 
