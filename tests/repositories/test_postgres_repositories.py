@@ -19,11 +19,16 @@ from tenantchat.api.persistence import (
     PostgresConversationStore,
     PostgresLeadStore,
 )
+from tenantchat.api.persistence.availability import (
+    PostgresAvailabilityProvider,
+    seed_demo_availability,
+)
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.settings import Settings
-from tenantchat.api.store import MessageRole
+from tenantchat.api.store import BookingAttempt, MessageRole
 from tenantchat.core.commands import BookingCommand, LeadCommand
-from tenantchat.core.errors import NotFoundError
+from tenantchat.core.errors import NotFoundError, SlotUnavailableError
+from tenantchat.core.ports import IdempotencyKey
 
 TEST_POOL = DatabasePoolSettings(size=2, max_overflow=1, timeout_seconds=2)
 
@@ -38,6 +43,9 @@ async def _database(database_url: str, *, pool: DatabasePoolSettings = TEST_POOL
     await database.synchronize_tenants(
         (record.policy.tenant_id, record.policy.name) for record in registry.all().values()
     )
+    # The booking reservation reads the database-backed fake calendar, so the
+    # same seed production composition runs must be present for the tests too.
+    await seed_demo_availability(database.engine, registry)
     return database
 
 
@@ -90,6 +98,9 @@ def test_production_composition_persists_current_api_writes(
                 "summary": "Furnace is making a grinding noise.",
             },
         )
+        offered = client.get(
+            "/api/tenants/clearview/availability", params={"service": "HVAC"}
+        ).json()["slots"]
         booking = client.post(
             "/api/book",
             json={
@@ -98,9 +109,10 @@ def test_production_composition_persists_current_api_writes(
                 "customer_name": "Dana Ruiz",
                 "contact": "555-222-1919",
                 "service": "HVAC",
-                "slot": "Mon Jul 1, 2:00 PM",
+                "slot": offered[0],
                 "address": "12 Alder Court, Portland, OR 97205",
             },
+            headers={"Idempotency-Key": "repository-booking-1"},
         )
     assert lead.status_code == 201
     assert booking.status_code == 201
@@ -306,23 +318,33 @@ def test_lead_and_booking_writes_are_durable_and_tenant_scoped(
             summary="Furnace is making a grinding noise.",
             urgency="this_week",
         )
-        booking_command = BookingCommand.parse(
-            clearview.policy,
-            customer_name="Dana Ruiz",
-            contact="555-222-1919",
-            address="12 Alder Court, Portland, OR 97205",
-            service="HVAC",
-            slot="Mon Jul 1, 2:00 PM",
-            offered_slots=clearview.offered_slots("hvac"),
-        )
 
         writer_database = await _database(repository_database_url)
         try:
+            offers = await PostgresAvailabilityProvider(writer_database.engine).offered_slots(
+                "clearview", "hvac"
+            )
+            booking_command = BookingCommand.parse(
+                clearview.policy,
+                customer_name="Dana Ruiz",
+                contact="555-222-1919",
+                address="12 Alder Court, Portland, OR 97205",
+                service="HVAC",
+                slot=offers[0].label,
+                offered_slots=offers,
+            )
             lead = await PostgresLeadStore(writer_database.engine).record(
                 lead_command, session_id="visitor-correlation"
             )
-            booking = await PostgresBookingStore(writer_database.engine).record(
-                booking_command, session_id="visitor-correlation"
+            booking = await PostgresBookingStore(writer_database.engine).confirm(
+                booking_command,
+                session_id="visitor-correlation",
+                attempt=BookingAttempt(
+                    tenant_id="clearview",
+                    scope="booking",
+                    key=IdempotencyKey.derive("clearview", "visitor-correlation", "book", "1"),
+                    request_hash="a" * 64,
+                ),
             )
         finally:
             await writer_database.dispose()
@@ -332,12 +354,160 @@ def test_lead_and_booking_writes_are_durable_and_tenant_scoped(
             leads = PostgresLeadStore(reader_database.engine)
             bookings = PostgresBookingStore(reader_database.engine)
             assert await leads.for_tenant("apex") == (lead,)
-            assert await bookings.for_tenant("clearview") == (booking,)
+            assert await bookings.for_tenant("clearview") == (booking.record,)
             assert await leads.for_tenant("clearview") == ()
             assert await bookings.for_tenant("apex") == ()
-            assert uuid.UUID(lead.session_id) != uuid.UUID(booking.session_id)
+            assert uuid.UUID(lead.session_id) != uuid.UUID(booking.record.session_id)
         finally:
             await reader_database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_two_concurrent_attempts_on_one_slot_confirm_exactly_one(
+    repository_database_url: str,
+) -> None:
+    """The durable reservation lets exactly one confirmed booking per slot.
+
+    Two customers who read the same window and submit at once race on the unique
+    confirmed-per-slot index. The loser surfaces a stable slot conflict, and the
+    winner's booking is the only one the store holds.
+    """
+
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            clearview = TenantRegistry.seeded().get("clearview")
+            offers = await PostgresAvailabilityProvider(database.engine).offered_slots(
+                "clearview", "hvac"
+            )
+            command = BookingCommand.parse(
+                clearview.policy,
+                customer_name="Dana Ruiz",
+                contact="555-222-1919",
+                address="12 Alder Court, Portland, OR 97205",
+                service="HVAC",
+                slot=offers[0].label,
+                offered_slots=offers,
+            )
+
+            def attempt(session: str, name: str) -> BookingAttempt:
+                return BookingAttempt(
+                    tenant_id="clearview",
+                    scope="booking",
+                    key=IdempotencyKey.derive("clearview", session, "book", "1"),
+                    request_hash=name * 64,
+                )
+
+            store = PostgresBookingStore(database.engine)
+            first, second = await asyncio.gather(
+                store.confirm(command, session_id="session-a", attempt=attempt("session-a", "a")),
+                store.confirm(command, session_id="session-b", attempt=attempt("session-b", "b")),
+                return_exceptions=True,
+            )
+
+            outcomes = [r for r in (first, second) if not isinstance(r, BaseException)]
+            refusals = [r for r in (first, second) if isinstance(r, SlotUnavailableError)]
+            assert len(outcomes) == 1
+            assert len(refusals) == 1
+            assert await store.for_tenant("clearview") == (outcomes[0].record,)
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_repeating_a_key_after_the_slot_is_taken_replays_the_original(
+    repository_database_url: str,
+) -> None:
+    """A retried key returns the original booking once the slot it owns is gone.
+
+    Without the replay-before-revalidation step this would fail: after the
+    first attempt books the window, that slot no longer reads as offered, so a
+    second submission would be refused as if it were a brand-new booking.
+    """
+
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            clearview = TenantRegistry.seeded().get("clearview")
+            offers = await PostgresAvailabilityProvider(database.engine).offered_slots(
+                "clearview", "hvac"
+            )
+            command = BookingCommand.parse(
+                clearview.policy,
+                customer_name="Dana Ruiz",
+                contact="555-222-1919",
+                address="12 Alder Court, Portland, OR 97205",
+                service="HVAC",
+                slot=offers[0].label,
+                offered_slots=offers,
+            )
+            attempt = BookingAttempt(
+                tenant_id="clearview",
+                scope="booking",
+                key=IdempotencyKey.derive("clearview", "session-a", "book", "1"),
+                request_hash="a" * 64,
+            )
+            store = PostgresBookingStore(database.engine)
+            first = await store.confirm(command, session_id="session-a", attempt=attempt)
+            second = await store.confirm(command, session_id="session-a", attempt=attempt)
+
+            assert first.replayed is False
+            assert second.replayed is True
+            assert second.record == first.record
+            assert await store.replay("clearview", "booking", attempt.key.value) == first.record
+            assert len(await store.for_tenant("clearview")) == 1
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_a_slot_from_another_tenant_cannot_be_booked_here(
+    repository_database_url: str,
+) -> None:
+    """The model cannot bind another tenant's window onto this tenant's booking.
+
+    Availability is scoped to the tenant, so a cross-tenant slot is never
+    offered to `clearview`; even if a caller fabricates the reference, the
+    store's reservation lookup finds no such slot under this tenant.
+    """
+
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            apex_offers = await PostgresAvailabilityProvider(database.engine).offered_slots(
+                "apex", "hvac"
+            )
+            clearview = TenantRegistry.seeded().get("clearview")
+            forged = BookingCommand.parse(
+                clearview.policy,
+                customer_name="Dana Ruiz",
+                contact="555-222-1919",
+                address="12 Alder Court, Portland, OR 97205",
+                service="HVAC",
+                slot=apex_offers[0].label,
+                offered_slots=apex_offers,
+            )
+            store = PostgresBookingStore(database.engine)
+            with pytest.raises(SlotUnavailableError):
+                await store.confirm(
+                    forged,
+                    session_id="session-a",
+                    attempt=BookingAttempt(
+                        tenant_id="clearview",
+                        scope="booking",
+                        key=IdempotencyKey.derive("clearview", "session-a", "book", "1"),
+                        request_hash="a" * 64,
+                    ),
+                )
+            assert await store.for_tenant("clearview") == ()
+        finally:
+            await database.dispose()
 
     asyncio.run(scenario())
 

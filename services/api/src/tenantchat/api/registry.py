@@ -5,32 +5,68 @@ database with a draft/publish workflow. It is an adapter, not a domain concern:
 the domain consumes ``TenantPolicy``, and where those come from is this layer's
 problem.
 
-Availability is a plain per-service list of labels. `DATA-003` replaces it with a
-provider interface over a real calendar, at which point slots gain stable IDs and
-start times and the "not in the past" rule becomes enforceable. Until then this
-list is the authority on what may be booked, which is what stops a caller from
-booking a time nobody offered.
+Availability is no longer a fixed list of labels. `DATA-003` introduced the
+:class:`~tenantchat.core.ports.AvailabilityProvider` port over a live calendar:
+the demo provider here synthesizes a future window of structured slots (with
+stable IDs and timezone-aware bounds), and production swaps it for the
+database-backed adapter that seeds and reads the same shape from Postgres. The
+"not in the past" and "belongs to this tenant" rules live in the domain, which
+is what keeps them true no matter which source supplies the slots.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import uuid
+from collections.abc import Callable, Set
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from tenantchat.core.catalog import ServiceCatalog, ServiceDefinition
 from tenantchat.core.errors import NotFoundError
+from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import PricingPolicy, TenantPolicy
+
+# How far ahead the demo calendar runs, and the hours it offers each day. Kept
+# in one place so the API route, the agent, and the hermetic tests all see the
+# same window; `FEAT-005` replaces this generation with a real calendar.
+_DEMO_DAYS = 5
+_DEMO_HOURS = ((9, 0), (11, 0), (13, 0), (15, 0))
+
+
+def demo_offered_slots(
+    service_slug: str, *, now: datetime | None = None
+) -> tuple[OfferedSlot, ...]:
+    """A future window of bookable slots for one service.
+
+    ``now`` is injectable so a test pins an exact offer instead of gambling on
+    the clock. The window starts at the next midnight (never today), so the
+    first slot is always clearly in the future and a run that crosses midnight
+    does not flip which slots are offered. IDs are minted once per call and
+    persist for the provider's lifetime, which is what makes a later reservation
+    of a slot shown earlier stable.
+    """
+    anchor = now if now is not None else datetime.now(UTC)
+    first_day = anchor.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    slots: list[OfferedSlot] = []
+    for day in range(_DEMO_DAYS):
+        for hour, minute in _DEMO_HOURS:
+            start = first_day + timedelta(days=day, hours=hour, minutes=minute)
+            slots.append(
+                OfferedSlot(
+                    id=str(uuid.uuid4()),
+                    service_slug=service_slug,
+                    start=start,
+                    end=start + timedelta(hours=1),
+                )
+            )
+    return tuple(slots)
 
 
 @dataclass(frozen=True, slots=True)
 class TenantRecord:
-    """A tenant's policy together with what it is currently offering."""
+    """A tenant's policy. Its current offerings come from an availability provider."""
 
     policy: TenantPolicy
-    # Keyed by service slug, so renaming a display name cannot orphan the slots.
-    availability: dict[str, tuple[str, ...]] = field(default_factory=dict)
-
-    def offered_slots(self, service_slug: str) -> tuple[str, ...]:
-        return self.availability.get(service_slug, ())
 
 
 _APEX = TenantRecord(
@@ -102,11 +138,6 @@ _CLEARVIEW = TenantRecord(
         ),
         served_zips=frozenset({"97035", "97201", "97202", "97203", "97204", "97205"}),
     ),
-    availability={
-        "window-cleaning": ("Mon Jul 1, 9:00 AM", "Tue Jul 2, 1:30 PM", "Thu Jul 4, 10:30 AM"),
-        "hvac": ("Mon Jul 1, 2:00 PM", "Wed Jul 3, 11:00 AM", "Fri Jul 5, 9:30 AM"),
-        "electrical": ("Tue Jul 2, 8:30 AM", "Wed Jul 3, 3:00 PM", "Fri Jul 5, 1:00 PM"),
-    },
 )
 
 
@@ -156,16 +187,44 @@ class RegistryPolicySource:
         return self._registry.get(tenant_id).policy
 
 
-class RegistryAvailabilityProvider:
-    """Serves the seeded slot labels. `DATA-003` replaces this with a calendar."""
+class DemoAvailabilityProvider:
+    """The in-process availability source: a stable future window per offer.
 
-    def __init__(self, registry: TenantRegistry) -> None:
+    A test double in the sense that it needs no database, but it is not a stub —
+    it returns real :class:`OfferedSlot` values with aware bounds and stable
+    IDs, so the graph, the routes, and the reservation exercise the same rules
+    they will against the production Postgres-backed provider. Production
+    composition never constructs this; it is the default for in-memory test
+    composition and a true database-backed adapter replaces it there.
+    """
+
+    def __init__(
+        self,
+        registry: TenantRegistry,
+        *,
+        now: datetime | None = None,
+        taken: Callable[[str], Set[str]] | None = None,
+    ) -> None:
         self._registry = registry
+        self._now = now
+        # ``taken`` names slot IDs that are no longer bookable, so a refresh
+        # after a reservation conflict reports the real alternatives instead of
+        # the set that just lost the race. In-memory composition wires the
+        # booking store here; the Postgres provider excludes booked slots in SQL.
+        self._taken = taken if taken is not None else (lambda _tenant: frozenset())
+        self._cache: dict[tuple[str, str], tuple[OfferedSlot, ...]] = {}
 
-    async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[str, ...]:
-        """Slot labels currently bookable for one service.
+    async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[OfferedSlot, ...]:
+        """Slots currently bookable for one service, empty for an unoffered one.
 
         Raises:
             NotFoundError: no such tenant.
         """
-        return self._registry.get(tenant_id).offered_slots(service_slug)
+        # The tenant lookup is what makes a guessed service on a real tenant
+        # distinct from a real service on a guessed tenant.
+        self._registry.get(tenant_id)
+        cache_key = (tenant_id, service_slug)
+        if cache_key not in self._cache:
+            self._cache[cache_key] = demo_offered_slots(service_slug, now=self._now)
+        taken_ids = self._taken(tenant_id)
+        return tuple(slot for slot in self._cache[cache_key] if slot.id not in taken_ids)

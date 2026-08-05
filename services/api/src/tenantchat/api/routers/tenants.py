@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from tenantchat.api.dependencies import Registry
+from tenantchat.api.dependencies import Availability, Registry
 from tenantchat.api.schemas import AvailabilityResponse, TenantsResponse, TenantSummary
 from tenantchat.core.errors import UnknownServiceError
 
@@ -28,11 +28,17 @@ def list_tenants(registry: Registry) -> TenantsResponse:
 
 
 @router.get("/api/tenants/{tenant_id}/availability", response_model=AvailabilityResponse)
-def get_availability(tenant_id: str, service: str, registry: Registry) -> AvailabilityResponse:
+async def get_availability(
+    tenant_id: str,
+    service: str,
+    registry: Registry,
+    availability: Availability,
+) -> AvailabilityResponse:
     """Slots currently offered for one service.
 
     The same list the booking endpoint validates against, so a slot shown here is
-    a slot that will be accepted.
+    a slot that will be accepted — until a competitor books it, at which point
+    booking reports the refreshed alternatives.
 
     Raises:
         NotFoundError: no such tenant.
@@ -46,7 +52,14 @@ def get_availability(tenant_id: str, service: str, registry: Registry) -> Availa
             detail=f"{service!r} did not resolve for tenant {tenant_id}",
         )
 
+    # A tenant that does not book through chat offers nothing to select. The
+    # booking rule itself lives in the domain; this mirrors it for the read
+    # surface so a visitor is never shown a slot they cannot book.
+    if not record.policy.booking_enabled:
+        return AvailabilityResponse(service=resolved.display_name, slots=[])
+
+    slots = await availability.offered_slots(tenant_id, resolved.slug)
     return AvailabilityResponse(
         service=resolved.display_name,
-        slots=list(record.offered_slots(resolved.slug)),
+        slots=[slot.label for slot in slots],
     )

@@ -304,12 +304,40 @@ class DispatchNodes:
                 "pending_booking": None,
             }
 
+        key = self._key(state, ToolName.BOOK_APPOINTMENT, call_id)
+        replay = await self._deps.bookings.find_replay(state["tenant_id"], key)
+        if replay is not None:
+            # The same attempt already booked this slot while the process was
+            # away; re-validating would refuse it as "not offered" now that the
+            # slot is taken by this very booking, so return the committed result.
+            return {
+                "transcript": [
+                    tool_entry(
+                        call_id,
+                        _payload(
+                            status="confirmed",
+                            confirmation_id=replay.reference,
+                            service=replay.service_name,
+                            slot=replay.slot,
+                        ),
+                    )
+                ],
+                "committed": [
+                    CommittedAction(
+                        action=ToolName.BOOK_APPOINTMENT.value,
+                        reference=replay.reference,
+                        replayed=True,
+                    )
+                ],
+                "pending_booking": None,
+            }
+
         try:
             command = await self._parse_booking(state, arguments=_arguments(pending))
             confirmation = await self._deps.bookings.confirm(
                 command,
                 session_id=state["session_id"],
-                idempotency_key=self._key(state, ToolName.BOOK_APPOINTMENT, call_id),
+                idempotency_key=key,
             )
         except DomainError as error:
             # Reachable when the slot was taken while the customer was deciding.
@@ -325,7 +353,7 @@ class DispatchNodes:
                     _payload(
                         status="confirmed",
                         confirmation_id=confirmation.reference,
-                        service=command.service.display_name,
+                        service=confirmation.service_name,
                         slot=confirmation.slot,
                     ),
                 )
@@ -446,7 +474,7 @@ class DispatchNodes:
                 detail=f"{requested!r} did not resolve for tenant {policy.tenant_id}",
             )
         slots = await self._deps.availability.offered_slots(policy.tenant_id, service.slug)
-        return _payload(service=service.display_name, slots=list(slots))
+        return _payload(service=service.display_name, slots=[slot.label for slot in slots])
 
     async def _create_lead(
         self,

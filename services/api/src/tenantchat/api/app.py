@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
+from tenantchat.api.actions import RecordedBookingService
 from tenantchat.api.agent import build_conversation_runtime
 from tenantchat.api.faults import TransportError
 from tenantchat.api.guards import (
@@ -43,13 +44,17 @@ from tenantchat.api.persistence import (
     PostgresLeadStore,
     PostgresMembershipStore,
 )
+from tenantchat.api.persistence.availability import (
+    PostgresAvailabilityProvider,
+    seed_demo_availability,
+)
 from tenantchat.api.persistence.rate_limits import PostgresRateLimitStore
 from tenantchat.api.problems import (
     REQUEST_ID_HEADER,
     handle_domain_error,
     transport_problem,
 )
-from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
 from tenantchat.api.routers import admin, bookings, chat, health, leads, tenants
 from tenantchat.api.settings import Settings, loopback_database
 from tenantchat.api.store import (
@@ -58,12 +63,13 @@ from tenantchat.api.store import (
     ConversationStore,
     HandoffStore,
     IdempotencyStore,
+    InMemoryBookingStore,
     LeadStore,
     MembershipStore,
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER, utc_now
 from tenantchat.core.errors import DomainError
-from tenantchat.core.ports import ConversationRuntime
+from tenantchat.core.ports import AvailabilityProvider, ConversationRuntime
 from tenantchat.core.visitor_session import (
     HmacVisitorCredentialSigner,
     VisitorCredentialSigner,
@@ -257,6 +263,7 @@ def create_app(
     checkpointer: Checkpointer | None = None,
     rate_limit_store: RateLimitStore | None = None,
     visitor_identity: VisitorIdentityExtractor | None = None,
+    availability_provider: AvailabilityProvider | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -289,6 +296,8 @@ def create_app(
             budgets are counted against. `SEC-002` replaces the default with
             an extractor that reads its signed visitor credential; the default
             uses the body's and path's ``session_id``.
+        availability_provider: What the tenant is currently offering. Explicit
+            test adapter; production builds the PostgreSQL-backed fake provider.
 
     Raises:
         ValueError: the stores were injected in part, or production composition
@@ -411,6 +420,27 @@ def create_app(
     # rotate by editing a request body.
     effective_identity = visitor_identity or credential_visitor_identity(visitor_credentials)
 
+    if availability_provider is None:
+        # In production the offers come from the same database the bookings land
+        # in; with injected test stores there is no database, so fall back to the
+        # deterministic in-process provider.
+        if database is not None:
+            availability_provider = PostgresAvailabilityProvider(database.engine)
+        else:
+            availability_provider = DemoAvailabilityProvider(
+                registry,
+                # The in-memory provider has no SQL, so the booking store tells
+                # it which slots are no longer bookable — the same exclusion the
+                # Postgres provider expresses with ``NOT EXISTS``.
+                taken=(
+                    booking_store.taken_slot_ids
+                    if isinstance(booking_store, InMemoryBookingStore)
+                    else None
+                ),
+            )
+
+    booking_service = RecordedBookingService(booking_store, availability_provider)
+
     bookings_for_agent, leads_for_agent = booking_store, lead_store
     handoffs_for_agent, keys_for_agent = handoff_store, idempotency_store
 
@@ -423,6 +453,7 @@ def create_app(
             handoffs=handoffs_for_agent,
             idempotency=keys_for_agent,
             checkpointer=saver,
+            availability=availability_provider,
         )
 
     @asynccontextmanager
@@ -434,6 +465,9 @@ def create_app(
                     (record.policy.tenant_id, record.policy.name)
                     for record in registry.all().values()
                 )
+                # Seed the database-backed fake provider now that tenant rows
+                # exist; idempotent, so a restart does not duplicate slots.
+                await seed_demo_availability(database.engine, registry)
             # Owned provider clients are closed with the app. An injected test
             # model is the caller's to clean up, not the app's.
             if owned_model is not None:
@@ -472,6 +506,8 @@ def create_app(
     # The one clock every visitor credential is verified against, so a test can
     # move time by reassigning state rather than sleeping.
     app.state.clock = utc_now
+    app.state.booking_service = booking_service
+    app.state.availability_provider = availability_provider
     app.state.conversation_runtime = (
         compose_runtime(checkpointer, effective_model)
         if effective_model is not None and checkpointer is not None

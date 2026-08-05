@@ -699,7 +699,7 @@ guarantees by construction.
 
 ### DATA-003 — Transactional, idempotent booking
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `Business action`
 - Depends on: `DATA-002`
@@ -717,7 +717,37 @@ guarantees by construction.
   - The model cannot book an unoffered, past, or wrong-tenant slot.
 - Verification:
   - Concurrency tests cover duplicate submission, retry after timeout, and competing users.
-- Completion notes: _Pending._
+- Completion notes: Added an `AvailabilityProvider` port and a database-backed fake
+  provider in `services/api/persistence/availability.py` (with an in-process demo
+  provider in `registry.py` for the hermetic suite), and timezone-aware
+  `OfferedSlot` values with stable provider IDs (`packages/core/slots.py`).
+  `BookingCommand` now carries `slot_id`/`slot_start`/`slot_end`, so "not in the
+  past" and "offered in this tenant's calendar" are decided by the domain while
+  the DB enforces the rest. Migration `0005_booking_reservation` adds
+  `availability_slots` and a partial unique index for one confirmed booking per
+  slot, plus a composite FK that makes it impossible to attach another tenant's
+  slot. Reserve+confirm+idempotency claim now commit in one transaction in
+  `PostgresBookingStore.confirm` / `InMemoryBookingStore.confirm`, so a retry
+  has no in-flight window. `POST /api/book` and the graph `commit_booking` node
+  require a key and check `find_replay` before re-validating, so a repeat of a
+  committed key returns the original confirmation even though that slot no
+  longer reads as offered. Changed files:
+  `packages/core/{__init__,commands,ports,slots}.py`,
+  `packages/orchestration/nodes.py`, `services/api/persistence/availability.py`,
+  `services/api/{actions,agent,app,dependencies,registry,routers/[{bookings,tenants}],
+  schemas,store}.py`, `services/api/persistence/repositories.py`,
+  `services/api/migrations/versions/0005_booking_reservation.py`, and the
+  `test_commands`/`test_bookings`/`test_actions`/`test_problem_details`/
+  `test_migrations`/`test_postgres_repositories`/`test_postgres_durability`
+  suites. Verification: `make check` green (`make setup`; hermetic gate includes
+  mypy strict, ruff, coverage); real Postgres 16 suites green via
+  `uv run --frozen pytest tests/migrations tests/repositories tests/agent_runtime`
+  (71 tests), including new cases for two concurrent attempts on one slot,
+  retry/replay after the slot is taken, and cross-tenant slot refusal. No new
+  environment variables. Follow-ups: `FEAT-005` replaces the fake provider with
+  a real calendar and owns pruning; `SEC-002` replaces the correlation-labeled
+  booking session with a server-issued visitor credential; `OBS-004` pins slot
+  reservation outcomes to the inference trace.
 
 ### SEC-001 — Admin authentication and tenant-scoped RBAC
 

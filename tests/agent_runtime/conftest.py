@@ -31,7 +31,7 @@ from psycopg import sql
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from tenantchat.api.agent import build_dispatch_dependencies, build_dispatch_runtime
-from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.registry import TenantRegistry, demo_offered_slots
 from tenantchat.api.store import (
     InMemoryBookingStore,
     InMemoryHandoffStore,
@@ -46,7 +46,10 @@ from tenantchat.orchestration.state import DispatchState
 
 BOOKING_TENANT = "clearview"
 LEAD_TENANT = "apex"
-OFFERED_SLOT = "Mon Jul 1, 2:00 PM"
+# Drawn from the same future window the demo provider offers, so a scripted
+# booking names a slot the domain will accept (a fixed past date would be
+# refused by the "not in the past" rule).
+OFFERED_SLOT = demo_offered_slots("hvac")[0].label
 
 
 def tool_call(name: str, **arguments: object) -> ToolCall:

@@ -25,10 +25,12 @@ import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import ValidationError
+from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import TenantPolicy
 
 # Wide enough for a caller-supplied key from an HTTP `Idempotency-Key` header,
@@ -90,11 +92,22 @@ class IdempotencyKey:
 
 @dataclass(frozen=True, slots=True)
 class BookingConfirmation:
-    """A booking that is committed and can be quoted back to the customer."""
+    """A booking that is committed and can be quoted back to the customer.
+
+    Carries the customer-facing echo (service name, contact, address) so that a
+    replay of a committed key can re-present the *original* confirmation without
+    re-validating the request — the slot a replay names was already taken by
+    that same attempt, so it is no longer offered.
+    """
 
     reference: str
     service_slug: str
+    service_name: str
     slot: str
+    customer_name: str
+    contact: str
+    address: str
+    created_at: datetime
     replayed: bool
 
 
@@ -130,6 +143,17 @@ class BookingService(Protocol):
         Raises:
             NotFoundError: the conversation does not belong to this tenant.
             ConflictError: a different action already used this key.
+        """
+        ...
+
+    async def find_replay(
+        self, tenant_id: str, idempotency_key: IdempotencyKey
+    ) -> BookingConfirmation | None:
+        """Return the committed confirmation if this key already booked one.
+
+        Checked *before* a caller re-validates the request: a replay names the
+        slot the same attempt already took, so it is no longer offered and would
+        otherwise be refused as if it were a fresh booking.
         """
         ...
 
@@ -277,6 +301,6 @@ class AvailabilityProvider(Protocol):
     behind this for a live calendar without the graph noticing.
     """
 
-    async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[str, ...]:
-        """Slot labels currently bookable, empty when the service has none."""
+    async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[OfferedSlot, ...]:
+        """Slots currently bookable for one service, empty when it has none."""
         ...

@@ -1,37 +1,44 @@
 """Booking submission.
 
 The handler is deliberately thin. It resolves the tenant, hands the raw strings
-to ``BookingCommand.parse``, and records what comes back. Every rule that decides
-whether the booking is allowed lives in the command, so the model-driven tool
-call added in `ARCH-001` gets the identical checks without this module.
+to ``BookingCommand.parse``, and asks the idempotent :class:`BookingService` to
+reserve and confirm the slot. Every rule that decides whether the booking is
+allowed lives in the command, so the model-driven tool call added in `ARCH-001`
+gets the identical checks without this module.
+
+The `Idempotency-Key` header is required: `DATA-003` makes a direct API booking
+replay-safe the same way a graph replay is, so a form double-submit cannot book
+twice. A repeated key returns the original confirmation (with the same
+reference) rather than a second booking.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from typing import Annotated
 
-from tenantchat.api.dependencies import Bookings, Registry
+from fastapi import APIRouter, Header, Response, status
+from fastapi.responses import JSONResponse
+
+from tenantchat.api.dependencies import Availability, BookingActions, Registry
 from tenantchat.api.schemas import BookingRequest, BookingResponse
 from tenantchat.core.commands import BookingCommand
+from tenantchat.core.ports import IdempotencyKey
 
 router = APIRouter(tags=["bookings"])
 
 
-@router.post(
-    "/api/book",
-    response_model=BookingResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("/api/book")
 async def create_booking(
     payload: BookingRequest,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     registry: Registry,
-    bookings: Bookings,
-) -> BookingResponse:
-    """Book an offered slot.
+    availability: Availability,
+    book: BookingActions,
+) -> Response:
+    """Reserve and confirm an offered slot, exactly once per idempotency key.
 
-    Not yet idempotent: a retried request books twice. `DATA-003` adds the
-    provider-backed slot reservation and idempotency transaction that close that
-    gap. This endpoint currently persists the accepted static-slot result only.
+    Returns ``201`` for the first attempt and ``200`` for a replay of the same
+    key, whose body names the original booking.
 
     Raises:
         NotFoundError: no such tenant.
@@ -39,8 +46,15 @@ async def create_booking(
         MissingRequiredFieldsError: a required field was empty.
         InvalidContactError: the contact is not a valid email or NANP number.
         UnknownServiceError: the service did not resolve against the catalog.
-        SlotUnavailableError: the slot is not currently offered.
+        SlotUnavailableError: the slot is not offered, is past, or was just
+            reserved by another customer; carries the current offers.
     """
+    key = IdempotencyKey.parse(idempotency_key)
+    replay = await book.find_replay(payload.tenant_id, key)
+    if replay is not None:
+        body = BookingResponse.build(replay).model_dump(mode="json")
+        return JSONResponse(status_code=status.HTTP_200_OK, content=body)
+
     record = registry.get(payload.tenant_id)
     resolved = record.policy.catalog.resolve(payload.service)
 
@@ -54,7 +68,20 @@ async def create_booking(
         # An unresolvable service has no slot list; passing an empty tuple lets
         # the command report the service problem, which is the more useful of
         # the two errors, rather than a confusing "slot unavailable".
-        offered_slots=record.offered_slots(resolved.slug) if resolved else (),
+        offered_slots=(
+            await availability.offered_slots(payload.tenant_id, resolved.slug)
+            if resolved is not None
+            else ()
+        ),
     )
 
-    return BookingResponse.of(await bookings.record(command, session_id=payload.session_id))
+    confirmation = await book.confirm(
+        command,
+        session_id=payload.session_id,
+        idempotency_key=key,
+    )
+    body = BookingResponse.build(confirmation).model_dump(mode="json")
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if confirmation.replayed else status.HTTP_201_CREATED,
+        content=body,
+    )

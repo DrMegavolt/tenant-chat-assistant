@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ from tenantchat.core.errors import (
     ValidationError,
 )
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import TenantPolicy
 
 # The `build_tenant` fixture, named for use in a signature. Spelled out here
@@ -31,7 +33,28 @@ from tenantchat.core.tenant import TenantPolicy
 # import path.
 TenantBuilder = Callable[..., TenantPolicy]
 
-OFFERED_SLOTS = ("Mon Jul 1, 2:00 PM", "Wed Jul 3, 11:00 AM")
+
+def future_offers() -> tuple[OfferedSlot, ...]:
+    """Two bookable slots, always in the future no matter when the suite runs."""
+    base = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return (
+        OfferedSlot(
+            id="slot-1",
+            service_slug="hvac",
+            start=base + timedelta(hours=14),
+            end=base + timedelta(hours=15),
+        ),
+        OfferedSlot(
+            id="slot-2",
+            service_slug="hvac",
+            start=base + timedelta(days=2, hours=11),
+            end=base + timedelta(days=2, hours=12),
+        ),
+    )
+
+
+OFFERED_SLOTS = future_offers()
+OFFERED_LABELS = tuple(slot.label for slot in OFFERED_SLOTS)
 
 
 def booking_args(**overrides: Any) -> dict[str, Any]:
@@ -41,7 +64,7 @@ def booking_args(**overrides: Any) -> dict[str, Any]:
         "contact": "555-222-1919",
         "address": "12 Alder Court, Portland, OR 97205",
         "service": "HVAC",
-        "slot": OFFERED_SLOTS[0],
+        "slot": OFFERED_LABELS[0],
         "offered_slots": OFFERED_SLOTS,
     } | overrides
 
@@ -135,6 +158,22 @@ class TestBookingService:
 
         assert command.service.slug == "hvac"
 
+    def test_the_chosen_slot_keeps_its_provider_identity_and_bounds(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """The command names the exact window, not just a label.
+
+        ``slot_id`` is the provider's stable identity and ``slot_start`` is
+        timezone-aware, which is what the reservation later keys on to reject a
+        past or double-booked slot.
+        """
+        command = BookingCommand.parse(build_tenant(), **booking_args())
+
+        assert command.slot == OFFERED_LABELS[0]
+        assert command.slot_id == "slot-1"
+        assert command.slot_start.tzinfo is not None
+        assert command.slot_end > command.slot_start
+
     def test_substring_of_a_service_name_does_not_resolve(
         self, build_tenant: TenantBuilder
     ) -> None:
@@ -153,7 +192,23 @@ class TestBookingSlot:
         with pytest.raises(SlotUnavailableError) as caught:
             BookingCommand.parse(build_tenant(), **booking_args(slot="Sun Jul 7, 3:00 AM"))
 
-        assert caught.value.offered == OFFERED_SLOTS
+        assert caught.value.offered == OFFERED_LABELS
+
+    def test_a_slot_whose_window_has_passed_is_refused(self, build_tenant: TenantBuilder) -> None:
+        """A past slot is an unavailable slot, whatever its label looks like."""
+        past = OfferedSlot(
+            id="slot-past",
+            service_slug="hvac",
+            start=datetime.now(UTC) - timedelta(hours=1),
+            end=datetime.now(UTC),
+        )
+        with pytest.raises(SlotUnavailableError) as caught:
+            BookingCommand.parse(
+                build_tenant(),
+                **booking_args(slot=past.label, offered_slots=(past,)),
+            )
+
+        assert caught.value.code == "slot_unavailable"
 
     def test_empty_offer_list_books_nothing(self, build_tenant: TenantBuilder) -> None:
         with pytest.raises(SlotUnavailableError):

@@ -28,6 +28,7 @@ from tenantchat.api.identity import (
     ROLE_HEADER,
     SUBJECT_HEADER,
 )
+from tenantchat.api.registry import demo_offered_slots
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     InMemoryAuditStore,
@@ -51,7 +52,11 @@ TEST_CSRF_SECRET = "csrf-secret-for-tests"
 
 BOOKING_TENANT = "clearview"
 LEAD_TENANT = "apex"
-OFFERED_SLOT = "Mon Jul 1, 2:00 PM"
+# The provider mints a future window, so the offered slot is fetched, not hardcoded:
+# a fixed date in the past would be refused by the "not in the past" rule.
+OFFERED_SLOTS = demo_offered_slots("hvac")
+OFFERED_SLOT = OFFERED_SLOTS[0].label
+OTHER_OFFERED_SLOT = OFFERED_SLOTS[1].label
 
 # The default operator every test uses; it is a support agent in both seeded
 # tenants unless a test re-seeds the membership store.
@@ -273,7 +278,7 @@ def booking_payload() -> Callable[..., dict[str, object]]:
             "tenant_id": "clearview",
             "session_id": "session-test",
             "service": "HVAC",
-            "slot": "Mon Jul 1, 2:00 PM",
+            "slot": OFFERED_SLOT,
             "customer_name": "Dana Ruiz",
             "address": "12 Alder Court, Portland, OR 97205",
             "contact": "555-222-1919",

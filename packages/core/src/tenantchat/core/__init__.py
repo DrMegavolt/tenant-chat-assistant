@@ -62,6 +62,7 @@ from tenantchat.core.ports import (
     LeadService,
     TenantPolicySource,
 )
+from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import PricingPolicy, PublicTenantView, TenantPolicy
 from tenantchat.core.visitor_session import (
     HmacVisitorCredentialSigner,
@@ -108,6 +109,7 @@ __all__ = [
     "LeadUrgency",
     "MissingRequiredFieldsError",
     "NotFoundError",
+    "OfferedSlot",
     "PolicyViolationError",
     "PricingNotPermittedError",
     "PricingPolicy",

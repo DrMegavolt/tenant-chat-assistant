@@ -25,6 +25,7 @@ DOMAIN_TABLES = {
     "idempotency_keys",
     "audit_events",
     "tenant_memberships",
+    "availability_slots",
     "knowledge_sources",
     "knowledge_documents",
     "knowledge_document_versions",
@@ -65,7 +66,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0006_api_abuse_protection"
+    assert revision == "0007_booking_reservation"
     assert {
         "tenant_status",
         "chat_session_status",

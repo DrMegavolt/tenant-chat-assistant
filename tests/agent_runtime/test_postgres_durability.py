@@ -29,6 +29,10 @@ from tenantchat.api.persistence import (
     PostgresIdempotencyStore,
     PostgresLeadStore,
 )
+from tenantchat.api.persistence.availability import (
+    PostgresAvailabilityProvider,
+    seed_demo_availability,
+)
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.orchestration.checkpoints import (
     checkpoint_connection_string,
@@ -76,6 +80,9 @@ async def _process(
     await database.synchronize_tenants(
         (record.policy.tenant_id, record.policy.name) for record in registry.all().values()
     )
+    # The booking reservation reads the database-backed calendar, so the same
+    # seed production composition runs is required here too.
+    await seed_demo_availability(database.engine, registry)
     try:
         async with postgres_checkpointer(database_url) as checkpointer:
             yield build_dispatch_runtime(
@@ -86,6 +93,7 @@ async def _process(
                 handoffs=PostgresHandoffStore(database.engine),
                 idempotency=PostgresIdempotencyStore(database.engine),
                 checkpointer=checkpointer,
+                availability=PostgresAvailabilityProvider(database.engine),
             )
     finally:
         await database.dispose()
