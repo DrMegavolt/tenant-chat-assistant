@@ -31,6 +31,21 @@ export function AdminPage() {
             <h1>Chat admin</h1>
           </div>
           <div className="admin-header-actions">
+            {console_.tenants.length > 1 && (
+              <label className="tenant-picker">
+                <span className="visually-hidden">Tenant</span>
+                <select
+                  value={console_.tenantId ?? ""}
+                  onChange={(event) => console_.selectTenant(event.target.value)}
+                >
+                  {console_.tenants.map((tenant) => (
+                    <option key={tenant.tenantId} value={tenant.tenantId}>
+                      {tenant.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <span className="refresh-status" role="status">
               <span className="visually-hidden">Last refreshed </span>
               <span id="lastUpdated">{relativeTime(console_.lastUpdated ?? undefined)}</span>

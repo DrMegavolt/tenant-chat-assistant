@@ -49,6 +49,19 @@ class ForbiddenError(TransportError):
     message = "This operator role may not perform that operation."
 
 
+class TenantAccessDeniedError(TransportError):
+    """The identity is real and has no membership in the requested tenant.
+
+    Deliberately indistinguishable from "no such tenant": the same document is
+    returned whether the tenant exists or not, so an operator without access
+    cannot probe for tenants they must not see.
+    """
+
+    status = 403
+    code = "tenant_access_denied"
+    message = "This operator has no access to the requested tenant."
+
+
 class CsrfValidationError(TransportError):
     """A state-changing admin request arrived without a valid double-submit token."""
 

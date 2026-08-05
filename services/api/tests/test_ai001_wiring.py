@@ -17,11 +17,13 @@ import pytest
 from tenantchat.api.app import create_app
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
+    InMemoryAuditStore,
     InMemoryBookingStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
+    InMemoryMembershipStore,
 )
 
 
@@ -82,6 +84,8 @@ def test_create_app_builds_a_model_when_llm_settings_are_present(
         conversation_store=InMemoryConversationStore(),
         handoff_store=InMemoryHandoffStore(),
         idempotency_store=InMemoryIdempotencyStore(),
+        membership_store=InMemoryMembershipStore(),
+        audit_store=InMemoryAuditStore(),
     )
 
     assert app.state.settings.llm_base_url == "http://model:1234/v1"

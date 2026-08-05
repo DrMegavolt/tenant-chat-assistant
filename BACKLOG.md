@@ -222,7 +222,7 @@ remaining production business workflows, and completed runbooks.
 - [x] `API-001` — Production API runtime and typed contracts — `Done`
 - [x] `DATA-002` — Server-authoritative repositories and concurrency control — `Done`
 - [ ] `DATA-003` — Transactional, idempotent booking — `P0`
-- [ ] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
+- [x] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
 - [ ] `SEC-002` — Secure visitor sessions and tenant binding — `P0`
 - [ ] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
 - [x] `SEC-004` — Service authentication and Kubernetes network boundaries — `Done`
@@ -648,7 +648,7 @@ guarantees by construction.
 
 ### SEC-001 — Admin authentication and tenant-scoped RBAC
 
-- Status: `In Progress` (gateway integration complete; tenant-scoped API RBAC remains)
+- Status: `Done`
 - Priority: `P0`
 - Type: `Security`
 - Depends on: `API-001`, `DATA-001`
@@ -675,6 +675,29 @@ guarantees by construction.
   API are same-origin (no admin CORS). Tests cover auth/CSRF/spoofing/roles.
   The remaining tenant-scoped RBAC (per-tenant role assignment, cross-tenant
   403 without confirming resource existence) depends on `API-001`/`DATA-001`.
+
+  Per-tenant RBAC landed with migration `0005_tenant_memberships` (PK
+  `(tenant_id, principal_subject)`, role CHECK limited to viewer/support_agent/
+  tenant_admin; `platform_admin` is directory-only and spans tenants). The
+  effective role for a tenant is the tighter of the directory role and the
+  membership row, so an assignment can narrow access but never widen it.
+  Membership is resolved before any tenant record is touched, so a refused
+  operator gets a byte-identical `tenant_access_denied` document whether the
+  tenant exists or not, and refusals write no audit rows. Protected surface:
+  tenant-scoped reads (chats, chat detail, leads, bookings) require any tenant
+  membership; staff replies require `support_agent` inside the tenant plus
+  CSRF; membership assignment/revocation require `platform_admin` plus CSRF.
+  Staff replies and membership mutations append to the append-only
+  `audit_events` table (UPDATE/DELETE revoked from the app role) with actor
+  type, principal subject, tenant, request ID, and a server-stamped timestamp.
+  Development auth is an explicit opt-in: `CHAT_API_DEV_AUTH=true` skips the
+  gateway token and mints its own CSRF secret, but `create_app` refuses to
+  start against a non-loopback `DATABASE_URL`, and the deployment security
+  gate rejects a manifest that enables it. RBAC matrix tests cover every
+  protected route, cross-tenant and phantom-tenant refusal, privilege-ceiling
+  enforcement, immediate grant/revoke effect, and audit content; the Postgres
+  migration and repository suites pin the table, indexes, and runtime-role
+  privileges. Full `make check` passes.
 
 ### SEC-002 — Secure visitor sessions and tenant binding
 

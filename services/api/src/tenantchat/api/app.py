@@ -22,22 +22,26 @@ from tenantchat.api.faults import TransportError
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
+    PostgresAuditStore,
     PostgresBookingStore,
     PostgresConversationStore,
     PostgresHandoffStore,
     PostgresIdempotencyStore,
     PostgresLeadStore,
+    PostgresMembershipStore,
 )
 from tenantchat.api.problems import PROBLEM_CONTENT_TYPE, handle_domain_error
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.routers import admin, bookings, chat, health, leads, tenants
-from tenantchat.api.settings import Settings
+from tenantchat.api.settings import Settings, loopback_database
 from tenantchat.api.store import (
+    AuditStore,
     BookingStore,
     ConversationStore,
     HandoffStore,
     IdempotencyStore,
     LeadStore,
+    MembershipStore,
 )
 from tenantchat.core.errors import DomainError
 from tenantchat.core.ports import ConversationRuntime
@@ -240,12 +244,14 @@ def create_app(
     conversation_store: ConversationStore | None = None,
     handoff_store: HandoffStore | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    membership_store: MembershipStore | None = None,
+    audit_store: AuditStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
 ) -> FastAPI:
     """Build the application.
 
-    The five stores are injected together or not at all. A mixture would run
+    The seven stores are injected together or not at all. A mixture would run
     half the request against a test double and half against PostgreSQL, which is
     the configuration most likely to make a passing test mean nothing.
 
@@ -256,6 +262,8 @@ def create_app(
         conversation_store: Explicit test adapter. Production builds PostgreSQL stores.
         handoff_store: Explicit test adapter. Production builds PostgreSQL stores.
         idempotency_store: Explicit test adapter. Production builds PostgreSQL stores.
+        membership_store: Explicit test adapter. Production builds PostgreSQL stores.
+        audit_store: Explicit test adapter. Production builds PostgreSQL stores.
         chat_model: The model the agent runtime calls. Injected for tests; when
             omitted, `AI-001` builds an OpenAI-compatible adapter from
             ``LLM_BASE_URL``/``LLM_MODEL``/``LLM_API_KEY`` if both the base URL
@@ -291,6 +299,8 @@ def create_app(
         conversation_store,
         handoff_store,
         idempotency_store,
+        membership_store,
+        audit_store,
     )
     if any(store is None for store in supplied):
         if any(store is not None for store in supplied):
@@ -299,18 +309,30 @@ def create_app(
             raise ValueError(
                 "DATABASE_URL is required unless explicit in-memory test stores are injected"
             )
+        # Development auth is a loopback-only convenience (SEC-001). A remote
+        # database is the shape every production deployment has, so refusing
+        # here is what makes "no production deployment can start with
+        # development auth enabled" structural rather than a convention.
+        if resolved.dev_auth and not loopback_database(resolved.database_url):
+            raise ValueError(
+                "CHAT_API_DEV_AUTH is enabled but DATABASE_URL is not a loopback address; "
+                "development auth must never run against a remote database"
+            )
         # Fail at startup rather than answering every admin request with a 401
         # that looks like a rejected operator instead of a missing secret.
-        missing = [
-            name
-            for name, value in (
-                ("ADMIN_GATEWAY_TOKEN", resolved.admin_gateway_token),
-                ("ADMIN_CSRF_SECRET", resolved.admin_csrf_secret),
-            )
-            if not value
-        ]
-        if missing:
-            raise ValueError(f"the admin routes require {', '.join(missing)}")
+        # Development auth needs none of these: it mints its own CSRF secret and
+        # trusts the identity headers directly.
+        if not resolved.dev_auth:
+            missing = [
+                name
+                for name, value in (
+                    ("ADMIN_GATEWAY_TOKEN", resolved.admin_gateway_token),
+                    ("ADMIN_CSRF_SECRET", resolved.admin_csrf_secret),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(f"the admin routes require {', '.join(missing)}")
         database = Database.connect(
             resolved.database_url,
             DatabasePoolSettings(
@@ -325,6 +347,8 @@ def create_app(
         conversation_store = PostgresConversationStore(database.engine)
         handoff_store = PostgresHandoffStore(database.engine)
         idempotency_store = PostgresIdempotencyStore(database.engine)
+        membership_store = PostgresMembershipStore(database.engine)
+        audit_store = PostgresAuditStore(database.engine)
 
     if (
         booking_store is None
@@ -332,6 +356,8 @@ def create_app(
         or conversation_store is None
         or handoff_store is None
         or idempotency_store is None
+        or membership_store is None
+        or audit_store is None
     ):
         raise RuntimeError("composition failed to provide persistence stores")
 
@@ -390,6 +416,8 @@ def create_app(
     app.state.conversation_store = conversation_store
     app.state.handoff_store = handoff_store
     app.state.idempotency_store = idempotency_store
+    app.state.membership_store = membership_store
+    app.state.audit_store = audit_store
     app.state.conversation_runtime = (
         compose_runtime(checkpointer, effective_model)
         if effective_model is not None and checkpointer is not None

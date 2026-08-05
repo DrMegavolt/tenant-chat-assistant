@@ -15,7 +15,13 @@ from fastapi import Depends, Request
 from tenantchat.api.faults import ChatUnavailableError
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.api.settings import Settings
-from tenantchat.api.store import BookingStore, ConversationStore, LeadStore
+from tenantchat.api.store import (
+    AuditStore,
+    BookingStore,
+    ConversationStore,
+    LeadStore,
+    MembershipStore,
+)
 from tenantchat.core.ports import ConversationRuntime
 
 
@@ -67,6 +73,16 @@ def get_conversation_store(request: Request) -> ConversationStore:
     return store
 
 
+def get_membership_store(request: Request) -> MembershipStore:
+    store: MembershipStore = request.app.state.membership_store
+    return store
+
+
+def get_audit_store(request: Request) -> AuditStore:
+    store: AuditStore = request.app.state.audit_store
+    return store
+
+
 def get_request_id(request: Request) -> str:
     request_id: str = request.state.request_id
     return request_id
@@ -76,6 +92,8 @@ Registry = Annotated[TenantRegistry, Depends(get_registry)]
 Bookings = Annotated[BookingStore, Depends(get_booking_store)]
 Leads = Annotated[LeadStore, Depends(get_lead_store)]
 Conversations = Annotated[ConversationStore, Depends(get_conversation_store)]
+Memberships = Annotated[MembershipStore, Depends(get_membership_store)]
+Audit = Annotated[AuditStore, Depends(get_audit_store)]
 Runtime = Annotated[ConversationRuntime, Depends(get_conversation_runtime)]
 ComposedRuntime = Annotated[ConversationRuntime | None, Depends(get_composed_runtime)]
 Configuration = Annotated[Settings, Depends(get_settings)]

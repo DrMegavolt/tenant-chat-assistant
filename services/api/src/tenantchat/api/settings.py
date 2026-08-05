@@ -9,7 +9,9 @@ that happens to touch it.
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 # Large enough for a booking form with a long address, small enough that an
 # unauthenticated caller cannot make the process buffer megabytes (SEC-003).
@@ -23,6 +25,22 @@ _DEFAULT_MAX_REQUEST_BYTES = 64 * 1024
 # in the deployed shape, so the allowlist is only the widget's direct path.
 _DEFAULT_ALLOWED_ORIGINS = ("http://127.0.0.1:8080", "http://localhost:8080")
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def loopback_database(database_url: str | None) -> bool:
+    """Whether the deployment's database is on this machine.
+
+    The boundary for `CHAT_API_DEV_AUTH`: development auth may only run against
+    a database that lives on the same host, because that is the one shape a
+    production deployment can never legitimately have. A URL with no host
+    (unix-socket driver default) counts as loopback.
+    """
+    if database_url is None:
+        return True
+    host = (urlparse(database_url).hostname or "").lower()
+    return host in _LOOPBACK_HOSTS
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -35,6 +53,12 @@ class Settings:
     # deployment that forgets one loses the console rather than opening it.
     admin_gateway_token: str | None = None
     admin_csrf_secret: str | None = None
+    # Explicit non-production local development auth (SEC-001): when enabled,
+    # the service trusts the gateway identity headers without the shared token,
+    # and the production composition refuses to start unless the database is
+    # loopback. Never set in a deployment: `scripts/verify_deployment_security.py`
+    # rejects a manifest that enables it.
+    dev_auth: bool = False
     database_pool_size: int = 5
     database_max_overflow: int = 5
     database_pool_timeout_seconds: float = 5.0
@@ -72,7 +96,16 @@ class Settings:
             # service must be handed the identical values, and the gateway's
             # configuration already uses these names.
             admin_gateway_token=os.environ.get("ADMIN_GATEWAY_TOKEN", "").strip() or None,
-            admin_csrf_secret=os.environ.get("ADMIN_CSRF_SECRET", "").strip() or None,
+            # A development process mints its own CSRF secret so `make api` needs
+            # no shared secrets at all; the loopback-database guard keeps that
+            # convenience from reaching a deployment.
+            admin_csrf_secret=os.environ.get("ADMIN_CSRF_SECRET", "").strip()
+            or (
+                secrets.token_hex(32)
+                if os.environ.get("CHAT_API_DEV_AUTH", "").lower() == "true"
+                else None
+            ),
+            dev_auth=os.environ.get("CHAT_API_DEV_AUTH", "").lower() == "true",
             database_pool_size=int(os.environ.get("CHAT_API_DATABASE_POOL_SIZE", "5")),
             database_max_overflow=int(os.environ.get("CHAT_API_DATABASE_MAX_OVERFLOW", "5")),
             database_pool_timeout_seconds=float(

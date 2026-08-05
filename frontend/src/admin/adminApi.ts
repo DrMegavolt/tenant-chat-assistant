@@ -7,7 +7,7 @@
  * through the gateway rather than render an empty console.
  */
 
-import type { SessionDetail, SessionSummary } from "src/admin/types";
+import type { SessionDetail, SessionSummary, TenantSummary } from "src/admin/types";
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -43,28 +43,40 @@ export class AdminApi {
   }
 
   /** @throws {UnauthorizedError} when the admin session has expired. */
-  async sessions(): Promise<SessionSummary[]> {
-    const response = await this.request("/api/admin/chats");
+  async tenants(): Promise<TenantSummary[]> {
+    const response = await this.request("/api/admin/tenants");
+    if (!response.ok) throw new Error(`Tenant list failed with ${response.status}`);
+    const payload = (await response.json()) as { tenants?: TenantSummary[] };
+    return payload.tenants ?? [];
+  }
+
+  /** @throws {UnauthorizedError} when the admin session has expired. */
+  async sessions(tenantId: string): Promise<SessionSummary[]> {
+    const response = await this.request(
+      `/api/admin/chats?tenant_id=${encodeURIComponent(tenantId)}`
+    );
     if (!response.ok) throw new Error(`Chat list failed with ${response.status}`);
     const payload = (await response.json()) as { sessions?: SessionSummary[] };
     return payload.sessions ?? [];
   }
 
   /** Returns null when the session has since been removed. */
-  async session(sessionId: string): Promise<SessionDetail | null> {
-    const response = await this.request(`/api/admin/chats/${encodeURIComponent(sessionId)}`);
+  async session(sessionId: string, tenantId: string): Promise<SessionDetail | null> {
+    const response = await this.request(
+      `/api/admin/chats/${encodeURIComponent(sessionId)}?tenant_id=${encodeURIComponent(tenantId)}`
+    );
     if (!response.ok) return null;
     const payload = (await response.json()) as { session?: SessionDetail };
     return payload.session ?? null;
   }
 
-  async sendStaffMessage(sessionId: string, content: string): Promise<void> {
+  async sendStaffMessage(sessionId: string, tenantId: string, content: string): Promise<void> {
     const response = await this.request(
       `/api/admin/chats/${encodeURIComponent(sessionId)}/messages`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
-        body: JSON.stringify({ content })
+        body: JSON.stringify({ tenant_id: tenantId, content })
       }
     );
     if (!response.ok) throw new Error(`Sending the staff message failed with ${response.status}`);
@@ -74,8 +86,8 @@ export class AdminApi {
     if (this.csrfToken) return this.csrfToken;
     const response = await this.request("/api/admin/csrf-token");
     if (!response.ok) return "";
-    const payload = (await response.json()) as { csrfToken?: string };
-    this.csrfToken = payload.csrfToken ?? "";
+    const payload = (await response.json()) as { csrf_token?: string };
+    this.csrfToken = payload.csrf_token ?? "";
     return this.csrfToken;
   }
 }

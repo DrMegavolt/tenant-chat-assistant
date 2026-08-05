@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -10,12 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import (
+    AuditActorType,
+    AuditEvent,
     BookingRecord,
     ConversationRecord,
     HandoffRecord,
     LeadRecord,
     MessageRecord,
     MessageRole,
+    TenantMembership,
 )
 from tenantchat.core.commands import (
     BookingCommand,
@@ -60,6 +64,32 @@ def _message(row: object) -> MessageRecord:
 def _lead_urgency(value: str) -> LeadUrgency:
     legacy = {"low": "flexible", "normal": "unknown", "high": "today"}
     return LeadUrgency(legacy.get(value, value))
+
+
+def _membership(row: object) -> TenantMembership:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return TenantMembership(
+        tenant_id=mapping["tenant_id"],
+        principal_subject=mapping["principal_subject"],
+        role=mapping["role"],
+        created_at=mapping["created_at"],
+        updated_at=mapping["updated_at"],
+    )
+
+
+def _audit_event(row: object) -> AuditEvent:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return AuditEvent(
+        tenant_id=mapping["tenant_id"],
+        actor_type=AuditActorType(mapping["actor_type"]),
+        principal_id=mapping["principal_id"],
+        action=mapping["action"],
+        resource_type=mapping["resource_type"],
+        resource_id=mapping["resource_id"],
+        request_id=mapping["request_id"],
+        details=dict(mapping["details"]),
+        occurred_at=mapping["occurred_at"],
+    )
 
 
 async def _action_session(
@@ -576,3 +606,127 @@ class PostgresBookingStore:
             )
             for row in rows
         )
+
+
+class PostgresMembershipStore:
+    """Per-tenant operator role rows (SEC-001).
+
+    The upsert is the assignment operation: the composite primary key means
+    re-assigning a role to the same operator in the same tenant can never
+    produce a second row.
+    """
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def role_for(self, tenant_id: str, subject: str) -> str | None:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT tenant_id, principal_subject, role, created_at, updated_at
+                    FROM tenant_memberships
+                    WHERE tenant_id = :tenant_id AND principal_subject = :subject
+                    """
+                ),
+                {"tenant_id": tenant_id, "subject": subject},
+            )
+            row = result.one_or_none()
+        return None if row is None else row.role
+
+    async def assign(self, *, tenant_id: str, subject: str, role: str) -> TenantMembership:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO tenant_memberships (tenant_id, principal_subject, role)
+                    VALUES (:tenant_id, :subject, :role)
+                    ON CONFLICT (tenant_id, principal_subject)
+                    DO UPDATE SET role = :role, updated_at = now()
+                    RETURNING tenant_id, principal_subject, role, created_at, updated_at
+                    """
+                ),
+                {"tenant_id": tenant_id, "subject": subject, "role": role},
+            )
+            return _membership(result.one())
+
+    async def revoke(self, *, tenant_id: str, subject: str) -> bool:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    DELETE FROM tenant_memberships
+                    WHERE tenant_id = :tenant_id AND principal_subject = :subject
+                    """
+                ),
+                {"tenant_id": tenant_id, "subject": subject},
+            )
+            return result.rowcount == 1
+
+    async def for_principal(self, subject: str) -> tuple[TenantMembership, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT tenant_id, principal_subject, role, created_at, updated_at
+                    FROM tenant_memberships
+                    WHERE principal_subject = :subject
+                    ORDER BY tenant_id
+                    """
+                ),
+                {"subject": subject},
+            )
+            return tuple(_membership(row) for row in result.all())
+
+
+class PostgresAuditStore:
+    """Append-only accountability records; UPDATE and DELETE are revoked from
+    the application role, so this store can only grow rows, never edit them."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def record(self, event: AuditEvent) -> AuditEvent:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO audit_events
+                        (tenant_id, actor_type, principal_id, action,
+                         resource_type, resource_id, request_id, details)
+                    VALUES
+                        (:tenant_id, :actor_type, :principal_id, :action,
+                         :resource_type, :resource_id, :request_id, :details)
+                    RETURNING occurred_at
+                    """
+                ).bindparams(bindparam("details", type_=JSONB)),
+                {
+                    "tenant_id": event.tenant_id,
+                    "actor_type": event.actor_type.value,
+                    "principal_id": event.principal_id,
+                    "action": event.action,
+                    "resource_type": event.resource_type,
+                    "resource_id": event.resource_id,
+                    "request_id": event.request_id,
+                    "details": dict(event.details),
+                },
+            )
+            occurred_at = result.scalar_one()
+        return replace(event, occurred_at=occurred_at)
+
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[AuditEvent, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT tenant_id, actor_type, principal_id, action,
+                           resource_type, resource_id, request_id, details, occurred_at
+                    FROM audit_events
+                    WHERE tenant_id = :tenant_id
+                    ORDER BY occurred_at DESC, id DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"tenant_id": tenant_id, "limit": limit},
+            )
+            return tuple(_audit_event(row) for row in result.all())

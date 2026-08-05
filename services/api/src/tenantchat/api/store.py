@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
@@ -37,6 +37,15 @@ class MessageRole(StrEnum):
     STAFF = "staff"
     SYSTEM = "system"
     TOOL = "tool"
+
+
+class AuditActorType(StrEnum):
+    """Who caused an audit event. ``visitor`` is absent: visitor actions are
+    recorded against their own tables and `SEC-002` scopes them to a session."""
+
+    STAFF = "staff"
+    SERVICE = "service"
+    SYSTEM = "system"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +112,37 @@ class LeadRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class TenantMembership:
+    """One operator's role inside one tenant (SEC-001 per-tenant RBAC)."""
+
+    tenant_id: str
+    principal_subject: str
+    role: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    """One accountability record: who, what, where, and which request caused it.
+
+    ``details`` is server-authored context (IDs, roles, version numbers) only.
+    Message content and customer contact details belong to the business tables
+    and to `PRIV-001`'s retention rules, never duplicated into this log.
+    """
+
+    tenant_id: str
+    actor_type: AuditActorType
+    principal_id: str | None
+    action: str
+    resource_type: str
+    resource_id: uuid.UUID | None
+    request_id: str | None
+    details: dict[str, object]
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 class ConversationStore(Protocol):
     async def create(self, tenant_id: str) -> ConversationRecord: ...
 
@@ -150,6 +190,38 @@ class HandoffStore(Protocol):
     async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord: ...
 
     async def for_tenant(self, tenant_id: str) -> tuple[HandoffRecord, ...]: ...
+
+
+class MembershipStore(Protocol):
+    """Per-tenant operator role assignment (SEC-001).
+
+    ``assign`` is an upsert: the record's identity is the (tenant, subject)
+    pair, and re-assigning a role replaces the old one rather than erroring.
+    ``revoke`` returns whether a row was removed, so a caller can distinguish
+    "revoked" from "had never been assigned" without probing existence.
+    """
+
+    async def role_for(self, tenant_id: str, subject: str) -> str | None: ...
+
+    async def assign(self, *, tenant_id: str, subject: str, role: str) -> TenantMembership: ...
+
+    async def revoke(self, *, tenant_id: str, subject: str) -> bool: ...
+
+    async def for_principal(self, subject: str) -> tuple[TenantMembership, ...]: ...
+
+
+class AuditStore(Protocol):
+    """Append-only accountability records, one per administrative mutation.
+
+    ``record`` is fire-and-forget from the caller's perspective: the event's
+    occurred_at is authoritative, so the implementation stamps it. Reads are
+    tenant-qualified only; `PRIV-001` consumes this surface for retention,
+    export, and erasure of an operator's records.
+    """
+
+    async def record(self, event: AuditEvent) -> AuditEvent: ...
+
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[AuditEvent, ...]: ...
 
 
 class IdempotencyStore(Protocol):
@@ -355,6 +427,60 @@ class InMemoryHandoffStore:
 
     async def for_tenant(self, tenant_id: str) -> tuple[HandoffRecord, ...]:
         return tuple(record for record in self._records if record.tenant_id == tenant_id)
+
+
+class InMemoryMembershipStore:
+    """A concurrency-safe fake with the same upsert/revoke semantics."""
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, str], TenantMembership] = {}
+        self._lock = asyncio.Lock()
+
+    async def role_for(self, tenant_id: str, subject: str) -> str | None:
+        async with self._lock:
+            row = self._rows.get((tenant_id, subject))
+        return None if row is None else row.role
+
+    async def assign(self, *, tenant_id: str, subject: str, role: str) -> TenantMembership:
+        now = datetime.now(UTC)
+        async with self._lock:
+            existing = self._rows.get((tenant_id, subject))
+            row = TenantMembership(
+                tenant_id=tenant_id,
+                principal_subject=subject,
+                role=role,
+                created_at=existing.created_at if existing else now,
+                updated_at=now,
+            )
+            self._rows[(tenant_id, subject)] = row
+        return row
+
+    async def revoke(self, *, tenant_id: str, subject: str) -> bool:
+        async with self._lock:
+            return self._rows.pop((tenant_id, subject), None) is not None
+
+    async def for_principal(self, subject: str) -> tuple[TenantMembership, ...]:
+        async with self._lock:
+            return tuple(row for key, row in sorted(self._rows.items()) if key[1] == subject)
+
+
+class InMemoryAuditStore:
+    """A concurrency-safe fake; production writes append-only rows."""
+
+    def __init__(self) -> None:
+        self._events: list[AuditEvent] = []
+        self._lock = asyncio.Lock()
+
+    async def record(self, event: AuditEvent) -> AuditEvent:
+        async with self._lock:
+            self._events.append(event)
+        return event
+
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[AuditEvent, ...]:
+        async with self._lock:
+            events = [event for event in self._events if event.tenant_id == tenant_id]
+        events.sort(key=lambda event: event.occurred_at, reverse=True)
+        return tuple(events[:limit])
 
 
 @dataclass(frozen=True, slots=True)

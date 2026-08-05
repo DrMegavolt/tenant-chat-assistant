@@ -210,6 +210,12 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "admin-csrf-secret",
             "secret",
         )
+        # SEC-001: dev auth trusts identity headers directly; the API refuses to
+        # start with it against a remote database, and a manifest must not
+        # enable it in the first place.
+        dev_auth = _env_block(chat, "CHAT_API_DEV_AUTH")
+        if re.search(r"^\s*value:\s*[\"']?true[\"']?\s*$", dev_auth, re.MULTILINE):
+            errors.append("chat-backend: CHAT_API_DEV_AUTH must never be enabled in a deployment")
 
     for workload in ("financing-agent", "ingestion-service"):
         dependency_document = workload_documents.get(workload)

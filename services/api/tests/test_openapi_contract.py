@@ -17,11 +17,13 @@ from tenantchat.api import schemas
 from tenantchat.api.app import create_app
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
+    InMemoryAuditStore,
     InMemoryBookingStore,
     InMemoryConversationStore,
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
+    InMemoryMembershipStore,
 )
 
 PUBLISHED_OPERATIONS = {
@@ -35,9 +37,14 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/chat/session/{session_id}"),
     ("post", "/api/chat/confirmation"),
     ("get", "/api/admin/csrf-token"),
+    ("get", "/api/admin/tenants"),
     ("get", "/api/admin/chats"),
     ("get", "/api/admin/chats/{session_id}"),
     ("post", "/api/admin/chats/{session_id}/messages"),
+    ("get", "/api/admin/leads"),
+    ("get", "/api/admin/bookings"),
+    ("post", "/api/admin/memberships"),
+    ("delete", "/api/admin/memberships"),
 }
 
 
@@ -68,6 +75,8 @@ def test_the_schema_is_withheld_when_docs_are_disabled(settings: Settings) -> No
         conversation_store=InMemoryConversationStore(),
         handoff_store=InMemoryHandoffStore(),
         idempotency_store=InMemoryIdempotencyStore(),
+        membership_store=InMemoryMembershipStore(),
+        audit_store=InMemoryAuditStore(),
     )
 
     with TestClient(app) as closed:

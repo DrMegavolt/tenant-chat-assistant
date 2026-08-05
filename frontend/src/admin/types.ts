@@ -1,5 +1,13 @@
 /** The shapes the operator console exchanges with the admin API. */
 
+/** One row of `GET /api/admin/tenants`: a tenant this operator may open. */
+export interface TenantSummary {
+  tenantId: string;
+  name: string;
+  /** The role this operator holds inside the tenant. */
+  role: string;
+}
+
 export const OUTCOMES = [
   "active",
   "lead",
