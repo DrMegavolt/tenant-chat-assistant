@@ -38,8 +38,8 @@ def calling(*calls: object, content: str = "") -> ModelResponse:
 def tool_payloads(harness: RuntimeHarness) -> list[dict[str, object]]:
     """Every distinct tool result the graph handed back to the model."""
     seen: list[dict[str, object]] = []
-    for call in harness.model.calls:
-        for message in call:
+    for prompt in harness.model.calls:
+        for message in prompt.messages:
             if message.role == "tool":
                 payload = json.loads(message.content)
                 if payload not in seen:

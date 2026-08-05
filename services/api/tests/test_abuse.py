@@ -41,7 +41,7 @@ from tenantchat.api.store import (
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.orchestration.checkpoints import InMemorySaver
-from tenantchat.orchestration.model import ModelMessage, ModelResponse, ToolSpec
+from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolSpec
 
 BOOKING_TENANT = "clearview"
 
@@ -72,7 +72,7 @@ class SlowModel:
         self._delay = delay_seconds
 
     async def complete(
-        self, messages: Sequence[ModelMessage], *, tools: Sequence[ToolSpec]
+        self, prompt: AssembledPrompt, *, tools: Sequence[ToolSpec]
     ) -> ModelResponse:
         await asyncio.sleep(self._delay)
         return ModelResponse(content="Done.", model_name="slow")

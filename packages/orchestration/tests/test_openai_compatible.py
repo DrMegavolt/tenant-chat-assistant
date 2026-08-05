@@ -2,7 +2,7 @@
 
 These tests pin the wire contract an adapter must speak: the request shape sent
 to an OpenAI-compatible ``/chat/completions`` endpoint and the translation of
-its response back into the domain's :class:`ModelMessage`/:class:`ToolCall`
+its response back into the domain's :class:`AssembledPrompt`/:class:`ToolCall`
 types. Because the transport is an ``httpx`` mock, the tests run with no network,
 no key, and no provider — the same way the rest of the runtime is tested.
 """
@@ -16,9 +16,12 @@ import httpx
 import pytest
 
 from tenantchat.orchestration.model import (
+    AssembledMessage,
+    AssembledPrompt,
     MessageRole,
-    ModelMessage,
     ModelResponse,
+    PromptRegion,
+    PromptSegment,
     ToolCall,
     ToolSpec,
 )
@@ -38,9 +41,34 @@ TOOL = ToolSpec(
 )
 
 
+def message(
+    role: MessageRole, content: str, *, tool_call_id: str | None = None
+) -> AssembledMessage:
+    """One assembled message whose single segment carries ``content``.
+
+    Visitor turns are marked untrusted, matching how assembly marks them; the
+    adapter must translate the content and not care about the marking.
+    """
+    region = PromptRegion.UNTRUSTED if role is MessageRole.USER else PromptRegion.TRUSTED
+    return AssembledMessage(
+        role=role,
+        segments=(PromptSegment("segment", region, content),),
+        tool_call_id=tool_call_id,
+    )
+
+
+def prompt(*messages: AssembledMessage) -> AssembledPrompt:
+    return AssembledPrompt(
+        template_id="wire-test",
+        template_version=1,
+        bindings={},
+        messages=tuple(messages),
+    )
+
+
 def _run(
     handler: httpx.MockTransport,
-    messages: list[ModelMessage],
+    messages: list[AssembledMessage],
     tools: tuple[ToolSpec, ...],
 ) -> ModelResponse:
     """Drive one `complete` against a fake transport and return the response."""
@@ -49,7 +77,7 @@ def _run(
         adapter = OpenAICompatibleChatModel(
             base_url="http://provider/v1", model="local-model", transport=handler
         )
-        return await adapter.complete(messages, tools=tools)
+        return await adapter.complete(prompt(*messages), tools=tools)
 
     return asyncio.run(invoke())
 
@@ -76,10 +104,10 @@ def test_sends_chat_completions_request_shape() -> None:
             transport=httpx.MockTransport(handler),
         )
         return await adapter.complete(
-            [
-                ModelMessage(role=MessageRole.SYSTEM, content="You are helpful."),
-                ModelMessage(role=MessageRole.USER, content="hello"),
-            ],
+            prompt(
+                message(MessageRole.SYSTEM, "You are helpful."),
+                message(MessageRole.USER, "hello"),
+            ),
             tools=(),
         )
 
@@ -112,7 +140,7 @@ def test_the_api_key_reaches_the_authorization_header_and_nowhere_else() -> None
     assert secret not in repr(adapter)
     assert secret not in str(adapter)
     with pytest.raises(httpx.HTTPStatusError) as raised:
-        asyncio.run(adapter.complete([ModelMessage(role=MessageRole.USER, content="hi")], tools=()))
+        asyncio.run(adapter.complete(prompt(message(MessageRole.USER, "hi")), tools=()))
     assert secret not in str(raised.value)
 
 
@@ -125,7 +153,7 @@ def test_omits_auth_header_when_no_key_is_configured() -> None:
 
     response = _run(
         httpx.MockTransport(handler),
-        [ModelMessage(role=MessageRole.USER, content="hi")],
+        [message(MessageRole.USER, "hi")],
         (),
     )
     assert response.content == "ok"
@@ -162,7 +190,7 @@ def test_translates_tool_specs_and_parses_tool_calls() -> None:
 
     response = _run(
         httpx.MockTransport(handler),
-        [ModelMessage(role=MessageRole.USER, content="what zip?")],
+        [message(MessageRole.USER, "what zip?")],
         (TOOL,),
     )
     assert response.content == ""
@@ -186,8 +214,8 @@ def test_sends_tool_results_with_correlation_id() -> None:
     response = _run(
         httpx.MockTransport(handler),
         [
-            ModelMessage(role=MessageRole.USER, content="run it"),
-            ModelMessage(role=MessageRole.TOOL, content="result", tool_call_id="call-1"),
+            message(MessageRole.USER, "run it"),
+            message(MessageRole.TOOL, "result", tool_call_id="call-1"),
         ],
         (),
     )
@@ -209,7 +237,7 @@ def test_records_model_name_and_usage() -> None:
 
     response = _run(
         httpx.MockTransport(handler),
-        [ModelMessage(role=MessageRole.USER, content="hi")],
+        [message(MessageRole.USER, "hi")],
         (),
     )
     assert response.model_name == "provider-model"
@@ -223,7 +251,7 @@ def test_treats_a_malformed_response_as_a_failed_turn() -> None:
         return httpx.Response(200, json={"choices": []})
 
     with pytest.raises(ValueError):
-        _run(httpx.MockTransport(handler), [ModelMessage(role=MessageRole.USER, content="hi")], ())
+        _run(httpx.MockTransport(handler), [message(MessageRole.USER, "hi")], ())
 
 
 def test_raises_on_transport_failure() -> None:
@@ -233,4 +261,4 @@ def test_raises_on_transport_failure() -> None:
         return httpx.Response(503)
 
     with pytest.raises(httpx.HTTPStatusError):
-        _run(httpx.MockTransport(handler), [ModelMessage(role=MessageRole.USER, content="hi")], ())
+        _run(httpx.MockTransport(handler), [message(MessageRole.USER, "hi")], ())

@@ -24,10 +24,13 @@ import httpx
 import pytest
 
 from tenantchat.orchestration.model import (
+    AssembledMessage,
+    AssembledPrompt,
     ChatModel,
     MessageRole,
-    ModelMessage,
     ModelResponse,
+    PromptRegion,
+    PromptSegment,
     ToolCall,
     ToolSpec,
 )
@@ -44,7 +47,29 @@ TOOL = ToolSpec(
     },
 )
 
-USER_TURN = (ModelMessage(role=MessageRole.USER, content="what zip?"),)
+
+def message(
+    role: MessageRole, content: str, *, tool_call_id: str | None = None
+) -> AssembledMessage:
+    """One assembled message whose single segment carries ``content``."""
+    region = PromptRegion.UNTRUSTED if role is MessageRole.USER else PromptRegion.TRUSTED
+    return AssembledMessage(
+        role=role,
+        segments=(PromptSegment("segment", region, content),),
+        tool_call_id=tool_call_id,
+    )
+
+
+def prompt(*messages: AssembledMessage) -> AssembledPrompt:
+    return AssembledPrompt(
+        template_id="contract",
+        template_version=1,
+        bindings={},
+        messages=tuple(messages),
+    )
+
+
+USER_TURN = prompt(message(MessageRole.USER, "what zip?"))
 
 
 class AdapterDriver(Protocol):
@@ -156,11 +181,11 @@ class _ScriptedDouble:
 
     async def complete(
         self,
-        messages: Sequence[ModelMessage],
+        prompt: AssembledPrompt,
         *,
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
-        del messages, tools
+        del prompt, tools
         if self._failure is not None:
             raise self._failure
         index = min(self._calls, len(self._script) - 1)
@@ -174,11 +199,11 @@ class _ScriptedDouble:
 
 def _complete(
     model: ChatModel,
-    messages: Sequence[ModelMessage] = USER_TURN,
+    prompt: AssembledPrompt = USER_TURN,
     *,
     tools: Sequence[ToolSpec] = (),
 ) -> ModelResponse:
-    return asyncio.run(model.complete(messages, tools=tools))
+    return asyncio.run(model.complete(prompt, tools=tools))
 
 
 DRIVERS = [OpenAIWireDriver(), ScriptedDoubleDriver()]
@@ -218,9 +243,9 @@ def test_tool_results_flow_back_with_their_call_id(driver: AdapterDriver) -> Non
 
     response = _complete(
         model,
-        (
-            ModelMessage(role=MessageRole.USER, content="run it"),
-            ModelMessage(role=MessageRole.TOOL, content="result", tool_call_id="call-1"),
+        prompt(
+            message(MessageRole.USER, "run it"),
+            message(MessageRole.TOOL, "result", tool_call_id="call-1"),
         ),
     )
 

@@ -94,6 +94,13 @@ class TenantPolicy:
     # default matters as much as the override: the visitor must never be shown
     # a statement the server does not also record.
     contact_consent_statement: str | None = None
+    # Prompt customization (`AI-003`). These fill declared template slots —
+    # tone, escalation rules, disclaimers — and are validated against the
+    # slot schema at assembly, so tenant input can never introduce a new
+    # instruction section. They default empty; the template supplies defaults.
+    assistant_tone: str | None = None
+    escalation_rules: tuple[str, ...] = ()
+    disclaimers: tuple[str, ...] = ()
 
     def public_view(self) -> PublicTenantView:
         """Project to the world-readable subset."""
