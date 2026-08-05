@@ -173,7 +173,7 @@ operator action.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /healthz` | Liveness. Dependency-aware readiness is `REL-002`. |
+| `GET /healthz` | Liveness. Dependency-aware readiness ships with each dependency, per the backlog's definition of done. |
 | `GET /api/tenants` | Public tenant configuration, projected from `PublicTenantView`. |
 | `GET /api/tenants/{id}/availability?service=` | Slots currently offered, and the list booking validates against. |
 | `POST /api/book` | Books an offered slot. |

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-02
-- **Affects:** `DATA-002`, `SEC-002`, `DATA-003`, `QA-002`
+- **Affects:** `DATA-002`, `SEC-002`, `DATA-003`
 
 ## Context
 

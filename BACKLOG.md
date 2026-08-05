@@ -2,7 +2,7 @@
 project: tenant-chat-assistant
 document_type: implementation-backlog
 schema_version: 1
-last_updated: 2026-08-03
+last_updated: 2026-08-04
 source_of_truth: BACKLOG.md
 ---
 
@@ -44,6 +44,24 @@ Priorities:
 - `P1`: Required for a credible production-ready RAG/agent demonstration.
 - `P2`: Important product maturity, usability, or operational improvement.
 - `P3`: Optional enhancement after the production demo is complete.
+
+### What is not a separate task
+
+Quality and operational work is a property of a feature, not a successor to it.
+An entry whose whole content is testing, deploying, or operating what another
+entry delivers is folded into that entry's definition of done, so coverage
+lands with the behavior instead of accumulating as a separately prioritized
+debt. Four kinds of work stay dedicated, because none of them is the byproduct
+of one feature:
+
+- The shared harness other tasks' tests run in — `QA-001`, complete.
+- AI quality measurement — `RAG-009` and `RAG-008`. The scoreboard is what makes
+  retrieval tunable at all; it is a product capability, not hygiene applied
+  afterwards.
+- Controls that own a security or privacy boundary rather than test one —
+  `SEC-*` and `PRIV-*`.
+- Operating burden that exists only once the system runs for real — `DEP-*`,
+  `OBS-003`, and `QA-005`. These are Gate C and deliberately uncommitted.
 
 ## Agent dispatch contract
 
@@ -135,10 +153,23 @@ A non-documentation task is `Done` only when:
 
 - Its acceptance criteria are implemented.
 - Unit and integration tests cover the changed behavior and important failure paths.
+- Every route, repository, or migration it changes is exercised against a real
+  Postgres through a documented `make` target, not only against fakes.
+- Every tenant-scoped surface it adds has a cross-tenant case and an
+  unauthorized-principal case asserting the error contract, not only the status
+  code.
+- Any exploit class it closes gains a permanent regression test under
+  `tests/security/`, named after the exploit rather than the fix.
+- A customer- or operator-visible workflow it completes ships its own
+  end-to-end case. A task does not hand its workflow coverage to a later one.
+- Any runtime dependency it introduces is represented in readiness and never in
+  liveness, and its absence degrades the service rather than restarting it.
+- Critical actions it adds emit the structured events and metrics the `OBS-001`
+  and `OBS-002` contracts require, once those exist, with no PII in log fields
+  or metric labels.
 - Tests, linting, and static checks pass locally.
 - Configuration and environment variables are documented with safe defaults.
 - Errors are observable without exposing secrets or PII.
-- Tenant isolation and authorization are covered where relevant.
 - No new high-severity dependency or container scan findings are knowingly introduced.
 - The task's completion notes list changed files, verification commands, and any follow-up task IDs.
 
@@ -156,14 +187,26 @@ Required: every `P0` task in this document. Until Gate A passes, expose the proj
 ### Gate B — Full RAG showcase — **the target**
 
 Required: Gate A plus `ARCH-001`, `AI-001`, `AI-003`, `AGENT-001`, `REL-001`,
-`REL-003`, `RAG-001` through `RAG-009`, `FEAT-001`, `FEAT-008`, `FEAT-011`,
-`FEAT-015`, `OBS-001`, `OBS-002`, `OBS-004`, `PRIV-002`, `QA-002`, and `QA-003`. The target
+`REL-003`, `RAG-001` through `RAG-009`, `FEAT-001`, `FEAT-004` (Gate B slice),
+`FEAT-008`, `FEAT-011`, `FEAT-015`, `OBS-001`, `OBS-002`, `OBS-004`, and
+`PRIV-002`. The target
 demonstration is a visible, tenant-safe document lifecycle: upload, parse,
 chunk, embed, index, retrieve, rerank, answer with authorized citations, abstain
 on weak evidence, and publish comparable evaluation results — with any single
 answer in that lifecycle discoverable in the AI turn explorer and openable as
 the actual executed call graph, showing why it said what it said and, where it
 was wrong, which stage failed and how certain the causal diagnosis is.
+
+Integration, tenant-isolation, and end-to-end coverage are not gate items; they
+are conditions each required task satisfies to be `Done` at all. The gate is
+verified by running the acceptance script below against a build in which every
+required task has met that definition.
+
+`FEAT-004` is in this gate because claim 2 names human handoff alongside booking
+and lead capture. Without it the escalation path writes a queue row that no
+operator can work, and the claim is a schema rather than a behavior. Its Gate B
+slice is verified by its own end-to-end test, not by the trace script below,
+which belongs to claim 3.
 
 #### Gate B executable acceptance script
 
@@ -197,8 +240,10 @@ about the architecture. Treat every `Gate C` task as `P3` in practice unless the
 project's purpose changes; the priorities below record what production would
 demand, not what to build next.
 
-Required: Gate B plus `DEP-002` through `DEP-006`, `QA-004`, `QA-005`, the
-remaining production business workflows, and completed runbooks.
+Required: Gate B plus `DEP-002` through `DEP-006`, `OBS-003`, `QA-005`, the
+`FEAT-004` remainder, the real-provider integrations (`FEAT-002`, `FEAT-003`,
+`FEAT-005`), the remaining production business workflows, and completed
+runbooks.
 
 ## Backlog index
 
@@ -251,44 +296,70 @@ remaining production business workflows, and completed runbooks.
 - [ ] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
 - [ ] `OBS-004` — Inference trace, answer provenance, and failure attribution — `P1`
 - [ ] `PRIV-002` — Inference trace data plane, retention, and access control — `P1`
-- [ ] `QA-002` — API and database integration tests — `P1`
-- [ ] `QA-003` — Tenant-isolation and security regression tests — `P1`
 
-### P1 supporting production work
+### P1 demo-critical business actions
 
-- [ ] `REL-002` — Dependency-aware health, graceful startup, and shutdown — `P1`
-- [ ] `OBS-003` — Dashboards, SLOs, and alerts as code — `P1`
-- [ ] `AI-002` — Model safety, quotas, and cost controls — `P1`
-- [ ] `QA-004` — End-to-end business workflow tests — `P1`
-- [ ] `QA-005` — Load, soak, and failure-injection tests — `P1`
+- [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 
-### P2 deferred Kubernetes and release operations
+### P2 product maturity — after Gate B
 
-- [ ] `DEP-002` — Kubernetes workload hardening — `P2`
-- [ ] `DEP-003` — TLS ingress and production widget hosting — `P2`
-- [ ] `DEP-004` — High availability and autoscaling — `P2`
-- [ ] `DEP-005` — Backup, restore, and disaster-recovery drill — `P2`
-- [ ] `DEP-006` — Release pipeline, scanning, and provenance — `P2`
+- [ ] `AI-002` — Model safety, quotas, and cost controls — `P2`
+- [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
+- [ ] `FEAT-002` — Real availability and calendar integration — `P2`
+- [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P2`
+- [ ] `FEAT-005` — Notification and outbound webhook workflow — `P2`
+- [ ] `FEAT-006` — Tenant onboarding, policy, and branding administration — `P2`
+- [ ] `FEAT-007` — Conversation search, filters, and operator actions — `P2`
+- [ ] `FEAT-009` — Business outcome and conversion analytics — `P2`
+- [ ] `FEAT-012` — Booking cancellation and rescheduling — `P2`
+- [ ] `FEAT-013` — Accessibility, responsive embed, and privacy UX — `P2` — _client slice complete_
+
+### P3 operating burden — Gate C, not committed
+
+- [ ] `DEP-002` — Kubernetes workload hardening — `P3`
+- [ ] `DEP-003` — TLS ingress and production widget hosting — `P3`
+- [ ] `DEP-004` — High availability and autoscaling — `P3`
+- [ ] `DEP-005` — Backup, restore, and disaster-recovery drill — `P3`
+- [ ] `DEP-006` — Release pipeline, scanning, and provenance — `P3`
+- [ ] `OBS-003` — Dashboards, SLOs, and alerts as code — `P3`
+- [ ] `QA-005` — Load, soak, and failure-injection tests — `P3`
+- [ ] `FEAT-014` — Additional business-domain agents — `P3`
+
+### Folded into the definition of done — `Cancelled`
+
+Each of these existed only to test or operate what another task delivers. The
+obligation is unchanged; it moved into the global definition of done, where it
+is owned by the task that introduces the behavior.
+
+- `QA-002` — API and database integration tests
+- `QA-003` — Tenant-isolation and security regression tests
+- `QA-004` — End-to-end business workflow tests
+- `REL-002` — Dependency-aware health, graceful startup, and shutdown
 
 ## Feature and workflow task list
 
-These tasks cover the missing customer-facing and operator-facing capabilities identified in the production audit.
+These tasks cover the missing customer-facing and operator-facing capabilities
+identified in the production audit. Priority follows the three claims in *What
+the demo is meant to prove*: a feature that supplies evidence for a claim is
+`P1`; a feature that adds a vendor integration behind an interface already
+proven by a domain task is `P2`, because the second CRM adapter teaches nothing
+the first outbox did not.
 
 - [ ] `FEAT-001` — Knowledge-base administration workflow — `P1`
-- [ ] `FEAT-002` — Real availability and calendar integration — `P1`
-- [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P1`
-- [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1`
-- [ ] `FEAT-005` — Notification and outbound webhook workflow — `P1`
-- [ ] `FEAT-006` — Tenant onboarding, policy, and branding administration — `P1`
-- [ ] `FEAT-007` — Conversation search, filters, and operator actions — `P2`
+- [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 - [ ] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
-- [ ] `FEAT-009` — Business outcome and conversion analytics — `P2`
-- [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P1`
 - [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
+- [ ] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
+- [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
+- [ ] `FEAT-002` — Real availability and calendar integration — `P2`
+- [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P2`
+- [ ] `FEAT-005` — Notification and outbound webhook workflow — `P2`
+- [ ] `FEAT-006` — Tenant onboarding, policy, and branding administration — `P2`
+- [ ] `FEAT-007` — Conversation search, filters, and operator actions — `P2`
+- [ ] `FEAT-009` — Business outcome and conversion analytics — `P2`
 - [ ] `FEAT-012` — Booking cancellation and rescheduling — `P2`
 - [ ] `FEAT-013` — Accessibility, responsive embed, and privacy UX — `P2` — _client slice complete_
-- [ ] `FEAT-014` — Additional business-domain agents — `P2`
-- [ ] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
+- [ ] `FEAT-014` — Additional business-domain agents — `P3`
 
 ## Completed baseline details
 
@@ -443,10 +514,12 @@ These tasks cover the missing customer-facing and operator-facing capabilities i
   Verified `make check` twice after removing dependency directories and cleaning
   generated artifacts: 271 Python tests (99% covered source) and six widget
   tests (86.21% statements) passed both times; `npm audit --audit-level=high`
-  reported zero vulnerabilities. Follow-ups: `QA-002` through `QA-005` deepen
-  integration, isolation, E2E, and failure coverage; `DEP-001` replaced the
-  prototype image (deleted with the `API-001` cutover) and `DEP-006` owns
-  release scanning/provenance.
+  reported zero vulnerabilities. Follow-ups: integration, isolation, and
+  end-to-end coverage became global definition-of-done obligations rather than
+  the successor tasks recorded here when this shipped — `QA-002` through
+  `QA-004` are `Cancelled` and name where each moved; `QA-005` still owns load
+  and soak coverage at Gate C; `DEP-001` replaced the prototype image (deleted
+  with the `API-001` cutover) and `DEP-006` owns release scanning/provenance.
 
 ### DATA-001 — Normalized schema and migration framework
 
@@ -885,23 +958,26 @@ guarantees by construction.
 
 ### REL-002 — Dependency-aware health, graceful startup, and shutdown
 
-- Status: `Todo`
-- Priority: `P1`
+- Status: `Cancelled`
+- Priority: —
 - Type: `Reliability`
-- Depends on: `API-001`, `DATA-002`, `DEP-001`
-- Likely areas: service health routes, Kubernetes probes, application lifecycle hooks
-- Scope:
-  - Separate liveness, readiness, and startup checks.
-  - Check required dependencies without turning transient optional failures into restart loops.
-  - Warm the embedding model before readiness succeeds.
-  - Drain traffic and finish or safely cancel in-flight work during shutdown.
-- Acceptance criteria:
-  - No service receives traffic before it can fulfill its required contract.
-  - Liveness does not depend on remote systems.
-  - Rolling updates do not lose accepted messages or actions.
-- Verification:
-  - Probe and rolling-restart tests pass in Kubernetes.
-- Completion notes: _Pending._
+- Cancelled on: `2026-08-04`
+- Reason: Every service that gains a dependency must already express it
+  correctly in its probes; that is a property of adding the dependency, not a
+  project to run afterwards. Deferring it produces exactly the failure it aims
+  to prevent — a readiness check written months after the client it guards, by
+  someone who no longer remembers which failures are transient.
+- Where the scope went:
+  - Liveness/readiness/startup separation, and the rule that a new dependency
+    enters readiness rather than liveness and degrades instead of restarting,
+    are now global definition-of-done items.
+  - Warming the embedding model before readiness succeeds belongs to the
+    embedding service's own readiness contract under that same rule.
+  - Draining traffic and finishing or safely cancelling in-flight work moved to
+    `FEAT-010`, which owns message-delivery correctness and is the only place
+    the guarantee is testable end to end.
+  - `DEP-002` and `DEP-004` retain the Kubernetes rolling-restart verification
+    at Gate C, where a live cluster exists to run it against.
 
 ### REL-003 — Durable background jobs and retry handling
 
@@ -968,8 +1044,12 @@ guarantees by construction.
 ### OBS-003 — Dashboards, SLOs, and alerts as code
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P3`
 - Type: `Operations`
+- Gate: `C` — an SLO is a promise to someone who is paged, and this system has
+  no on-call. The instrumentation the dashboards would read is not deferred
+  with them: `OBS-002` owns the metrics and their cardinality ceiling, and
+  `FEAT-015` is the surface the demo actually reads answers from.
 - Depends on: `OBS-002`, `DEP-002`
 - Likely areas: `k8s/observability/`, Grafana dashboards, Prometheus rules, runbooks
 - Scope:
@@ -1143,8 +1223,14 @@ guarantees by construction.
 ### AI-002 — Model safety, quotas, and cost controls
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `AI safety/operations`
+- Priority note: Per-tenant spend budgets and cost attribution are a billing
+  concern that arrives with paying tenants. The two parts that are safety
+  rather than economics do not wait for this task: bounded tool rounds are
+  already enforced in the `dispatch@1` graph, and the per-request context limit
+  is enforced during assembly by `AI-003`, which reports what it excluded
+  instead of truncating silently.
 - Depends on: `AI-001`, `SEC-003`, `OBS-002`
 - Likely areas: policy engine, model gateway, tenant plans/configuration
 - Scope:
@@ -1435,12 +1521,22 @@ guarantees by construction.
   - State-machine tests cover happy paths, interruptions, retries, topic changes, and invalid transitions.
 - Completion notes: _Pending._
 
+The `DEP-*` tasks below are Gate C. The parts of each that are a normal
+consequence of shipping an image or a route already landed with the task that
+shipped it: non-root numeric users, digest pinning, and the removal of runtime
+`pip` and executable ConfigMap mounts under `DEP-001`; default-deny
+NetworkPolicies, per-caller credentials, and public-route separation under
+`SEC-004`; the widget gateway, its CSP, and admin/visitor listener separation
+under `DEP-003`'s recorded progress. What remains in each entry is the
+operating burden — policy scanners, autoscaling, recovery drills, and a
+promotion pipeline — which requires a cluster that runs for real.
+
 ### DEP-002 — Kubernetes workload hardening
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P3`
 - Type: `Infrastructure`
-- Depends on: `DEP-001`, `SEC-004`, `REL-002`
+- Depends on: `DEP-001`, `SEC-004`
 - Likely areas: `k8s/`
 - Scope:
   - Add restricted pod/container security contexts, read-only root filesystems, dropped capabilities, seccomp, and dedicated service accounts.
@@ -1457,7 +1553,7 @@ guarantees by construction.
 ### DEP-003 — TLS ingress and production widget hosting
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P3`
 - Type: `Infrastructure/frontend`
 - Depends on: `SEC-003`, `DEP-002`
 - Likely areas: ingress/certificate manifests, frontend build/hosting, CSP configuration
@@ -1488,9 +1584,9 @@ guarantees by construction.
 ### DEP-004 — High availability and autoscaling
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P3`
 - Type: `Infrastructure/reliability`
-- Depends on: `DATA-002`, `REL-002`, `DEP-002`
+- Depends on: `DATA-002`, `DEP-002`
 - Likely areas: deployments, HPA, PDB, topology rules, database/search architecture docs
 - Scope:
   - Run stateless services with multiple replicas, disruption budgets, rolling strategies, and topology spread.
@@ -1507,7 +1603,7 @@ guarantees by construction.
 ### DEP-005 — Backup, restore, and disaster-recovery drill
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P3`
 - Type: `Operations/data`
 - Depends on: `DATA-001`, `RAG-001`, `DEP-002`
 - Likely areas: backup jobs, encrypted storage configuration, runbooks
@@ -1526,7 +1622,7 @@ guarantees by construction.
 ### DEP-006 — Release pipeline, scanning, and provenance
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P3`
 - Type: `Delivery/security`
 - Depends on: `QA-001`, `DEP-001`, `DEP-002`
 - Likely areas: CI/CD workflows, registry configuration, deployment overlays
@@ -1545,60 +1641,71 @@ guarantees by construction.
 
 ### QA-002 — API and database integration tests
 
-- Status: `Todo`
-- Priority: `P1`
+- Status: `Cancelled`
+- Priority: —
 - Type: `Quality`
-- Depends on: `API-001`, `DATA-002`
-- Likely areas: `tests/integration/`
-- Scope:
-  - Cover every API route against real Postgres and replaceable fake providers.
-  - Test transactions, migrations, error contracts, pagination, ordering, and concurrency.
-- Acceptance criteria:
-  - Tests run hermetically in CI and clean up their data.
-  - Success and failure contracts are asserted, not only HTTP status codes.
-- Verification:
-  - Run the integration suite repeatedly and in randomized order.
-- Completion notes: _Pending._
+- Cancelled on: `2026-08-04`
+- Reason: This was already happening without the task. `DATA-001`, `DATA-002`,
+  and `RAG-001` each shipped their own migration and repository suites against
+  disposable PostgreSQL 16 under `make test-database`, because a repository is
+  not demonstrably correct against a fake. Keeping the entry implied a future
+  sweep that would test routes whose authors had moved on, and made Gate B
+  depend on it.
+- Where the scope went: the global definition of done now requires every route,
+  repository, and migration a task changes to be exercised against a real
+  Postgres through a documented `make` target, asserting the error contract
+  rather than the status code alone. `tests/integration/` was never created;
+  coverage lives beside the code it covers, in `tests/migrations/`,
+  `tests/repositories/`, and each service's own suite.
 
 ### QA-003 — Tenant-isolation and security regression tests
 
-- Status: `Todo`
-- Priority: `P1`
+- Status: `Cancelled`
+- Priority: —
 - Type: `Security quality`
-- Depends on: `SEC-001` through `SEC-005`, `PRIV-001`
-- Likely areas: `tests/security/`
-- Scope:
-  - Maintain automated cross-tenant, session-hijack, RBAC, CORS, rate-limit, path-traversal, prompt-injection, and PII-leak tests.
-- Acceptance criteria:
-  - Every formerly identified P0 exploit has a regression test.
-  - Security tests run in CI and against staging before release.
-- Verification:
-  - Run the suite with two or more tenants and principals of every role.
-- Completion notes: _Pending._
+- Cancelled on: `2026-08-04`
+- Reason: An isolation suite that depends on `SEC-001` through `SEC-005` and
+  `PRIV-001` can only be written after every boundary it checks is already
+  shipped and trusted. That inverts the order that catches anything: the
+  cross-tenant case is worth most when it is written by the person building the
+  boundary, as the argument that the boundary holds.
+- Where the scope went:
+  - Cross-tenant and unauthorized-principal negative cases are now a
+    definition-of-done item for every tenant-scoped surface, owned by the task
+    that adds the surface.
+  - `tests/security/` survives as the required home for a permanent regression
+    test per exploit class, added by the task that closes the exploit. It is a
+    growing artifact with no single owner rather than a task.
+  - The adversarial corpora keep their existing owners: indirect prompt
+    injection is `RAG-007`, trace-plane PII leakage is `PRIV-002`, rate and
+    origin abuse is `SEC-003`, session hijack and tenant reassignment is
+    `SEC-002`.
 
 ### QA-004 — End-to-end business workflow tests
 
-- Status: `Todo`
-- Priority: `P1`
+- Status: `Cancelled`
+- Priority: —
 - Type: `Quality`
-- Depends on: `FEAT-002` through `FEAT-005`, `AGENT-001`
-- Likely areas: browser/API E2E tests and provider sandboxes
-- Scope:
-  - Test visitor-to-booking, visitor-to-lead, financing-to-follow-up, and visitor-to-human-handoff journeys.
-  - Cover staff takeover, notifications, external delivery, retry, and final outcome state.
-- Acceptance criteria:
-  - Tests assert both UI behavior and durable/external side effects.
-  - Sandbox provider failures and duplicate callbacks are covered.
-- Verification:
-  - Run in CI or a disposable staging environment.
-- Completion notes: _Pending._
+- Cancelled on: `2026-08-04`
+- Reason: It collected the end-to-end coverage of four features into a fifth
+  task that could only start once all four had shipped untested end to end.
+- Where the scope went: the global definition of done now requires a task
+  completing a customer- or operator-visible workflow to ship its own
+  end-to-end case, including durable and external side effects, sandbox
+  provider failure, and duplicate callback. `FEAT-002` through `FEAT-005` and
+  `FEAT-004` already name those cases in their own verification sections.
 
 ### QA-005 — Load, soak, and failure-injection tests
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P3`
 - Type: `Performance/reliability quality`
-- Depends on: `REL-001` through `REL-003`, `DEP-004`
+- Gate: `C` — an operating burden, not a demo claim. Sustained load and soak
+  behavior can only be measured against a cluster that runs for real, and
+  measuring it teaches nothing further about the architecture. Per-dependency
+  failure injection is not deferred with it: `REL-001` owns timeout, reset,
+  `429`, `5xx`, and malformed-response coverage for the clients it adds.
+- Depends on: `REL-001`, `REL-003`, `DEP-004`
 - Likely areas: `tests/performance/`, staging scripts, runbooks
 - Scope:
   - Define expected concurrency, throughput, context size, and latency targets.
@@ -1637,8 +1744,14 @@ guarantees by construction.
 ### FEAT-002 — Real availability and calendar integration
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Feature/integration`
+- Priority note: The architectural claim — a booking that survives retry,
+  timeout, and replay — is proven by `DATA-003` against its database-backed
+  provider, behind the same availability interface a real provider implements.
+  This task swaps the implementation and adds webhook reconciliation. That is
+  vendor plumbing with real value for a customer and little additional evidence
+  for the demo, which is why it sits after Gate B rather than inside it.
 - Depends on: `DATA-003`, `REL-001`, `REL-003`, `SEC-005`
 - Likely areas: calendar provider adapter, scheduling service, tenant integration settings
 - Scope:
@@ -1656,8 +1769,12 @@ guarantees by construction.
 ### FEAT-003 — CRM lead integration and delivery guarantees
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Feature/integration`
+- Priority note: `REL-003` owns the guarantee in the title — durable outbox,
+  leases, backoff, dead-letter, and exactly-once external effect under
+  duplicate delivery — and proves it against a fake receiver. A real CRM
+  adapter demonstrates field mapping, not delivery semantics.
 - Depends on: `REL-003`, `PRIV-001`, `SEC-005`
 - Likely areas: CRM adapter, lead outbox, admin delivery status
 - Scope:
@@ -1675,27 +1792,53 @@ guarantees by construction.
 ### FEAT-004 — Human handoff queue and agent takeover
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P1` for the Gate B slice; `P2` for the remainder
 - Type: `Feature/workflow`
-- Depends on: `SEC-001`, `DATA-002`, `AGENT-001`, `FEAT-010`
+- Depends on: `SEC-001`, `DATA-002`, `AGENT-001`
 - Likely areas: handoff tables/service, admin UI, visitor message channel
-- Scope:
-  - Add queue, priority, reason, summary, assignment, presence, SLA, accept, takeover, release, and resolution states.
-  - Pause automated replies while a staff member owns the conversation.
-  - Notify the visitor of queue/takeover/resolution state without exposing staff internals.
+- Rationale: claim 2 names human handoff alongside booking and lead capture.
+  `ARCH-001` shipped the escalate node and `handoffs.summary`, so the
+  conversation already leaves the agent — it just arrives nowhere. Until a staff
+  member can take ownership of it, "escalates to a human" describes a table.
+- Scope — Gate B slice:
+  - Add queue, reason, summary, assignment, accept, release, and resolution
+    states over the existing admin polling transport.
+  - Enforce single ownership: exactly one staff owner at a time, with
+    race-to-accept resolved in the database rather than in the console.
+  - Pause automated replies while a staff member owns the conversation, and
+    resume the graph safely on release without repeating a committed action.
+  - Notify the visitor of queue, takeover, and resolution state without
+    exposing staff identity or internal queue position.
+- Scope — deferred remainder (`P2`, after Gate B):
+  - Presence, priority ordering, SLA timers and breach events, reassignment
+    between staff, and the operator notification channel, which belongs with
+    `FEAT-005`.
+  - Live push of takeover and staff replies, which arrives with `FEAT-010`;
+    the Gate B slice is correct over polling and must stay correct after it.
 - Acceptance criteria:
-  - Only one staff owner can hold a conversation at a time.
-  - Automated agents cannot reply during active takeover unless explicitly invited.
-  - Every assignment and message is tenant-scoped and audited.
+  - Only one staff owner can hold a conversation at a time, proven under
+    concurrent accepts rather than by UI affordance.
+  - Automated agents cannot reply during active takeover unless explicitly
+    invited, and a queued turn resuming after release commits nothing twice.
+  - Every assignment and message is tenant-scoped and audited to a principal,
+    tenant, timestamp, and request ID.
+  - A visitor cannot learn which staff member holds their conversation, or that
+    another tenant's queue exists.
 - Verification:
-  - Multi-user E2E tests cover race-to-accept, disconnect, reassignment, and resolution.
+  - Multi-user end-to-end tests cover race-to-accept, staff disconnect,
+    release-and-resume, and resolution, asserting durable state alongside UI
+    behavior.
 - Completion notes: _Pending._
 
 ### FEAT-005 — Notification and outbound webhook workflow
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Feature/integration`
+- Priority note: Shares `REL-003`'s delivery guarantee with `FEAT-003`. Signed,
+  replay-protected webhooks and consent-aware channels are genuine product
+  work, but nothing in the three claims depends on an email leaving the
+  cluster. Absorbs the operator notification channel deferred from `FEAT-004`.
 - Depends on: `REL-003`, `PRIV-001`, `SEC-005`
 - Likely areas: notification adapters, webhook subscriptions, delivery log
 - Scope:
@@ -1713,8 +1856,14 @@ guarantees by construction.
 ### FEAT-006 — Tenant onboarding, policy, and branding administration
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Feature/platform`
+- Priority note: Tenant isolation is enforced by tenant-qualified repositories,
+  retrieval filters, and RBAC — not by where the two demo tenants' facts are
+  stored. Moving them out of code removes a deployment from onboarding, which
+  matters to a customer and not to any of the three claims. `RAG-001` and
+  `FEAT-001` already establish the draft/publish/version pattern this task
+  would reuse.
 - Depends on: `SEC-001`, `DATA-001`, `AI-001`
 - Likely areas: tenant APIs/tables, admin settings UI, widget configuration
 - Scope:
@@ -1790,20 +1939,33 @@ guarantees by construction.
 ### FEAT-010 — Streaming, cancellation, and reliable message delivery
 
 - Status: `Todo`
-- Priority: `P1`
+- Priority: `P2`
 - Type: `Feature/frontend/backend`
 - Depends on: `API-001`, `DATA-002`, `SEC-002`, `REL-001`
-- Likely areas: chat transport, widget state, admin live updates
+- Likely areas: chat transport, widget state, admin live updates, application lifecycle hooks
+- Priority note: This is the highest-value `P2` and the first task to pick up
+  after Gate B. A non-streaming widget reads as a prototype regardless of what
+  is behind it. It is not `P1` because none of the three claims is about
+  perceived latency, and `DATA-002` already made the underlying correctness
+  property true: the visitor's message is committed before the runtime is
+  asked anything, so an interrupted turn loses a reply, never a question.
 - Scope:
   - Add authenticated SSE or WebSocket delivery for model tokens, message commits, handoff changes, and staff replies.
   - Add cancel, reconnect, resume cursor, delivery acknowledgements, and duplicate suppression.
   - Persist only complete or explicitly cancelled message states.
+  - Drain traffic and finish or safely cancel in-flight work during shutdown,
+    absorbed from the cancelled `REL-002`. A rolling update must not lose an
+    accepted message or leave a partial one durable.
 - Acceptance criteria:
   - Refresh/reconnect does not duplicate or lose committed messages.
   - Cancellation stops downstream generation where supported and never rolls back committed actions.
-  - Staff replies arrive without two-second polling.
+  - Staff replies arrive without two-second polling, and the `FEAT-004`
+    ownership guarantees hold identically over the pushed transport.
+  - A rolling restart mid-turn loses no accepted message and produces no
+    duplicate business action.
 - Verification:
   - Browser tests cover network interruption, reconnect, duplicate event, cancel, and takeover.
+  - A restart-during-generation test asserts the drain guarantee.
 - Completion notes: _Pending._
 
 ### FEAT-011 — Customer-facing citations and source viewer
@@ -1904,8 +2066,13 @@ guarantees by construction.
 ### FEAT-014 — Additional business-domain agents
 
 - Status: `Todo`
-- Priority: `P2`
+- Priority: `P3`
 - Type: `Feature/agents`
+- Priority note: `AGENT-001` proves the registry, the typed tool allowlist, and
+  safe handoff; the dispatcher and financing agents already exercise two
+  domains through it. A third and fourth agent add breadth, not evidence — the
+  generality claim is carried by the registry contract and its tests, not by
+  the count of agents registered against it.
 - Depends on: `AGENT-001`, `RAG-008`, appropriate real integrations
 - Likely areas: specialized agent registry, domain prompts/policies, tools, eval datasets
 - Scope:
@@ -1956,6 +2123,12 @@ or UI subcomponents, but the task owner and final reviewer should remain the
 strong model. P0 security changes always receive strong-model review regardless
 of implementation complexity.
 
+No wave contains a task whose output is coverage of an earlier wave. Integration
+and isolation tests were previously scheduled as `QA-002` in Wave 1 and `QA-003`
+in Wave 3; they are now part of what makes each row in every wave `Done`, which
+is why the complexity ratings below already assume that work. A row that looks
+cheaper than its rating suggests is probably not counting it.
+
 ### Wave 0 — Current unblockers
 
 Run these two now; their likely areas do not need to overlap. `API-001` slice 2
@@ -1977,8 +2150,7 @@ may run in parallel only when their likely files do not overlap.
 | 1A | `AI-001` | `L` | Strong | Unblocked, and the last thing between the served runtime and an answered turn: chat routes report themselves unavailable until a provider adapter exists. |
 | 1B | `SEC-001` remainder | `L` | Strong | After `API-001`; finish tenant membership and route-level RBAC rather than treating gateway auth as completion. |
 | 1C | `SEC-002` | `L` | Strong | After `API-001`; establishes the visitor security boundary. |
-| 1D | `QA-002` | `M` | Economical | Start after `API-001` and grow continuously as later APIs land. |
-| 1E | `RAG-002` | `L` | Strong | After `REL-003`; implements durable ingestion and index-integrity detection. |
+| 1D | `RAG-002` | `L` | Strong | After `REL-003`; implements durable ingestion and index-integrity detection. |
 
 ### Wave 2 — Runtime, privacy foundation, and content preparation
 
@@ -2004,7 +2176,7 @@ may run in parallel only when their likely files do not overlap.
 | 3F | `FEAT-011` | `S` | Economical | After `RAG-005` and `SEC-002`; bounded citation and authorized-source UI. |
 | 3G | `OBS-001` | `M` | Economical | After `PRIV-001`; structured events, correlation, and redaction under a fixed privacy contract. |
 | 3H | `PRIV-002` | `L` | Strong | After `PRIV-001`; protects the content-bearing inference plane. |
-| 3I | `QA-003` | `L` | Economical fixture implementation, strong security review | After all P0 security tasks and `PRIV-001`; adversarial tenant-isolation coverage is a release gate. |
+| 3I | `FEAT-004` Gate B slice | `M` | Economical implementation, strong review of the ownership transaction | After `AGENT-001` and the `SEC-001` remainder; completes claim 2's escalation path over the existing polling transport. |
 
 ### Wave 4 — Provenance product and quality flywheel
 
@@ -2018,15 +2190,23 @@ may run in parallel only when their likely files do not overlap.
 
 ### Wave 5 — Gate B verification, then stop
 
-- Finish the continuously grown `QA-002` and `QA-003` suites.
+- Confirm that no required task shipped with a definition-of-done exemption. A
+  waived integration, cross-tenant, or end-to-end obligation is a Gate B
+  blocker recorded against the task that waived it, not a new backlog entry.
 - Run the ten-case Gate B executable acceptance script across both tenants and
   require every case to be discoverable in `FEAT-015`.
+- Run the `FEAT-004` handoff journey end to end, since claim 2's escalation
+  path is verified there rather than by the trace script.
 - Record measured results and any explicit exception; do not start Gate C work
   merely because a model or agent is idle.
-- Keep `OBS-003`, `AI-002`, `REL-002`, `FEAT-002` through `FEAT-007`,
-  `FEAT-009`, `FEAT-010`, `FEAT-012`, `FEAT-014`, `DEP-002` through `DEP-006`,
-  `QA-004`, and `QA-005` outside the Gate B dispatch queue unless the product
-  goal changes.
+- Keep `AI-002`, `FEAT-002`, `FEAT-003`, `FEAT-005` through `FEAT-007`,
+  `FEAT-009`, `FEAT-010`, `FEAT-012`, `FEAT-014`, the `FEAT-004` remainder,
+  `OBS-003`, `DEP-002` through `DEP-006`, and `QA-005` outside the Gate B
+  dispatch queue unless the product goal changes.
+
+Then stop. `FEAT-010` is the first task to pick up if the project continues:
+live delivery is what a viewer notices before any of the three claims, and it
+carries the shutdown-drain guarantee absorbed from the cancelled `REL-002`.
 
 ## Decision log required before implementation
 
