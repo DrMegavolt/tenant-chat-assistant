@@ -62,6 +62,10 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/admin/trace-access"),
     ("post", "/api/admin/trace-access"),
     ("delete", "/api/admin/trace-access"),
+    # RAG-002: the knowledge lifecycle surface FEAT-001's console builds on.
+    ("post", "/api/admin/knowledge/uploads"),
+    ("get", "/api/admin/knowledge/index-findings"),
+    ("post", "/api/admin/knowledge/index-integrity-check"),
 }
 
 

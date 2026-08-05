@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from datetime import timedelta
 
 import pytest
@@ -293,6 +294,7 @@ def test_operator_routes_control_postgres_jobs_with_the_same_tenant_contract(
         admin_gateway_token="gateway-token-for-job-tests",
         admin_csrf_secret="csrf-secret-for-job-tests",
         visitor_credential_signing_key="visitor-signing-key-for-tests-" + "x" * 16,
+        ingestion_storage_root=tempfile.mkdtemp(prefix="tenantchat-job-repository-"),
     )
     headers = {
         GATEWAY_TOKEN_HEADER: "gateway-token-for-job-tests",

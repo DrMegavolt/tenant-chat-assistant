@@ -315,6 +315,20 @@ spec:
               app: postgres
       ports:
         - { protocol: TCP, port: 5432 }
+    # RAG-002: the ingestion handler reads uploads from the shared PVC, writes
+    # chunks to Elasticsearch, and calls the embedding service.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: embedding-service
+      ports:
+        - { protocol: TCP, port: 8001 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

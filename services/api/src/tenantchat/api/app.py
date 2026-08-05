@@ -11,6 +11,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -28,6 +29,7 @@ from tenantchat.api.guards import (
     ResponseSizeLimitMiddleware,
     SecurityHeadersMiddleware,
 )
+from tenantchat.api.index_integrity import IndexIntegrityStore, InMemoryIndexIntegrityStore
 from tenantchat.api.jobs import InMemoryJobStore, JobStore
 from tenantchat.api.limits import (
     InMemoryRateLimitStore,
@@ -56,6 +58,8 @@ from tenantchat.api.persistence.availability import (
     PostgresAvailabilityProvider,
     seed_demo_availability,
 )
+from tenantchat.api.persistence.index_integrity import PostgresIndexIntegrityStore
+from tenantchat.api.persistence.knowledge import PostgresKnowledgeStore
 from tenantchat.api.persistence.rate_limits import PostgresRateLimitStore
 from tenantchat.api.problems import (
     handle_domain_error,
@@ -69,12 +73,19 @@ from tenantchat.api.routers import (
     chat,
     health,
     jobs,
+    knowledge,
     leads,
     privacy,
     tenants,
     traces,
 )
+from tenantchat.api.search import (
+    ElasticsearchSearchIndex,
+    InMemorySearchIndex,
+    SearchIndex,
+)
 from tenantchat.api.settings import Settings, loopback_database, validate_trace_content_export
+from tenantchat.api.storage import DiskObjectStore, MemoryObjectStore, ObjectStore
 from tenantchat.api.store import (
     AuditStore,
     BookingStore,
@@ -83,8 +94,10 @@ from tenantchat.api.store import (
     HandoffStore,
     IdempotencyStore,
     InMemoryBookingStore,
+    InMemoryKnowledgeStore,
     InMemoryTraceAccessStore,
     InMemoryTurnRecordStore,
+    KnowledgeStore,
     LeadStore,
     MembershipStore,
     PrivacyStore,
@@ -303,6 +316,10 @@ def create_app(
     rate_limit_store: RateLimitStore | None = None,
     visitor_identity: VisitorIdentityExtractor | None = None,
     availability_provider: AvailabilityProvider | None = None,
+    knowledge_store: KnowledgeStore | None = None,
+    generation_findings: IndexIntegrityStore | None = None,
+    object_store: ObjectStore | None = None,
+    search_index: SearchIndex | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -348,6 +365,15 @@ def create_app(
             uses the body's and path's ``session_id``.
         availability_provider: What the tenant is currently offering. Explicit
             test adapter; production builds the PostgreSQL-backed fake provider.
+        knowledge_store: The knowledge system of record (RAG-001). Injected
+            for tests; production builds the PostgreSQL store.
+        generation_findings: Index generations and integrity findings (RAG-002).
+            Injected for tests; production builds the PostgreSQL store.
+        object_store: Tenant-isolated object storage for uploads (RAG-002).
+            Injected for tests; production requires ``INGESTION_STORAGE_ROOT``.
+        search_index: The retrieval index (RAG-002). Injected for tests;
+            production builds the Elasticsearch adapter when
+            ``ELASTICSEARCH_URL`` is configured.
 
     Raises:
         ValueError: the stores were injected in part, or production composition
@@ -467,6 +493,20 @@ def create_app(
         job_store = PostgresJobStore(database.engine)
         turn_record_store = PostgresTurnRecordStore(database.engine)
         trace_access_store = PostgresTraceAccessStore(database.engine)
+        knowledge_store = PostgresKnowledgeStore(database.engine)
+        generation_findings = PostgresIndexIntegrityStore(database.engine)
+        if not resolved.ingestion_storage_root:
+            raise ValueError(
+                "INGESTION_STORAGE_ROOT is required for tenant-isolated upload storage"
+            )
+        object_store = DiskObjectStore(Path(resolved.ingestion_storage_root))
+        if resolved.elasticsearch_url is not None:
+            search_index = ElasticsearchSearchIndex(
+                base_url=resolved.elasticsearch_url,
+                username=resolved.elasticsearch_username,
+                password=resolved.elasticsearch_password,
+                index_name=resolved.elasticsearch_index,
+            )
 
     if (
         booking_store is None
@@ -490,6 +530,21 @@ def create_app(
         turn_record_store = InMemoryTurnRecordStore()
     if trace_access_store is None:
         trace_access_store = InMemoryTraceAccessStore()
+
+    rag_stores = (knowledge_store, generation_findings, object_store, search_index)
+    if (
+        database is None
+        and any(store is None for store in rag_stores)
+        and any(store is not None for store in rag_stores)
+    ):
+        raise ValueError("inject all RAG stores together or let production composition build all")
+    if not any(store is not None for store in rag_stores) and database is None:
+        # The no-database shape is a unit test, and the in-memory fakes are its
+        # complete implementation, exactly like `InMemoryJobStore` above.
+        knowledge_store = InMemoryKnowledgeStore()
+        generation_findings = InMemoryIndexIntegrityStore()
+        object_store = MemoryObjectStore()
+        search_index = InMemorySearchIndex()
 
     # SEC-002: the visitor credential signer. Production composition required
     # the key above, so every real deployment signs with a shared secret it
@@ -609,6 +664,10 @@ def create_app(
     app.state.job_store = job_store
     app.state.turn_record_store = turn_record_store
     app.state.trace_access_store = trace_access_store
+    app.state.knowledge_store = knowledge_store
+    app.state.generation_findings = generation_findings
+    app.state.object_store = object_store
+    app.state.search_index = search_index
     app.state.visitor_credential_signer = visitor_credentials
     # The one clock every visitor credential is verified against, so a test can
     # move time by reassigning state rather than sleeping.
@@ -640,6 +699,7 @@ def create_app(
     app.include_router(privacy.router)
     app.include_router(jobs.router)
     app.include_router(traces.router)
+    app.include_router(knowledge.router)
     app.include_router(admin.router)
 
     return app

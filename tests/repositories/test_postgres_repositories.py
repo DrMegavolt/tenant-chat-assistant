@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import tempfile
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 
@@ -86,6 +87,8 @@ def test_production_composition_persists_current_api_writes(
         admin_gateway_token="gateway-token-for-tests",
         admin_csrf_secret="csrf-secret-for-tests",
         visitor_credential_signing_key="visitor-signing-key-for-tests-" + "x" * 16,
+        # RAG-002: production composition requires the isolated upload root.
+        ingestion_storage_root=tempfile.mkdtemp(prefix="tenantchat-ingestion-"),
     )
     with TestClient(create_app(settings)) as client:
         apex = client.post("/api/chat/session", json={"tenant_id": "apex"}).json()

@@ -81,3 +81,16 @@ class ChatUnavailableError(TransportError):
     status = 503
     code = "chat_unavailable"
     message = "This deployment cannot answer chat turns."
+
+
+class SearchIndexUnavailableError(TransportError):
+    """The deployment has no retrieval index configured.
+
+    The integrity check must read the index to detect faults, and a deployment
+    without one cannot answer either way — it reports the capability as absent
+    rather than claiming a clean bill of health.
+    """
+
+    status = 503
+    code = "search_index_unavailable"
+    message = "This deployment has no retrieval index."

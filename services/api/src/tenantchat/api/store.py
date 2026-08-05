@@ -26,6 +26,17 @@ from tenantchat.core.commands import (
 )
 from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
+from tenantchat.core.knowledge import (
+    ContentChecksum,
+    DocumentVersion,
+    KnowledgeDocument,
+    KnowledgeDomain,
+    KnowledgeSource,
+    RetrievalContext,
+    SourceKind,
+    Visibility,
+)
+from tenantchat.core.lifecycle import IndexingState, VersionState
 from tenantchat.core.ports import IdempotencyKey
 from tenantchat.core.privacy import (
     ANONYMIZED_NAME,
@@ -1412,3 +1423,295 @@ class InMemoryPrivacyStore:
             ]
         records.sort(key=lambda record: record.requested_at, reverse=True)
         return tuple(records)
+
+
+class KnowledgeStore(Protocol):
+    """The knowledge system of record's ingestion-facing surface (RAG-001).
+
+    The ingestion job, the upload route, and the integrity detector all work
+    through this contract; the in-memory fake below and the PostgreSQL
+    repository both satisfy it.
+    """
+
+    async def stage_version(
+        self,
+        tenant_id: str,
+        *,
+        source_id: uuid.UUID,
+        external_key: str,
+        title: str,
+        checksum: ContentChecksum,
+        byte_size: int,
+        media_type: str,
+        storage_key: str,
+        visibility: Visibility = Visibility.PUBLIC,
+    ) -> KnowledgeDocument: ...
+    async def load_document(self, tenant_id: str, document_id: uuid.UUID) -> KnowledgeDocument: ...
+    async def document_for_version(
+        self, tenant_id: str, version_id: uuid.UUID
+    ) -> KnowledgeDocument: ...
+    async def record_indexing_started(
+        self, tenant_id: str, version_id: uuid.UUID
+    ) -> KnowledgeDocument: ...
+    async def record_indexed(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument: ...
+    async def record_index_failure(
+        self, tenant_id: str, version_id: uuid.UUID, *, error_code: str
+    ) -> KnowledgeDocument: ...
+    async def versions_in_state(
+        self, tenant_id: str, state: VersionState
+    ) -> tuple[DocumentVersion, ...]: ...
+
+
+class InMemoryKnowledgeStore:
+    """Hermetic fake of the knowledge system of record (RAG-001).
+
+    Mirrors :class:`tenantchat.api.persistence.knowledge.PostgresKnowledgeStore`
+    for the ingestion lifecycle's unit tests. Rules stay in the domain — every
+    transition goes through the aggregate's plan methods — so a test that passes
+    against this fake is testing the same decisions the repository makes.
+    """
+
+    def __init__(self) -> None:
+        self._sources: dict[tuple[str, uuid.UUID], KnowledgeSource] = {}
+        self._source_names: dict[tuple[str, str, str], uuid.UUID] = {}
+        self._documents: dict[uuid.UUID, KnowledgeDocument] = {}
+        self._document_keys: dict[tuple[str, uuid.UUID, str], uuid.UUID] = {}
+
+    def _source(self, tenant_id: str, source_id: uuid.UUID) -> KnowledgeSource:
+        source = self._sources.get((tenant_id, source_id))
+        if source is None:
+            raise NotFoundError(detail=f"source {source_id} absent or outside tenant {tenant_id}")
+        return source
+
+    def _document_for_version(self, tenant_id: str, version_id: uuid.UUID) -> KnowledgeDocument:
+        for document in self._documents.values():
+            if document.tenant_id != tenant_id:
+                continue
+            for version in document.versions:
+                if version.version_id == version_id:
+                    return document
+        raise NotFoundError(detail=f"version {version_id} absent or outside tenant {tenant_id}")
+
+    def _document(self, tenant_id: str, document_id: uuid.UUID) -> KnowledgeDocument:
+        document = self._documents.get(document_id)
+        if document is None or document.tenant_id != tenant_id:
+            detail = f"document {document_id} absent or outside tenant {tenant_id}"
+            raise NotFoundError(detail=detail)
+        return document
+
+    @staticmethod
+    def _apply(document: KnowledgeDocument, version: DocumentVersion) -> KnowledgeDocument:
+        return replace(
+            document,
+            versions=tuple(
+                version if item.version_id == version.version_id else item
+                for item in document.versions
+            ),
+        )
+
+    async def register_source(
+        self,
+        tenant_id: str,
+        *,
+        domain: KnowledgeDomain,
+        kind: SourceKind,
+        display_name: str,
+        external_reference: str | None = None,
+    ) -> KnowledgeSource:
+        key = (tenant_id, domain.value, display_name)
+        existing = self._source_names.get(key)
+        if existing is not None:
+            return self._source(tenant_id, existing)
+        source = KnowledgeSource(
+            source_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            domain=domain,
+            kind=kind,
+            display_name=display_name,
+        )
+        self._sources[(tenant_id, source.source_id)] = source
+        self._source_names[key] = source.source_id
+        return source
+
+    async def set_source_enabled(
+        self, tenant_id: str, source_id: uuid.UUID, *, enabled: bool
+    ) -> KnowledgeSource:
+        source = self._source(tenant_id, source_id)
+        updated = replace(source, enabled=enabled)
+        self._sources[(tenant_id, source_id)] = updated
+        return updated
+
+    async def stage_version(
+        self,
+        tenant_id: str,
+        *,
+        source_id: uuid.UUID,
+        external_key: str,
+        title: str,
+        checksum: ContentChecksum,
+        byte_size: int,
+        media_type: str,
+        storage_key: str,
+        visibility: Visibility = Visibility.PUBLIC,
+    ) -> KnowledgeDocument:
+        source = self._source(tenant_id, source_id)
+        document_id = self._document_keys.get((tenant_id, source_id, external_key))
+        if document_id is None:
+            document = KnowledgeDocument(
+                document_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                source=source,
+                external_key=external_key,
+                title=title,
+            )
+            self._documents[document.document_id] = document
+            self._document_keys[(tenant_id, source_id, external_key)] = document.document_id
+        else:
+            document = self._document(tenant_id, document_id)
+        if document.deleted:
+            raise NotFoundError(detail=f"document {document.document_id} is deleted")
+        if document.version_with_checksum(checksum) is not None:
+            return document
+        version = DocumentVersion(
+            version_id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            document_id=document.document_id,
+            revision=document.next_revision(),
+            state=VersionState.DRAFT,
+            indexing_state=IndexingState.PENDING,
+            visibility=visibility,
+            checksum=checksum,
+            byte_size=byte_size,
+            media_type=media_type,
+            storage_key=storage_key,
+        )
+        updated = replace(document, versions=(*document.versions, version))
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def load_document(self, tenant_id: str, document_id: uuid.UUID) -> KnowledgeDocument:
+        return self._document(tenant_id, document_id)
+
+    async def document_for_version(
+        self, tenant_id: str, version_id: uuid.UUID
+    ) -> KnowledgeDocument:
+        return self._document_for_version(tenant_id, version_id)
+
+    async def approve(
+        self, tenant_id: str, version_id: uuid.UUID, *, approved_by: str, at: datetime
+    ) -> KnowledgeDocument:
+        document = self._document_for_version(tenant_id, version_id)
+        document.plan_approval(version_id, approved_by=approved_by, at=at)
+        version = document.version(version_id)
+        updated = self._apply(document, replace(version, state=VersionState.APPROVED))
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def publish(
+        self,
+        tenant_id: str,
+        version_id: uuid.UUID,
+        *,
+        at: datetime,
+        effective_at: datetime | None = None,
+        expires_at: datetime | None = None,
+    ) -> KnowledgeDocument:
+        document = self._document_for_version(tenant_id, version_id)
+        plan = document.plan_publication(
+            version_id, at=at, effective_at=effective_at, expires_at=expires_at
+        )
+        versions: list[DocumentVersion] = []
+        for item in document.versions:
+            if item.version_id == plan.supersedes_version_id:
+                versions.append(replace(item, state=VersionState.SUPERSEDED))
+            elif item.version_id == plan.version_id:
+                versions.append(
+                    replace(
+                        item,
+                        state=VersionState.PUBLISHED,
+                        effective_at=plan.effective_at,
+                        expires_at=plan.expires_at,
+                    )
+                )
+            else:
+                versions.append(item)
+        updated = replace(document, versions=tuple(versions))
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def expire(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        document = self._document_for_version(tenant_id, version_id)
+        plan = document.plan_expiry(version_id, at=at)
+        version = document.version(version_id)
+        updated = self._apply(document, replace(version, expires_at=plan.expires_at))
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def record_indexing_started(
+        self, tenant_id: str, version_id: uuid.UUID
+    ) -> KnowledgeDocument:
+        return await self._record_indexing(tenant_id, version_id, state=IndexingState.INDEXING)
+
+    async def record_indexed(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        return await self._record_indexing(tenant_id, version_id, state=IndexingState.INDEXED)
+
+    async def record_index_failure(
+        self, tenant_id: str, version_id: uuid.UUID, *, error_code: str
+    ) -> KnowledgeDocument:
+        return await self._record_indexing(tenant_id, version_id, state=IndexingState.FAILED)
+
+    async def _record_indexing(
+        self,
+        tenant_id: str,
+        version_id: uuid.UUID,
+        *,
+        state: IndexingState,
+    ) -> KnowledgeDocument:
+        document = self._document_for_version(tenant_id, version_id)
+        document.version_for_indexing(version_id)
+        version = document.version(version_id)
+        updated = self._apply(document, replace(version, indexing_state=state))
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def delete_document(
+        self, tenant_id: str, document_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        document = self._document(tenant_id, document_id)
+        if document.deleted:
+            return document
+        updated = replace(
+            document,
+            deleted=True,
+            versions=tuple(replace(item, state=VersionState.DELETED) for item in document.versions),
+        )
+        self._documents[document_id] = updated
+        return updated
+
+    async def retrievable_versions(self, context: RetrievalContext) -> tuple[DocumentVersion, ...]:
+        versions: list[DocumentVersion] = []
+        for document in self._documents.values():
+            if document.tenant_id != context.tenant_id:
+                continue
+            version = document.retrievable_version(context)
+            if version is not None:
+                versions.append(version)
+        versions.sort(key=lambda item: (item.document_id, item.revision))
+        return tuple(versions)
+
+    async def versions_in_state(
+        self, tenant_id: str, state: VersionState
+    ) -> tuple[DocumentVersion, ...]:
+        versions: list[DocumentVersion] = []
+        for document in self._documents.values():
+            if document.tenant_id != tenant_id:
+                continue
+            versions.extend(item for item in document.versions if item.state is state)
+        versions.sort(key=lambda item: (item.document_id, item.revision))
+        return tuple(versions)

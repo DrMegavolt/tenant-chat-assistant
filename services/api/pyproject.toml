@@ -20,6 +20,9 @@ dependencies = [
     "greenlet==3.5.4",
     "psycopg[binary]==3.2.3",
     "pydantic==2.10.5",
+    # FastAPI multipart forms need the parser at runtime; declared explicitly
+    # rather than relying on the framework's optional extra.
+    "python-multipart==0.0.20",
     "sqlalchemy==2.0.36",
     "uvicorn[standard]==0.34.0",
 ]

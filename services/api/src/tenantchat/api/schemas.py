@@ -33,6 +33,8 @@ from tenantchat.api.store import (
     TurnRecord,
     TurnRecordProjection,
 )
+from tenantchat.core.indexing import IndexIntegrityFinding
+from tenantchat.core.knowledge import DocumentVersion, KnowledgeDocument
 from tenantchat.core.ports import AssistantTurn, BookingConfirmation
 from tenantchat.core.tenant import PublicTenantView
 
@@ -878,3 +880,75 @@ class AdminJobsResponse(BaseModel):
 class AdminJobDetailResponse(BaseModel):
     job: AdminJob
     events: list[AdminJobEvent]
+
+
+class UploadedVersionResponse(BaseModel):
+    """One staged draft, as the uploading operator reads it.
+
+    Identifiers and approval state only: the stored content lives in object
+    storage and never crosses this surface.
+    """
+
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    source_id: uuid.UUID
+    source_name: str
+    external_key: str
+    revision: int
+    state: str
+    indexing_state: str
+    checksum: str
+    byte_size: int
+    media_type: str
+    visibility: str
+
+    @classmethod
+    def of(cls, document: KnowledgeDocument, version: DocumentVersion) -> UploadedVersionResponse:
+        return cls(
+            document_id=document.document_id,
+            version_id=version.version_id,
+            source_id=document.source.source_id,
+            source_name=document.source.display_name,
+            external_key=document.external_key,
+            revision=version.revision,
+            state=version.state.value,
+            indexing_state=version.indexing_state.value,
+            checksum=version.checksum.value,
+            byte_size=version.byte_size,
+            media_type=version.media_type,
+            visibility=version.visibility.value,
+        )
+
+
+class IndexFindingSummary(BaseModel):
+    """One bounded index-integrity finding, safe for operator surfaces.
+
+    Carries the fault code, the tenant-qualified source version, and the index
+    generation involved. ``detail`` is bounded by the detector's construction
+    and is published as-is; document content cannot reach it.
+    """
+
+    code: str
+    tenant_id: str
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    generation_id: uuid.UUID | None
+    detected_at: datetime
+    detail: dict[str, object]
+
+    @classmethod
+    def of(cls, finding: IndexIntegrityFinding) -> IndexFindingSummary:
+        return cls(
+            code=finding.code.value,
+            tenant_id=finding.tenant_id,
+            document_id=finding.document_id,
+            version_id=finding.version_id,
+            generation_id=finding.generation_id,
+            detected_at=finding.detected_at,
+            detail=dict(finding.detail),
+        )
+
+
+class IndexFindingsResponse(BaseModel):
+    findings: list[IndexFindingSummary]
+    limit: int

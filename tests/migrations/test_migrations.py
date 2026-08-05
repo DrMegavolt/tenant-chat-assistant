@@ -36,6 +36,8 @@ DOMAIN_TABLES = {
     "turn_records",
     "turn_record_projections",
     "trace_access_grants",
+    "knowledge_index_generations",
+    "knowledge_index_findings",
 }
 TENANT_QUERY_TABLES = DOMAIN_TABLES - {"tenants"}
 
@@ -76,7 +78,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0010_trace_privacy"
+    assert revision == "0011_ingestion_generations"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -95,6 +97,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         "consent_status",
         "privacy_request_status",
         "background_job_status",
+        "knowledge_generation_status",
     } <= enum_names
 
     for table in TENANT_QUERY_TABLES:
