@@ -41,6 +41,7 @@ from tenantchat.api.identity import (
     verify_csrf,
 )
 from tenantchat.api.index_integrity import IndexIntegrityDetector
+from tenantchat.api.parsing import MAX_DOCUMENT_BYTES, SUPPORTED_MEDIA_TYPES
 from tenantchat.api.schemas import (
     IndexFindingsResponse,
     IndexFindingSummary,
@@ -61,11 +62,11 @@ TenantIdQuery = Annotated[
     str, Query(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$", alias="tenant_id")
 ]
 
-# Media types the pipeline can scan and parse today. `RAG-003` widens this as
-# production parser adapters land; refusing here is what keeps an unsupported
-# format from becoming a broken ingestion job.
-_ACCEPTED_MEDIA_TYPES = frozenset({"text/markdown", "text/plain", "text/x-markdown", "text/html"})
-_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Media types the pipeline can parse: exactly the adapters' set, so a format
+# that would become a broken ingestion job is refused at the door. The upload
+# budget matches the scanner's, so an oversized document fails here too.
+_ACCEPTED_MEDIA_TYPES = SUPPORTED_MEDIA_TYPES
+_MAX_UPLOAD_BYTES = MAX_DOCUMENT_BYTES
 
 
 async def _authorize_mutation(

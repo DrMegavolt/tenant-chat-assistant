@@ -8,15 +8,17 @@ needs to distinguish an ingestion failure from a retrieval failure afterwards:
   reused across retries, and the unit of cleanup when an attempt dies
   mid-write;
 - the parser, chunker, and embedding-model identifiers the generation was
-  produced with;
+  produced with (the parser identifier comes from the adapter that actually
+  parsed the document — one per media type — so the record names the real
+  implementation);
 - chunk counts recorded *before* indexing starts, so "the index holds fewer
   chunks than the content produced" is measurable even for a job that never
   finished.
 
-The parser and chunker here are the prototype Markdown adapters, pinned to
-versioned identifiers. `RAG-003` replaces them with production adapters behind
-the same job shape; the version identifiers are what make that swap visible to
-`OBS-004` instead of silent.
+Parsing and chunking are the versioned adapters of
+:mod:`tenantchat.api.parsing` (`RAG-003`); every chunk carries the
+heading path, page, or anchor its text came from, and embedding happens in
+bounded batches below the provider's request limit.
 
 Every failure surfaces as a bounded safe code through
 :class:`~tenantchat.api.jobs.JobExecutionError`; document content never
@@ -26,16 +28,24 @@ reaches a code, a message, or the durable job record.
 from __future__ import annotations
 
 import contextlib
-import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 
 from tenantchat.api.index_integrity import IndexIntegrityStore
 from tenantchat.api.jobs import JobExecutionError, JobHandler, JobKind, JobRecord, JobStore
+from tenantchat.api.parsing import (
+    CHUNK_OVERLAP,
+    CHUNK_TOKENS,
+    CHUNKER_VERSION,
+    Chunk,
+    ParsedDocument,
+    chunk_document,
+    parse_document,
+)
 from tenantchat.api.search import (
     Embedder,
-    EmbeddingResult,
     EmbeddingUnavailableError,
     IndexedChunk,
     SearchIndex,
@@ -48,18 +58,10 @@ from tenantchat.core.indexing import GenerationStatus, IndexGeneration
 from tenantchat.core.knowledge import DocumentVersion, KnowledgeDocument
 from tenantchat.core.lifecycle import VersionState
 
-# The component identifiers `OBS-004` pins an answer's evidence to. Bumping one
-# of these is a deliberate contract change: the detector treats a model swap as
-# an integrity fault until a new generation records it.
-PARSER_VERSION = "markdown-sections.v1"
-CHUNKER_VERSION = "token-window.v1"
-
-# The scan budget. Values are prototype bounds; `RAG-003` owns production
-# limits, and the scanner here exists so a corrupt or hostile document fails
-# the job with a safe code instead of poisoning a generation.
-_MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-_CHUNK_TOKENS = 650
-_CHUNK_OVERLAP = 120
+# The per-request embedding budget, below the provider's documented maximum:
+# a large document is sliced into batches of this many chunks before the
+# embedder is called, so one job never sends an unbounded batch.
+EMBED_BATCH_SIZE = 16
 
 # Kinds the ingestion job may process. Drafts and deleted versions are refused
 # by the domain's `version_for_indexing` gate: indexing either would put
@@ -80,77 +82,6 @@ def generation_id_for(tenant_id: str, version_id: uuid.UUID) -> uuid.UUID:
     structural rather than a convention.
     """
     return uuid.uuid5(_GENERATION_NAMESPACE, f"{tenant_id}:{version_id}")
-
-
-class ParsedDocument:
-    """The scanning-and-parsing output for one document.
-
-    ``section`` is the last heading seen at the current text offset, which is
-    the anchor `RAG-003` will replace with heading-hierarchy-aware locations.
-    """
-
-    def __init__(self, *, title: str, section: str, text: str) -> None:
-        self.title = title
-        self.section = section
-        self.text = text
-
-
-def scan_content(content: bytes) -> None:
-    """Reject content the pipeline cannot safely process.
-
-    Raises:
-        ValidationError: the document exceeds the size budget, is not valid
-            UTF-8, contains NUL bytes, or has no scannable text.
-    """
-    if len(content) > _MAX_DOCUMENT_BYTES:
-        raise ValidationError(detail="document exceeds the size budget")
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValidationError(detail="document is not valid UTF-8") from exc
-    if "\x00" in text:
-        raise ValidationError(detail="document contains NUL bytes")
-    if not text.strip():
-        raise ValidationError(detail="document has no text content")
-
-
-def parse_markdown(content: bytes, *, title: str) -> ParsedDocument:
-    """Parse Markdown into title, running section, and body text.
-
-    The prototype parser: headings become section anchors, everything else is
-    body text. `RAG-003` owns production parsing; the version identifier above
-    pins this one.
-
-    Raises:
-        ValidationError: the content failed scanning or has no text.
-    """
-    scan_content(content)
-    text = content.decode("utf-8")
-    section = "General"
-    lines: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            section = stripped.lstrip("#").strip() or section
-            lines.append(stripped)
-        elif stripped:
-            lines.append(stripped)
-    return ParsedDocument(title=title, section=section, text="\n".join(lines))
-
-
-def chunk_text(text: str) -> list[str]:
-    """Split one document's text into overlapping token windows.
-
-    A token is whitespace-delimited, which is what makes the chunker
-    deterministic without a model vocabulary. `RAG-003` replaces the tokenizer.
-    """
-    tokens = re.findall(r"\S+", text)
-    step = max(1, _CHUNK_TOKENS - _CHUNK_OVERLAP)
-    return [
-        " ".join(tokens[start : start + _CHUNK_TOKENS])
-        for start in range(0, len(tokens), step)
-        if tokens[start : start + _CHUNK_TOKENS]
-    ]
 
 
 def ingestion_payload(version_id: uuid.UUID) -> dict[str, object]:
@@ -275,7 +206,7 @@ async def _prepared_generation(
         tenant_id=tenant_id,
         document_id=version.document_id,
         version_id=version.version_id,
-        parser_version=PARSER_VERSION,
+        parser_version="",  # filled when the adapter that parsed is known
         chunker_version=CHUNKER_VERSION,
         embedding_model="",  # filled when the embedder returns
         status=GenerationStatus.IN_PROGRESS,
@@ -294,17 +225,22 @@ async def _run_generation(
     tenant_id = version.tenant_id
     try:
         await dependencies.knowledge.record_indexing_started(tenant_id, version.version_id)
-        await dependencies.generations.begin_generation(generation)
 
         content = await dependencies.storage.read(StorageKey.parse(version.storage_key))
-        parsed = parse_markdown(content, title=document.title)
-        chunks = chunk_text(parsed.text)
-        generation = replace(generation, chunk_count=len(chunks))
-
-        embedded = await dependencies.embedder.embed(
-            [f"Title: {parsed.title}\nSection: {parsed.section}\n\n{chunk}" for chunk in chunks]
+        parsed = parse_document(content, media_type=version.media_type, title=document.title)
+        chunks = chunk_document(parsed, chunk_tokens=CHUNK_TOKENS, overlap_tokens=CHUNK_OVERLAP)
+        # The generation row records the parser that actually ran and the chunk
+        # count *before* indexing starts, so a partial write is measurable
+        # even for a job that never finishes.
+        generation = replace(
+            generation,
+            parser_version=parsed.parser_version,
+            chunk_count=len(chunks),
         )
-        generation = replace(generation, embedding_model=embedded.model)
+        await dependencies.generations.begin_generation(generation)
+
+        embedded = await _embed_in_batches(dependencies, parsed, chunks)
+        generation = replace(generation, embedding_model=embedded[0][0] if embedded else "")
 
         indexed = await _write_chunks(
             dependencies, document, version, parsed, chunks, embedded, generation
@@ -349,13 +285,40 @@ async def _run_generation(
         raise JobExecutionError("ingestion_pipeline_failed", retryable=True) from exc
 
 
+async def _embed_in_batches(
+    dependencies: IngestionDependencies,
+    parsed: ParsedDocument,
+    chunks: Sequence[Chunk],
+) -> tuple[tuple[str, tuple[float, ...]], ...]:
+    """Embed chunk texts in bounded batches, ``(model, vector)`` per chunk.
+
+    The embedding provider enforces a per-request batch limit, so a large
+    document is sliced into ``EMBED_BATCH_SIZE`` batches instead of one
+    unbounded call; each chunk keeps the model that embedded it, so a
+    mid-run provider swap stays visible to the integrity detector.
+    """
+    embedded: list[tuple[str, tuple[float, ...]]] = []
+    for start in range(0, len(chunks), EMBED_BATCH_SIZE):
+        batch = chunks[start : start + EMBED_BATCH_SIZE]
+        result = await dependencies.embedder.embed(
+            [_embedding_text(parsed.title, chunk) for chunk in batch]
+        )
+        embedded.extend((result.model, vector) for vector in result.vectors)
+    return tuple(embedded)
+
+
+def _embedding_text(title: str, chunk: Chunk) -> str:
+    """The embedding prompt for one chunk: title and location lead the text."""
+    return f"Title: {title}\nSection: {chunk.location}\n\n{chunk.text}"
+
+
 async def _write_chunks(
     dependencies: IngestionDependencies,
     document: KnowledgeDocument,
     version: DocumentVersion,
     parsed: ParsedDocument,
-    chunks: list[str],
-    embedded: EmbeddingResult,
+    chunks: Sequence[Chunk],
+    embedded: Sequence[tuple[str, tuple[float, ...]]],
     generation: IndexGeneration,
 ) -> int:
     """Write one generation's chunks, then retire older generations' chunks.
@@ -374,12 +337,12 @@ async def _write_chunks(
                 version_id=version.version_id,
                 generation_id=generation.generation_id,
                 title=parsed.title,
-                section=parsed.section,
-                text=chunk,
-                embedding_model=embedded.model,
-                embedding=embedded.vectors[position],
+                section=str(chunk.location),
+                text=chunk.text,
+                embedding_model=model,
+                embedding=vector,
             )
-            for position, chunk in enumerate(chunks)
+            for position, (chunk, (model, vector)) in enumerate(zip(chunks, embedded, strict=True))
         ]
     )
     await dependencies.index.deactivate_stale_chunks(
