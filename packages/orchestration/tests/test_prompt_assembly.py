@@ -155,7 +155,7 @@ def test_the_resolved_bindings_and_hash_ride_on_the_assembled_prompt() -> None:
     outcome = assemble()
 
     assert outcome.prompt.template_id == "dispatch-system"
-    assert outcome.prompt.template_version == 1
+    assert outcome.prompt.template_version == 2
     assert outcome.prompt.bindings["phone"] == "(555) 816-4420"
     assert len(outcome.prompt.content_hash) == 64
 

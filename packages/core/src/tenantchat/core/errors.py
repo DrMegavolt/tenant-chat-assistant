@@ -32,10 +32,13 @@ aggregate, broken invariant, dependency failure.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from tenantchat.core.fields import RequiredField
 from tenantchat.core.lifecycle import VersionState
+
+if TYPE_CHECKING:
+    from tenantchat.core.workflows import WorkflowStatus, WorkflowTransition
 
 
 class DomainError(Exception):
@@ -222,4 +225,31 @@ class InvalidVersionTransitionError(ConflictError):
             raise ValueError("InvalidVersionTransitionError requires at least one permitted state")
         self.current = current
         self.permitted = permitted
+        super().__init__(detail)
+
+
+class WorkflowTransitionError(ConflictError):
+    """A workflow is not in a state the requested transition may leave.
+
+    A conflict rather than a validation failure: the workflow was in the right
+    state a moment ago and moved under the caller. Carries the current status
+    and the transitions it would have accepted, so the caller can reload the
+    workflow instead of guessing what changed.
+    """
+
+    code = "invalid_workflow_transition"
+    message = "That workflow has moved on. Reload it and try again."
+
+    def __init__(
+        self,
+        *,
+        current: WorkflowStatus,
+        transition: WorkflowTransition,
+        permitted: frozenset[WorkflowTransition],
+        detail: str | None = None,
+    ) -> None:
+        # `permitted` is legitimately empty: a terminal workflow accepts nothing.
+        self.current = current
+        self.transition = transition
+        self.permitted = frozenset(permitted)
         super().__init__(detail)

@@ -231,7 +231,7 @@ class TestTracedTurn:
         assert turn["trace_id"] == trace_id
         assert turn_access[0]["trace_id"] == trace_id
         assert turn["tenant"] == tenant_pseudonym(BOOKING_TENANT, key=TEST_PSEUDONYM_KEY)
-        assert turn["graph_version"] == "dispatch@1"
+        assert turn["graph_version"] == "dispatch@2"
         assert turn["committed_actions"] == []
 
         # Every line carries the contract fields; records emitted outside a

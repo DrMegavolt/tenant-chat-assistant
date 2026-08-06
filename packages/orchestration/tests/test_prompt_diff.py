@@ -16,6 +16,8 @@ from tenantchat.core.tenant import PricingPolicy, TenantPolicy
 from tenantchat.orchestration.model import MessageRole, PromptRegion
 from tenantchat.orchestration.prompts import (
     DEFAULT_REGISTRY,
+    DISPATCH_SYSTEM_V2_VERSION,
+    DISPATCH_SYSTEM_VERSION,
     BindingSchema,
     HistoryTurn,
     PromptBudget,
@@ -256,9 +258,17 @@ def test_diffing_two_templates_is_refused() -> None:
 
 
 def test_the_dispatch_template_has_no_drift_against_its_registered_self() -> None:
-    """The default registry and the module constant stay the same artifact."""
+    """A registered version and its module constant stay the same artifact.
+
+    The registry is append-only, so the v1 module constant and the registry's
+    v1 resolve to identical content even though a v2 now exists.
+    """
     diff = diff_templates(
-        DEFAULT_REGISTRY.resolve("dispatch-system", 1),
-        DEFAULT_REGISTRY.current("dispatch-system"),
+        DEFAULT_REGISTRY.resolve("dispatch-system", DISPATCH_SYSTEM_VERSION),
+        DEFAULT_REGISTRY.resolve("dispatch-system", DISPATCH_SYSTEM_VERSION),
     )
     assert not diff.changed
+    assert diff_templates(
+        DEFAULT_REGISTRY.resolve("dispatch-system", DISPATCH_SYSTEM_VERSION),
+        DEFAULT_REGISTRY.resolve("dispatch-system", DISPATCH_SYSTEM_V2_VERSION),
+    ).changed

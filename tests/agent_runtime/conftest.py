@@ -40,6 +40,8 @@ from tenantchat.api.store import (
     InMemoryHandoffStore,
     InMemoryIdempotencyStore,
     InMemoryLeadStore,
+    InMemoryWorkflowStore,
+    WorkflowStore,
 )
 from tenantchat.core.privacy import ConsentGrant, ConsentPurpose
 from tenantchat.orchestration.checkpoints import Checkpointer, InMemorySaver
@@ -92,6 +94,10 @@ class ScriptedModel:
 
     script: list[ModelResponse]
     calls: list[AssembledPrompt] = field(default_factory=list)
+    # The allowlist each call was offered, one entry per call. The graph's
+    # permission boundary is "the model only ever sees its agent's tools", and
+    # an assertion needs the offered set, not the prompt that carried it.
+    offered_tools: list[tuple[str, ...]] = field(default_factory=list)
     failure: Exception | None = None
 
     async def complete(
@@ -101,6 +107,7 @@ class ScriptedModel:
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
         self.calls.append(prompt)
+        self.offered_tools.append(tuple(spec.name for spec in tools))
         if self.failure is not None:
             raise self.failure
         index = min(len(self.calls) - 1, len(self.script) - 1)
@@ -147,6 +154,7 @@ class RuntimeHarness:
     handoffs: InMemoryHandoffStore
     idempotency: InMemoryIdempotencyStore
     consent: ConsentStore
+    workflows: WorkflowStore
     checkpointer: Checkpointer
 
     async def checkpointed_state(self, tenant_id: str, session_id: str) -> DispatchState:
@@ -174,6 +182,7 @@ class RuntimeHarness:
             leads=self.leads,
             handoffs=self.handoffs,
             idempotency=self.idempotency,
+            workflows=self.workflows,
         )
 
 
@@ -220,6 +229,7 @@ def build_harness(
     handoffs: InMemoryHandoffStore | None = None,
     idempotency: InMemoryIdempotencyStore | None = None,
     consent: ConsentStore | None = None,
+    workflows: WorkflowStore | None = None,
 ) -> RuntimeHarness:
     """Compose a runtime over in-memory adapters."""
     model = ScriptedModel(script=list(script))
@@ -228,6 +238,7 @@ def build_harness(
     handoff_store = handoffs if handoffs is not None else InMemoryHandoffStore()
     key_store = idempotency if idempotency is not None else InMemoryIdempotencyStore()
     consent_store = consent if consent is not None else PermissiveConsentStore()
+    workflow_store = workflows if workflows is not None else InMemoryWorkflowStore()
     saver = checkpointer if checkpointer is not None else InMemorySaver()
 
     adapters: dict[str, Any] = {
@@ -238,6 +249,7 @@ def build_harness(
         "handoffs": handoff_store,
         "idempotency": key_store,
         "consent": consent_store,
+        "workflows": workflow_store,
     }
     runtime = build_dispatch_runtime(**adapters, checkpointer=saver)
     return RuntimeHarness(
@@ -253,6 +265,7 @@ def build_harness(
         handoffs=handoff_store,
         idempotency=key_store,
         consent=consent_store,
+        workflows=workflow_store,
         checkpointer=saver,
     )
 

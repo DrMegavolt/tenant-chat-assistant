@@ -4,7 +4,7 @@ The shape is small on purpose. Every node is a checkpoint write, and `ADR-0001`
 accepted that single-turn chat pays graph overhead it does not need — so the
 budget is spent where resumability is actually worth something, which is the
 booking confirmation, and nowhere else. A question that calls no tools crosses
-two nodes.
+three nodes: route, model, finalize.
 
 ``GRAPH_VERSION`` changes whenever the node set, the edges, or a node's
 observable behavior changes. `OBS-004` records it against every turn, which is
@@ -25,11 +25,12 @@ from tenantchat.orchestration.nodes import (
     DispatchNodes,
     route_after_confirmation,
     route_after_model,
+    route_after_routing,
     route_after_tools,
 )
 from tenantchat.orchestration.state import DispatchState
 
-GRAPH_VERSION: Final = "dispatch@1"
+GRAPH_VERSION: Final = "dispatch@2"
 
 
 DispatchGraph = StateGraph[DispatchState, None, DispatchState, DispatchState]
@@ -46,6 +47,7 @@ def build_dispatch_graph(dependencies: DispatchDependencies) -> DispatchGraph:
     nodes = DispatchNodes(dependencies)
     builder: DispatchGraph = StateGraph(DispatchState)
 
+    builder.add_node(DispatchNode.ROUTE.value, nodes.route)
     builder.add_node(DispatchNode.MODEL.value, nodes.call_model)
     builder.add_node(DispatchNode.TOOLS.value, nodes.run_tools)
     builder.add_node(DispatchNode.CONFIRM_BOOKING.value, nodes.confirm_booking)
@@ -53,7 +55,12 @@ def build_dispatch_graph(dependencies: DispatchDependencies) -> DispatchGraph:
     builder.add_node(DispatchNode.ESCALATE.value, nodes.escalate)
     builder.add_node(DispatchNode.FINALIZE.value, nodes.finalize)
 
-    builder.add_edge(START, DispatchNode.MODEL.value)
+    builder.add_edge(START, DispatchNode.ROUTE.value)
+    builder.add_conditional_edges(
+        DispatchNode.ROUTE.value,
+        route_after_routing,
+        [DispatchNode.MODEL.value, DispatchNode.ESCALATE.value, DispatchNode.FINALIZE.value],
+    )
     builder.add_conditional_edges(
         DispatchNode.MODEL.value,
         route_after_model,

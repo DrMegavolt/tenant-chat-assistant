@@ -53,6 +53,7 @@ from tenantchat.api.persistence import (
     PostgresPrivacyStore,
     PostgresTraceAccessStore,
     PostgresTurnRecordStore,
+    PostgresWorkflowStore,
 )
 from tenantchat.api.persistence.availability import (
     PostgresAvailabilityProvider,
@@ -97,12 +98,14 @@ from tenantchat.api.store import (
     InMemoryKnowledgeStore,
     InMemoryTraceAccessStore,
     InMemoryTurnRecordStore,
+    InMemoryWorkflowStore,
     KnowledgeStore,
     LeadStore,
     MembershipStore,
     PrivacyStore,
     TraceAccessStore,
     TurnRecordStore,
+    WorkflowStore,
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER, utc_now
 from tenantchat.core.errors import DomainError
@@ -311,6 +314,7 @@ def create_app(
     job_store: JobStore | None = None,
     turn_record_store: TurnRecordStore | None = None,
     trace_access_store: TraceAccessStore | None = None,
+    workflow_store: WorkflowStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
     rate_limit_store: RateLimitStore | None = None,
@@ -345,6 +349,9 @@ def create_app(
             builds the PostgreSQL implementation; explicit-store compositions
             default to an in-memory fake, like the job store.
         trace_access_store: The PRIV-002 dedicated trace-read grants. Production
+            builds the PostgreSQL implementation; explicit-store compositions
+            default to an in-memory fake.
+        workflow_store: The AGENT-001 routing and workflow records. Production
             builds the PostgreSQL implementation; explicit-store compositions
             default to an in-memory fake.
         chat_model: The model the agent runtime calls. Injected for tests; when
@@ -493,6 +500,7 @@ def create_app(
         job_store = PostgresJobStore(database.engine)
         turn_record_store = PostgresTurnRecordStore(database.engine)
         trace_access_store = PostgresTraceAccessStore(database.engine)
+        workflow_store = PostgresWorkflowStore(database.engine)
         knowledge_store = PostgresKnowledgeStore(database.engine)
         generation_findings = PostgresIndexIntegrityStore(database.engine)
         # The upload surface exists only where the ingestion pipeline exists. A
@@ -538,6 +546,10 @@ def create_app(
         turn_record_store = InMemoryTurnRecordStore()
     if trace_access_store is None:
         trace_access_store = InMemoryTraceAccessStore()
+    if workflow_store is None:
+        # Explicit-store compositions are unit-test shapes; a deployed app took
+        # the database branch above and can never silently run in-memory.
+        workflow_store = InMemoryWorkflowStore()
 
     rag_stores = (knowledge_store, generation_findings, object_store, search_index)
     if (
@@ -615,6 +627,7 @@ def create_app(
             handoffs=handoffs_for_agent,
             idempotency=keys_for_agent,
             consent=consent_for_agent,
+            workflows=workflow_store,
             checkpointer=saver,
             availability=availability_provider,
         )

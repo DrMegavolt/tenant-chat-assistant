@@ -31,8 +31,16 @@ from typing import Protocol
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import ValidationError
 from tenantchat.core.privacy import ConsentGrant
+from tenantchat.core.routing import (
+    IntentCandidate,
+    IntentName,
+    RoutingDecision,
+    RoutingOutcome,
+    RoutingRule,
+)
 from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import TenantPolicy
+from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
 
 # Wide enough for a caller-supplied key from an HTTP `Idempotency-Key` header,
 # narrow enough that the value is safe in a URL, a log line, and a SQL literal.
@@ -322,4 +330,145 @@ class AvailabilityProvider(Protocol):
 
     async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[OfferedSlot, ...]:
         """Slots currently bookable for one service, empty when it has none."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingRecord:
+    """One persisted routing decision, as `OBS-004` will read it.
+
+    The whole decision, not the winner: every candidate with its score, the
+    chosen intent, the confidence, the policy version, and the thresholds that
+    were applied. ``rule`` is what makes a misroute diagnosable from this
+    record alone — whether the correct intent was never a candidate (a
+    ``FALLBACK`` or a candidate missing entirely), was scored and lost (present
+    in ``candidates`` below the winner), or lost to a threshold (``CLARIFY``
+    with ``chosen=None``).
+    """
+
+    turn_index: int
+    policy_version: str
+    agent_version: str
+    outcome: RoutingOutcome
+    rule: RoutingRule
+    chosen_intent: IntentName | None
+    confidence: float
+    candidates: tuple[IntentCandidate, ...]
+    direct_threshold: float
+    clarify_threshold: float
+    conflict_gap: float
+    created_at: datetime
+
+
+class WorkflowService(Protocol):
+    """The durable record of routing decisions and agent workflows.
+
+    `ADR-0001` keeps the system of record in domain tables, so this service
+    exists: every routing decision, workflow, and workflow transition is written
+    here and outlives any checkpoint. The graph is the driver and the
+    checkpoint is the resume point; this service is what a restart cannot lose.
+
+    Every mutation takes an :class:`IdempotencyKey` derived from checkpoint
+    values and returns the original result on replay, so a node that runs again
+    after a crash records nothing twice.
+    """
+
+    async def current(self, tenant_id: str, session_id: str) -> WorkflowState | None:
+        """The session's active workflow (``ACTIVE`` or ``PAUSED``), if any.
+
+        Read-only, so no idempotency key: the router uses it as the previous
+        intent for continuation decisions.
+        """
+        ...
+
+    async def last_routing(self, tenant_id: str, session_id: str) -> RoutingRecord | None:
+        """The most recent routing decision for the session, if any.
+
+        Read-only. The router uses it to bound clarification: a second
+        consecutive ambiguity hands off instead of asking again.
+        """
+        ...
+
+    async def record_routing(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        decision: RoutingDecision,
+        agent_version: str,
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> None:
+        """Persist one routing decision. Replays rewrite nothing.
+
+        The natural key is ``(session, turn_index)``; the idempotency key is
+        derived from the same parts, so a replayed route node lands on the same
+        row it already wrote. ``agent_version`` pins which agent registry the
+        decision dispatched under.
+        """
+        ...
+
+    async def start(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        intent: IntentName,
+        agent_version: str,
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowState:
+        """Open an ``ACTIVE`` workflow for the intent.
+
+        Exactly one active workflow may exist per session; starting again while
+        one is active returns it rather than creating a rival.
+        """
+        ...
+
+    async def update(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        collected_fields: Mapping[str, str],
+        allowed_field_names: tuple[str, ...],
+        tool_results: tuple[ToolResult, ...],
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowState:
+        """Merge one turn's collected fields, tool results, and allowed actions.
+
+        Content-merge semantics make a replay write nothing twice: fields are
+        overwritten per name, tool results per call ID.
+
+        Raises:
+            ValidationError: a collected field name is not in
+                ``allowed_field_names``.
+            NotFoundError: no workflow with that ID for this tenant and session.
+        """
+        ...
+
+    async def transition(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        transition: WorkflowTransition,
+        payload: Mapping[str, object],
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowState:
+        """Move the workflow through the state machine, exactly once per key.
+
+        ``PAUSE`` persists the pending confirmation from ``payload``; every
+        other transition clears it.
+
+        Raises:
+            WorkflowTransitionError: the transition is not permitted from the
+                workflow's current status.
+            NotFoundError: no workflow with that ID for this tenant and session.
+        """
         ...

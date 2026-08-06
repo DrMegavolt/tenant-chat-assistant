@@ -10,9 +10,10 @@ once claimed. The budgets are ceilings with room in them: the point is to catch
 a step change — a node added to the hot path, a per-turn round trip introduced
 into a service — not to police a few percent of drift on a shared CI runner.
 
-Measured on the reference machine at the time of writing: 7 checkpoint writes
-and roughly 1.2 ms median for a question that calls no tools and commits
-nothing. The model is scripted, so the figure is framework overhead alone.
+Measured on the reference machine at the time of writing: 9 checkpoint writes
+and roughly 1.5 ms median for a question that calls no tools and commits
+nothing (`AGENT-001` added the router node to this path). The model is
+scripted, so the figure is framework overhead alone.
 """
 
 from __future__ import annotations
@@ -28,9 +29,11 @@ from tests.agent_runtime.conftest import BOOKING_TENANT, CountingSaver, build_ha
 
 MEASUREMENTS = Path(__file__).resolve().parents[2] / "artifacts" / "agent-runtime-overhead.json"
 
-# Two nodes and their supersteps. Eight leaves room for LangGraph's own
-# accounting to shift by one; a third node on this path would exceed it.
-MAX_SINGLE_TURN_CHECKPOINT_WRITES = 8
+# Three nodes and their supersteps (route, model, finalize — `AGENT-001`
+# added the router to the hot path deliberately). Nine is the measured figure;
+# twelve leaves room for LangGraph's own accounting to shift by a couple, while
+# still catching a fourth node appearing on this path.
+MAX_SINGLE_TURN_CHECKPOINT_WRITES = 12
 
 # In-process wall time for a turn whose model call is instant. Far above the
 # observed figure on purpose — CI hardware is not the reference machine, and a

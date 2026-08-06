@@ -18,10 +18,12 @@ from tenantchat.core.errors import (
     MissingRequiredFieldsError,
     NotFoundError,
     UnknownServiceError,
+    WorkflowTransitionError,
 )
 from tenantchat.core.fields import RequiredField
 from tenantchat.core.lifecycle import VersionState
 from tenantchat.core.privacy import ConsentPurpose, ConsentRequiredError
+from tenantchat.core.workflows import WorkflowStatus, WorkflowTransition
 
 # Strings that must never surface in printable output. Modelled on what really
 # ends up in `detail`: connection strings, credentials, internal hostnames, and
@@ -49,6 +51,11 @@ EXTRA_ARGS: dict[type[DomainError], dict[str, object]] = {
         "permitted": (VersionState.APPROVED,),
     },
     ConsentRequiredError: {"missing_purposes": (ConsentPurpose.BOOKING,)},
+    WorkflowTransitionError: {
+        "current": WorkflowStatus.ACTIVE,
+        "transition": WorkflowTransition.RESUME,
+        "permitted": frozenset({WorkflowTransition.PAUSE}),
+    },
 }
 
 

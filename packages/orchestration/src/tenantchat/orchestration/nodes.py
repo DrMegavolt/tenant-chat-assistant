@@ -40,9 +40,13 @@ from tenantchat.core.errors import (
     MissingRequiredFieldsError,
     SlotUnavailableError,
     UnknownServiceError,
+    ValidationError,
 )
 from tenantchat.core.ports import IdempotencyKey
+from tenantchat.core.routing import IntentName, RoutingOutcome, clarify_question
 from tenantchat.core.tenant import TenantPolicy
+from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
+from tenantchat.orchestration.agents import AGENTS_VERSION, AgentSpec
 from tenantchat.orchestration.dependencies import DispatchDependencies
 from tenantchat.orchestration.model import MessageRole, ToolCall
 from tenantchat.orchestration.prompts import (
@@ -74,6 +78,7 @@ MAX_TOOL_ROUNDS: Final = 4
 class DispatchNode(StrEnum):
     """Node names, closed so a routing function cannot invent an edge."""
 
+    ROUTE = "route"
     MODEL = "model"
     TOOLS = "tools"
     CONFIRM_BOOKING = "confirm_booking"
@@ -163,6 +168,30 @@ def pending_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
     return ()
 
 
+def latest_visitor_message(state: DispatchState) -> str:
+    """The message that started this turn, which is what the router scores."""
+    for entry in reversed(state["transcript"]):
+        if entry["role"] == "user":
+            return entry["content"]
+    return ""
+
+
+def _agent_for(deps: DispatchDependencies, state: DispatchState) -> AgentSpec | None:
+    """The agent the routed intent dispatched to, or ``None`` when none applies.
+
+    An unrecognized value is treated as "no agent" rather than raised on: the
+    safe failure is a refusal, not a graph crash.
+    """
+    raw = state.get("routed_intent", "")
+    if not raw:
+        return None
+    try:
+        intent = IntentName(raw)
+    except ValueError:
+        return None
+    return deps.agents.for_intent(intent)
+
+
 def unanswered_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
     """Tool calls the model made that nothing has replied to yet.
 
@@ -213,12 +242,145 @@ class DispatchNodes:
     def __init__(self, dependencies: DispatchDependencies) -> None:
         self._deps = dependencies
 
+    async def route(self, state: DispatchState) -> dict[str, Any]:
+        """Decide the turn's intent, record the decision, and open the workflow.
+
+        Every effect here is deterministic and keyed: the decision is a pure
+        function of the message, the active workflow, and the versioned policy,
+        and the routing record and workflow writes carry idempotency keys
+        derived from checkpoint values — so a node that runs again after a
+        crash records the same decision and opens no second workflow.
+
+        The workflow is the conversation's durable state, not the checkpoint:
+        when the turn switches topic the old workflow is suspended with its
+        collected fields intact, and a handoff or cancellation is recorded as a
+        transition on it.
+        """
+        tenant_id = state["tenant_id"]
+        session_id = state["session_id"]
+        turn = state["turn_index"]
+
+        current = await self._deps.workflows.current(tenant_id, session_id)
+        previous = current.intent if current is not None else None
+        last = await self._deps.workflows.last_routing(tenant_id, session_id)
+        clarification_pending = (
+            last is not None
+            and last.turn_index == turn - 1
+            and last.outcome is RoutingOutcome.CLARIFY
+        )
+        decision = self._deps.routing.route(
+            latest_visitor_message(state),
+            previous_intent=previous,
+            clarification_pending=clarification_pending,
+        )
+        await self._deps.workflows.record_routing(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            decision=decision,
+            agent_version=AGENTS_VERSION,
+            turn_index=turn,
+            idempotency_key=self._routing_key(state),
+        )
+
+        base: dict[str, Any] = {
+            "routing_outcome": decision.outcome.value,
+            "route_rule": decision.rule.value,
+        }
+        if decision.outcome is RoutingOutcome.CLARIFY:
+            question = clarify_question(decision)
+            return base | {
+                "transcript": [assistant_entry(question, [])],
+                "clarification_question": question,
+            }
+        if decision.outcome is RoutingOutcome.HANDOFF:
+            # The escalation node closes out an active workflow, so it must be
+            # told which one this handoff belongs to.
+            return base | {
+                "failure": HandoffReason.UNRESOLVED.value,
+                "workflow_id": current.workflow_id if current is not None else "",
+            }
+
+        chosen = decision.chosen
+        if chosen is None:
+            raise RuntimeError(f"{decision.rule.value} routing decision chose no intent")
+        if chosen is IntentName.HANDOFF:
+            return base | {
+                "routed_intent": chosen.value,
+                "failure": HandoffReason.CUSTOMER_REQUEST.value,
+                "workflow_id": current.workflow_id if current is not None else "",
+            }
+        if chosen is IntentName.CANCEL:
+            if current is not None:
+                await self._deps.workflows.transition(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    workflow_id=current.workflow_id,
+                    transition=WorkflowTransition.CANCEL,
+                    payload={},
+                    idempotency_key=self._workflow_key(state, "cancel"),
+                )
+            return base | {"routed_intent": chosen.value, "collected_fields": {}}
+
+        agent = self._deps.agents.for_intent(chosen)
+        if agent is None:
+            raise RuntimeError(f"no agent registered for intent {chosen.value}")
+
+        if not agent.workflow:
+            # A single-turn agent needs no workflow row; a previous workflow is
+            # suspended so the durable record still holds it.
+            if current is not None:
+                await self._deps.workflows.transition(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    workflow_id=current.workflow_id,
+                    transition=WorkflowTransition.SUSPEND,
+                    payload={"switched_to": chosen.value},
+                    idempotency_key=self._workflow_key(state, "suspend"),
+                )
+            return base | {"routed_intent": chosen.value, "collected_fields": {}}
+
+        if current is not None and current.intent is chosen:
+            return base | {
+                "routed_intent": chosen.value,
+                "workflow_id": current.workflow_id,
+            }
+
+        if current is not None:
+            await self._deps.workflows.transition(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                workflow_id=current.workflow_id,
+                transition=WorkflowTransition.SUSPEND,
+                payload={"switched_to": chosen.value},
+                idempotency_key=self._workflow_key(state, "suspend"),
+            )
+        started = await self._deps.workflows.start(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            intent=chosen,
+            agent_version=AGENTS_VERSION,
+            next_allowed_actions=agent.tool_names,
+            turn_index=turn,
+            idempotency_key=self._workflow_key(state, "start"),
+        )
+        return base | {
+            "routed_intent": chosen.value,
+            "workflow_id": started.workflow_id,
+            "collected_fields": {},
+        }
+
     async def call_model(self, state: DispatchState) -> dict[str, Any]:
         """Ask the model what to do next."""
         policy = await self._deps.policies.policy(state["tenant_id"])
         outcome = _assemble_prompt(policy, state)
+        agent = _agent_for(self._deps, state)
+        # The model is offered only the tools the routed agent may call; the
+        # tools node enforces the same allowlist against whatever it sends.
+        allowed = tuple(
+            spec for spec in TOOL_SPECS if spec.name in (agent.tool_names if agent else ())
+        )
         try:
-            response = await self._deps.model.complete(outcome.prompt, tools=TOOL_SPECS)
+            response = await self._deps.model.complete(outcome.prompt, tools=allowed)
         except Exception:
             # Deliberately broad, and deliberately not retried. Whatever the
             # provider did, the customer is waiting; `REL-001` owns retry and
@@ -249,22 +411,75 @@ class DispatchNodes:
         two bookings in one response gets one confirmation and an explicit
         refusal for the rest, instead of a second call that silently never
         receives a result.
+
+        The allowlist is enforced here, deterministically: a call to a tool the
+        routed agent may not use is answered with a refusal and never executed,
+        and the refusal names the allowed set so the model can recover.
         """
         policy = await self._deps.policies.policy(state["tenant_id"])
         pending = state["pending_booking"]
         awaiting = pending["call_id"] if pending is not None else None
+        agent = _agent_for(self._deps, state)
         entries = []
         committed: list[CommittedAction] = []
+        results: list[ToolResult] = []
+        fields: dict[str, str] = {}
+        completed_lead = False
 
         for call in unanswered_tool_calls(state):
             if call["call_id"] == awaiting:
                 continue
+            tool = ToolName.resolve(call["name"])
+            if tool is None:
+                entries.append(
+                    tool_entry(call["call_id"], _payload(error="unknown_tool", name=call["name"]))
+                )
+                continue
+            if agent is None or tool not in agent.tools:
+                entries.append(
+                    tool_entry(
+                        call["call_id"],
+                        _payload(
+                            error="tool_not_allowed",
+                            name=call["name"],
+                            allowed_tools=list(agent.tool_names) if agent is not None else [],
+                        ),
+                    )
+                )
+                continue
             content, action = await self._run_one(state, policy, call)
             entries.append(tool_entry(call["call_id"], content))
+            results.append(ToolResult(call_id=call["call_id"], name=call["name"], result=content))
+            fields.update(self._collected(agent, _arguments(call)))
             if action is not None:
                 committed.append(action)
+                if action["action"] == ToolName.CREATE_LEAD.value:
+                    completed_lead = True
 
-        return {"transcript": entries, "committed": committed}
+        update: dict[str, Any] = {"transcript": entries, "committed": committed}
+        if agent is not None and agent.workflow and state["workflow_id"]:
+            merged = await self._deps.workflows.update(
+                tenant_id=state["tenant_id"],
+                session_id=state["session_id"],
+                workflow_id=state["workflow_id"],
+                collected_fields=fields,
+                allowed_field_names=tuple(field.name for field in agent.input_fields),
+                tool_results=tuple(results),
+                next_allowed_actions=agent.tool_names,
+                turn_index=state["turn_index"],
+                idempotency_key=self._workflow_key(state, "update", "tools"),
+            )
+            update["collected_fields"] = dict(merged.collected_fields)
+            if completed_lead:
+                await self._deps.workflows.transition(
+                    tenant_id=state["tenant_id"],
+                    session_id=state["session_id"],
+                    workflow_id=state["workflow_id"],
+                    transition=WorkflowTransition.COMPLETE,
+                    payload={},
+                    idempotency_key=self._workflow_key(state, "complete", "lead"),
+                )
+        return update
 
     async def confirm_booking(self, state: DispatchState) -> dict[str, Any]:
         """Validate the proposed booking, then pause for the customer.
@@ -272,7 +487,8 @@ class DispatchNodes:
         The validation runs *before* the interrupt so that a booking which
         cannot succeed never reaches the customer as a question. It also runs
         again after the resume, because LangGraph re-executes the whole node —
-        which is exactly why nothing in this node writes anything.
+        which is exactly why the pause transition, the one effect here, is
+        keyed by the booking call ID so the replay is a no-op.
         """
         pending = state["pending_booking"]
         if pending is None:
@@ -286,17 +502,23 @@ class DispatchNodes:
                 "pending_booking": None,
             }
 
-        decision = BookingDecision.of(
-            interrupt(
-                {
-                    "awaiting": "booking_confirmation",
-                    "service": command.service.display_name,
-                    "slot": command.slot,
-                    "customer_name": command.customer_name,
-                    "address": command.address,
-                }
+        confirmation = {
+            "awaiting": "booking_confirmation",
+            "service": command.service.display_name,
+            "slot": command.slot,
+            "customer_name": command.customer_name,
+            "address": command.address,
+        }
+        if state["workflow_id"]:
+            await self._deps.workflows.transition(
+                tenant_id=state["tenant_id"],
+                session_id=state["session_id"],
+                workflow_id=state["workflow_id"],
+                transition=WorkflowTransition.PAUSE,
+                payload=confirmation,
+                idempotency_key=self._workflow_key(state, "pause", pending["call_id"]),
             )
-        )
+        decision = BookingDecision.of(interrupt(confirmation))
         return {"booking_approved": decision is BookingDecision.APPROVED}
 
     async def commit_booking(self, state: DispatchState) -> dict[str, Any]:
@@ -305,12 +527,45 @@ class DispatchNodes:
         if pending is None:
             return {}
         call_id = pending["call_id"]
+        tenant_id = state["tenant_id"]
+        session_id = state["session_id"]
+        workflow_id = state["workflow_id"]
+        agent = _agent_for(self._deps, state)
+
+        if workflow_id and agent is not None and agent.workflow:
+            merged = await self._deps.workflows.update(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                workflow_id=workflow_id,
+                collected_fields=self._collected(agent, _arguments(pending)),
+                allowed_field_names=tuple(field.name for field in agent.input_fields),
+                tool_results=(),
+                next_allowed_actions=agent.tool_names,
+                turn_index=state["turn_index"],
+                idempotency_key=self._workflow_key(state, "update", call_id),
+            )
+        else:
+            merged = None
 
         if not state["booking_approved"]:
-            return {
-                "transcript": [tool_entry(call_id, _payload(status="declined_by_customer"))],
-                "pending_booking": None,
-            }
+            # Declining is a normal turn, not an error: the workflow resumes and
+            # the conversation keeps looking for another slot.
+            if workflow_id:
+                await self._deps.workflows.transition(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    workflow_id=workflow_id,
+                    transition=WorkflowTransition.RESUME,
+                    payload={"decision": "declined"},
+                    idempotency_key=self._workflow_key(state, "resume", call_id),
+                )
+            return self._with_collected(
+                {
+                    "transcript": [tool_entry(call_id, _payload(status="declined_by_customer"))],
+                    "pending_booking": None,
+                },
+                merged,
+            )
 
         key = self._key(state, ToolName.BOOK_APPOINTMENT, call_id)
         replay = await self._deps.bookings.find_replay(state["tenant_id"], key)
@@ -318,27 +573,32 @@ class DispatchNodes:
             # The same attempt already booked this slot while the process was
             # away; re-validating would refuse it as "not offered" now that the
             # slot is taken by this very booking, so return the committed result.
-            return {
-                "transcript": [
-                    tool_entry(
-                        call_id,
-                        _payload(
-                            status="confirmed",
-                            confirmation_id=replay.reference,
-                            service=replay.service_name,
-                            slot=replay.slot,
-                        ),
-                    )
-                ],
-                "committed": [
-                    CommittedAction(
-                        action=ToolName.BOOK_APPOINTMENT.value,
-                        reference=replay.reference,
-                        replayed=True,
-                    )
-                ],
-                "pending_booking": None,
-            }
+            if workflow_id:
+                await self._resume_and_complete(state, call_id, "approved")
+            return self._with_collected(
+                {
+                    "transcript": [
+                        tool_entry(
+                            call_id,
+                            _payload(
+                                status="confirmed",
+                                confirmation_id=replay.reference,
+                                service=replay.service_name,
+                                slot=replay.slot,
+                            ),
+                        )
+                    ],
+                    "committed": [
+                        CommittedAction(
+                            action=ToolName.BOOK_APPOINTMENT.value,
+                            reference=replay.reference,
+                            replayed=True,
+                        )
+                    ],
+                    "pending_booking": None,
+                },
+                merged,
+            )
 
         try:
             command = await self._parse_booking(state, arguments=_arguments(pending))
@@ -349,32 +609,80 @@ class DispatchNodes:
             )
         except DomainError as error:
             # Reachable when the slot was taken while the customer was deciding.
-            return {
-                "transcript": [tool_entry(call_id, _error_payload(error))],
-                "pending_booking": None,
-            }
+            if workflow_id:
+                await self._deps.workflows.transition(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    workflow_id=workflow_id,
+                    transition=WorkflowTransition.RESUME,
+                    payload={"error": error.code},
+                    idempotency_key=self._workflow_key(state, "resume", call_id),
+                )
+            return self._with_collected(
+                {
+                    "transcript": [tool_entry(call_id, _error_payload(error))],
+                    "pending_booking": None,
+                },
+                merged,
+            )
 
-        return {
-            "transcript": [
-                tool_entry(
-                    call_id,
-                    _payload(
-                        status="confirmed",
-                        confirmation_id=confirmation.reference,
-                        service=confirmation.service_name,
-                        slot=confirmation.slot,
-                    ),
-                )
-            ],
-            "committed": [
-                CommittedAction(
-                    action=ToolName.BOOK_APPOINTMENT.value,
-                    reference=confirmation.reference,
-                    replayed=confirmation.replayed,
-                )
-            ],
-            "pending_booking": None,
-        }
+        if workflow_id:
+            await self._resume_and_complete(state, call_id, "approved")
+        return self._with_collected(
+            {
+                "transcript": [
+                    tool_entry(
+                        call_id,
+                        _payload(
+                            status="confirmed",
+                            confirmation_id=confirmation.reference,
+                            service=confirmation.service_name,
+                            slot=confirmation.slot,
+                        ),
+                    )
+                ],
+                "committed": [
+                    CommittedAction(
+                        action=ToolName.BOOK_APPOINTMENT.value,
+                        reference=confirmation.reference,
+                        replayed=confirmation.replayed,
+                    )
+                ],
+                "pending_booking": None,
+            },
+            merged,
+        )
+
+    async def _resume_and_complete(self, state: DispatchState, call_id: str, decision: str) -> None:
+        """Move a paused booking workflow through its final transitions.
+
+        Two transitions rather than one: the customer's decision is the resume,
+        and the committed booking is the completion — a workflow that books
+        without ever being answered is a workflow that never paused.
+        """
+        await self._deps.workflows.transition(
+            tenant_id=state["tenant_id"],
+            session_id=state["session_id"],
+            workflow_id=state["workflow_id"],
+            transition=WorkflowTransition.RESUME,
+            payload={"decision": decision},
+            idempotency_key=self._workflow_key(state, "resume", call_id),
+        )
+        await self._deps.workflows.transition(
+            tenant_id=state["tenant_id"],
+            session_id=state["session_id"],
+            workflow_id=state["workflow_id"],
+            transition=WorkflowTransition.COMPLETE,
+            payload={},
+            idempotency_key=self._workflow_key(state, "complete", call_id),
+        )
+
+    @staticmethod
+    def _with_collected(result: dict[str, Any], merged: WorkflowState | None) -> dict[str, Any]:
+        """Mirror the persisted collected fields into the checkpointed state."""
+        if merged is not None:
+            result["collected_fields"] = dict(merged.collected_fields)
+        return result
 
     async def escalate(self, state: DispatchState) -> dict[str, Any]:
         """Hand the conversation to a person and say so.
@@ -382,7 +690,12 @@ class DispatchNodes:
         The summary is written here rather than by the model, because every route
         into this node is one where the model has stopped being reliable: it
         failed, it returned nothing, or it spent the whole round budget without
-        reaching an answer.
+        reaching an answer — or the customer asked for a person outright.
+
+        An active workflow ends here too: a failure is recorded and the workflow
+        is handed off, so the durable record says what the workflow's last
+        moment was. A customer-requested handoff skips the failure mark — the
+        workflow did not fail, the customer left it.
         """
         policy = await self._deps.policies.policy(state["tenant_id"])
         reason = HandoffReason.parse(state["failure"] or HandoffReason.UNRESOLVED.value)
@@ -399,6 +712,24 @@ class DispatchNodes:
             session_id=state["session_id"],
             idempotency_key=self._key(state, ToolName.HANDOFF_TO_HUMAN, "escalation"),
         )
+        if state["workflow_id"]:
+            if reason is not HandoffReason.CUSTOMER_REQUEST:
+                await self._deps.workflows.transition(
+                    tenant_id=state["tenant_id"],
+                    session_id=state["session_id"],
+                    workflow_id=state["workflow_id"],
+                    transition=WorkflowTransition.FAIL,
+                    payload={"failure": reason.value},
+                    idempotency_key=self._workflow_key(state, "fail"),
+                )
+            await self._deps.workflows.transition(
+                tenant_id=state["tenant_id"],
+                session_id=state["session_id"],
+                workflow_id=state["workflow_id"],
+                transition=WorkflowTransition.HAND_OFF,
+                payload={"reason": reason.value},
+                idempotency_key=self._workflow_key(state, "hand_off"),
+            )
         abandoned = _payload(error="turn_abandoned", message="The conversation was handed over.")
         return {
             "answer": (
@@ -470,6 +801,25 @@ class DispatchNodes:
     def _check_service_area(self, policy: TenantPolicy, arguments: Mapping[str, object]) -> str:
         zip_code = text_argument(arguments, "zip")
         return _payload(served=policy.serves_zip(zip_code), zip=zip_code, phone=policy.phone)
+
+    @staticmethod
+    def _collected(agent: AgentSpec, arguments: Mapping[str, object]) -> dict[str, str]:
+        """The collectible fields a tool call carried, for the workflow record.
+
+        Fields are picked only from the agent's declared input schema, so the
+        model can never introduce a field name the registry did not approve.
+        An overlong value is skipped here; the command that runs the tool
+        enforces the real bounds.
+        """
+        fields: dict[str, str] = {}
+        for field in agent.input_fields:
+            try:
+                value = text_argument(arguments, field.name)
+            except ValidationError:
+                continue
+            if value:
+                fields[field.name] = value
+        return fields
 
     async def _get_availability(self, policy: TenantPolicy, arguments: Mapping[str, object]) -> str:
         if not policy.booking_enabled:
@@ -583,6 +933,42 @@ class DispatchNodes:
             str(state["turn_index"]),
             distinguisher,
         )
+
+    @staticmethod
+    def _routing_key(state: DispatchState) -> IdempotencyKey:
+        """The key one turn's routing record is written under, once."""
+        return IdempotencyKey.derive(
+            state["tenant_id"], state["session_id"], "routing", str(state["turn_index"])
+        )
+
+    @staticmethod
+    def _workflow_key(state: DispatchState, kind: str, distinguisher: str = "") -> IdempotencyKey:
+        """The key one workflow effect is written under, once per kind and turn.
+
+        ``kind`` separates the effects a turn can perform (start, suspend,
+        pause, resume, complete, cancel, fail, hand_off, update) and
+        ``distinguisher`` separates repeated effects of one kind — two update
+        calls in one turn, or the same transition across two workflows.
+        """
+        return IdempotencyKey.derive(
+            state["tenant_id"],
+            state["session_id"],
+            "workflow",
+            kind,
+            str(state["turn_index"]),
+            distinguisher,
+        )
+
+
+def route_after_routing(state: DispatchState) -> DispatchNode:
+    """Where a routed turn goes: clarify ends as a question, handoff escalates."""
+    if state["routing_outcome"] == RoutingOutcome.CLARIFY.value:
+        return DispatchNode.FINALIZE
+    if state["routing_outcome"] == RoutingOutcome.HANDOFF.value:
+        return DispatchNode.ESCALATE
+    if state["routed_intent"] == IntentName.HANDOFF.value:
+        return DispatchNode.ESCALATE
+    return DispatchNode.MODEL
 
 
 def route_after_model(state: DispatchState) -> DispatchNode:

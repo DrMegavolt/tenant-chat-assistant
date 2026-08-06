@@ -1880,7 +1880,7 @@ guarantees by construction.
 
 ### AGENT-001 — Persisted intent router and workflow state machine
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Agent platform`
 - Depends on: `ARCH-001`, `DATA-002`, `AI-001`
@@ -1900,7 +1900,16 @@ guarantees by construction.
   - Low-confidence or conflicting intent asks a clarification or hands off safely.
 - Verification:
   - State-machine tests cover happy paths, interruptions, retries, topic changes, and invalid transitions.
-- Completion notes: _Pending._
+- Completion notes: Landed as `dispatch@2` (route/model/finalize). `packages/core` gained the
+  deterministic, versioned `routing.py` policy (`intent-routing@1`) and the `workflows.py`
+  state machine; `packages/orchestration` gained the agent registry (`agents@1`) with closed
+  tool allowlists and the route node, and `dispatch-system@2` binds the routed agent context
+  into the prompt. `services/api` persists the whole routing decision and the workflow/event
+  records in `routing_decisions`, `agent_workflows`, and `workflow_events` (migration
+  `0012_agent_routing`), backed by the idempotent `RecordedWorkflowService`; the checkpoint
+  remains only a resume point. One active workflow per session, topics switch by suspending
+  with collected state intact, cancellation and handoff are recorded transitions, and a
+  second consecutive ambiguity bounds clarification with a safe handoff.
 
 The `DEP-*` tasks below are Gate C. The parts of each that are a normal
 consequence of shipping an image or a route already landed with the task that

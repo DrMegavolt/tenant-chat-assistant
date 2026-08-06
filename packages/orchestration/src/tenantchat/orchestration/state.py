@@ -96,6 +96,19 @@ class DispatchState(TypedDict):
     # graph that retries as well would multiply it.
     failure: str
     model_name: str
+    # The AGENT-001 routing outcome, mirrored from the durable routing record
+    # so the model-facing prompt can bind the agent context. The durable record
+    # in the workflow service is authoritative; these fields are the turn's
+    # working copy.
+    routing_outcome: str
+    routed_intent: str
+    route_rule: str
+    workflow_id: str
+    clarification_question: str
+    # The fields collected so far by the active workflow agent, mirrored from
+    # the durable workflow row for the same reason. Replaced wholesale by the
+    # tools node, never accumulated.
+    collected_fields: dict[str, str]
 
 
 def visitor_entry(content: str) -> TranscriptEntry:
@@ -129,6 +142,12 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "booking_approved": False,
         "failure": "",
         "model_name": "",
+        "routing_outcome": "",
+        "routed_intent": "",
+        "route_rule": "",
+        "workflow_id": "",
+        "clarification_question": "",
+        "collected_fields": {},
     }
 
 
@@ -146,4 +165,12 @@ def next_turn(message: str) -> dict[str, object]:
         "pending_booking": None,
         "booking_approved": False,
         "failure": "",
+        # The route node re-decides every turn; the previous turn's decision
+        # must not leak into the next one.
+        "routing_outcome": "",
+        "routed_intent": "",
+        "route_rule": "",
+        "workflow_id": "",
+        "clarification_question": "",
+        "collected_fields": {},
     }

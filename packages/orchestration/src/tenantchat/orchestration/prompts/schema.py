@@ -29,7 +29,8 @@ class SlotKind(StrEnum):
 
     The kinds name the customization the scope guarantees — tone, business
     facts, escalation rules, disclaimers — plus the code-derived rule and price
-    text that a template may bind from policy booleans and approved prices.
+    text that a template may bind from policy booleans and approved prices, and
+    the workflow context the `AGENT-001` router binds from graph state.
     """
 
     TONE = "tone"
@@ -38,6 +39,7 @@ class SlotKind(StrEnum):
     DISCLAIMER = "disclaimer"
     POLICY_RULE = "policy_rule"
     PRICE_LIST = "price_list"
+    WORKFLOW_CONTEXT = "workflow_context"
 
 
 class PromptBindingError(ValueError):
