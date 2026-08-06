@@ -1,0 +1,727 @@
+import { useEffect, useState } from "react";
+
+import type { AdminApi } from "src/admin/adminApi";
+import {
+  DIAGNOSIS_CAUSE_LABELS,
+  DIAGNOSIS_STATUS_LABELS,
+  isUncertainStatus,
+  OUTCOME_LABELS,
+  type DiagnosisRecord,
+  type GoldCase,
+  type PromptMessage,
+  type PromptSegment,
+  type ReplayResult,
+  type RetrievalSection,
+  type RoutingSection,
+  type ToolsSection,
+  type TraceRead,
+  type TraceSearchRecord,
+  type VerdictsSection
+} from "src/admin/traceTypes";
+
+export interface TraceDetailProps {
+  api: AdminApi;
+  tenantId: string;
+  record: TraceSearchRecord;
+  gold: GoldCase[];
+}
+
+/**
+ * One turn, drilled down: the executed structure from the stored trace, the
+ * coordinated diagnostic panels, the gold overlay, and safe replay. Every
+ * rendered element carries its stored trace field, so nothing here can be
+ * mistaken for an idealized graph.
+ */
+export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
+  const [trace, setTrace] = useState<TraceRead | null>(null);
+  const [replay, setReplay] = useState<ReplayResult | null>(null);
+  const [replayError, setReplayError] = useState<string | null>(null);
+  const [isReplaying, setReplaying] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchTrace(api, tenantId, record.turnId).then((loaded) => {
+      if (!cancelled && loaded) setTrace(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, tenantId, record.turnId]);
+
+  if (trace === null) {
+    return (
+      <p className="muted-copy" role="status">
+        Opening the audited turn record…
+      </p>
+    );
+  }
+
+  const content = trace.content;
+  const goldCase = gold.find((case_) => case_.query === content.retrieval?.query);
+
+  const runReplay = async () => {
+    setReplaying(true);
+    setReplayError(null);
+    try {
+      setReplay(await api.replayTrace(record.turnId, tenantId));
+    } catch {
+      setReplayError("The replay did not run. The model may be unavailable.");
+    } finally {
+      setReplaying(false);
+    }
+  };
+
+  return (
+    <article className="trace-detail" aria-label={`Turn ${record.turnIndex} detail`}>
+      <header className="trace-detail-header">
+        <h3>Turn {content.turnIndex ?? record.turnIndex}</h3>
+        <span className={`outcome-badge outcome-${record.outcome}`}>
+          {OUTCOME_LABELS[record.outcome] ?? record.outcome}
+        </span>
+        <span className="session-meta mono">{record.traceId ?? record.turnId}</span>
+        <span className="session-meta">
+          Manifest {content.manifestHash?.slice(0, 12) ?? "not recorded"} · schema{" "}
+          {content.schemaVersion ?? "?"}
+        </span>
+      </header>
+
+      <ExecutedGraph content={content} />
+
+      {goldCase && <GoldOverlay goldCase={goldCase} actualQuery={content.retrieval?.query} />}
+
+      <DiagnosisPanel diagnoses={content.diagnoses} />
+
+      <RoutingPanel routing={content.routing} />
+
+      <RetrievalFunnel retrieval={content.retrieval} />
+
+      <PromptPanel prompt={content.prompt} />
+
+      <VerdictsPanel verdicts={content.verdicts} output={content.output} />
+
+      <ToolsPanel tools={content.tools} />
+
+      <ReplayPanel
+        replay={replay}
+        isReplaying={isReplaying}
+        error={replayError}
+        onReplay={() => void runReplay()}
+      />
+    </article>
+  );
+}
+
+// A module-level promise registry deduplicates the audited read across a
+// StrictMode double-mount and repeated openings of the same turn: each
+// inference-plane read is audited, so two of them for one click would be two
+// audit rows for one operator action.
+const traceFetchers = new Map<string, Promise<TraceRead | null>>();
+
+function fetchTrace(api: AdminApi, tenantId: string, turnId: string): Promise<TraceRead | null> {
+  const key = `${tenantId}:${turnId}`;
+  const existing = traceFetchers.get(key);
+  if (existing) return existing;
+  const promise = api.trace(turnId, tenantId).finally(() => traceFetchers.delete(key));
+  traceFetchers.set(key, promise);
+  return promise;
+}
+
+interface GraphSource {
+  label: string;
+  storedField: string;
+  detail: string;
+  status: "ok" | "failed" | "uncertain" | "skipped";
+}
+
+function graphSources(content: TraceRead["content"]): GraphSource[] {
+  const sources: GraphSource[] = [];
+  const routing = content.routing;
+  sources.push({
+    label: routing ? `Routing · ${routing.rule ?? "recorded"}` : "Routing",
+    storedField: "routing",
+    detail: routing
+      ? `intent ${routing.intent ?? "?"} at ${routing.score ?? "?"} (threshold ${routing.threshold ?? "?"})`
+      : "not recorded",
+    status: routing ? "ok" : "skipped"
+  });
+
+  const retrieval = content.retrieval;
+  const retrievalFailed = retrieval?.retrieverVersion === "unavailable";
+  sources.push({
+    label: retrieval ? `Retrieval · ${retrieval.retrieverVersion ?? "recorded"}` : "Retrieval",
+    storedField: "retrieval",
+    detail: retrieval
+      ? `${retrieval.candidates?.length ?? 0} candidate(s), sufficient: ${retrieval.sufficient ? "yes" : "no"}`
+      : "not recorded",
+    status: retrievalFailed
+      ? "failed"
+      : retrieval
+        ? retrieval.sufficient
+          ? "ok"
+          : "uncertain"
+        : "skipped"
+  });
+
+  const prompt = content.prompt;
+  const excluded = prompt?.excluded?.length ?? 0;
+  sources.push({
+    label: prompt ? `Prompt assembly · ${prompt.templateRef ?? "?"}` : "Prompt assembly",
+    storedField: "prompt.template_ref / prompt.excluded",
+    detail: prompt
+      ? `${prompt.messages?.length ?? 0} message(s), ${excluded} excluded by budget`
+      : "not recorded",
+    status: excluded > 0 ? "uncertain" : prompt ? "ok" : "skipped"
+  });
+
+  const toolCalls = content.tools?.toolCalls ?? [];
+  const modelCalled = Boolean(content.model?.name);
+  sources.push({
+    label: modelCalled
+      ? `Model · ${content.model?.name} · ${content.outcome?.rounds ?? 1} round(s)`
+      : "Model",
+    storedField: "model.name / outcome.rounds",
+    detail: modelCalled
+      ? toolCalls.length
+        ? `${toolCalls.length} tool call(s) attempted`
+        : "one completion"
+      : "no model call (recorded as abstained/clarified)",
+    status: modelCalled ? "ok" : "skipped"
+  });
+
+  for (const call of toolCalls) {
+    const result = content.tools?.toolResults?.find((item) => item.callId === call.callId);
+    const errorCode = result ? toolErrorCode(result.result) : null;
+    sources.push({
+      label: `Tool · ${call.name ?? "?"}`,
+      storedField: "tools.tool_calls / tools.tool_results",
+      detail: errorCode
+        ? `executed, safe error code ${errorCode}`
+        : result
+          ? "executed"
+          : "no result recorded (turn interrupted)",
+      status: errorCode ? "failed" : result ? "ok" : "uncertain"
+    });
+  }
+
+  const verdicts = content.verdicts;
+  const failedCitations = verdicts?.citationInvalid?.length ?? 0;
+  const refused = verdicts?.refusedTools?.length ?? 0;
+  sources.push({
+    label: "Validation",
+    storedField: "verdicts",
+    detail: [
+      `${failedCitations} fabricated citation(s)`,
+      `${refused} tool(s) refused`,
+      `${verdicts?.claimsInvalid?.length ?? 0} unsupported claim(s)`
+    ].join(", "),
+    status: failedCitations > 0 || refused > 0 ? "failed" : "ok"
+  });
+
+  const outcome = content.outcome;
+  sources.push({
+    label: `Outcome · ${outcome?.status ?? "?"}`,
+    storedField: "outcome",
+    detail: outcome?.failure ? `failure ${outcome.failure}` : "no failure recorded",
+    status:
+      outcome?.status === "answered"
+        ? "ok"
+        : outcome?.status === "abstained"
+          ? "uncertain"
+          : "failed"
+  });
+  return sources;
+}
+
+function toolErrorCode(result: string | undefined): string | null {
+  if (!result) return null;
+  try {
+    const parsed = JSON.parse(result) as { error?: unknown };
+    return typeof parsed.error === "string" ? parsed.error : null;
+  } catch {
+    return null;
+  }
+}
+
+const STATUS_LABELS: Record<GraphSource["status"], string> = {
+  ok: "ok",
+  failed: "failed",
+  uncertain: "uncertain",
+  skipped: "skipped"
+};
+
+function ExecutedGraph({ content }: { content: TraceRead["content"] }) {
+  const sources = graphSources(content);
+  return (
+    <section className="trace-panel" aria-labelledby="graphTitle">
+      <div className="admin-panel-header">
+        <h3 id="graphTitle">Executed structure</h3>
+      </div>
+      <p className="muted-copy">
+        Every element below maps to a stored trace field (named under each row). Per-node durations
+        are not recorded by the trace; full LangGraph node/edge events are a documented follow-up.
+      </p>
+      <ol className="graph-stages">
+        {sources.map((source, index) => (
+          <li key={`${source.label}-${index}`} className={`graph-stage ${source.status}`}>
+            <span className="graph-stage-status">{STATUS_LABELS[source.status]}</span>
+            <span className="graph-stage-body">
+              <strong>{source.label}</strong>
+              <span className="muted-copy">{source.detail}</span>
+              <code className="graph-stored-field">{source.storedField}</code>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function GoldOverlay({
+  goldCase,
+  actualQuery
+}: {
+  goldCase: GoldCase;
+  actualQuery: string | undefined;
+}) {
+  return (
+    <section className="trace-panel gold-panel" aria-labelledby="goldTitle">
+      <div className="admin-panel-header">
+        <h3 id="goldTitle">Gold evidence overlay</h3>
+        <span className="muted-copy">reviewer-labelled · non-gating</span>
+      </div>
+      <p className="muted-copy">
+        This turn's query matches eval case{" "}
+        <code>
+          {goldCase.caseId}
+          {goldCase.scenario ? ` · scenario ${goldCase.scenario}` : ""}
+        </code>
+        . The gold chunks below are the reviewer-labelled passages the case is anchored to; they do
+        not change how this turn was judged.
+      </p>
+      <ul className="gold-chunks">
+        {goldCase.goldChunks.map((chunk) => (
+          <li key={chunk.sourceId}>
+            <code>{chunk.sourceId}</code>
+            <p>{chunk.text}</p>
+          </li>
+        ))}
+      </ul>
+      {goldCase.goldChunks.length === 0 && (
+        <p className="muted-copy">
+          This case is anchored to no gold chunks (it expects an abstention); the absence is the
+          expectation.
+        </p>
+      )}
+      {actualQuery !== undefined && actualQuery !== goldCase.query && (
+        <p className="muted-copy">
+          The turn's stored query differs from the fixture's; matching is by exact query equality.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function DiagnosisPanel({ diagnoses }: { diagnoses: DiagnosisRecord[] | undefined }) {
+  return (
+    <section className="trace-panel" aria-labelledby="diagnosisTitle">
+      <div className="admin-panel-header">
+        <h3 id="diagnosisTitle">Diagnoses</h3>
+      </div>
+      {!diagnoses || diagnoses.length === 0 ? (
+        <p className="muted-copy">No diagnosis recorded for this turn.</p>
+      ) : (
+        <ul className="diagnosis-list">
+          {diagnoses.map((diagnosis) => {
+            const uncertain = isUncertainStatus(diagnosis.status);
+            return (
+              <li
+                key={`${diagnosis.cause}-${diagnosis.stage}`}
+                className={`diagnosis ${diagnosis.status}`}
+              >
+                <span className="session-row">
+                  <strong>{DIAGNOSIS_CAUSE_LABELS[diagnosis.cause] ?? diagnosis.cause}</strong>
+                  <span className={`diagnosis-status ${diagnosis.status}`}>
+                    {DIAGNOSIS_STATUS_LABELS[diagnosis.status] ?? diagnosis.status}
+                  </span>
+                </span>
+                <span className="muted-copy">
+                  stage {diagnosis.stage} · {diagnosis.role} · confidence {diagnosis.confidence}
+                </span>
+                {uncertain && (
+                  <p className="uncertain-note" role="note">
+                    This is not a confirmed cause: it is a suspicion or an inconclusive finding
+                    until replay or review adds evidence.
+                  </p>
+                )}
+                {diagnosis.evidence.length > 0 && (
+                  <ul className="evidence-refs">
+                    {diagnosis.evidence.map((ref) => (
+                      <li key={ref}>
+                        <code>{ref}</code>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function RoutingPanel({ routing }: { routing: RoutingSection | null | undefined }) {
+  return (
+    <section className="trace-panel" aria-labelledby="routingTitle">
+      <div className="admin-panel-header">
+        <h3 id="routingTitle">Routing alternatives</h3>
+        <span className="muted-copy">stored in routing</span>
+      </div>
+      {!routing ? (
+        <p className="muted-copy">No routing decision recorded.</p>
+      ) : (
+        <>
+          <p className="muted-copy">
+            Rule <code>{routing.rule ?? "?"}</code> · policy{" "}
+            <code>{routing.policyVersion ?? "?"}</code>
+          </p>
+          <table className="trace-table">
+            <thead>
+              <tr>
+                <th scope="col">Intent</th>
+                <th scope="col">Score</th>
+                <th scope="col">Matched signals</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(routing.candidates ?? []).map((candidate, index) => (
+                <tr key={index}>
+                  <td>{candidate.intent ?? "?"}</td>
+                  <td>{candidate.score ?? "?"}</td>
+                  <td>{(candidate.matchedSignals ?? []).join(", ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
+  );
+}
+
+function RetrievalFunnel({ retrieval }: { retrieval: RetrievalSection | null | undefined }) {
+  return (
+    <section className="trace-panel" aria-labelledby="funnelTitle">
+      <div className="admin-panel-header">
+        <h3 id="funnelTitle">Retrieval funnel</h3>
+        <span className="muted-copy">stored in retrieval</span>
+      </div>
+      {!retrieval ? (
+        <p className="muted-copy">No retrieval run recorded.</p>
+      ) : (
+        <>
+          <p className="muted-copy">
+            Query: <code>{retrieval.query || "—"}</code> · retriever{" "}
+            <code>{retrieval.retrieverVersion ?? "?"}</code> · reranker{" "}
+            <code>{retrieval.reranker ?? "none"}</code> · sufficient:{" "}
+            {retrieval.sufficient ? "yes" : "no"}
+          </p>
+          <table className="trace-table">
+            <thead>
+              <tr>
+                <th scope="col">Source</th>
+                <th scope="col">Score</th>
+                <th scope="col">Generation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(retrieval.candidates ?? []).map((candidate, index) => (
+                <tr key={`${candidate.sourceId}-${index}`}>
+                  <td>
+                    <code>{candidate.sourceId ?? "?"}</code>
+                  </td>
+                  <td>{candidate.score ?? "?"}</td>
+                  <td>{candidate.generationId ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted-copy">
+            The trace stores each candidate's fused score; per-stage lexical, vector, and rerank
+            scores are recorded when the pipeline supplies them.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+function PromptPanel({ prompt }: { prompt: TraceRead["content"]["prompt"] }) {
+  return (
+    <section className="trace-panel" aria-labelledby="promptTitle">
+      <div className="admin-panel-header">
+        <h3 id="promptTitle">Assembled prompt</h3>
+        <span className="muted-copy">stored in prompt</span>
+      </div>
+      {!prompt ? (
+        <p className="muted-copy">No assembled prompt recorded.</p>
+      ) : (
+        <>
+          <p className="muted-copy">
+            Template <code>{prompt.templateRef ?? "?"}</code> · content hash{" "}
+            <code>{(prompt.contentHash ?? "").slice(0, 12)}</code>
+          </p>
+          <div className="prompt-messages">
+            {(prompt.messages ?? []).map((message, index) => (
+              <PromptMessageView key={index} message={message} />
+            ))}
+          </div>
+          {(prompt.excluded ?? []).length > 0 && (
+            <div className="prompt-excluded">
+              <h4>Excluded from the context budget</h4>
+              <ul>
+                {(prompt.excluded ?? []).map((item, index) => (
+                  <li key={index}>
+                    <code>{item.reference ?? "?"}</code> · {item.kind ?? "?"} · {item.reason ?? "?"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function PromptMessageView({ message }: { message: PromptMessage }) {
+  const segments = message.segments ?? [];
+  return (
+    <div className="prompt-message">
+      <h4>{message.role}</h4>
+      {segments.length === 0 && <p className="muted-copy">{message.content ?? ""}</p>}
+      {segments.map((segment) => (
+        <PromptSegmentView key={segment.segmentId} segment={segment} />
+      ))}
+    </div>
+  );
+}
+
+function PromptSegmentView({ segment }: { segment: PromptSegment }) {
+  const trusted = segment.region === "trusted";
+  return (
+    <p className={`prompt-segment ${trusted ? "trusted" : "untrusted"}`}>
+      <span className="visually-hidden">
+        {trusted ? "Trusted server-authored" : "Untrusted visitor or evidence"} segment
+      </span>
+      <span aria-hidden="true" className="segment-region">
+        {trusted ? "TRUSTED" : "UNTRUSTED"}
+      </span>
+      {segment.text}
+    </p>
+  );
+}
+
+function VerdictsPanel({
+  verdicts,
+  output
+}: {
+  verdicts: VerdictsSection | undefined;
+  output: TraceRead["content"]["output"];
+}) {
+  const claims = output?.claims ?? [];
+  const verified = new Set((verdicts?.citations ?? []).map((citation) => citation.sourceId));
+  const fabricated = new Set(verdicts?.citationInvalid ?? []);
+  return (
+    <section className="trace-panel" aria-labelledby="verdictsTitle">
+      <div className="admin-panel-header">
+        <h3 id="verdictsTitle">Claim verdicts</h3>
+        <span className="muted-copy">
+          deterministic: supported / unsupported / fabricated_citation
+        </span>
+      </div>
+      {claims.length === 0 && (verdicts?.claimsInvalid?.length ?? 0) === 0 ? (
+        <p className="muted-copy">No claims recorded for this turn.</p>
+      ) : (
+        <ul className="claim-list">
+          {claims.map((claim) => (
+            <li key={claim}>
+              <span
+                className={`claim-verdict ${fabricated.has(claim) ? "fabricated" : "supported"}`}
+              >
+                {fabricated.has(claim)
+                  ? "fabricated_citation"
+                  : verified.has(claim)
+                    ? "supported"
+                    : "unchecked"}
+              </span>
+              <code>{claim}</code>
+            </li>
+          ))}
+          {(verdicts?.claimsInvalid ?? []).map((item, index) => (
+            <li key={`invalid-${index}`}>
+              <span className="claim-verdict unsupported">unsupported</span>
+              <code>{item.claim ?? "?"}</code>
+              <span className="muted-copy">{item.reason ?? ""}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ToolsPanel({ tools }: { tools: ToolsSection | undefined }) {
+  return (
+    <section className="trace-panel" aria-labelledby="toolsTitle">
+      <div className="admin-panel-header">
+        <h3 id="toolsTitle">Tool policy and execution</h3>
+        <span className="muted-copy">stored in tools / verdicts</span>
+      </div>
+      {(tools?.toolCalls ?? []).length === 0 &&
+      (tools?.committed ?? []).length === 0 &&
+      (tools?.toolResults ?? []).length === 0 ? (
+        <p className="muted-copy">No tool activity recorded.</p>
+      ) : (
+        <>
+          <table className="trace-table">
+            <thead>
+              <tr>
+                <th scope="col">Call</th>
+                <th scope="col">Tool</th>
+                <th scope="col">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(tools?.toolCalls ?? []).map((call) => {
+                const result = (tools?.toolResults ?? []).find(
+                  (item) => item.callId === call.callId
+                );
+                const errorCode = result ? toolErrorCode(result.result) : null;
+                return (
+                  <tr key={call.callId ?? call.name}>
+                    <td>
+                      <code>{call.callId ?? "?"}</code>
+                    </td>
+                    <td>{call.name ?? "?"}</td>
+                    <td>
+                      {errorCode ? (
+                        <span className="tool-error">error {errorCode}</span>
+                      ) : result ? (
+                        <span className="tool-ok">ok</span>
+                      ) : (
+                        <span className="muted-copy">no result recorded</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {(tools?.committed ?? []).length > 0 && (
+            <div className="prompt-excluded">
+              <h4>Committed effects (idempotency keys)</h4>
+              <ul>
+                {(tools?.committed ?? []).map((action, index) => (
+                  <li key={index}>
+                    {action.action ?? "?"} · {action.reference ?? "?"} · key{" "}
+                    <code>{(action.idempotencyKey ?? "").slice(0, 12)}</code> · replayed:{" "}
+                    {action.replayed ? "yes" : "no"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function ReplayPanel({
+  replay,
+  isReplaying,
+  error,
+  onReplay
+}: {
+  replay: ReplayResult | null;
+  isReplaying: boolean;
+  error: string | null;
+  onReplay: () => void;
+}) {
+  return (
+    <section className="trace-panel" aria-labelledby="replayTitle">
+      <div className="admin-panel-header">
+        <h3 id="replayTitle">Safe replay</h3>
+        <span className="muted-copy">audited · current model · no tools</span>
+      </div>
+      {!replay ? (
+        <>
+          <p className="muted-copy">
+            Replays the stored prompt through the current model with no tools, so nothing
+            domain-effectful can be touched. Each replay is an audited model call.
+          </p>
+          {error && (
+            <p className="admin-alert" role="alert">
+              {error}
+            </p>
+          )}
+          <button type="button" className="ghost-button" onClick={onReplay} disabled={isReplaying}>
+            {isReplaying ? "Replaying…" : "Run one safe replay"}
+          </button>
+        </>
+      ) : (
+        <>
+          {replay.manifestChanged ? (
+            <p className="replay-warning" role="note">
+              The components this turn ran under differ from what this deployment serves now. The
+              replay ran under the current components, marked below.
+            </p>
+          ) : (
+            <p className="replay-safe" role="note">
+              This deployment serves the same components the turn ran under.
+            </p>
+          )}
+          <p className="replay-warning" role="note">
+            A single replayed trial is stochastic: it is an observation, never a proof. The original
+            record is untouched.
+          </p>
+          <table className="trace-table">
+            <thead>
+              <tr>
+                <th scope="col">Component</th>
+                <th scope="col">Stored (original)</th>
+                <th scope="col">Current</th>
+              </tr>
+            </thead>
+            <tbody>
+              {replay.components.map((component) => (
+                <tr key={component.name} className={component.changed ? "manifest-changed" : ""}>
+                  <td>{component.name}</td>
+                  <td>
+                    <code>{component.stored || "—"}</code>
+                  </td>
+                  <td>
+                    <code>{component.current || "—"}</code>
+                    {component.changed && <span className="uncertain-chip">changed</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="replay-outputs">
+            <div>
+              <h4>Original output</h4>
+              <pre>{replay.original.outputRaw || "—"}</pre>
+            </div>
+            <div>
+              <h4>Replayed output ({replay.replayed.modelName || "current model"})</h4>
+              <pre>{replay.replayed.outputRaw || "—"}</pre>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}

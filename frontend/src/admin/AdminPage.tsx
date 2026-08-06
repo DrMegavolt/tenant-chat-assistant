@@ -1,27 +1,37 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { AdminApi } from "src/admin/adminApi";
 import { SessionDetail } from "src/admin/components/SessionDetail";
 import { SessionList } from "src/admin/components/SessionList";
 import { StatBar } from "src/admin/components/StatBar";
+import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { relativeTime } from "src/admin/time";
 import { useAdminConsole } from "src/admin/useAdminConsole";
 
+type AdminView = "queue" | "traces";
+
+const VIEW_LABELS: Record<AdminView, string> = {
+  queue: "Chat queue",
+  traces: "AI turn explorer"
+};
+
 /**
- * The operator console: every conversation, and the ability to answer one.
+ * The operator console: every conversation, the ability to answer one, and
+ * the FEAT-015 AI turn explorer over the inference plane.
  *
- * Two panes and one selection. The queue on the left is the working surface —
- * searchable, filterable, and never rebuilt underneath a dispatcher who is
- * reading it — and the right pane is the whole of one conversation.
+ * Two panes and one selection for the queue; the explorer is a separate tab
+ * because it is a diagnosis surface, not a live queue — the console keeps
+ * polling only while the queue tab is open.
  */
 export function AdminPage() {
   const api = useMemo(() => new AdminApi(), []);
   const console_ = useAdminConsole(api);
+  const [view, setView] = useState<AdminView>("queue");
 
   return (
     <>
-      <a className="skip-link" href="#queue">
-        Skip to the chat queue
+      <a className="skip-link" href={view === "queue" ? "#queue" : "#traceTitle"}>
+        Skip to main content
       </a>
 
       <div className="admin-shell">
@@ -31,7 +41,20 @@ export function AdminPage() {
             <h1>Chat admin</h1>
           </div>
           <div className="admin-header-actions">
-            {console_.tenants.length > 1 && (
+            <nav className="admin-tabs" aria-label="Console views">
+              {(Object.keys(VIEW_LABELS) as AdminView[]).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  className={tab === view ? "admin-tab active" : "admin-tab"}
+                  aria-current={tab === view ? "page" : undefined}
+                  onClick={() => setView(tab)}
+                >
+                  {VIEW_LABELS[tab]}
+                </button>
+              ))}
+            </nav>
+            {console_.tenants.length > 1 && view === "queue" && (
               <label className="tenant-picker">
                 <span className="visually-hidden">Tenant</span>
                 <select
@@ -57,33 +80,48 @@ export function AdminPage() {
         </header>
 
         <main className="admin-main">
-          {console_.error && (
+          {console_.error && view === "queue" && (
             <p className="admin-alert" role="alert">
               {console_.error}
             </p>
           )}
 
-          <StatBar sessions={console_.sessions} />
+          {view === "queue" && (
+            <>
+              <StatBar sessions={console_.sessions} />
 
-          <div className="admin-layout">
-            <aside className="admin-queue" id="queue" aria-labelledby="queueTitle">
-              <div className="admin-panel-header">
-                <h2 id="queueTitle">Live &amp; archived chats</h2>
-                <span className="muted-copy">{console_.sessions.length}</span>
+              <div className="admin-layout">
+                <aside className="admin-queue" id="queue" aria-labelledby="queueTitle">
+                  <div className="admin-panel-header">
+                    <h2 id="queueTitle">Live &amp; archived chats</h2>
+                    <span className="muted-copy">{console_.sessions.length}</span>
+                  </div>
+                  <SessionList
+                    sessions={console_.sessions}
+                    selectedId={console_.selectedId}
+                    onSelect={console_.select}
+                  />
+                </aside>
+
+                <SessionDetail
+                  session={console_.selected}
+                  isLoading={console_.isLoading}
+                  onSendStaffMessage={console_.sendStaffMessage}
+                />
               </div>
-              <SessionList
-                sessions={console_.sessions}
-                selectedId={console_.selectedId}
-                onSelect={console_.select}
-              />
-            </aside>
+            </>
+          )}
 
-            <SessionDetail
-              session={console_.selected}
-              isLoading={console_.isLoading}
-              onSendStaffMessage={console_.sendStaffMessage}
+          {view === "traces" && (
+            <TraceExplorer
+              api={api}
+              tenants={console_.tenants.map((tenant) => ({
+                tenantId: tenant.tenantId,
+                name: tenant.name
+              }))}
+              initialTenantId={console_.tenantId}
             />
-          </div>
+          )}
         </main>
       </div>
     </>

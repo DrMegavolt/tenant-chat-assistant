@@ -66,6 +66,11 @@ PUBLISHED_OPERATIONS = {
     # lookup, audited like the direct read.
     ("get", "/api/admin/traces"),
     ("get", "/api/admin/traces/by-trace-id/{trace_id}"),
+    # FEAT-015: the explorer's replay surface (stored prompt through the current
+    # model, no tools) and the gold-evidence overlay, both under the same
+    # dedicated role and audit rules as the reads.
+    ("post", "/api/admin/traces/{turn_id}/replay"),
+    ("get", "/api/admin/traces/gold-cases"),
     ("get", "/api/admin/trace-access"),
     ("post", "/api/admin/trace-access"),
     ("delete", "/api/admin/trace-access"),

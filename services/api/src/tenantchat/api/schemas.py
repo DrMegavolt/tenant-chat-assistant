@@ -876,6 +876,7 @@ class TraceSearchResponse(BaseModel):
     outcome: str
     component_manifest_hash: str
     diagnosis_causes: list[str]
+    diagnosis_statuses: list[str]
     turn_index: int
     trace_schema_version: str
 
@@ -889,6 +890,7 @@ class TraceSearchResponse(BaseModel):
             outcome=record.outcome,
             component_manifest_hash=record.component_manifest_hash,
             diagnosis_causes=list(record.diagnosis_causes),
+            diagnosis_statuses=list(record.diagnosis_statuses),
             turn_index=record.turn_index,
             trace_schema_version=record.trace_schema_version,
         )
@@ -900,6 +902,73 @@ class TraceSearchResponsePage(BaseModel):
     @classmethod
     def of(cls, records: tuple[TurnRecord, ...]) -> TraceSearchResponsePage:
         return cls(records=[TraceSearchResponse.of(record) for record in records])
+
+
+class ComponentVersionSnapshot(BaseModel):
+    """One manifest component as the turn pinned it and as this deployment
+    serves it now — versions only, never content."""
+
+    name: str
+    stored: str
+    current: str
+    changed: bool
+
+
+class ReplayOutput(BaseModel):
+    """One side of a replay comparison: the prompt hash it was built from, the
+    model that produced it, and the raw output."""
+
+    content_hash: str
+    model_name: str
+    output_raw: str
+
+
+class TraceReplayResponse(BaseModel):
+    """The result of one safe replay, original and replayed side by side.
+
+    The replay is the stored prompt sent through the *current* model with no
+    tools attached, so nothing domain-effectful can be touched. Output text is
+    content and this response is governed exactly like
+    :class:`TraceReadResponse`: the dedicated trace-read role, audited to an
+    actor, turn, and reason. ``stochastic`` is true by contract: a single
+    replayed trial is an observation, never a proof.
+    """
+
+    turn_id: uuid.UUID
+    recorded_at: datetime
+    manifest_hash: str
+    current_manifest_hash: str | None
+    manifest_changed: bool
+    stochastic: bool
+    components: list[ComponentVersionSnapshot]
+    original: ReplayOutput
+    replayed: ReplayOutput
+
+
+class GoldEvidenceItem(BaseModel):
+    """One reviewer-labelled chunk a Gate B case is anchored to."""
+
+    source_id: str
+    text: str
+
+
+class GoldCaseResponse(BaseModel):
+    """One eval fixture case, served so the explorer can overlay it on a turn.
+
+    The gold evidence is synthetic evaluation content, not visitor data, but it
+    is still evidence-like text, so it is served only under the trace-read role
+    and audited — the same governance the inference plane itself gets.
+    """
+
+    case_id: str
+    tenant_id: str
+    scenario: str | None
+    query: str
+    gold_chunks: list[GoldEvidenceItem]
+
+
+class GoldCasesResponse(BaseModel):
+    cases: list[GoldCaseResponse]
 
 
 class JobControlRequest(_Request):

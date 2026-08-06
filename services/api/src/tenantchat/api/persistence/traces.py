@@ -40,6 +40,7 @@ _TRACE_COLUMNS = (
     "outcome",
     "component_manifest_hash",
     "diagnosis_causes",
+    "diagnosis_statuses",
     "turn_index",
     "trace_schema_version",
 )
@@ -60,6 +61,7 @@ def _turn_record(row: object) -> TurnRecord:
         outcome=mapping["outcome"],
         component_manifest_hash=mapping["component_manifest_hash"],
         diagnosis_causes=tuple(mapping["diagnosis_causes"]),
+        diagnosis_statuses=tuple(mapping["diagnosis_statuses"]),
         turn_index=mapping["turn_index"],
         trace_schema_version=mapping["trace_schema_version"],
     )
@@ -103,6 +105,7 @@ class PostgresTurnRecordStore:
         outcome: str = "unknown",
         component_manifest_hash: str = "",
         diagnosis_causes: tuple[str, ...] = (),
+        diagnosis_statuses: tuple[str, ...] = (),
         turn_index: int = 0,
         trace_schema_version: str = "1",
     ) -> TurnRecord:
@@ -116,15 +119,15 @@ class PostgresTurnRecordStore:
                         """
                         INSERT INTO turn_records
                             (id, tenant_id, chat_session_id, trace_id, content, recorded_at,
-                             outcome, component_manifest_hash, diagnosis_causes, turn_index,
-                             trace_schema_version)
+                             outcome, component_manifest_hash, diagnosis_causes,
+                             diagnosis_statuses, turn_index, trace_schema_version)
                         VALUES
                             (:id, :tenant_id, :session_id, :trace_id, :content, :recorded_at,
-                             :outcome, :manifest_hash, :diagnosis_causes, :turn_index,
-                             :schema_version)
+                             :outcome, :manifest_hash, :diagnosis_causes, :diagnosis_statuses,
+                             :turn_index, :schema_version)
                         RETURNING id, tenant_id, chat_session_id, trace_id, content, recorded_at,
-                                  outcome, component_manifest_hash, diagnosis_causes, turn_index,
-                                  trace_schema_version
+                                  outcome, component_manifest_hash, diagnosis_causes,
+                                  diagnosis_statuses, turn_index, trace_schema_version
                         """
                     ).bindparams(bindparam("content", type_=JSONB)),
                     {
@@ -137,6 +140,7 @@ class PostgresTurnRecordStore:
                         "outcome": outcome,
                         "manifest_hash": component_manifest_hash,
                         "diagnosis_causes": list(diagnosis_causes),
+                        "diagnosis_statuses": list(diagnosis_statuses),
                         "turn_index": turn_index,
                         "schema_version": trace_schema_version,
                     },
@@ -197,7 +201,10 @@ class PostgresTurnRecordStore:
         *,
         manifest_hash: str | None = None,
         causes: tuple[str, ...] = (),
+        statuses: tuple[str, ...] = (),
         outcome: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 50,
     ) -> tuple[TurnRecord, ...]:
         clauses = ["tenant_id = :tenant_id"]
@@ -208,9 +215,18 @@ class PostgresTurnRecordStore:
         if causes:
             clauses.append("diagnosis_causes @> :causes")
             params["causes"] = list(causes)
+        if statuses:
+            clauses.append("diagnosis_statuses @> :statuses")
+            params["statuses"] = list(statuses)
         if outcome is not None:
             clauses.append("outcome = :outcome")
             params["outcome"] = outcome
+        if since is not None:
+            clauses.append("recorded_at >= :since")
+            params["since"] = since
+        if until is not None:
+            clauses.append("recorded_at <= :until")
+            params["until"] = until
         bounded = min(limit, _MAX_TRACE_SEARCH_LIMIT)
         # The WHERE clause is built from a fixed clause list and bound
         # parameters only; no caller text ever reaches the statement.

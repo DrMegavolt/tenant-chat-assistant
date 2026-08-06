@@ -730,6 +730,7 @@ class TurnRecord:
     outcome: str = "unknown"
     component_manifest_hash: str = ""
     diagnosis_causes: tuple[str, ...] = ()
+    diagnosis_statuses: tuple[str, ...] = ()
     turn_index: int = 0
     trace_schema_version: str = "1"
 
@@ -893,6 +894,7 @@ class TurnRecordStore(Protocol):
         outcome: str = "unknown",
         component_manifest_hash: str = "",
         diagnosis_causes: tuple[str, ...] = (),
+        diagnosis_statuses: tuple[str, ...] = (),
         turn_index: int = 0,
         trace_schema_version: str = "1",
     ) -> TurnRecord:
@@ -933,14 +935,18 @@ class TurnRecordStore(Protocol):
         *,
         manifest_hash: str | None = None,
         causes: tuple[str, ...] = (),
+        statuses: tuple[str, ...] = (),
         outcome: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 50,
     ) -> tuple[TurnRecord, ...]:
         """The tenant's records matching the content-free filters, newest first.
 
         This is the `OBS-004` attribution query surface: filter by the
-        component-manifest hash (what build answered), by diagnosis causes
-        (what failed), or by outcome, bounded to *limit*.
+        component-manifest hash (what build answered), by diagnosis causes or
+        statuses (what failed, and how certain the record is), by outcome, or
+        by recorded time — bounded to *limit*.
         """
 
     async def projections_for_turn(
@@ -993,6 +999,7 @@ class InMemoryTurnRecordStore:
         outcome: str = "unknown",
         component_manifest_hash: str = "",
         diagnosis_causes: tuple[str, ...] = (),
+        diagnosis_statuses: tuple[str, ...] = (),
         turn_index: int = 0,
         trace_schema_version: str = "1",
     ) -> TurnRecord:
@@ -1006,6 +1013,7 @@ class InMemoryTurnRecordStore:
             outcome=outcome,
             component_manifest_hash=component_manifest_hash,
             diagnosis_causes=tuple(diagnosis_causes),
+            diagnosis_statuses=tuple(diagnosis_statuses),
             turn_index=turn_index,
             trace_schema_version=trace_schema_version,
         )
@@ -1052,10 +1060,14 @@ class InMemoryTurnRecordStore:
         *,
         manifest_hash: str | None = None,
         causes: tuple[str, ...] = (),
+        statuses: tuple[str, ...] = (),
         outcome: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 50,
     ) -> tuple[TurnRecord, ...]:
         wanted_causes = set(causes)
+        wanted_statuses = set(statuses)
         async with self._lock:
             records = [
                 replace(record, content=dict(record.content))
@@ -1063,7 +1075,12 @@ class InMemoryTurnRecordStore:
                 if record.tenant_id == tenant_id
                 and (manifest_hash is None or record.component_manifest_hash == manifest_hash)
                 and (not wanted_causes or wanted_causes.issubset(set(record.diagnosis_causes)))
+                and (
+                    not wanted_statuses or wanted_statuses.issubset(set(record.diagnosis_statuses))
+                )
                 and (outcome is None or record.outcome == outcome)
+                and (since is None or record.recorded_at >= since)
+                and (until is None or record.recorded_at <= until)
             ]
         records.sort(key=lambda record: record.recorded_at, reverse=True)
         return tuple(records[:limit])

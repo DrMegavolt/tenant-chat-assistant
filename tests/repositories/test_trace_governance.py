@@ -100,6 +100,7 @@ def test_the_derived_columns_round_trip_with_the_envelope(
             outcome="answered",
             component_manifest_hash="a" * 64,
             diagnosis_causes=("grounding_or_citation_error",),
+            diagnosis_statuses=("detected",),
             turn_index=3,
             trace_schema_version="1",
         )
@@ -109,6 +110,7 @@ def test_the_derived_columns_round_trip_with_the_envelope(
     assert fetched.outcome == "answered"
     assert fetched.component_manifest_hash == "a" * 64
     assert fetched.diagnosis_causes == ("grounding_or_citation_error",)
+    assert fetched.diagnosis_statuses == ("detected",)
     assert fetched.turn_index == 3
     assert fetched.trace_schema_version == "1"
 
@@ -186,6 +188,54 @@ def test_search_filters_by_manifest_hash_cause_and_outcome(
 
     bounded = asyncio.run(store.search("tenant-a", limit=2))
     assert len(bounded) == 2
+
+
+def test_search_filters_by_diagnosis_status_and_time_range(
+    database: Database, repository_database_url: str
+) -> None:
+    """The `FEAT-015` explorer dimensions: status and recorded-time bounds."""
+    _seed_tenants(repository_database_url, "tenant-a")
+    session_id = uuid.uuid4()
+    _seed_session(repository_database_url, "tenant-a", session_id)
+    store = PostgresTurnRecordStore(database.engine)
+    base = datetime(2026, 8, 1, tzinfo=UTC)
+    asyncio.run(
+        store.record(
+            "tenant-a",
+            session_id,
+            content={},
+            outcome="answered",
+            diagnosis_causes=("grounding_or_citation_error",),
+            diagnosis_statuses=("detected",),
+            recorded_at=base,
+        )
+    )
+    asyncio.run(
+        store.record(
+            "tenant-a",
+            session_id,
+            content={},
+            outcome="answered",
+            diagnosis_causes=("routing_error",),
+            diagnosis_statuses=("suspected", "inconclusive"),
+            recorded_at=base + timedelta(hours=1),
+        )
+    )
+
+    by_status = asyncio.run(store.search("tenant-a", statuses=("suspected",)))
+    assert [record.diagnosis_statuses for record in by_status] == [("suspected", "inconclusive")]
+
+    since_only = asyncio.run(store.search("tenant-a", since=base + timedelta(minutes=30)))
+    assert len(since_only) == 1
+    assert since_only[0].diagnosis_statuses == ("suspected", "inconclusive")
+
+    window = asyncio.run(store.search("tenant-a", since=base, until=base + timedelta(minutes=30)))
+    assert [record.diagnosis_statuses for record in window] == [("detected",)]
+
+    combined = asyncio.run(
+        store.search("tenant-a", statuses=("detected",), until=base + timedelta(hours=1))
+    )
+    assert len(combined) == 1
 
 
 def test_search_and_trace_lookup_never_leak_across_tenants(

@@ -8,6 +8,14 @@
  */
 
 import type { SessionDetail, SessionSummary, TenantSummary } from "src/admin/types";
+import type {
+  GoldCase,
+  ReplayResult,
+  TraceContent,
+  TraceRead,
+  TraceSearchFilters,
+  TraceSearchRecord
+} from "src/admin/traceTypes";
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -82,6 +90,72 @@ export class AdminApi {
     if (!response.ok) throw new Error(`Sending the staff message failed with ${response.status}`);
   }
 
+  /**
+   * The FEAT-015 attribution surface: content-free results only. The record
+   * itself arrives through `trace`, whose read is audited per record.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async searchTraces(tenantId: string, filters: TraceSearchFilters): Promise<TraceSearchRecord[]> {
+    const params = new URLSearchParams({
+      tenant_id: tenantId,
+      reason: "quality_review",
+      limit: "100"
+    });
+    if (filters.since) params.set("since", filters.since);
+    if (filters.until) params.set("until", filters.until);
+    if (filters.outcome) params.set("outcome", filters.outcome);
+    if (filters.cause) params.set("cause", filters.cause);
+    if (filters.diagnosisStatus) params.set("diagnosis_status", filters.diagnosisStatus);
+    if (filters.manifestHash) params.set("manifest_hash", filters.manifestHash);
+    const response = await this.request(`/api/admin/traces?${params}`);
+    if (!response.ok) throw new Error(`Trace search failed with ${response.status}`);
+    const payload = (await response.json()) as { records?: unknown[] };
+    return (payload.records ?? []).map((wire) =>
+      searchRecordFromWire(wire as Record<string, unknown>)
+    );
+  }
+
+  /**
+   * One full content-bearing turn record. Every call is RBAC-gated and
+   * audited server-side with this read's reason.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async trace(turnId: string, tenantId: string): Promise<TraceRead | null> {
+    const response = await this.request(
+      `/api/admin/traces/${encodeURIComponent(turnId)}?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`
+    );
+    if (!response.ok) return null;
+    return traceReadFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * One safe replay: the stored prompt through the current model, no tools.
+   * Launches an audited model call, so it carries the CSRF token like every
+   * admin mutation.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async replayTrace(turnId: string, tenantId: string): Promise<ReplayResult> {
+    const response = await this.request(
+      `/api/admin/traces/${encodeURIComponent(turnId)}/replay?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
+      { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
+    );
+    if (!response.ok) throw new Error(`Replay failed with ${response.status}`);
+    return replayFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /** The reviewer-labelled gold cases for one tenant (trace-read gated). */
+  async goldCases(tenantId: string): Promise<GoldCase[]> {
+    const response = await this.request(
+      `/api/admin/traces/gold-cases?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`
+    );
+    if (!response.ok) throw new Error(`Gold cases failed with ${response.status}`);
+    const payload = (await response.json()) as { cases?: unknown[] };
+    return (payload.cases ?? []).map((wire) => goldCaseFromWire(obj(wire)));
+  }
+
   private async csrf(): Promise<string> {
     if (this.csrfToken) return this.csrfToken;
     const response = await this.request("/api/admin/csrf-token");
@@ -90,6 +164,243 @@ export class AdminApi {
     this.csrfToken = payload.csrf_token ?? "";
     return this.csrfToken;
   }
+}
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function strOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function searchRecordFromWire(wire: Record<string, unknown>): TraceSearchRecord {
+  return {
+    turnId: str(wire.turn_id),
+    sessionId: str(wire.session_id),
+    traceId: strOrNull(wire.trace_id),
+    recordedAt: str(wire.recorded_at),
+    outcome: str(wire.outcome),
+    componentManifestHash: str(wire.component_manifest_hash),
+    diagnosisCauses: Array.isArray(wire.diagnosis_causes) ? wire.diagnosis_causes.map(str) : [],
+    diagnosisStatuses: Array.isArray(wire.diagnosis_statuses)
+      ? wire.diagnosis_statuses.map(str)
+      : [],
+    turnIndex: typeof wire.turn_index === "number" ? wire.turn_index : 0,
+    traceSchemaVersion: str(wire.trace_schema_version)
+  };
+}
+
+function traceReadFromWire(wire: Record<string, unknown>): TraceRead {
+  return {
+    turnId: str(wire.turn_id),
+    tenantId: str(wire.tenant_id),
+    sessionId: str(wire.session_id),
+    traceId: strOrNull(wire.trace_id),
+    recordedAt: str(wire.recorded_at),
+    content: traceContentFromWire(obj(wire.content)),
+    projections: Array.isArray(wire.projections)
+      ? (wire.projections as TraceRead["projections"])
+      : []
+  };
+}
+
+/** The deep snake→camel mapping of the OBS-004 content object. The wire
+ * format is the store's; the UI contract is camelCase, so the client owns
+ * the mapping and the panels read typed fields only. */
+function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
+  const prompt = obj(wire.prompt);
+  const retrieval = obj(wire.retrieval);
+  const routing = obj(wire.routing);
+  const tools = obj(wire.tools);
+  const verdicts = obj(wire.verdicts);
+  const output = obj(wire.output);
+  const outcome = obj(wire.outcome);
+  const model = obj(wire.model);
+  return {
+    schemaVersion: str(wire.schema_version),
+    turnIndex: typeof wire.turn_index === "number" ? wire.turn_index : undefined,
+    manifestHash: str(wire.manifest_hash),
+    routing: routing
+      ? {
+          ...routing,
+          rule: str(routing.rule),
+          intent: str(routing.intent),
+          policyVersion: str(routing.policy_version),
+          candidates: list(routing.candidates).map((candidate) => ({
+            ...candidate,
+            intent: str(candidate.intent),
+            matchedSignals: listStr(candidate.matched_signals)
+          }))
+        }
+      : null,
+    retrieval: retrieval
+      ? {
+          query: str(retrieval.query),
+          sufficient: retrieval.sufficient === true,
+          retrieverVersion: str(retrieval.retriever_version),
+          reranker: strOrNull(retrieval.reranker),
+          minEvidenceScore:
+            typeof retrieval.min_evidence_score === "number" ? retrieval.min_evidence_score : null,
+          embeddingModel: str(retrieval.embedding_model),
+          generationId: strOrNull(retrieval.generation_id),
+          filters: obj(retrieval.filters),
+          budget: obj(retrieval.budget),
+          parameters: obj(retrieval.parameters),
+          candidates: list(retrieval.candidates).map((candidate) => ({
+            ...candidate,
+            sourceId: str(candidate.source_id),
+            generationId: strOrNull(candidate.generation_id),
+            embeddingModel: str(candidate.embedding_model)
+          })),
+          evidence: list(retrieval.evidence).map((item) => ({
+            ...item,
+            sourceId: str(item.source_id),
+            generationId: strOrNull(item.generation_id)
+          }))
+        }
+      : null,
+    prompt: prompt
+      ? {
+          templateRef: str(prompt.template_ref),
+          contentHash: str(prompt.content_hash),
+          bindings: obj(prompt.bindings) as Record<string, string>,
+          excluded: list(prompt.excluded).map((item) => ({
+            ...item,
+            kind: str(item.kind),
+            reference: str(item.reference),
+            reason: str(item.reason)
+          })),
+          messages: list(prompt.messages).map((message) => ({
+            role: str(message.role),
+            content: str(message.content),
+            toolCallId: strOrNull(message.tool_call_id),
+            segments: list(message.segments).map((segment) => ({
+              segmentId: str(segment[0]),
+              region: str(segment[1]),
+              text: str(segment[2])
+            }))
+          }))
+        }
+      : null,
+    model: model ? { name: str(model.name), usage: obj(model.usage) } : undefined,
+    output: output
+      ? {
+          answer: str(output.answer),
+          raw: str(output.raw),
+          claims: listStr(output.claims)
+        }
+      : undefined,
+    verdicts: verdicts
+      ? {
+          citations: list(verdicts.citations).map((citation) => ({
+            sourceId: str(citation.source_id),
+            title: str(citation.title)
+          })),
+          citationInvalid: listStr(verdicts.citation_invalid),
+          refusedTools: listStr(verdicts.refused_tools),
+          claimsInvalid: list(verdicts.claims_invalid).map((item) => ({
+            claim: str(item.claim),
+            reason: str(item.reason)
+          }))
+        }
+      : undefined,
+    tools: tools
+      ? {
+          toolCalls: list(tools.tool_calls).map((call) => ({
+            callId: str(call.call_id),
+            name: str(call.name),
+            arguments: obj(call.arguments)
+          })),
+          toolResults: list(tools.tool_results).map((result) => ({
+            callId: str(result.call_id),
+            result: str(result.result)
+          })),
+          committed: list(tools.committed).map((action) => ({
+            action: str(action.action),
+            reference: str(action.reference),
+            replayed: action.replayed === true,
+            idempotencyKey: str(action.idempotency_key)
+          }))
+        }
+      : undefined,
+    outcome: outcome
+      ? {
+          status: str(outcome.status),
+          rounds: typeof outcome.rounds === "number" ? outcome.rounds : undefined,
+          ...(strOrNull(outcome.failure) === null ? {} : { failure: strOrNull(outcome.failure) })
+        }
+      : undefined,
+    componentManifest: obj(wire.component_manifest),
+    diagnoses: list(wire.diagnoses).map((diagnosis) => ({
+      cause: str(diagnosis.cause),
+      stage: str(diagnosis.stage),
+      role: str(diagnosis.role),
+      status: str(diagnosis.status),
+      confidence: str(diagnosis.confidence),
+      evidence: listStr(diagnosis.evidence),
+      detectorVersion: str(diagnosis.detector_version)
+    }))
+  };
+}
+
+function obj(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function listStr(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function list(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> => typeof item === "object" && item !== null
+      )
+    : [];
+}
+
+function replayFromWire(wire: Record<string, unknown>): ReplayResult {
+  const original = obj(wire.original);
+  const replayed = obj(wire.replayed);
+  return {
+    turnId: str(wire.turn_id),
+    recordedAt: str(wire.recorded_at),
+    manifestHash: str(wire.manifest_hash),
+    currentManifestHash: strOrNull(wire.current_manifest_hash),
+    manifestChanged: wire.manifest_changed === true,
+    stochastic: wire.stochastic === true,
+    components: Array.isArray(wire.components)
+      ? (wire.components as ReplayResult["components"])
+      : [],
+    original: {
+      contentHash: str(original.content_hash),
+      modelName: str(original.model_name),
+      outputRaw: str(original.output_raw)
+    },
+    replayed: {
+      contentHash: str(replayed.content_hash),
+      modelName: str(replayed.model_name),
+      outputRaw: str(replayed.output_raw)
+    }
+  };
+}
+
+function goldCaseFromWire(wire: Record<string, unknown>): GoldCase {
+  return {
+    caseId: str(wire.case_id),
+    tenantId: str(wire.tenant_id),
+    scenario: strOrNull(wire.scenario),
+    query: str(wire.query),
+    goldChunks: list(wire.gold_chunks).map((chunk) => ({
+      sourceId: str(chunk.source_id),
+      text: str(chunk.text)
+    }))
+  };
 }
 
 /**

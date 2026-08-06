@@ -96,6 +96,26 @@ class RetrievalEvidenceSource:
         self._now = now
         self._metrics = metrics
 
+    @property
+    def retriever_manifest(self) -> dict[str, object]:
+        """The content-free static retrieval envelope this source serves.
+
+        The shape mirrors what `OBS-004` records into ``component_manifest``
+        for turns this source answered, so the `FEAT-015` replay comparison
+        can diff the two. Runtime values (index generation, embedding model)
+        are per-query evidence, not component versions, and stay out.
+        """
+        return {
+            "version": self._config.version,
+            "reranker": RERANKER_NAME if self._config.rerank else None,
+            "min_evidence_score": self._config.min_evidence_score,
+            "parameters": self._config.parameters(),
+            "budget": {
+                "max_sources": self._config.max_sources,
+                "max_context_tokens": self._config.max_context_tokens,
+            },
+        }
+
     def _record(
         self, status: Status, verdict: RetrievalVerdict, started: float, candidates: int
     ) -> None:

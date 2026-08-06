@@ -349,7 +349,7 @@ the first outbox did not.
 - [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 - [ ] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
 - [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
-- [ ] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
+- [x] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
 - [ ] `FEAT-002` — Real availability and calendar integration — `P2`
 - [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P2`
@@ -1405,7 +1405,7 @@ guarantees by construction.
   - Migration `0014_inference_trace` adds the content-free query surface to the PRIV-002 envelope: `outcome`, `component_manifest_hash`, `diagnosis_causes`, `turn_index`, `trace_schema_version`, plus `(tenant_id, trace_id)` and manifest/cause/outcome indexes. Content still lives only in the opaque `content` object; the columns are derived at write time by `routers/chat.py::_record_turn`, which now records paused turns too.
   - The admin API (`routers/traces.py`) gains the attribution surface under the same `trace_viewer` grant and audit rules: `GET /api/admin/traces` (filter by manifest hash, cause, outcome; results carry no content) and `GET /api/admin/traces/by-trace-id/{trace_id}` (the OBS-001 correlation lookup).
   - Every committed domain effect is attributed to the idempotency key it committed under (`CommittedAction.key`), and each retrieval candidate is pinned to its index generation and embedding model (`EvidenceItem.generation_id`/`embedding_model`).
-  - Not built (documented follow-ups): executed-graph node/edge capture (needs a LangGraph callback listener), immutable-index replay, and the replay service; the trace stores the data those need but does not tax the hot path to gather them.
+  - Not built (documented follow-ups): executed-graph node/edge capture (needs a LangGraph callback listener), immutable-index replay, and the full replay service; `FEAT-015` ships the minimal safe prompt replay (stored prompt through the current model, no tools) and documents the rest.
   - Files: `packages/orchestration/src/tenantchat/orchestration/trace.py` (new), `state.py`, `nodes.py`, `runtime.py`, `tools.py`; `packages/core/src/tenantchat/core/ports.py`; `services/api/migrations/versions/0014_inference_trace.py`; `services/api/src/tenantchat/api/{store.py, persistence/traces.py, routers/chat.py, routers/traces.py, schemas.py, evidence.py, agent.py}`; tests in `packages/orchestration/tests/test_trace.py`, `services/api/tests/test_trace_record.py`, `test_traces.py`, `test_citations.py`, `tests/repositories/test_trace_governance.py`, `tests/privacy/test_privacy_lifecycle.py` (chat-generated turn records now count toward export/erasure), `tests/migrations/test_migrations.py`; `docs/runbooks/inference-trace-plane.md`.
 
 ### ARCH-001 — LangGraph agent runtime over a framework-free domain
@@ -2619,7 +2619,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-015 — AI turn explorer and executed-graph console
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Feature/AI operations`
 - Depends on: `OBS-004`, `SEC-001`
@@ -2638,7 +2638,14 @@ promotion pipeline — which requires a cluster that runs for real.
   - All ten Gate B acceptance cases can be walked from explorer result to executed graph, evidence, diagnosis, and replay result where applicable.
 - Verification:
   - Run component and browser tests for the six filters, actual-graph fidelity, partial traces, retrieval funnel, prompt diff, claim evidence, diagnosis uncertainty, gold-evidence overlay, replay safety messaging, tenant isolation, keyboard navigation, and the ten-case Gate B walkthrough.
-- Completion notes: _Pending._
+- Completion notes:
+  - The explorer is a tab in the operator console (`frontend/src/admin/`): six content-free filters (time range, tenant, outcome, diagnosis cause, diagnosis status, component-manifest hash) over `GET /api/admin/traces`, with results as content-free index entries and the full content-bearing record fetched only through the audited single-read route. Migration `0015_diagnosis_status` adds the diagnosis-status array to the content-free projection so the status filter is a real query dimension, not a client-side filter.
+  - The executed-graph view renders what the `OBS-004` trace actually stores — routing decision, retrieval run, prompt assembly (with budget exclusions), model rounds, tool calls paired with their result statuses and safe error codes, validation verdicts, and the outcome — as an accessible waterfall where every row names its stored trace field. It never fabricates nodes, edges, or durations: per-node timing is not recorded, the trace documents that, and a full LangGraph node/edge event list remains the documented instrumentation follow-up (`OBS-004`). Failed and partial turns (abstained, paused, escalated) stay inspectable.
+  - Drill-down panels: routing alternatives with scores and matched signals; the retrieval funnel (query, filters, per-candidate fused scores, budget); the prompt with trusted/untrusted segments colored by region and the context-budget exclusions; the prompt-version diff via safe replay (stored vs current template refs and model, content-free); claim verdicts limited to the deterministic `supported`/`unsupported`/`fabricated_citation` (no graded entailment as gating); tool policy and execution results with safe error codes; and the diagnosis panel, where `suspected` and `inconclusive` are labelled uncertain and never presented as confirmed causes.
+  - Gold evidence: `GET /api/admin/traces/gold-cases` serves the reviewer-labelled eval cases (`evals/fixtures/cases.json` + chunk texts from `corpus.json`, embedded as `services/api/src/tenantchat/api/gold_cases.json` with a drift test against the fixtures) under the same trace-read role and audit rules; the explorer overlays a case on a turn by exact query equality, marked non-gating.
+  - Safe replay: `POST /api/admin/traces/{turn_id}/replay` (trace-read role + CSRF + audited) rebuilds the stored prompt with `reconstruct_prompt`, re-hashes it against the stored content hash, and runs it through the current model with no tools — no domain effect can be touched. The response compares the stored and current component manifests content-free, labels the single trial stochastic, and the console shows original vs replayed output with changed components visibly distinguished.
+  - Files: `services/api/migrations/versions/0015_diagnosis_status.py`; `services/api/src/tenantchat/api/{store.py, persistence/traces.py, schemas.py, replay.py, gold.py, gold_cases.json, routers/traces.py, routers/chat.py, evidence.py}` (`replay.py` joins the composition root, which is where the stored record meets the current model); tests in `services/api/tests/test_trace_explorer.py` (including the ten-case Gate B walkthrough), `test_traces.py`, `test_openapi_contract.py`, `tests/repositories/test_trace_governance.py`, `tests/migrations/test_migrations.py`, `tests/test_architecture_invariants.py`; frontend `frontend/src/admin/{AdminPage.tsx, adminApi.ts, traceTypes.ts, admin.css, components/TraceExplorer.tsx, components/TraceDetail.tsx}` and `frontend/tests/traceExplorer.test.tsx` plus `tests/support/traceFixtures.ts`.
+  - Follow-ups: full LangGraph node/edge event capture (a callback listener; `OBS-004` documents it), immutable-index and gold-substitution replay (`FEAT-008`/`RAG-008`), and a per-stage duration column once the trace records one.
 
 ## Recommended dispatch sequence
 
