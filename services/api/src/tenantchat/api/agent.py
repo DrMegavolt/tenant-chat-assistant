@@ -27,6 +27,7 @@ from tenantchat.api.actions import (
     RecordedBookingService,
     RecordedHandoffService,
     RecordedLeadService,
+    RecordedWorkflowService,
 )
 from tenantchat.api.registry import (
     DemoAvailabilityProvider,
@@ -39,12 +40,15 @@ from tenantchat.api.store import (
     HandoffStore,
     IdempotencyStore,
     LeadStore,
+    WorkflowStore,
 )
 from tenantchat.core.ports import (
     AssistantTurn,
     AvailabilityProvider,
     CommittedEffect,
 )
+from tenantchat.core.routing import ROUTING_POLICY
+from tenantchat.orchestration.agents import DEFAULT_AGENT_REGISTRY
 from tenantchat.orchestration.checkpoints import Checkpointer
 from tenantchat.orchestration.dependencies import DispatchDependencies
 from tenantchat.orchestration.graph import compile_dispatch_graph
@@ -61,6 +65,7 @@ def build_dispatch_dependencies(
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
     consent: ConsentStore,
+    workflows: WorkflowStore,
     availability: AvailabilityProvider | None = None,
 ) -> DispatchDependencies:
     """Wrap this service's adapters in the ports the graph runs against.
@@ -77,6 +82,9 @@ def build_dispatch_dependencies(
         bookings=RecordedBookingService(bookings, source, consent),
         leads=RecordedLeadService(leads, idempotency, consent),
         handoffs=RecordedHandoffService(handoffs, idempotency),
+        workflows=RecordedWorkflowService(workflows),
+        routing=ROUTING_POLICY,
+        agents=DEFAULT_AGENT_REGISTRY,
     )
 
 
@@ -89,6 +97,7 @@ def build_dispatch_runtime(
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
     consent: ConsentStore,
+    workflows: WorkflowStore,
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
 ) -> DispatchRuntime:
@@ -102,6 +111,7 @@ def build_dispatch_runtime(
         idempotency=idempotency,
         availability=availability,
         consent=consent,
+        workflows=workflows,
     )
     return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
 
@@ -164,6 +174,7 @@ def build_conversation_runtime(
     handoffs: HandoffStore,
     idempotency: IdempotencyStore,
     consent: ConsentStore,
+    workflows: WorkflowStore,
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
 ) -> GraphConversationRuntime:
@@ -177,6 +188,7 @@ def build_conversation_runtime(
             handoffs=handoffs,
             idempotency=idempotency,
             consent=consent,
+            workflows=workflows,
             checkpointer=checkpointer,
             availability=availability,
         )

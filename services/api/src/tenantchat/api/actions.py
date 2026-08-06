@@ -21,6 +21,7 @@ key of its own.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from typing import Final
 
 from tenantchat.api.store import (
@@ -31,6 +32,9 @@ from tenantchat.api.store import (
     HandoffStore,
     IdempotencyStore,
     LeadStore,
+    RoutingRow,
+    WorkflowStore,
+    _row_state,
 )
 from tenantchat.core.commands import (
     BookingCommand,
@@ -38,7 +42,7 @@ from tenantchat.core.commands import (
     HandoffCommand,
     LeadCommand,
 )
-from tenantchat.core.errors import SlotUnavailableError
+from tenantchat.core.errors import SlotUnavailableError, ValidationError
 from tenantchat.core.ports import (
     AvailabilityProvider,
     BookingConfirmation,
@@ -46,7 +50,10 @@ from tenantchat.core.ports import (
     HandoffTicket,
     IdempotencyKey,
     LeadReceipt,
+    RoutingRecord,
 )
+from tenantchat.core.routing import IntentName, RoutingDecision
+from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
 
 BOOKING_SCOPE: Final = "booking"
 LEAD_SCOPE: Final = "lead"
@@ -265,3 +272,152 @@ class RecordedHandoffService:
             response={"reference": record.handoff_id},
         )
         return HandoffTicket(reference=record.handoff_id, reason=record.reason, replayed=False)
+
+
+class RecordedWorkflowService:
+    """The idempotent service behind the router and the workflow state machine.
+
+    `ADR-0001` puts validation and idempotency here rather than in a graph
+    node. The validation this service owns: collected fields may only carry
+    names the agent's declared input schema permits, and the workflow's state
+    machine is the domain's — a transition the machine refuses is an error the
+    caller sees, never a row the node writes.
+
+    Replay safety is the store's business (unique constraints on the natural
+    and idempotency keys), so every mutation here simply forwards its key.
+    """
+
+    def __init__(self, workflows: WorkflowStore) -> None:
+        self._workflows = workflows
+
+    async def current(self, tenant_id: str, session_id: str) -> WorkflowState | None:
+        """The session's active workflow, if any."""
+        row = await self._workflows.current(tenant_id, session_id)
+        return _row_state(row) if row is not None else None
+
+    async def last_routing(self, tenant_id: str, session_id: str) -> RoutingRecord | None:
+        """The most recent routing decision for the session, if any."""
+        row = await self._workflows.last_routing(tenant_id, session_id)
+        return _routing_record(row) if row is not None else None
+
+    async def record_routing(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        decision: RoutingDecision,
+        agent_version: str,
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> None:
+        """Persist the whole decision, once per (session, turn)."""
+        await self._workflows.record_routing(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            turn_index=turn_index,
+            decision=decision,
+            agent_version=agent_version,
+            idempotency_key=idempotency_key,
+        )
+
+    async def start(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        intent: IntentName,
+        agent_version: str,
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowState:
+        """Open the intent's workflow, returning the active one on replay."""
+        row = await self._workflows.start(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            intent=intent,
+            agent_version=agent_version,
+            next_allowed_actions=next_allowed_actions,
+            turn_index=turn_index,
+            idempotency_key=idempotency_key,
+        )
+        return _row_state(row)
+
+    async def update(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        collected_fields: Mapping[str, str],
+        allowed_field_names: tuple[str, ...],
+        tool_results: tuple[ToolResult, ...],
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowState:
+        """Merge one turn's evidence, refusing undeclared field names.
+
+        Raises:
+            ValidationError: a collected field name is not in
+                ``allowed_field_names``.
+            NotFoundError: no workflow with that ID for this tenant and session.
+        """
+        unknown = sorted(set(collected_fields) - set(allowed_field_names))
+        if unknown:
+            raise ValidationError(detail=f"workflow update carried undeclared fields {unknown}")
+        row = await self._workflows.update(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            workflow_id=workflow_id,
+            collected_fields=collected_fields,
+            tool_results=tool_results,
+            next_allowed_actions=next_allowed_actions,
+            turn_index=turn_index,
+            idempotency_key=idempotency_key,
+        )
+        return _row_state(row)
+
+    async def transition(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        transition: WorkflowTransition,
+        payload: Mapping[str, object],
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowState:
+        """Move the workflow through the state machine, exactly once per key.
+
+        Raises:
+            WorkflowTransitionError: the transition is not permitted from the
+                workflow's current status.
+            NotFoundError: no workflow with that ID for this tenant and session.
+        """
+        row = await self._workflows.transition(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            workflow_id=workflow_id,
+            transition=transition,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+        return _row_state(row)
+
+
+def _routing_record(row: RoutingRow) -> RoutingRecord:
+    return RoutingRecord(
+        turn_index=row.turn_index,
+        policy_version=row.policy_version,
+        agent_version=row.agent_version,
+        outcome=row.outcome,
+        rule=row.rule,
+        chosen_intent=row.chosen_intent,
+        confidence=row.confidence,
+        candidates=row.candidates,
+        direct_threshold=row.direct_threshold,
+        clarify_threshold=row.clarify_threshold,
+        conflict_gap=row.conflict_gap,
+        created_at=row.created_at,
+    )

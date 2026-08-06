@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -45,6 +45,20 @@ from tenantchat.core.privacy import (
     ConsentStatus,
     DataClass,
     RetentionPolicy,
+)
+from tenantchat.core.routing import (
+    IntentCandidate,
+    IntentName,
+    RoutingDecision,
+    RoutingOutcome,
+    RoutingRule,
+)
+from tenantchat.core.workflows import (
+    ToolResult,
+    WorkflowState,
+    WorkflowStatus,
+    WorkflowTransition,
+    transition_workflow,
 )
 
 
@@ -1715,3 +1729,441 @@ class InMemoryKnowledgeStore:
             versions.extend(item for item in document.versions if item.state is state)
         versions.sort(key=lambda item: (item.document_id, item.revision))
         return tuple(versions)
+
+
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# AGENT-001: durable routing decisions and agent workflows.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingRow:
+    """One persisted routing decision, one row of ``routing_decisions``.
+
+    ``candidates`` is the whole scored candidate list, not the winner: this is
+    the record `OBS-004` diagnoses a misrouted turn from.
+    """
+
+    turn_index: int
+    tenant_id: str
+    session_id: str
+    policy_version: str
+    agent_version: str
+    outcome: RoutingOutcome
+    rule: RoutingRule
+    chosen_intent: IntentName | None
+    confidence: float
+    candidates: tuple[IntentCandidate, ...]
+    direct_threshold: float
+    clarify_threshold: float
+    conflict_gap: float
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRow:
+    """One workflow row, as the store reads and writes it."""
+
+    workflow_id: str
+    tenant_id: str
+    session_id: str
+    intent: IntentName
+    agent_version: str
+    status: WorkflowStatus
+    collected_fields: dict[str, str]
+    pending_confirmation: dict[str, object] | None
+    tool_results: tuple[dict[str, object], ...]
+    next_allowed_actions: tuple[str, ...]
+    turn_index: int
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowEventRow:
+    """One workflow event, as the store reads it back.
+
+    ``kind`` names the mutation: the seven state-machine transitions plus
+    ``start`` and ``update``, which are logged the same way.
+    """
+
+    workflow_id: str
+    kind: str
+    payload: dict[str, object]
+    created_at: datetime
+
+
+class WorkflowStore(Protocol):
+    """The persistence contract behind the workflow application service.
+
+    The graph never sees this type: the idempotent service in
+    :mod:`tenantchat.api.actions` wraps these methods with validation and
+    converts the rows to the domain's
+    :class:`~tenantchat.core.workflows.WorkflowState`.
+    """
+
+    async def record_routing(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        turn_index: int,
+        decision: RoutingDecision,
+        agent_version: str,
+        idempotency_key: IdempotencyKey,
+    ) -> None:
+        """Persist one decision, deduplicated by (session, turn)."""
+        ...
+
+    async def current(self, tenant_id: str, session_id: str) -> WorkflowRow | None:
+        """The session's active or paused workflow, newest first."""
+        ...
+
+    async def last_routing(self, tenant_id: str, session_id: str) -> RoutingRow | None:
+        """The session's most recent routing decision."""
+        ...
+
+    async def start(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        intent: IntentName,
+        agent_version: str,
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowRow:
+        """Open an active workflow, returning the existing one on replay."""
+        ...
+
+    async def update(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        collected_fields: Mapping[str, str],
+        tool_results: tuple[ToolResult, ...],
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowRow:
+        """Merge one turn's evidence into the workflow, replay-safe by key."""
+        ...
+
+    async def transition(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        transition: WorkflowTransition,
+        payload: Mapping[str, object],
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowRow:
+        """Apply one transition exactly once per key, or refuse it."""
+        ...
+
+    async def routing_decisions(self, tenant_id: str, session_id: str) -> tuple[RoutingRow, ...]:
+        """Every recorded decision for a session, ascending by turn."""
+        ...
+
+    async def workflows(self, tenant_id: str, session_id: str) -> tuple[WorkflowRow, ...]:
+        """Every workflow a session has run, oldest first."""
+        ...
+
+    async def events(self, tenant_id: str, workflow_id: str) -> tuple[WorkflowEventRow, ...]:
+        """A workflow's event log, oldest first."""
+        ...
+
+
+class InMemoryWorkflowStore:
+    """A concurrency-safe fake with the same semantics as the PostgreSQL store.
+
+    Transitions go through the same pure domain function the PostgreSQL store
+    calls, so an invalid transition is refused identically against both.
+    """
+
+    def __init__(self) -> None:
+        self._routing: dict[tuple[str, str, int], RoutingRow] = {}
+        self._workflows: dict[tuple[str, str, str], WorkflowRow] = {}
+        self._events: dict[tuple[str, str, str, str], WorkflowEventRow] = {}
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _event_key(
+        tenant_id: str, workflow_id: str, key: IdempotencyKey
+    ) -> tuple[str, str, str, str]:
+        return (tenant_id, workflow_id, key.value, "event")
+
+    async def record_routing(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        turn_index: int,
+        decision: RoutingDecision,
+        agent_version: str,
+        idempotency_key: IdempotencyKey,
+    ) -> None:
+        del idempotency_key  # the (session, turn) key is the deduplication
+        async with self._lock:
+            self._routing[(tenant_id, session_id, turn_index)] = RoutingRow(
+                turn_index=turn_index,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                policy_version=decision.policy_version,
+                agent_version=agent_version,
+                outcome=decision.outcome,
+                rule=decision.rule,
+                chosen_intent=decision.chosen,
+                confidence=decision.confidence,
+                candidates=decision.candidates,
+                direct_threshold=decision.direct_threshold,
+                clarify_threshold=decision.clarify_threshold,
+                conflict_gap=decision.conflict_gap,
+                created_at=datetime.now(UTC),
+            )
+
+    async def current(self, tenant_id: str, session_id: str) -> WorkflowRow | None:
+        async with self._lock:
+            candidates = [
+                row
+                for row in self._workflows.values()
+                if row.tenant_id == tenant_id
+                and row.session_id == session_id
+                and row.status in (WorkflowStatus.ACTIVE, WorkflowStatus.PAUSED)
+            ]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda row: (row.created_at, row.workflow_id))
+
+    async def last_routing(self, tenant_id: str, session_id: str) -> RoutingRow | None:
+        async with self._lock:
+            rows = [
+                row
+                for row in self._routing.values()
+                if row.tenant_id == tenant_id and row.session_id == session_id
+            ]
+            if not rows:
+                return None
+            return max(rows, key=lambda row: row.turn_index)
+
+    async def start(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        intent: IntentName,
+        agent_version: str,
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowRow:
+        async with self._lock:
+            existing = [
+                row
+                for row in self._workflows.values()
+                if row.tenant_id == tenant_id
+                and row.session_id == session_id
+                and row.status is WorkflowStatus.ACTIVE
+            ]
+            if existing:
+                return max(existing, key=lambda row: (row.created_at, row.workflow_id))
+            now = datetime.now(UTC)
+            row = WorkflowRow(
+                workflow_id=f"wf-{uuid.uuid4().hex}",
+                tenant_id=tenant_id,
+                session_id=session_id,
+                intent=intent,
+                agent_version=agent_version,
+                status=WorkflowStatus.ACTIVE,
+                collected_fields={},
+                pending_confirmation=None,
+                tool_results=(),
+                next_allowed_actions=next_allowed_actions,
+                turn_index=turn_index,
+                created_at=now,
+                updated_at=now,
+                completed_at=None,
+            )
+            self._workflows[(tenant_id, session_id, row.workflow_id)] = row
+            self._record_event(row, "start", {}, idempotency_key)
+            return row
+
+    async def update(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        collected_fields: Mapping[str, str],
+        tool_results: tuple[ToolResult, ...],
+        next_allowed_actions: tuple[str, ...],
+        turn_index: int,
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowRow:
+        async with self._lock:
+            row = self._workflow(tenant_id, session_id, workflow_id)
+            event_key = self._event_key(tenant_id, workflow_id, idempotency_key)
+            if event_key in self._events:
+                # A replayed update: the merge is content-idempotent, so the
+                # existing row is already the state the replay would produce,
+                # and re-recording the event would restamp its timestamp.
+                return row
+            merged_fields = {**row.collected_fields, **collected_fields}
+            by_call_id = {result["call_id"]: result for result in row.tool_results}
+            for result in tool_results:
+                by_call_id[result.call_id] = {
+                    "call_id": result.call_id,
+                    "name": result.name,
+                    "result": result.result,
+                }
+            updated = replace(
+                row,
+                collected_fields=merged_fields,
+                tool_results=tuple(by_call_id.values()),
+                next_allowed_actions=next_allowed_actions,
+                turn_index=turn_index,
+                updated_at=datetime.now(UTC),
+            )
+            self._workflows[(tenant_id, session_id, workflow_id)] = updated
+            self._record_event(
+                updated,
+                "update",
+                {
+                    "fields": dict(collected_fields),
+                    "results": [result.call_id for result in tool_results],
+                },
+                idempotency_key,
+            )
+            return updated
+
+    async def transition(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        workflow_id: str,
+        transition: WorkflowTransition,
+        payload: Mapping[str, object],
+        idempotency_key: IdempotencyKey,
+    ) -> WorkflowRow:
+        async with self._lock:
+            row = self._workflow(tenant_id, session_id, workflow_id)
+            event_key = self._event_key(tenant_id, workflow_id, idempotency_key)
+            if event_key in self._events:
+                return row
+            moved = transition_workflow(
+                _row_state(row), transition, payload=payload, now=datetime.now(UTC)
+            )
+            updated = _state_row(moved)
+            self._workflows[(tenant_id, session_id, workflow_id)] = updated
+            self._record_event(updated, transition.value, payload, idempotency_key)
+            return updated
+
+    async def routing_decisions(self, tenant_id: str, session_id: str) -> tuple[RoutingRow, ...]:
+        async with self._lock:
+            rows = [
+                row
+                for row in self._routing.values()
+                if row.tenant_id == tenant_id and row.session_id == session_id
+            ]
+            return tuple(sorted(rows, key=lambda row: row.turn_index))
+
+    async def workflows(self, tenant_id: str, session_id: str) -> tuple[WorkflowRow, ...]:
+        async with self._lock:
+            rows = [
+                row
+                for row in self._workflows.values()
+                if row.tenant_id == tenant_id and row.session_id == session_id
+            ]
+            return tuple(sorted(rows, key=lambda row: (row.created_at, row.workflow_id)))
+
+    async def events(self, tenant_id: str, workflow_id: str) -> tuple[WorkflowEventRow, ...]:
+        async with self._lock:
+            rows = [
+                row
+                for (tenant, workflow, _key, _kind), row in self._events.items()
+                if tenant == tenant_id and workflow == workflow_id
+            ]
+            return tuple(sorted(rows, key=lambda row: row.created_at))
+
+    def _workflow(self, tenant_id: str, session_id: str, workflow_id: str) -> WorkflowRow:
+        row = self._workflows.get((tenant_id, session_id, workflow_id))
+        if row is None:
+            raise NotFoundError(detail="workflow absent or outside tenant")
+        return row
+
+    def _record_event(
+        self,
+        row: WorkflowRow,
+        kind: str,
+        payload: Mapping[str, object],
+        key: IdempotencyKey,
+    ) -> None:
+        self._events[self._event_key(row.tenant_id, row.workflow_id, key)] = WorkflowEventRow(
+            workflow_id=row.workflow_id,
+            kind=kind,
+            payload=dict(payload),
+            created_at=row.updated_at,
+        )
+
+
+def _row_state(row: WorkflowRow) -> WorkflowState:
+    return WorkflowState(
+        workflow_id=row.workflow_id,
+        tenant_id=row.tenant_id,
+        session_id=row.session_id,
+        intent=row.intent,
+        agent_version=row.agent_version,
+        status=row.status,
+        collected_fields=row.collected_fields,
+        pending_confirmation=row.pending_confirmation,
+        tool_results=tuple(
+            ToolResult(
+                call_id=str(result["call_id"]),
+                name=str(result["name"]),
+                result=str(result["result"]),
+            )
+            for result in row.tool_results
+        ),
+        next_allowed_actions=row.next_allowed_actions,
+        turn_index=row.turn_index,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        completed_at=row.completed_at,
+    )
+
+
+def _state_row(state: WorkflowState) -> WorkflowRow:
+    return WorkflowRow(
+        workflow_id=state.workflow_id,
+        tenant_id=state.tenant_id,
+        session_id=state.session_id,
+        intent=state.intent,
+        agent_version=state.agent_version,
+        status=state.status,
+        collected_fields=dict(state.collected_fields),
+        pending_confirmation=(
+            dict(state.pending_confirmation) if state.pending_confirmation is not None else None
+        ),
+        tool_results=tuple(
+            {
+                "call_id": result.call_id,
+                "name": result.name,
+                "result": result.result,
+            }
+            for result in state.tool_results
+        ),
+        next_allowed_actions=state.next_allowed_actions,
+        turn_index=state.turn_index,
+        created_at=state.created_at,
+        updated_at=state.updated_at,
+        completed_at=state.completed_at,
+    )

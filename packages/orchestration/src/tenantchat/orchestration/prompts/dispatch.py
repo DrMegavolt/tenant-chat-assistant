@@ -1,4 +1,4 @@
-"""The dispatcher system prompt, as versioned template artifacts.
+"""The dispatcher system prompts, as versioned template artifacts.
 
 `AI-003` replaces the string-concatenation prompt with this: a registry-backed
 template whose segments, slot schema, and bindings are all code that changes
@@ -10,20 +10,30 @@ Nothing visitor-written reaches this template's segments. Slot values come from
 :class:`~tenantchat.core.tenant.TenantPolicy` (server-owned configuration) and
 from the versioned bindings function; assembly marks visitor turns and
 retrieved evidence untrusted regardless.
+
+``dispatch-system@2`` adds the `AGENT-001` agent context: the routed intent,
+the active agent's plan, the fields collected so far, the tools the agent may
+call, and the workflow status, all bound from the graph's checkpoint state. The
+model reads its current job from the same durable record the workflow service
+writes, so a resumed conversation is told the same job it was told before it
+was interrupted.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
+from tenantchat.core.routing import IntentName
 from tenantchat.core.tenant import PricingPolicy, TenantPolicy
+from tenantchat.orchestration.agents import DEFAULT_AGENT_REGISTRY
 from tenantchat.orchestration.model import PromptRegion
 from tenantchat.orchestration.prompts.registry import TemplateSegment, TemplateVersion
 from tenantchat.orchestration.prompts.schema import BindingSchema, SlotKind, SlotSpec
 
 DISPATCH_SYSTEM_TEMPLATE_ID = "dispatch-system"
 DISPATCH_SYSTEM_VERSION = 1
-DISPATCH_SYSTEM_REF = f"{DISPATCH_SYSTEM_TEMPLATE_ID}@{DISPATCH_SYSTEM_VERSION}"
+DISPATCH_SYSTEM_V2_VERSION = 2
+DISPATCH_SYSTEM_REF = f"{DISPATCH_SYSTEM_TEMPLATE_ID}@{DISPATCH_SYSTEM_V2_VERSION}"
 
 # The tone bullet a tenant gets unless it supplies one of its own.
 DEFAULT_TONE = (
@@ -68,7 +78,7 @@ _PROACTIVE_DISABLED = "Ask for contact details only when an action you are takin
 
 
 def _dispatch_bindings(policy: TenantPolicy, workflow: Mapping[str, object]) -> Mapping[str, str]:
-    del workflow  # dispatch-system@1 binds nothing from graph state; the AGENT-001 router will
+    del workflow  # dispatch-system@1 binds nothing from graph state; @2 adds the agent context
     quoted = tuple(
         (policy.catalog.resolve(slug), slug, price)
         for slug, price in policy.approved_prices
@@ -170,4 +180,97 @@ DISPATCH_SYSTEM_V1 = TemplateVersion(
         )
     ),
     bindings=_dispatch_bindings,
+)
+
+
+def _agent_bindings(workflow: Mapping[str, object]) -> Mapping[str, str]:
+    """Bind the routed agent's context from the graph's checkpoint state.
+
+    Every value is derived, never echoed: the routed intent names an agent
+    from the registry, the collected fields are the workflow's own record, and
+    the status is read off the pending confirmation. A missing or unparsable
+    intent renders the neutral form rather than raising — the assembly-time
+    question is "can the model still do its job", and an empty context is
+    exactly the @1 prompt.
+    """
+    routed = str(workflow.get("routed_intent", "") or "")
+    intent = None
+    if routed:
+        try:
+            intent = IntentName(routed)
+        except ValueError:
+            intent = None
+    agent = DEFAULT_AGENT_REGISTRY.for_intent(intent) if intent is not None else None
+    if agent is None:
+        # No routed intent means no agent context: every slot binds empty so
+        # the segment renders nothing and drops from the assembled prompt.
+        return {
+            "active_intent": "",
+            "agent_plan": "",
+            "collected_fields": "",
+            "allowed_tools": "",
+            "workflow_status": "",
+        }
+    fields = workflow.get("collected_fields")
+    if isinstance(fields, Mapping):
+        collected = "; ".join(f"{name}: {value}" for name, value in fields.items() if value)
+    else:
+        collected = ""
+    status = (
+        "Waiting on the customer's confirmation."
+        if workflow.get("pending_booking")
+        else "No pending confirmation."
+    )
+    return {
+        "active_intent": agent.intent.value,
+        "agent_plan": agent.description,
+        "collected_fields": collected or "nothing yet",
+        "allowed_tools": ", ".join(agent.tool_names) or "none",
+        "workflow_status": status,
+    }
+
+
+def _dispatch_bindings_v2(
+    policy: TenantPolicy, workflow: Mapping[str, object]
+) -> Mapping[str, str]:
+    return {**_dispatch_bindings(policy, workflow), **_agent_bindings(workflow)}
+
+
+# The active template (`AGENT-001`): the v1 prompt plus the routed agent's
+# context, bound from the graph state the router wrote.
+DISPATCH_SYSTEM_V2 = TemplateVersion(
+    template_id=DISPATCH_SYSTEM_TEMPLATE_ID,
+    version=DISPATCH_SYSTEM_V2_VERSION,
+    description="The dispatcher system prompt with the routed agent context: "
+    "active intent, agent plan, collected fields, allowed tools, and workflow "
+    "status, bound from the graph's workflow state.",
+    segments=(
+        *DISPATCH_SYSTEM_V1.segments,
+        TemplateSegment(
+            "agent_context",
+            PromptRegion.TRUSTED,
+            "Current job:\n"
+            "- Active intent: {active_intent}\n"
+            "- {agent_plan}\n"
+            "- Collected so far: {collected_fields}\n"
+            "- Tools you may use: {allowed_tools}\n"
+            "- {workflow_status}",
+        ),
+    ),
+    schema=BindingSchema(
+        (
+            *DISPATCH_SYSTEM_V1.schema.slots,
+            SlotSpec("active_intent", SlotKind.WORKFLOW_CONTEXT, max_chars=100),
+            SlotSpec("agent_plan", SlotKind.WORKFLOW_CONTEXT, max_chars=500),
+            SlotSpec(
+                "collected_fields",
+                SlotKind.WORKFLOW_CONTEXT,
+                max_chars=1000,
+                single_line=False,
+            ),
+            SlotSpec("allowed_tools", SlotKind.WORKFLOW_CONTEXT, max_chars=300),
+            SlotSpec("workflow_status", SlotKind.WORKFLOW_CONTEXT, max_chars=300),
+        )
+    ),
+    bindings=_dispatch_bindings_v2,
 )

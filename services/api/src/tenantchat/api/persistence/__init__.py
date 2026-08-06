@@ -20,6 +20,7 @@ from tenantchat.api.persistence.traces import (
     PostgresTraceAccessStore,
     PostgresTurnRecordStore,
 )
+from tenantchat.api.persistence.workflows import PostgresWorkflowStore
 
 __all__ = [
     "Database",
@@ -37,4 +38,5 @@ __all__ = [
     "PostgresPrivacyStore",
     "PostgresTraceAccessStore",
     "PostgresTurnRecordStore",
+    "PostgresWorkflowStore",
 ]

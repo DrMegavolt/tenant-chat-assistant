@@ -16,6 +16,7 @@ from tenantchat.orchestration.nodes import (
     DispatchNode,
     route_after_confirmation,
     route_after_model,
+    route_after_routing,
     route_after_tools,
 )
 from tenantchat.orchestration.state import (
@@ -142,3 +143,36 @@ def test_everything_else_declines(resumed: object) -> None:
     values that dispatch a crew depend on what someone happened to send.
     """
     assert BookingDecision.of(resumed) is BookingDecision.DECLINED
+
+
+# --- AGENT-001: where a routed turn goes ------------------------------------
+
+
+def routed(**overrides: object) -> DispatchState:
+    base = initial_state("clearview", "session-1", "hello")
+    return base | overrides  # type: ignore[return-value]
+
+
+def test_a_direct_route_sends_the_turn_to_the_model() -> None:
+    state = routed(routing_outcome="direct", routed_intent="booking")
+
+    assert route_after_routing(state) is DispatchNode.MODEL
+
+
+def test_a_clarification_ends_as_a_question_without_calling_the_model() -> None:
+    state = routed(routing_outcome="clarify")
+
+    assert route_after_routing(state) is DispatchNode.FINALIZE
+
+
+def test_an_unresolved_route_escalates_without_calling_the_model() -> None:
+    state = routed(routing_outcome="handoff", route_rule="bounded_clarify")
+
+    assert route_after_routing(state) is DispatchNode.ESCALATE
+
+
+def test_a_routed_handoff_request_escalates_directly() -> None:
+    """The customer asked for a person; the router does not spend a model call."""
+    state = routed(routing_outcome="direct", routed_intent="handoff")
+
+    assert route_after_routing(state) is DispatchNode.ESCALATE

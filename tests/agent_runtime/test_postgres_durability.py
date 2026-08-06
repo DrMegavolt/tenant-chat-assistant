@@ -30,6 +30,7 @@ from tenantchat.api.persistence import (
     PostgresHandoffStore,
     PostgresIdempotencyStore,
     PostgresLeadStore,
+    PostgresWorkflowStore,
 )
 from tenantchat.api.persistence.availability import (
     PostgresAvailabilityProvider,
@@ -133,6 +134,7 @@ async def _process(
                 handoffs=PostgresHandoffStore(database.engine),
                 idempotency=PostgresIdempotencyStore(database.engine),
                 consent=consent,
+                workflows=PostgresWorkflowStore(database.engine),
                 checkpointer=checkpointer,
                 availability=PostgresAvailabilityProvider(database.engine),
             )

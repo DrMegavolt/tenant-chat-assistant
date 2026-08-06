@@ -21,7 +21,10 @@ from tenantchat.core.ports import (
     HandoffService,
     LeadService,
     TenantPolicySource,
+    WorkflowService,
 )
+from tenantchat.core.routing import RoutingPolicy
+from tenantchat.orchestration.agents import AgentRegistry
 from tenantchat.orchestration.model import ChatModel
 
 
@@ -35,3 +38,6 @@ class DispatchDependencies:
     bookings: BookingService
     leads: LeadService
     handoffs: HandoffService
+    workflows: WorkflowService
+    routing: RoutingPolicy
+    agents: AgentRegistry

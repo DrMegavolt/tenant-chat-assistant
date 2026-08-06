@@ -141,7 +141,7 @@ def test_the_assembled_prompt_carries_a_template_id_and_version(
     )
 
     assert outcome.prompt.template_id == "dispatch-system"
-    assert outcome.prompt.template_version == 1
+    assert outcome.prompt.template_version == 2
     assert outcome.prompt.template_ref == DISPATCH_SYSTEM_REF
     assert outcome.prompt.content_hash
 
