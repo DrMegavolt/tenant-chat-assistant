@@ -1,6 +1,6 @@
-"""Scoring: recall@k, citation precision, abstention correctness.
+"""Scoring: recall@k, citation precision, abstention correctness, grounding.
 
-Three scores make up the minimum scoreboard (`RAG-009`):
+Four scores make up the scoreboard (`RAG-009` plus the `RAG-008` release gate):
 
 - **recall@k** — the fraction of a case's labelled gold chunks the retriever
   returned. Undefined for cases with no gold chunks; those are excluded from
@@ -11,9 +11,14 @@ Three scores make up the minimum scoreboard (`RAG-009`):
 - **abstention correctness** — the fraction of cases where the decision
   boundary (no retrieved chunk at or above the threshold) agrees with the
   case's ``expect_abstain`` label.
+- **grounding correctness** — the fraction of grounded-answer cases where
+  :func:`validate_sensitive_claims` (the exact validator `RAG-005` runs
+  online) agrees with the ``expect_grounded`` label, so the property gated in
+  CI is the property enforced at request time.
 
 The cross-tenant check is a hard invariant, not a score: a retriever that
-leaks another tenant's chunks fails the run regardless of thresholds.
+leaks another tenant's chunks fails the run regardless of thresholds. A
+dimension that no case exercises is not scored and cannot fail the run.
 """
 
 from __future__ import annotations
@@ -25,11 +30,20 @@ from typing import Any
 
 from evals.corpus import FixtureCorpus
 from evals.retriever import RetrievalResult, RetrieverConfig
+from evals.versions import component_manifest, corpus_digest
+from tenantchat.core.claims import (
+    ClaimVerdict,
+)
+from tenantchat.core.claims import (
+    validate_sensitive_claims as validate_sensitive_claims,
+)
+
+_GROUNDING_THRESHOLD = 0.9
 
 
 @dataclass(frozen=True, slots=True)
 class EvalCase:
-    """One hand-labelled evaluation case from ``cases.json``."""
+    """One labelled evaluation case from a versioned dataset."""
 
     id: str
     tenant_id: str
@@ -38,6 +52,12 @@ class EvalCase:
     expect_abstain: bool
     citations: tuple[str, ...]
     scenario: str | None
+    prior_turns: tuple[str, ...] = ()
+    answer: str | None = None
+    expect_grounded: bool | None = None
+    review_id: str | None = None
+    trace_id: str | None = None
+    turn_id: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict[str, Any]) -> EvalCase:
@@ -49,6 +69,14 @@ class EvalCase:
             expect_abstain=bool(raw["expect_abstain"]),
             citations=tuple(str(item) for item in raw["citations"]),
             scenario=None if raw.get("scenario") is None else str(raw["scenario"]),
+            prior_turns=tuple(str(item) for item in raw.get("prior_turns", ())),
+            answer=None if raw.get("answer") is None else str(raw["answer"]),
+            expect_grounded=(
+                None if raw.get("expect_grounded") is None else bool(raw["expect_grounded"])
+            ),
+            review_id=None if raw.get("review_id") is None else str(raw["review_id"]),
+            trace_id=None if raw.get("trace_id") is None else str(raw["trace_id"]),
+            turn_id=None if raw.get("turn_id") is None else str(raw["turn_id"]),
         )
 
 
@@ -62,10 +90,11 @@ class CaseResult:
     citation_precision: float | None
     abstain_decision: bool
     abstain_correct: bool
+    grounding_correct: bool | None
     cross_tenant_leaks: tuple[str, ...]
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        row: dict[str, object] = {
             "case": self.case.id,
             "scenario": self.case.scenario,
             "retrieved": list(self.retrieved),
@@ -73,8 +102,16 @@ class CaseResult:
             "citation_precision": self.citation_precision,
             "abstain_decision": self.abstain_decision,
             "abstain_correct": self.abstain_correct,
+            "grounding_correct": self.grounding_correct,
             "cross_tenant_leaks": list(self.cross_tenant_leaks),
         }
+        if self.case.prior_turns:
+            row["prior_turns"] = list(self.case.prior_turns)
+        for field in ("review_id", "trace_id", "turn_id"):
+            value = getattr(self.case, field)
+            if value is not None:
+                row[field] = value
+        return row
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,28 +126,18 @@ class EvaluationReport:
     min_recall: float
     min_citation_precision: float
     min_abstention: float
+    min_grounding: float
     cases: tuple[CaseResult, ...]
     aggregate: dict[str, float]
+    scored: dict[str, bool]
+    components: dict[str, object]
     passed: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "components": {
-                "retriever": {
-                    "name": self.retriever.name,
-                    "version": self.retriever.version,
-                    "k": self.retriever.k,
-                    "parameters": dict(self.retriever.parameters),
-                },
-                "embedding_model": self.embedding_model,
-                "reranker": self.reranker,
-                "prompt_template": self.prompt_template,
-                "abstain_threshold": self.abstain_threshold,
-                "min_recall": self.min_recall,
-                "min_citation_precision": self.min_citation_precision,
-                "min_abstention": self.min_abstention,
-            },
+            "components": dict(self.components),
             "scores": self.aggregate,
+            "scored": self.scored,
             "passed": self.passed,
             "cases": [case.to_dict() for case in self.cases],
         }
@@ -129,6 +156,7 @@ class EvaluationReport:
             f"recall@{self.retriever.k}: {self.aggregate['recall_at_k']:.4f}",
             f"citation_precision: {self.aggregate['citation_precision']:.4f}",
             f"abstention_correctness: {self.aggregate['abstention_correctness']:.4f}",
+            f"grounding_correctness: {self.aggregate['grounding_correctness']:.4f}",
             f"cross_tenant_leaks: {self.aggregate['cross_tenant_leaks']:.0f}",
         ]
         for case in self.cases:
@@ -136,9 +164,10 @@ class EvaluationReport:
             citation = (
                 "  -" if case.citation_precision is None else f"{case.citation_precision:.2f}"
             )
+            grounding = "  -" if case.grounding_correct is None else f"{case.grounding_correct}"
             scenario = f" [{case.case.scenario}]" if case.case.scenario else ""
             lines.append(
-                f"{case.case.id}: recall={recall} citation={citation} "
+                f"{case.case.id}: recall={recall} citation={citation} grounding={grounding} "
                 f"abstain={'yes' if case.abstain_decision else 'no'} "
                 f"({'correct' if case.abstain_correct else 'WRONG'}){scenario}"
             )
@@ -156,6 +185,9 @@ def score_cases(
     min_citation_precision: float,
     min_abstention: float,
     reranker: str | None = None,
+    min_grounding: float = _GROUNDING_THRESHOLD,
+    parser_chunker: str | None = None,
+    tenant_policy: str | None = None,
 ) -> EvaluationReport:
     """Score one run and decide whether it meets the configured thresholds."""
     case_results: list[CaseResult] = []
@@ -185,6 +217,7 @@ def score_cases(
                 citation_precision=citation_precision,
                 abstain_decision=abstain_decision,
                 abstain_correct=abstain_decision == case.expect_abstain,
+                grounding_correct=_grounding_correct(corpus, case),
                 cross_tenant_leaks=leaks,
             )
         )
@@ -194,18 +227,25 @@ def score_cases(
         for result in case_results
         if result.citation_precision is not None
     ]
+    groundings = [
+        result.grounding_correct for result in case_results if result.grounding_correct is not None
+    ]
     aggregate = {
         "recall_at_k": _mean(recalls),
         "citation_precision": _mean(citations),
         "abstention_correctness": _mean(
             [1.0 if result.abstain_correct else 0.0 for result in case_results]
         ),
+        "grounding_correctness": _mean([1.0 if value else 0.0 for value in groundings]),
         "cross_tenant_leaks": float(sum(len(result.cross_tenant_leaks) for result in case_results)),
     }
+    # An unscored dimension does not gate: a dataset that never exercises
+    # grounding cannot regress it, and an empty aggregate must not read as 0.
     passed = (
         aggregate["cross_tenant_leaks"] == 0
-        and aggregate["recall_at_k"] >= min_recall
-        and aggregate["citation_precision"] >= min_citation_precision
+        and (not recalls or aggregate["recall_at_k"] >= min_recall)
+        and (not citations or aggregate["citation_precision"] >= min_citation_precision)
+        and (not groundings or aggregate["grounding_correctness"] >= min_grounding)
         and aggregate["abstention_correctness"] >= min_abstention
     )
     return EvaluationReport(
@@ -217,10 +257,51 @@ def score_cases(
         min_recall=min_recall,
         min_citation_precision=min_citation_precision,
         min_abstention=min_abstention,
+        min_grounding=min_grounding,
         cases=tuple(case_results),
         aggregate=aggregate,
+        scored={
+            "recall_at_k": bool(recalls),
+            "citation_precision": bool(citations),
+            "abstention_correctness": True,
+            "grounding_correctness": bool(groundings),
+            "cross_tenant_leaks": True,
+        },
+        components=component_manifest(
+            retriever=retriever_config,
+            embedding_model=corpus.embedding_model,
+            reranker=reranker,
+            abstain_threshold=abstain_threshold,
+            min_recall=min_recall,
+            min_citation_precision=min_citation_precision,
+            min_abstention=min_abstention,
+            min_grounding=min_grounding,
+            corpus_chunks=len(corpus.chunks),
+            corpus_digest=corpus_digest(corpus),
+            parser_chunker=parser_chunker,
+            tenant_policy=tenant_policy,
+        ),
         passed=passed,
     )
+
+
+def _grounding_correct(corpus: FixtureCorpus, case: EvalCase) -> bool | None:
+    """Score one grounded-answer case with the validator online runs (`RAG-005`).
+
+    Evidence is the gold chunks' texts, the passages the case says should
+    have been admitted; ``validate_sensitive_claims`` is the same function the
+    request path calls, so a claim the online validator would refuse scores
+    the same way here.
+    """
+    if case.answer is None or case.expect_grounded is None:
+        return None
+    evidence = tuple(
+        text
+        for chunk_id in case.gold_chunk_ids
+        if (text := corpus.chunk_text(chunk_id)) is not None
+    )
+    verdict = validate_sensitive_claims(case.answer, evidence_texts=evidence)
+    return (verdict.verdict is ClaimVerdict.SUPPORTED) == case.expect_grounded
 
 
 def _abstain(results: Sequence[RetrievalResult], threshold: float) -> bool:

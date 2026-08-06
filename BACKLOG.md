@@ -290,7 +290,7 @@ runbooks.
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
 - [x] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
 - [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
-- [ ] `RAG-008` — RAG evaluation and regression suite — `P1`
+- [x] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
 - [ ] `OBS-001` — Structured logging and request correlation — `P1`
 - [x] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
@@ -1995,7 +1995,7 @@ guarantees by construction.
 
 ### RAG-008 — RAG evaluation and regression suite
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI quality`
 - Depends on: `RAG-009`, `RAG-004`, `RAG-005`, `RAG-007`, `OBS-004`, `FEAT-008`
@@ -2017,7 +2017,47 @@ guarantees by construction.
   - Dataset examples contain no real customer PII.
 - Verification:
   - Run the evaluation twice and confirm stable scoring within documented tolerance.
-- Completion notes: _Pending._
+- Completion notes: Landed as `evals/compare.py` + `evals/gate.py` over the RAG-009 runner, with
+  `make eval-gate` (baseline-vs-candidate, determinism-verified) now a step of `make check`.
+  **Versioned datasets** (`evals/datasets/`, per-manifest name/version/source hand-labelled|promoted
+  and the PRIV-002 attestation): `golden-v1` *is* the RAG-009 fixtures (referenced, not copied);
+  `multi-turn-v1` scores 12 turn-pair cases through the single-turn runner (RAG-006 is not built —
+  `prior_turns` documents the context, the resolved query is what is scored, and the dataset
+  manifest says so); `adversarial-v1` folds the RAG-007 documents (flagged ones indexed inactive,
+  mirroring ingestion quarantine) plus a Clearview financing-policy document and 18 financing,
+  claim-grounding, injection, and isolation cases. **Promotion consumption**: `evals/promotion.py`
+  materializes a FEAT-008 `eval_dataset` projection (gold chunk ids resolved against the
+  knowledge base) into a dataset case with review/trace provenance and a second PRIV-002 pass;
+  the loader then enforces PRIV-002 on every load, and the PII suite asserts no shipped dataset
+  (including promoted shapes) carries phone/email/account/ZIP patterns. **Comparison report**:
+  one JSON with the manifest diff over the eleven content-free components, aggregate deltas,
+  per-case regressions and improvements, and every regression carrying its
+  `review_id`/`trace_id`/`turn_id` linkage; run ids are content-bound manifest hashes.
+  **Grounding**: `score_cases` calls `tenantchat.core.claims.validate_sensitive_claims` — the
+  exact validator RAG-005 runs online — so `grounding_correctness` in CI is the property
+  enforced at request time (a fabricated $89 price fails; the verbatim-in-admitted-evidence
+  boundary is documented in the adversarial dataset). **Thresholds + exceptions**:
+  thresholds live in each dataset manifest (env `RAG_EVAL_MIN_*` overrides), the gate blocks
+  every aggregate below threshold and every per-case pass-to-fail regression, and
+  `evals/exceptions.json` records reviewed waivers bound to the exact baseline/candidate
+  manifest hashes — the two golden-v1 hybrid recall regressions (1.0→0.5) are the documented
+  RAG-009 1.0000→0.95 delta, waived at baseline; a changed manifest cannot inherit a waiver.
+  Cross-tenant leaks are never waivable. **Judge policy**: `evals/judges.py` registers judge
+  scorers with measured held-out agreement; the gate refuses any judge without
+  ≥0.8 agreement on ≥20 held-out labels, and reports the rest as informational only — no LLM
+  judge exists in the hermetic gate, and tests prove an unvalidated judge cannot block.
+  **FEAT-008 closure**: `evals.gate.close_passing_reviews` feeds the gate's real report JSON
+  to `apply_eval_report` with a server-minted run id, closing `awaiting_fix` reviews whose
+  promoted case passes (proven in `services/api/tests/test_eval_closure.py` with real runner
+  reports and the in-memory store; `case_passes` also now reads `grounding_correct`).
+  Determinism tolerance is exact and asserted: every dataset gates twice per `make check` with
+  byte-identical reports. Files touched: `evals/{dataset,compare,gate,judges,exceptions,
+  promotion}.py`, `evals/{runner,scorer,versions}.py`, `evals/datasets/*.json`,
+  `evals/exceptions.json`, `evals/tests/*`, `services/api/src/tenantchat/api/review.py`
+  (grounding in `case_passes`), `services/api/tests/test_eval_closure.py`, `Makefile`,
+  `BACKLOG.md`. Follow-ups: wire the release pipeline's store into the closure at the
+  composition root, add the first real judge scorer with its held-out agreement, and grow
+  promoted datasets from the live flywheel once the queue is populated.
 
 ### AGENT-001 — Persisted intent router and workflow state machine
 

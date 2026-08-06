@@ -15,7 +15,7 @@ NPM := npm --prefix frontend
 	dev worker js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
-	images-check keycloak-render keycloak-lint arch-validate arch-build clean
+	images-check keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -50,6 +50,11 @@ test: ## Run the hermetic unit suite (no external services)
 eval: ## Run the golden offline evaluation harness (baseline + hybrid, hermetic)
 	$(UV_RUN) python -m evals.runner
 	$(UV_RUN) python -m evals.runner --retriever hybrid
+
+eval-gate: ## Baseline-vs-candidate regression gate over every versioned dataset (RAG-008)
+	$(UV_RUN) python -m evals.gate --dataset golden-v1 --verify-determinism
+	$(UV_RUN) python -m evals.gate --dataset multi-turn-v1 --verify-determinism
+	$(UV_RUN) python -m evals.gate --dataset adversarial-v1 --verify-determinism
 
 test-cov: ## Run tests with a coverage report
 	$(UV_RUN) pytest -m "not integration" --cov --cov-report=term-missing \
@@ -138,8 +143,10 @@ images-check: image-contracts images-build images-smoke ## Build and smoke all r
 
 # js-build runs before test-cov: the public route allowlist is derived from the
 # build output, so an unbuilt frontend makes that specification vacuous.
+# eval-gate runs the baseline-vs-candidate comparison over every versioned
+# dataset with determinism verification; it is hermetic and takes ~2s.
 check: lock-check lint format-check typecheck js-lint js-typecheck js-format-check js-build \
-	test-cov js-test-cov deployment-security image-contracts ## Full local and CI quality gate
+	eval-gate test-cov js-test-cov deployment-security image-contracts ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
 

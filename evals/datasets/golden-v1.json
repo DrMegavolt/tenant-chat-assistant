@@ -1,0 +1,19 @@
+{
+  "name": "golden-v1",
+  "version": 1,
+  "source": "hand-labelled",
+  "abstain_threshold": 0.5,
+  "thresholds": {
+    "recall_at_k": 0.6,
+    "citation_precision": 0.8,
+    "abstention_correctness": 0.9,
+    "grounding_correctness": 0.9
+  },
+  "pii_check": {
+    "policy": "PRIV-002",
+    "method": "core.reviews.payload_contains_pii over every free-text case field",
+    "enforced_at": "dataset-load"
+  },
+  "cases_file": "../fixtures/cases.json",
+  "corpus_file": "../fixtures/corpus.json"
+}

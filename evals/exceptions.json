@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "waivers": [
+    {
+      "case_id": "apex-hvac-heating-repair",
+      "metric": "recall_at_k",
+      "baseline_manifest_hash": "659c7c6eae9e07cbfc96a3e9f9099b52074c7a052946a1fff38835b0b0d6a66c",
+      "candidate_manifest_hash": "e348a97696bbdd7aedc90a8ed391c3f8a9b4543e74a188b13b2ea8a745c9691e",
+      "waived_by": "RAG-008 baseline review",
+      "waived_at": "2026-08-06",
+      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver."
+    },
+    {
+      "case_id": "clearview-hvac-current-pricing",
+      "metric": "recall_at_k",
+      "baseline_manifest_hash": "659c7c6eae9e07cbfc96a3e9f9099b52074c7a052946a1fff38835b0b0d6a66c",
+      "candidate_manifest_hash": "e348a97696bbdd7aedc90a8ed391c3f8a9b4543e74a188b13b2ea8a745c9691e",
+      "waived_by": "RAG-008 baseline review",
+      "waived_at": "2026-08-06",
+      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver."
+    }
+  ]
+}
