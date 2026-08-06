@@ -100,6 +100,10 @@ METRIC_DEFINITIONS: Final[Mapping[MetricName, tuple[MetricKind, str]]] = {
         MetricKind.COUNTER,
         "Citation-validation verdicts on published answers.",
     ),
+    MetricName.FEEDBACK_SUBMITTED: (
+        MetricKind.COUNTER,
+        "Visitor feedback submissions by rating: up or down.",
+    ),
 }
 
 

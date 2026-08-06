@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { AdminApi } from "src/admin/adminApi";
+import { ReviewQueue } from "src/admin/components/ReviewQueue";
 import { SessionDetail } from "src/admin/components/SessionDetail";
 import { SessionList } from "src/admin/components/SessionList";
 import { StatBar } from "src/admin/components/StatBar";
@@ -8,20 +9,21 @@ import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { relativeTime } from "src/admin/time";
 import { useAdminConsole } from "src/admin/useAdminConsole";
 
-type AdminView = "queue" | "traces";
+type AdminView = "queue" | "reviews" | "traces";
 
 const VIEW_LABELS: Record<AdminView, string> = {
   queue: "Chat queue",
+  reviews: "Review queue",
   traces: "AI turn explorer"
 };
 
 /**
- * The operator console: every conversation, the ability to answer one, and
- * the FEAT-015 AI turn explorer over the inference plane.
+ * The operator console: every conversation, the ability to answer one, the
+ * FEAT-008 review queue, and the FEAT-015 AI turn explorer over the inference
+ * plane.
  *
- * Two panes and one selection for the queue; the explorer is a separate tab
- * because it is a diagnosis surface, not a live queue — the console keeps
- * polling only while the queue tab is open.
+ * The queue and the explorer are diagnosis surfaces, not live queues — the
+ * console keeps polling only while the chat queue tab is open.
  */
 export function AdminPage() {
   const api = useMemo(() => new AdminApi(), []);
@@ -30,7 +32,10 @@ export function AdminPage() {
 
   return (
     <>
-      <a className="skip-link" href={view === "queue" ? "#queue" : "#traceTitle"}>
+      <a
+        className="skip-link"
+        href={view === "queue" ? "#queue" : view === "reviews" ? "#reviewTitle" : "#traceTitle"}
+      >
         Skip to main content
       </a>
 
@@ -114,6 +119,17 @@ export function AdminPage() {
 
           {view === "traces" && (
             <TraceExplorer
+              api={api}
+              tenants={console_.tenants.map((tenant) => ({
+                tenantId: tenant.tenantId,
+                name: tenant.name
+              }))}
+              initialTenantId={console_.tenantId}
+            />
+          )}
+
+          {view === "reviews" && (
+            <ReviewQueue
               api={api}
               tenants={console_.tenants.map((tenant) => ({
                 tenantId: tenant.tenantId,

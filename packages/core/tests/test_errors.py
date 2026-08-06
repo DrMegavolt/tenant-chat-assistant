@@ -17,6 +17,7 @@ from tenantchat.core.errors import (
     InvalidVersionTransitionError,
     MissingRequiredFieldsError,
     NotFoundError,
+    ReviewTransitionError,
     UnknownServiceError,
     WorkflowTransitionError,
 )
@@ -55,6 +56,10 @@ EXTRA_ARGS: dict[type[DomainError], dict[str, object]] = {
         "current": WorkflowStatus.ACTIVE,
         "transition": WorkflowTransition.RESUME,
         "permitted": frozenset({WorkflowTransition.PAUSE}),
+    },
+    ReviewTransitionError: {
+        "current": "open",
+        "permitted": frozenset({"in_review"}),
     },
 }
 

@@ -36,6 +36,9 @@ DOMAIN_TABLES = {
     "turn_records",
     "turn_record_projections",
     "trace_access_grants",
+    "turn_feedback",
+    "review_queue",
+    "review_diagnoses",
     "knowledge_index_generations",
     "knowledge_index_findings",
     "routing_decisions",
@@ -81,7 +84,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0015_diagnosis_status"
+    assert revision == "0016_review_queue"
     assert {
         "tenant_status",
         "chat_session_status",

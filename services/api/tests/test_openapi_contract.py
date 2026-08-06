@@ -39,6 +39,9 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/chat/session"),
     ("post", "/api/chat/consent"),
     ("post", "/api/chat/confirmation"),
+    # FEAT-008: the visitor's rating of one turn record, tenant- and
+    # session-qualified before anything is written.
+    ("post", "/api/chat/feedback"),
     # RAG-005: tenant-scoped source view behind the visitor's citation.
     ("get", "/api/chat/sources/{source_id}"),
     ("get", "/api/admin/csrf-token"),
@@ -74,6 +77,13 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/admin/trace-access"),
     ("post", "/api/admin/trace-access"),
     ("delete", "/api/admin/trace-access"),
+    # FEAT-008: the review queue. The list is content-free; detail and every
+    # mutation are trace-read gated, CSRF protected, and audited.
+    ("get", "/api/admin/reviews"),
+    ("get", "/api/admin/reviews/{review_id}"),
+    ("post", "/api/admin/reviews/{review_id}/take"),
+    ("post", "/api/admin/reviews/{review_id}/review"),
+    ("post", "/api/admin/reviews/{review_id}/promote"),
     # RAG-002: the knowledge lifecycle surface FEAT-001's console builds on.
     ("post", "/api/admin/knowledge/uploads"),
     ("get", "/api/admin/knowledge/index-findings"),

@@ -40,6 +40,7 @@ export const CREDENTIAL = "tc.v1.testpayload.testsignature";
 
 export const AVAILABILITY_REPLY = {
   session_id: "session-1",
+  turn_id: "turn-1",
   reply: "",
   pending: {
     awaiting: "booking_confirmation",
@@ -59,6 +60,7 @@ export const AVAILABILITY_REPLY = {
 
 export const BOOKING_CONFIRMED = {
   session_id: "session-1",
+  turn_id: "turn-2",
   reply: "Your appointment is booked.",
   pending: null,
   committed: [{ action: "book_appointment", reference: "booking-1", replayed: false }],
@@ -72,6 +74,7 @@ export const BOOKING_CONFIRMED = {
 
 export const SIMPLE_REPLY = {
   session_id: "session-1",
+  turn_id: "turn-3",
   reply: "I found one opening.",
   pending: null,
   committed: [],

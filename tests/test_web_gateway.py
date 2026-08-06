@@ -67,6 +67,7 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
         "/api/chat",
         "/api/chat/consent",
         "/api/chat/confirmation",
+        "/api/chat/feedback",
         "/api/chat/sources/{source_id}",
         "/api/book",
         "/api/leads",

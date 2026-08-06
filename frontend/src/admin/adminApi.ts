@@ -8,6 +8,7 @@
  */
 
 import type { SessionDetail, SessionSummary, TenantSummary } from "src/admin/types";
+import type { ReviewDetail, ReviewDiagnosis, ReviewSummary } from "src/admin/reviewTypes";
 import type {
   GoldCase,
   ReplayResult,
@@ -154,6 +155,103 @@ export class AdminApi {
     if (!response.ok) throw new Error(`Gold cases failed with ${response.status}`);
     const payload = (await response.json()) as { cases?: unknown[] };
     return (payload.cases ?? []).map((wire) => goldCaseFromWire(obj(wire)));
+  }
+
+  /**
+   * The FEAT-008 queue: content-free entries only, highest priority first.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async listReviews(tenantId: string, status?: string): Promise<ReviewSummary[]> {
+    const params = new URLSearchParams({
+      tenant_id: tenantId,
+      reason: "quality_review",
+      limit: "200"
+    });
+    if (status) params.set("review_status", status);
+    const response = await this.request(`/api/admin/reviews?${params}`);
+    if (!response.ok) throw new Error(`Review list failed with ${response.status}`);
+    const payload = (await response.json()) as { reviews?: unknown[] };
+    return (payload.reviews ?? []).map((wire) => reviewSummaryFromWire(obj(wire)));
+  }
+
+  /** One content-bearing review entry (trace-read gated and audited). */
+  async reviewDetail(reviewId: string, tenantId: string): Promise<ReviewDetail | null> {
+    const response = await this.request(
+      `/api/admin/reviews/${encodeURIComponent(reviewId)}?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`
+    );
+    if (!response.ok) return null;
+    return reviewDetailFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /** Mark an open case as in review by the current operator. */
+  async takeReview(reviewId: string, tenantId: string): Promise<void> {
+    const response = await this.request(
+      `/api/admin/reviews/${encodeURIComponent(reviewId)}/take?tenant_id=${encodeURIComponent(tenantId)}`,
+      { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
+    );
+    if (!response.ok) throw new Error(`Taking the review failed with ${response.status}`);
+  }
+
+  /** Record the reviewer's decision, correction, and fix. */
+  async submitReview(
+    reviewId: string,
+    tenantId: string,
+    body: {
+      verdict: "confirmed" | "rejected" | "amended";
+      status: "awaiting_fix" | "rejected";
+      note?: string;
+      correctedAnswer?: string;
+      proposedFix?: string;
+      diagnoses: {
+        automaticIndex: number | null;
+        relationship: "confirms" | "rejects" | "amends" | "adds";
+        cause: string;
+        stage: string;
+        role: "primary" | "contributing";
+        status: "detected" | "suspected" | "confirmed" | "inconclusive";
+        confidence: "low" | "medium" | "high";
+        note?: string;
+      }[];
+    }
+  ): Promise<void> {
+    const response = await this.request(
+      `/api/admin/reviews/${encodeURIComponent(reviewId)}/review?tenant_id=${encodeURIComponent(tenantId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
+        body: JSON.stringify({
+          tenant_id: tenantId,
+          verdict: body.verdict,
+          status: body.status,
+          note: body.note,
+          corrected_answer: body.correctedAnswer,
+          proposed_fix: body.proposedFix,
+          diagnoses: body.diagnoses.map((diagnosis) => ({
+            automatic_index: diagnosis.automaticIndex,
+            relationship: diagnosis.relationship,
+            cause: diagnosis.cause,
+            stage: diagnosis.stage,
+            role: diagnosis.role,
+            status: diagnosis.status,
+            confidence: diagnosis.confidence,
+            note: diagnosis.note
+          }))
+        })
+      }
+    );
+    if (!response.ok) throw new Error(`Submitting the review failed with ${response.status}`);
+  }
+
+  /** Promote a reviewed, anonymized case into the evaluation dataset. */
+  async promoteReview(reviewId: string, tenantId: string): Promise<string> {
+    const response = await this.request(
+      `/api/admin/reviews/${encodeURIComponent(reviewId)}/promote?tenant_id=${encodeURIComponent(tenantId)}`,
+      { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
+    );
+    if (!response.ok) throw new Error(`Promoting the review failed with ${response.status}`);
+    const payload = (await response.json()) as { case_id?: string };
+    return payload.case_id ?? "";
   }
 
   private async csrf(): Promise<string> {
@@ -400,6 +498,76 @@ function goldCaseFromWire(wire: Record<string, unknown>): GoldCase {
       sourceId: str(chunk.source_id),
       text: str(chunk.text)
     }))
+  };
+}
+
+function reviewSummaryFromWire(wire: Record<string, unknown>): ReviewSummary {
+  return {
+    reviewId: str(wire.review_id),
+    turnId: str(wire.turn_id),
+    sessionId: strOrNull(wire.session_id),
+    recordedAt: strOrNull(wire.recorded_at),
+    outcome: str(wire.outcome),
+    source: str(wire.source),
+    status: str(wire.status),
+    priority: typeof wire.priority === "number" ? wire.priority : 0,
+    recurrence: typeof wire.recurrence === "number" ? wire.recurrence : 1,
+    manifestHash: str(wire.manifest_hash),
+    committedActions: wire.committed_actions === true,
+    novelManifest: wire.novel_manifest === true,
+    caseId: strOrNull(wire.case_id),
+    verdict: strOrNull(wire.verdict),
+    diagnosisCauses: Array.isArray(wire.diagnosis_causes) ? wire.diagnosis_causes.map(str) : [],
+    diagnosisStatuses: Array.isArray(wire.diagnosis_statuses)
+      ? wire.diagnosis_statuses.map(str)
+      : [],
+    closingEvalRunId: strOrNull(wire.closing_eval_run_id),
+    closingEvalCaseId: strOrNull(wire.closing_eval_case_id),
+    createdAt: str(wire.created_at),
+    turnIndex: typeof wire.turn_index === "number" ? wire.turn_index : 0
+  };
+}
+
+function reviewDiagnosisFromWire(wire: Record<string, unknown>): ReviewDiagnosis {
+  return {
+    diagnosisId: str(wire.diagnosis_id),
+    reviewId: str(wire.review_id),
+    relationship: str(wire.relationship),
+    automaticIndex: typeof wire.automatic_index === "number" ? wire.automatic_index : null,
+    cause: str(wire.cause),
+    stage: str(wire.stage),
+    role: str(wire.role),
+    status: str(wire.status),
+    confidence: str(wire.confidence),
+    evidence: Array.isArray(wire.evidence) ? wire.evidence.map(str) : [],
+    note: strOrNull(wire.note),
+    createdAt: str(wire.created_at)
+  };
+}
+
+function reviewDetailFromWire(wire: Record<string, unknown>): ReviewDetail {
+  const review = obj(wire.review);
+  const feedback = obj(wire.feedback);
+  return {
+    review: reviewSummaryFromWire(review),
+    feedback:
+      feedback && Object.keys(feedback).length > 0
+        ? {
+            turnId: str(feedback.turn_id),
+            rating: str(feedback.rating),
+            reason: strOrNull(feedback.reason),
+            createdAt: str(feedback.created_at)
+          }
+        : null,
+    reviewerSubject: strOrNull(wire.reviewer_subject),
+    reviewedAt: strOrNull(wire.reviewed_at),
+    verdictNote: strOrNull(wire.verdict_note),
+    correctedAnswer: strOrNull(wire.corrected_answer),
+    proposedFix: strOrNull(wire.proposed_fix),
+    closingEvalPassedAt: strOrNull(wire.closing_eval_passed_at),
+    diagnoses: Array.isArray(wire.diagnoses)
+      ? wire.diagnoses.map((row) => reviewDiagnosisFromWire(obj(row)))
+      : []
   };
 }
 

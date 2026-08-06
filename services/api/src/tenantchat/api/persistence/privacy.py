@@ -180,6 +180,7 @@ def _projection(row: object) -> TurnRecordProjection:
         turn_record_id=mapping["turn_record_id"],
         kind=mapping["kind"],
         created_at=mapping["created_at"],
+        payload=dict(mapping["payload"]),
     )
 
 
@@ -489,13 +490,14 @@ class PostgresPrivacyStore:
                 await connection.execute(
                     text(
                         f"""
-                        SELECT p.id, p.tenant_id, p.turn_record_id, p.kind, p.created_at
+                        SELECT p.id, p.tenant_id, p.turn_record_id, p.kind, p.created_at,
+                               p.payload
                         FROM turn_record_projections p
                         JOIN turn_records tr
                           ON tr.tenant_id = p.tenant_id AND tr.id = p.turn_record_id
                         WHERE p.tenant_id = :tenant_id AND tr.chat_session_id = ANY({ids})
                         ORDER BY p.created_at, p.id
-                        """  # noqa: S608 - ids are uuid.UUID literals, not caller text
+                        """
                     ),
                     {"tenant_id": tenant_id},
                 )

@@ -71,6 +71,7 @@ class MetricName(StrEnum):
     BUSINESS_ACTIONS = "tenantchat_business_actions_total"
     BUSINESS_LATENCY = "tenantchat_business_latency_seconds"
     CITATION_VALIDATION = "tenantchat_citation_validation_total"
+    FEEDBACK_SUBMITTED = "tenantchat_feedback_submitted_total"
 
 
 class MetricKind(StrEnum):
@@ -97,6 +98,7 @@ class MetricLabelName(StrEnum):
     KIND = "kind"
     TEMPLATE = "template"
     VERDICT = "verdict"
+    RATING = "rating"
 
 
 class Operation(StrEnum):
@@ -180,6 +182,18 @@ class ActionStatus(StrEnum):
     DECLINED = "declined"
 
 
+class FeedbackRatingValue(StrEnum):
+    """How the visitor rated one turn, as the bounded label vocabulary.
+
+    Distinct from ``tenantchat.core.reviews.FeedbackRating`` on purpose: this
+    is the closed set a metric label may carry, and the two are asserted equal
+    by the cardinality test so a new rating cannot reach a label silently.
+    """
+
+    UP = "up"
+    DOWN = "down"
+
+
 # The label names each metric may carry, as the adapter's hard contract. A label
 # name that is not listed here is rejected at record time, so a metric can never
 # grow a dimension by omission.
@@ -202,6 +216,7 @@ METRIC_LABELS: Final[Mapping[MetricName, tuple[MetricLabelName, ...]]] = {
     MetricName.BUSINESS_ACTIONS: (MetricLabelName.OPERATION, MetricLabelName.STATUS),
     MetricName.BUSINESS_LATENCY: (MetricLabelName.OPERATION,),
     MetricName.CITATION_VALIDATION: (MetricLabelName.VERDICT,),
+    MetricName.FEEDBACK_SUBMITTED: (MetricLabelName.RATING,),
 }
 
 # The value enums this package owns. The routing, tool, and intent vocabularies
@@ -216,6 +231,7 @@ BOUNDED_LABEL_VALUE_ENUMS: Final[tuple[type[StrEnum], ...]] = (
     TokenKind,
     CitationVerdict,
     ActionStatus,
+    FeedbackRatingValue,
 )
 
 

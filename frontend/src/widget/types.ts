@@ -66,7 +66,14 @@ export interface ToolEvent {
 
 /** One entry in the visible transcript, in the order the visitor saw it. */
 export type TranscriptEntry =
-  | { kind: "message"; id: string; role: MessageRole; text: string; source: MessageSource }
+  | {
+      kind: "message";
+      id: string;
+      role: MessageRole;
+      text: string;
+      source: MessageSource;
+      turnId?: string;
+    }
   | { kind: "tool"; id: string; event: ToolEvent }
   | { kind: "booking"; id: string; pending: PendingBooking };
 
@@ -134,12 +141,29 @@ export interface ConfirmationRequest {
 /** The response to one turn, pending and reply being alternatives. */
 export interface ChatTurnResponse {
   sessionId: string;
+  /** The inference-plane record the turn earned (`FEAT-008` feedback target). */
+  turnId: string | null;
   reply: string;
   pending: PendingBooking | null;
   committed: CommittedAction[];
   provenance: TurnProvenance;
   /** A freshly reissued token that names the same conversation (SEC-002). */
   credential: string;
+}
+
+/** A request to rate one turn record (`POST /api/chat/feedback`). */
+export interface FeedbackRequest {
+  turnId: string;
+  rating: "up" | "down";
+  reason?: string;
+}
+
+/** The recorded rating, as the server returned it. */
+export interface FeedbackResponse {
+  turnId: string;
+  rating: "up" | "down";
+  reason: string | null;
+  createdAt: string;
 }
 
 export interface ConsentRecord {
