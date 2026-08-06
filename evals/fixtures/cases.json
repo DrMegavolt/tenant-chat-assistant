@@ -1,0 +1,230 @@
+{
+  "abstain_threshold": 0.5,
+  "cases": [
+    {
+      "id": "apex-hvac-hours",
+      "tenant_id": "apex",
+      "query": "What are Apex's business hours?",
+      "gold_chunk_ids": ["apex-hvac-2"],
+      "expect_abstain": false,
+      "citations": ["apex-hvac-2"],
+      "scenario": null
+    },
+    {
+      "id": "apex-hvac-serves-98103",
+      "tenant_id": "apex",
+      "query": "Do you serve 98103?",
+      "gold_chunk_ids": ["apex-hvac-1"],
+      "expect_abstain": false,
+      "citations": ["apex-hvac-1"],
+      "scenario": null
+    },
+    {
+      "id": "apex-hvac-heating-repair",
+      "tenant_id": "apex",
+      "query": "Can you repair my furnace heating unit?",
+      "gold_chunk_ids": ["apex-hvac-3", "apex-hvac-8"],
+      "expect_abstain": false,
+      "citations": ["apex-hvac-3"],
+      "scenario": null
+    },
+    {
+      "id": "apex-hvac-cost",
+      "tenant_id": "apex",
+      "query": "How much is HVAC repair?",
+      "gold_chunk_ids": ["apex-hvac-5"],
+      "expect_abstain": false,
+      "citations": ["apex-hvac-5"],
+      "scenario": null
+    },
+    {
+      "id": "apex-hvac-warranty",
+      "tenant_id": "apex",
+      "query": "Is my repair covered by a warranty?",
+      "gold_chunk_ids": ["apex-hvac-6"],
+      "expect_abstain": false,
+      "citations": ["apex-hvac-6"],
+      "scenario": null
+    },
+    {
+      "id": "apex-hvac-same-day",
+      "tenant_id": "apex",
+      "query": "Can you come out the same day for an AC emergency?",
+      "gold_chunk_ids": ["apex-hvac-7"],
+      "expect_abstain": false,
+      "citations": ["apex-hvac-7"],
+      "scenario": null
+    },
+    {
+      "id": "apex-electrical-panel",
+      "tenant_id": "apex",
+      "query": "Do you upgrade electrical panels?",
+      "gold_chunk_ids": ["apex-electrical-1", "apex-electrical-4"],
+      "expect_abstain": false,
+      "citations": ["apex-electrical-4"],
+      "scenario": null
+    },
+    {
+      "id": "apex-electrical-permit",
+      "tenant_id": "apex",
+      "query": "Who handles the permit for electrical work?",
+      "gold_chunk_ids": ["apex-electrical-5"],
+      "expect_abstain": false,
+      "citations": ["apex-electrical-5"],
+      "scenario": null
+    },
+    {
+      "id": "apex-plumbing-leak",
+      "tenant_id": "apex",
+      "query": "There is a water leak in my kitchen, is that urgent?",
+      "gold_chunk_ids": ["apex-plumbing-3", "apex-plumbing-1"],
+      "expect_abstain": false,
+      "citations": ["apex-plumbing-3"],
+      "scenario": null
+    },
+    {
+      "id": "apex-plumbing-water-heater",
+      "tenant_id": "apex",
+      "query": "Do you replace tankless water heaters?",
+      "gold_chunk_ids": ["apex-plumbing-5"],
+      "expect_abstain": false,
+      "citations": ["apex-plumbing-5"],
+      "scenario": null
+    },
+    {
+      "id": "apex-outside-service-area",
+      "tenant_id": "apex",
+      "query": "Can you send a plumber to Bellevue?",
+      "gold_chunk_ids": ["apex-plumbing-2"],
+      "expect_abstain": false,
+      "citations": ["apex-plumbing-2"],
+      "scenario": null
+    },
+    {
+      "id": "apex-window-cross-tenant",
+      "tenant_id": "apex",
+      "query": "Do you offer window washing?",
+      "gold_chunk_ids": [],
+      "expect_abstain": true,
+      "citations": [],
+      "scenario": "cross_tenant"
+    },
+    {
+      "id": "clearview-window-pricing",
+      "tenant_id": "clearview",
+      "query": "What does window cleaning cost?",
+      "gold_chunk_ids": ["clearview-windows-1"],
+      "expect_abstain": false,
+      "citations": ["clearview-windows-1"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-window-minimum",
+      "tenant_id": "clearview",
+      "query": "Is there a minimum booking for window cleaning?",
+      "gold_chunk_ids": ["clearview-windows-6", "clearview-windows-1"],
+      "expect_abstain": false,
+      "citations": ["clearview-windows-6"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-window-screens",
+      "tenant_id": "clearview",
+      "query": "Do you clean screens too?",
+      "gold_chunk_ids": ["clearview-windows-4"],
+      "expect_abstain": false,
+      "citations": ["clearview-windows-4"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-commercial-contract",
+      "tenant_id": "clearview",
+      "query": "Can a business get a quarterly cleaning contract?",
+      "gold_chunk_ids": ["clearview-windows-5"],
+      "expect_abstain": false,
+      "citations": ["clearview-windows-5"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-hvac-current-pricing",
+      "tenant_id": "clearview",
+      "query": "How much is the HVAC diagnostic at Clearview?",
+      "gold_chunk_ids": ["clearview-hvac-current-1", "clearview-hvac-current-3"],
+      "expect_abstain": false,
+      "citations": ["clearview-hvac-current-1"],
+      "scenario": "stale"
+    },
+    {
+      "id": "clearview-hvac-care-plan",
+      "tenant_id": "clearview",
+      "query": "What does the Care Plan cover?",
+      "gold_chunk_ids": ["clearview-hvac-current-4"],
+      "expect_abstain": false,
+      "citations": ["clearview-hvac-current-4"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-hvac-emergency",
+      "tenant_id": "clearview",
+      "query": "Is loss of heat in January an emergency?",
+      "gold_chunk_ids": ["clearview-hvac-current-6"],
+      "expect_abstain": false,
+      "citations": ["clearview-hvac-current-6"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-electrical-diagnostic",
+      "tenant_id": "clearview",
+      "query": "How much is an electrical diagnostic visit?",
+      "gold_chunk_ids": ["clearview-electrical-1"],
+      "expect_abstain": false,
+      "citations": ["clearview-electrical-1"],
+      "scenario": null
+    },
+    {
+      "id": "clearview-window-fabricated",
+      "tenant_id": "clearview",
+      "query": "Is there a discount for quarterly window cleaning?",
+      "gold_chunk_ids": ["clearview-windows-5"],
+      "expect_abstain": false,
+      "citations": ["clearview-windows-nonexistent-99"],
+      "scenario": "fabricated_citation"
+    },
+    {
+      "id": "apex-flood-restoration",
+      "tenant_id": "apex",
+      "query": "Do you handle flood damage restoration?",
+      "gold_chunk_ids": [],
+      "expect_abstain": true,
+      "citations": [],
+      "scenario": "unsupported"
+    },
+    {
+      "id": "clearview-pest-control",
+      "tenant_id": "clearview",
+      "query": "Can you remove termites?",
+      "gold_chunk_ids": [],
+      "expect_abstain": true,
+      "citations": [],
+      "scenario": "unsupported"
+    },
+    {
+      "id": "apex-snow-removal",
+      "tenant_id": "apex",
+      "query": "Do you plow driveways in winter?",
+      "gold_chunk_ids": [],
+      "expect_abstain": true,
+      "citations": [],
+      "scenario": "unsupported"
+    },
+    {
+      "id": "clearview-roof-gutter",
+      "tenant_id": "clearview",
+      "query": "Can you clean my gutters and roof?",
+      "gold_chunk_ids": [],
+      "expect_abstain": true,
+      "citations": [],
+      "scenario": "unsupported"
+    }
+  ]
+}

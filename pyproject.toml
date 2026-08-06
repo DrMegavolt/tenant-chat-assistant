@@ -82,7 +82,7 @@ explicit = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-testpaths = ["packages", "services", "tests"]
+testpaths = ["packages", "services", "tests", "evals"]
 pythonpath = ["."]
 addopts = [
     "--strict-markers",
@@ -159,7 +159,7 @@ show_error_codes = true
 # Named per converted service rather than as `services`: the sibling directories
 # still hold excluded side-service scripts, and mypy errors on a directory with
 # nothing to check.
-files = ["packages", "services/api", "scripts", "tests", "runtime_security.py"]
+files = ["packages", "services/api", "scripts", "tests", "evals", "runtime_security.py"]
 exclude = ["architecture/"]
 # `tenantchat` is a PEP 420 namespace package under a src layout, so mypy cannot
 # infer where the package root starts. Without these it derives two module names

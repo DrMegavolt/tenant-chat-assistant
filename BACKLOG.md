@@ -289,7 +289,7 @@ runbooks.
 - [ ] `RAG-005` — Evidence and citation contract — `P1`
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
 - [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
-- [ ] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
+- [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
 - [ ] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
 - [ ] `OBS-001` — Structured logging and request correlation — `P1`
@@ -1857,7 +1857,7 @@ guarantees by construction.
 
 ### RAG-009 — Golden evaluation harness and scoreboard
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI quality`
 - Depends on: `RAG-001`, `RAG-003`
@@ -1877,7 +1877,7 @@ guarantees by construction.
   - Fixtures contain no real customer PII.
 - Verification:
   - Run the harness twice for identical output, then once against a seeded regression to confirm the score moves in the expected direction.
-- Completion notes: This is the thin slice that makes `RAG-004` through `RAG-007` tunable. `RAG-008` grows it into the versioned, CI-gating suite. _Pending._
+- Completion notes: The `evals` package ships the runner, `LexicalOverlapRetriever` baseline (prefix stemming over stopword-filtered tokens), fixture corpus (2 tenants, 11 documents, superseded `clearview-hvac-2025`), 24 labelled cases, deterministic scorer with pinned manifest, and `make eval`. Baseline scores: recall@5 1.0000, citation precision 0.9500, abstention correctness 1.0000, cross-tenant leaks 0; harness proven by determinism, reload-stability, and k-sensitivity tests. `RAG-008` grows this suite.
 
 ### RAG-008 — RAG evaluation and regression suite
 
