@@ -1,0 +1,290 @@
+{
+  "embedding_model": "scripted-embedder.v1",
+  "documents": [
+    {
+      "id": "apex-hvac",
+      "tenant_id": "apex",
+      "domain": "hvac",
+      "title": "HVAC Service Guide",
+      "version": "2026-06",
+      "active": true,
+      "chunks": [
+        {
+          "id": "apex-hvac-1",
+          "section": "Service area",
+          "text": "Apex Home Services serves Seattle ZIP codes 98101 through 98105. We do not serve addresses outside those ZIP codes, and we ask callers to confirm their ZIP before scheduling."
+        },
+        {
+          "id": "apex-hvac-2",
+          "section": "Business hours",
+          "text": "Apex's business hours are Monday through Friday from 8:00 AM to 6:00 PM and Saturday from 9:00 AM to 2:00 PM. The office is closed on Sunday."
+        },
+        {
+          "id": "apex-hvac-3",
+          "section": "Heating repair",
+          "text": "Heating repair covers furnaces, heat pumps, and boilers. A technician diagnoses the unit on site and explains the repair options before any work begins."
+        },
+        {
+          "id": "apex-hvac-4",
+          "section": "Cooling repair",
+          "text": "Cooling repair covers central air conditioners and ductless mini-splits. Seasonal tune-ups are recommended before the first hot spell of the year."
+        },
+        {
+          "id": "apex-hvac-5",
+          "section": "Pricing policy",
+          "text": "Apex does not publish prices for HVAC repair or any other service. A technician inspects the equipment and provides a written estimate that must be approved before work starts."
+        },
+        {
+          "id": "apex-hvac-6",
+          "section": "Warranty",
+          "text": "Repairs are covered by a one-year parts and labor warranty. Warranty service requires proof of the original appointment."
+        },
+        {
+          "id": "apex-hvac-7",
+          "section": "Booking",
+          "text": "Appointments can be booked for the morning or afternoon window on any business day. Same-day emergency calls are accepted until noon when a truck is available."
+        },
+        {
+          "id": "apex-hvac-8",
+          "section": "Safety",
+          "text": "Technicians carry proof of licensure and insurance. Carbon monoxide checks are included with every heating service visit."
+        }
+      ]
+    },
+    {
+      "id": "apex-electrical",
+      "tenant_id": "apex",
+      "domain": "electrical",
+      "title": "Electrical Services",
+      "version": "2026-06",
+      "active": true,
+      "chunks": [
+        {
+          "id": "apex-electrical-1",
+          "section": "Services",
+          "text": "Apex electricians handle wiring, panel upgrades, outlet and switch replacement, and lighting installation. Work is performed by licensed electricians."
+        },
+        {
+          "id": "apex-electrical-2",
+          "section": "Service area",
+          "text": "Electrical service is available in Seattle ZIP codes 98101 through 98105, the same area our HVAC team covers."
+        },
+        {
+          "id": "apex-electrical-3",
+          "section": "Pricing",
+          "text": "Apex quotes electrical work after inspection. No price is published for panel work, rewiring, or lighting jobs."
+        },
+        {
+          "id": "apex-electrical-4",
+          "section": "Panel upgrades",
+          "text": "Panel upgrades replace outdated service panels and are typically a multi-hour job requiring the utility to schedule an interruption."
+        },
+        {
+          "id": "apex-electrical-5",
+          "section": "Inspection",
+          "text": "Work passes inspection where the jurisdiction requires it. The permit process is handled by the technician and included in the quote."
+        },
+        {
+          "id": "apex-electrical-6",
+          "section": "Booking",
+          "text": "Electrical appointments are booked through the same calendar as HVAC. Emergency outages are prioritized over routine work."
+        }
+      ]
+    },
+    {
+      "id": "apex-plumbing",
+      "tenant_id": "apex",
+      "domain": "plumbing",
+      "title": "Plumbing Services",
+      "version": "2026-06",
+      "active": true,
+      "chunks": [
+        {
+          "id": "apex-plumbing-1",
+          "section": "Services",
+          "text": "Plumbing services cover leak repair, drain cleaning, fixture replacement, and water heater work. Call before a leak becomes an emergency."
+        },
+        {
+          "id": "apex-plumbing-2",
+          "section": "Service area",
+          "text": "Plumbers from Apex serve Seattle ZIP codes 98101 through 98105 only. Bellevue and other Eastside cities are outside the service area."
+        },
+        {
+          "id": "apex-plumbing-3",
+          "section": "Leaks",
+          "text": "A confirmed water leak is treated as urgent. The plumber isolates the supply, assesses the damage, and recommends repair or replacement."
+        },
+        {
+          "id": "apex-plumbing-4",
+          "section": "Pricing",
+          "text": "Plumbing quotes are written after inspection and approved before work begins. Apex does not publish fixture or labor prices."
+        },
+        {
+          "id": "apex-plumbing-5",
+          "section": "Water heaters",
+          "text": "Water heater replacement includes removal of the old unit and installation of the new one. Tankless units require an electrical or gas assessment first."
+        },
+        {
+          "id": "apex-plumbing-6",
+          "section": "Booking",
+          "text": "Plumbing appointments share the main booking calendar and confirmations are sent the same way."
+        }
+      ]
+    },
+    {
+      "id": "clearview-windows",
+      "tenant_id": "clearview",
+      "domain": "window-cleaning",
+      "title": "Window Cleaning Services",
+      "version": "2026-06",
+      "active": true,
+      "chunks": [
+        {
+          "id": "clearview-windows-1",
+          "section": "Pricing",
+          "text": "Window cleaning is $150 per hour with a two hour minimum. Exterior-only visits are priced the same; screens are cleaned at no extra charge."
+        },
+        {
+          "id": "clearview-windows-2",
+          "section": "Service area",
+          "text": "Clearview Property Care serves Portland ZIP codes 97035 and 97201 through 97205."
+        },
+        {
+          "id": "clearview-windows-3",
+          "section": "Hours",
+          "text": "Clearview works daily from 7:00 AM to 7:00 PM, including weekends, to fit commercial and residential schedules."
+        },
+        {
+          "id": "clearview-windows-4",
+          "section": "What is included",
+          "text": "We clean interior and exterior glass where safe access allows, and we clean screens too, ending with a final inspection walk with the customer."
+        },
+        {
+          "id": "clearview-windows-5",
+          "section": "Commercial",
+          "text": "Commercial contracts receive quarterly cleaning schedules and a dedicated account contact. Invoice terms are net 30 for approved accounts."
+        },
+        {
+          "id": "clearview-windows-6",
+          "section": "Scheduling",
+          "text": "Residential visits are scheduled in two hour blocks. A two hour minimum applies to every booking."
+        },
+        {
+          "id": "clearview-windows-7",
+          "section": "Equipment",
+          "text": "Cleaners use water-fed poles and squeegee kits. Ladders are used only under 20 feet; taller work is quoted separately with powered access."
+        },
+        {
+          "id": "clearview-windows-8",
+          "section": "Seasonal notes",
+          "text": "Spring and fall are the busiest weeks for exterior work. Booking two weeks ahead in those seasons is recommended."
+        }
+      ]
+    },
+    {
+      "id": "clearview-hvac",
+      "tenant_id": "clearview",
+      "domain": "hvac",
+      "title": "HVAC Services",
+      "version": "2026-07",
+      "active": true,
+      "chunks": [
+        {
+          "id": "clearview-hvac-current-1",
+          "section": "Pricing",
+          "text": "The HVAC diagnostic visit is $120. Repair work is quoted after inspection; replacement of major equipment is always quoted separately."
+        },
+        {
+          "id": "clearview-hvac-current-2",
+          "section": "Service area",
+          "text": "HVAC service is available in Portland ZIP codes 97035 and 97201 through 97205."
+        },
+        {
+          "id": "clearview-hvac-current-3",
+          "section": "Diagnostic visits",
+          "text": "A diagnostic visit tests the system, reports the fault, and ends with a written repair estimate. The $120 fee is credited toward approved repairs."
+        },
+        {
+          "id": "clearview-hvac-current-4",
+          "section": "Maintenance plans",
+          "text": "The Care Plan covers two tune-ups per year and a 10 percent discount on repairs. Plans are billed annually."
+        },
+        {
+          "id": "clearview-hvac-current-5",
+          "section": "Booking",
+          "text": "HVAC appointments book into the same calendar as window cleaning, daily 7:00 AM to 7:00 PM."
+        },
+        {
+          "id": "clearview-hvac-current-6",
+          "section": "Emergency service",
+          "text": "Loss of heating in winter or loss of cooling in a heat event is treated as an emergency and moved ahead of routine appointments."
+        },
+        {
+          "id": "clearview-hvac-current-7",
+          "section": "Equipment brands",
+          "text": "Clearview installs and services all major residential brands; no brand is preferred over another in recommendations."
+        }
+      ]
+    },
+    {
+      "id": "clearview-hvac-2025",
+      "tenant_id": "clearview",
+      "domain": "hvac",
+      "title": "HVAC Services (superseded)",
+      "version": "2025-09",
+      "active": false,
+      "chunks": [
+        {
+          "id": "clearview-hvac-stale-1",
+          "section": "Pricing (superseded)",
+          "text": "The HVAC diagnostic visit was $95. This pricing sheet was replaced in 2026."
+        },
+        {
+          "id": "clearview-hvac-stale-2",
+          "section": "Service area (superseded)",
+          "text": "HVAC service previously covered only Portland 97201 through 97205. The coverage area was expanded in 2026."
+        },
+        {
+          "id": "clearview-hvac-stale-3",
+          "section": "Maintenance (superseded)",
+          "text": "The old maintenance plan covered one tune-up per year with no repair discount."
+        }
+      ]
+    },
+    {
+      "id": "clearview-electrical",
+      "tenant_id": "clearview",
+      "domain": "electrical",
+      "title": "Electrical Services",
+      "version": "2026-06",
+      "active": true,
+      "chunks": [
+        {
+          "id": "clearview-electrical-1",
+          "section": "Pricing",
+          "text": "The electrical diagnostic visit is $140. Panel work and rewiring are quoted after inspection."
+        },
+        {
+          "id": "clearview-electrical-2",
+          "section": "Service area",
+          "text": "Electrical work is available in Portland ZIP codes 97035 and 97201 through 97205."
+        },
+        {
+          "id": "clearview-electrical-3",
+          "section": "Services",
+          "text": "Licensed electricians handle wiring, panel upgrades, and outlet and switch replacement."
+        },
+        {
+          "id": "clearview-electrical-4",
+          "section": "Booking",
+          "text": "Electrical appointments share the daily 7:00 AM to 7:00 PM calendar."
+        },
+        {
+          "id": "clearview-electrical-5",
+          "section": "Inspection",
+          "text": "Panel work passes jurisdiction inspection where required; the permit is handled by the technician."
+        }
+      ]
+    }
+  ]
+}

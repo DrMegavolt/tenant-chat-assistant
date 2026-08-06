@@ -47,6 +47,9 @@ typecheck: ## Run mypy in strict mode
 test: ## Run the hermetic unit suite (no external services)
 	$(UV_RUN) pytest -m "not integration"
 
+eval: ## Run the golden offline evaluation harness (hermetic, no services)
+	$(UV_RUN) python -m evals.runner
+
 test-cov: ## Run tests with a coverage report
 	$(UV_RUN) pytest -m "not integration" --cov --cov-report=term-missing \
 		--cov-report=xml:coverage/python/coverage.xml \
