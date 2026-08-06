@@ -21,6 +21,7 @@ key of its own.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Mapping
 from typing import Final
 
@@ -42,7 +43,8 @@ from tenantchat.core.commands import (
     HandoffCommand,
     LeadCommand,
 )
-from tenantchat.core.errors import SlotUnavailableError, ValidationError
+from tenantchat.core.errors import DomainError, SlotUnavailableError, ValidationError
+from tenantchat.core.metrics import ActionStatus, MetricName, MetricsReporter, Operation
 from tenantchat.core.ports import (
     AvailabilityProvider,
     BookingConfirmation,
@@ -90,6 +92,11 @@ class RecordedBookingService:
 
     Consent is checked before the claim, so a refusal leaves no reservation and
     no claimed key behind (`PRIV-001`).
+
+    ``metrics`` is the `OBS-002` business-action recorder. The status is
+    recorded *here* rather than in a graph node because this service knows the
+    one thing a replayed node cannot: whether the effect was committed once,
+    answered a duplicate key, or was refused — the exactly-once business count.
     """
 
     def __init__(
@@ -97,10 +104,23 @@ class RecordedBookingService:
         bookings: BookingStore,
         availability: AvailabilityProvider,
         consent: ConsentStore,
+        metrics: MetricsReporter | None = None,
     ) -> None:
         self._bookings = bookings
         self._availability = availability
         self._consent = consent
+        self._metrics = metrics
+
+    def _record(self, status: ActionStatus, started: float) -> None:
+        if self._metrics is None:
+            return
+        labels = {"operation": Operation.BOOKING.value, "status": status.value}
+        self._metrics.observe(MetricName.BUSINESS_ACTIONS, 1, labels=labels)
+        self._metrics.observe(
+            MetricName.BUSINESS_LATENCY,
+            time.monotonic() - started,
+            labels={"operation": Operation.BOOKING.value},
+        )
 
     async def confirm(
         self,
@@ -119,30 +139,39 @@ class RecordedBookingService:
             SlotUnavailableError: the slot is past, reserved, or wrong tenant,
                 carrying the current offers.
         """
-        await _require_consent(self._consent, command, session_id)
-        attempt = BookingAttempt(
-            tenant_id=command.tenant_id,
-            scope=BOOKING_SCOPE,
-            key=idempotency_key,
-            request_hash=_fingerprint(
-                session_id,
-                command.customer_name,
-                command.contact.value,
-                command.address,
-                command.service.slug,
-                command.slot_id,
-            ),
-        )
+        started = time.monotonic()
         try:
-            outcome = await self._bookings.confirm(command, session_id=session_id, attempt=attempt)
-        except SlotUnavailableError:
-            refreshed = tuple(
-                slot.label
-                for slot in await self._availability.offered_slots(
-                    command.tenant_id, command.service.slug
-                )
+            await _require_consent(self._consent, command, session_id)
+            attempt = BookingAttempt(
+                tenant_id=command.tenant_id,
+                scope=BOOKING_SCOPE,
+                key=idempotency_key,
+                request_hash=_fingerprint(
+                    session_id,
+                    command.customer_name,
+                    command.contact.value,
+                    command.address,
+                    command.service.slug,
+                    command.slot_id,
+                ),
             )
-            raise SlotUnavailableError(offered=refreshed) from None
+            try:
+                outcome = await self._bookings.confirm(
+                    command, session_id=session_id, attempt=attempt
+                )
+            except SlotUnavailableError:
+                refreshed = tuple(
+                    slot.label
+                    for slot in await self._availability.offered_slots(
+                        command.tenant_id, command.service.slug
+                    )
+                )
+                raise SlotUnavailableError(offered=refreshed) from None
+        except DomainError:
+            self._record(ActionStatus.REFUSED, started)
+            raise
+        status = ActionStatus.REPLAYED if outcome.replayed else ActionStatus.COMMITTED
+        self._record(status, started)
         return _confirmation(outcome.record, replayed=outcome.replayed)
 
     async def find_replay(
@@ -179,11 +208,27 @@ class RecordedLeadService:
     """Captures a lead once per idempotency key."""
 
     def __init__(
-        self, leads: LeadStore, idempotency: IdempotencyStore, consent: ConsentStore
+        self,
+        leads: LeadStore,
+        idempotency: IdempotencyStore,
+        consent: ConsentStore,
+        metrics: MetricsReporter | None = None,
     ) -> None:
         self._leads = leads
         self._idempotency = idempotency
         self._consent = consent
+        self._metrics = metrics
+
+    def _record(self, status: ActionStatus, started: float) -> None:
+        if self._metrics is None:
+            return
+        labels = {"operation": Operation.LEAD.value, "status": status.value}
+        self._metrics.observe(MetricName.BUSINESS_ACTIONS, 1, labels=labels)
+        self._metrics.observe(
+            MetricName.BUSINESS_LATENCY,
+            time.monotonic() - started,
+            labels={"operation": Operation.LEAD.value},
+        )
 
     async def capture(
         self,
@@ -201,29 +246,36 @@ class RecordedLeadService:
             ConflictError: an attempt with this key is in flight, or the key was
                 used for a different lead.
         """
-        await _require_consent(self._consent, command, session_id)
-        replay = await self._idempotency.begin(
-            command.tenant_id,
-            scope=LEAD_SCOPE,
-            key=idempotency_key,
-            fingerprint=_fingerprint(
-                session_id,
-                command.customer_name,
-                command.contact.value,
-                command.service,
-                command.summary,
-            ),
-        )
-        if replay is not None:
-            return LeadReceipt(reference=str(replay["reference"]), replayed=True)
+        started = time.monotonic()
+        try:
+            await _require_consent(self._consent, command, session_id)
+            replay = await self._idempotency.begin(
+                command.tenant_id,
+                scope=LEAD_SCOPE,
+                key=idempotency_key,
+                fingerprint=_fingerprint(
+                    session_id,
+                    command.customer_name,
+                    command.contact.value,
+                    command.service,
+                    command.summary,
+                ),
+            )
+            if replay is not None:
+                self._record(ActionStatus.REPLAYED, started)
+                return LeadReceipt(reference=str(replay["reference"]), replayed=True)
 
-        record = await self._leads.record(command, session_id=session_id)
-        await self._idempotency.complete(
-            command.tenant_id,
-            scope=LEAD_SCOPE,
-            key=idempotency_key,
-            response={"reference": record.lead_id},
-        )
+            record = await self._leads.record(command, session_id=session_id)
+            await self._idempotency.complete(
+                command.tenant_id,
+                scope=LEAD_SCOPE,
+                key=idempotency_key,
+                response={"reference": record.lead_id},
+            )
+        except DomainError:
+            self._record(ActionStatus.REFUSED, started)
+            raise
+        self._record(ActionStatus.COMMITTED, started)
         return LeadReceipt(reference=record.lead_id, replayed=False)
 
 
@@ -235,9 +287,26 @@ class RecordedHandoffService:
     the same stuck conversation is how that queue stops being trustworthy.
     """
 
-    def __init__(self, handoffs: HandoffStore, idempotency: IdempotencyStore) -> None:
+    def __init__(
+        self,
+        handoffs: HandoffStore,
+        idempotency: IdempotencyStore,
+        metrics: MetricsReporter | None = None,
+    ) -> None:
         self._handoffs = handoffs
         self._idempotency = idempotency
+        self._metrics = metrics
+
+    def _record(self, status: ActionStatus, started: float) -> None:
+        if self._metrics is None:
+            return
+        labels = {"operation": Operation.HANDOFF.value, "status": status.value}
+        self._metrics.observe(MetricName.BUSINESS_ACTIONS, 1, labels=labels)
+        self._metrics.observe(
+            MetricName.BUSINESS_LATENCY,
+            time.monotonic() - started,
+            labels={"operation": Operation.HANDOFF.value},
+        )
 
     async def request(
         self,
@@ -253,24 +322,31 @@ class RecordedHandoffService:
             ConflictError: an attempt with this key is in flight, or the key was
                 used for a different handoff.
         """
-        replay = await self._idempotency.begin(
-            command.tenant_id,
-            scope=HANDOFF_SCOPE,
-            key=idempotency_key,
-            fingerprint=_fingerprint(session_id, command.reason.value, command.summary),
-        )
-        if replay is not None:
-            return HandoffTicket(
-                reference=str(replay["reference"]), reason=command.reason, replayed=True
+        started = time.monotonic()
+        try:
+            replay = await self._idempotency.begin(
+                command.tenant_id,
+                scope=HANDOFF_SCOPE,
+                key=idempotency_key,
+                fingerprint=_fingerprint(session_id, command.reason.value, command.summary),
             )
+            if replay is not None:
+                self._record(ActionStatus.REPLAYED, started)
+                return HandoffTicket(
+                    reference=str(replay["reference"]), reason=command.reason, replayed=True
+                )
 
-        record = await self._handoffs.record(command, session_id=session_id)
-        await self._idempotency.complete(
-            command.tenant_id,
-            scope=HANDOFF_SCOPE,
-            key=idempotency_key,
-            response={"reference": record.handoff_id},
-        )
+            record = await self._handoffs.record(command, session_id=session_id)
+            await self._idempotency.complete(
+                command.tenant_id,
+                scope=HANDOFF_SCOPE,
+                key=idempotency_key,
+                response={"reference": record.handoff_id},
+            )
+        except DomainError:
+            self._record(ActionStatus.REFUSED, started)
+            raise
+        self._record(ActionStatus.COMMITTED, started)
         return HandoffTicket(reference=record.handoff_id, reason=record.reason, replayed=False)
 
 

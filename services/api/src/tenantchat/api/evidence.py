@@ -26,6 +26,7 @@ The pipeline mirrors the `RAG-004` calibration shape:
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
@@ -50,6 +51,12 @@ from tenantchat.core.knowledge import (
     RetrievalAudience,
     RetrievalContext,
 )
+from tenantchat.core.metrics import (
+    MetricName,
+    MetricsReporter,
+    RetrievalVerdict,
+    Status,
+)
 from tenantchat.core.ports import (
     EvidenceBundle,
     EvidenceItem,
@@ -61,6 +68,10 @@ logger = logging.getLogger(__name__)
 
 class RetrievalEvidenceSource:
     """Serves one tenant's approved knowledge as evidence for one query.
+
+    ``metrics`` is the `OBS-002` retrieval recorder: latency, run status, the
+    abstention verdict, and the candidate count. ``None`` is a composition or
+    harness that observes nothing.
 
     Raises:
         EvidenceUnavailableError: the index or the embedding provider failed,
@@ -76,14 +87,49 @@ class RetrievalEvidenceSource:
         knowledge: KnowledgeStore,
         config: HybridRetrieverConfig,
         now: Callable[[], datetime] = utc_now,
+        metrics: MetricsReporter | None = None,
     ) -> None:
         self._index = index
         self._embedder = embedder
         self._knowledge = knowledge
         self._config = config
         self._now = now
+        self._metrics = metrics
+
+    def _record(
+        self, status: Status, verdict: RetrievalVerdict, started: float, candidates: int
+    ) -> None:
+        if self._metrics is None:
+            return
+        self._metrics.observe(
+            MetricName.RETRIEVAL_RUNS,
+            1,
+            labels={"status": status.value, "verdict": verdict.value},
+        )
+        self._metrics.observe(
+            MetricName.RETRIEVAL_LATENCY,
+            time.monotonic() - started,
+            labels={"status": status.value},
+        )
+        self._metrics.observe(MetricName.RETRIEVAL_CANDIDATES, float(candidates))
 
     async def retrieve(self, *, tenant_id: str, query: str) -> EvidenceBundle:
+        started = time.monotonic()
+        try:
+            bundle = await self._retrieve(tenant_id, query)
+        except EvidenceUnavailableError:
+            # A failed retrieval is the same verdict as no evidence: the graph
+            # treats both as insufficient, and the metric records them under
+            # the same bounded value.
+            self._record(Status.UNAVAILABLE, RetrievalVerdict.INSUFFICIENT, started, candidates=0)
+            raise
+        verdict = (
+            RetrievalVerdict.SUFFICIENT if bundle.sufficient else RetrievalVerdict.INSUFFICIENT
+        )
+        self._record(Status.OK, verdict, started, candidates=len(bundle.items))
+        return bundle
+
+    async def _retrieve(self, tenant_id: str, query: str) -> EvidenceBundle:
         try:
             pool = await self._index.active_chunks(tenant_id=tenant_id)
             ranked = await rank_chunks(

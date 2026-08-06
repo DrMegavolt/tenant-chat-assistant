@@ -42,6 +42,7 @@ from tenantchat.api.store import (
     LeadStore,
     WorkflowStore,
 )
+from tenantchat.core.metrics import MetricsReporter
 from tenantchat.core.ports import (
     AssistantTurn,
     AvailabilityProvider,
@@ -69,6 +70,7 @@ def build_dispatch_dependencies(
     workflows: WorkflowStore,
     availability: AvailabilityProvider | None = None,
     evidence: EvidenceSource | None = None,
+    metrics: MetricsReporter | None = None,
 ) -> DispatchDependencies:
     """Wrap this service's adapters in the ports the graph runs against.
 
@@ -80,19 +82,24 @@ def build_dispatch_dependencies(
     deployment without it answers as the pre-`RAG-005` graph did, with no
     abstention and no citations, so the feature adds risk only where it is
     composed in.
+
+    ``metrics`` is the `OBS-002` metrics port. ``None`` is a harness that
+    observes nothing; the production composition passes the Prometheus
+    adapter.
     """
     source = availability or DemoAvailabilityProvider(registry)
     return DispatchDependencies(
         model=model,
         policies=RegistryPolicySource(registry),
         availability=source,
-        bookings=RecordedBookingService(bookings, source, consent),
-        leads=RecordedLeadService(leads, idempotency, consent),
-        handoffs=RecordedHandoffService(handoffs, idempotency),
+        bookings=RecordedBookingService(bookings, source, consent, metrics=metrics),
+        leads=RecordedLeadService(leads, idempotency, consent, metrics=metrics),
+        handoffs=RecordedHandoffService(handoffs, idempotency, metrics=metrics),
         workflows=RecordedWorkflowService(workflows),
         routing=ROUTING_POLICY,
         agents=DEFAULT_AGENT_REGISTRY,
         evidence=evidence,
+        metrics=metrics,
     )
 
 
@@ -109,6 +116,7 @@ def build_dispatch_runtime(
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
     evidence: EvidenceSource | None = None,
+    metrics: MetricsReporter | None = None,
 ) -> DispatchRuntime:
     """Build the runtime one deployment will serve conversations from."""
     dependencies = build_dispatch_dependencies(
@@ -122,6 +130,7 @@ def build_dispatch_runtime(
         consent=consent,
         workflows=workflows,
         evidence=evidence,
+        metrics=metrics,
     )
     return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
 
@@ -194,6 +203,7 @@ def build_conversation_runtime(
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
     evidence: EvidenceSource | None = None,
+    metrics: MetricsReporter | None = None,
 ) -> GraphConversationRuntime:
     """Build the runtime the HTTP layer serves conversations from."""
     return GraphConversationRuntime(
@@ -209,5 +219,6 @@ def build_conversation_runtime(
             checkpointer=checkpointer,
             availability=availability,
             evidence=evidence,
+            metrics=metrics,
         )
     )

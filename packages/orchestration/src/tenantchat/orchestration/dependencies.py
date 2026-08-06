@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tenantchat.core.metrics import MetricsReporter
 from tenantchat.core.ports import (
     AvailabilityProvider,
     BookingService,
@@ -46,3 +47,8 @@ class DispatchDependencies:
     # exactly as before `RAG-005`, with no evidence, no abstention, and no
     # citations. A composition with a retrieval adapter never passes `None`.
     evidence: EvidenceSource | None = None
+    # `None` is a composition that observes nothing: unit-test harnesses omit
+    # it. Recording is an observation, not an effect — a replayed node re-observes
+    # the work it re-executed — which is why the exactly-once business counts
+    # are recorded by the idempotent services instead (`OBS-002`).
+    metrics: MetricsReporter | None = None

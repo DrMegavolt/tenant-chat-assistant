@@ -25,6 +25,7 @@ no transcript.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -43,6 +44,7 @@ from tenantchat.api.dependencies import (
     SearchIndexes,
     TurnRecords,
 )
+from tenantchat.api.metrics import METRICS
 from tenantchat.api.schemas import (
     BookingConfirmationRequest,
     ChatRequest,
@@ -60,6 +62,12 @@ from tenantchat.api.store import ConversationStore, MessageRole, TurnRecordStore
 from tenantchat.api.visitor import VisitorClock, VisitorIdentity, VisitorSigner, issue
 from tenantchat.core.errors import ConflictError, NotFoundError
 from tenantchat.core.knowledge import RetrievalAudience, RetrievalContext
+from tenantchat.core.metrics import (
+    CitationVerdict,
+    MetricName,
+    Operation,
+    TurnOutcome,
+)
 from tenantchat.core.ports import AssistantTurn
 from tenantchat.core.privacy import ConsentPurpose, consent_statement
 from tenantchat.core.visitor_session import VisitorCredentialSigner
@@ -67,6 +75,37 @@ from tenantchat.core.visitor_session import VisitorCredentialSigner
 router = APIRouter(tags=["chat"])
 
 logger = logging.getLogger(__name__)
+
+
+def _record_metrics(duration: float, turn: AssistantTurn) -> None:
+    """The operational metrics one completed or paused turn produced.
+
+    Latency, the outcome class, and the citation-validation verdicts only:
+    the answer and its content stay in the inference plane (`ADR-0010`). The
+    trace exemplar comes from the correlation context, so a spike drills
+    through to the one turn that caused it.
+    """
+    METRICS.observe(
+        MetricName.TURN_LATENCY,
+        duration,
+        labels={"operation": Operation.TURN.value},
+    )
+    if turn.is_paused:
+        METRICS.observe(
+            MetricName.TURN_OUTCOMES,
+            1,
+            labels={"outcome": TurnOutcome.PAUSED.value},
+        )
+    METRICS.observe(
+        MetricName.CITATION_VALIDATION,
+        float(len(turn.citations)),
+        labels={"verdict": CitationVerdict.VALID.value},
+    )
+    METRICS.observe(
+        MetricName.CITATION_VALIDATION,
+        float(len(turn.citation_invalid)),
+        labels={"verdict": CitationVerdict.INVALID.value},
+    )
 
 
 def _log_turn(turn: AssistantTurn) -> None:
@@ -315,7 +354,9 @@ async def send_message(
         content=payload.message,
     )
 
+    started = time.monotonic()
     turn = await runtime.send(tenant_id, str(session_id), payload.message)
+    _record_metrics(time.monotonic() - started, turn)
     await _record_answer(conversations, tenant_id, session_id, turn)
     await _record_turn(turn_records, tenant_id, session_id, turn)
     _log_turn(turn)
@@ -406,7 +447,9 @@ async def confirm_booking(
     if await runtime.pending(tenant_id, session_key) is None:
         raise ConflictError(detail=f"conversation {session_key} is awaiting no confirmation")
 
+    started = time.monotonic()
     turn = await runtime.resume(tenant_id, session_key, approved=payload.decision == "approved")
+    _record_metrics(time.monotonic() - started, turn)
     await _record_answer(conversations, tenant_id, session_id, turn)
     await _record_turn(turn_records, tenant_id, session_id, turn)
     _log_turn(turn)

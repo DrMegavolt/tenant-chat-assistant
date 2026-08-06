@@ -27,6 +27,9 @@ dependencies = [
     # for PDF and DOCX.
     "pypdf==6.14.2",
     "python-docx==1.2.0",
+    # OBS-002 metrics plane: the Prometheus adapter behind the core metrics
+    # port and the `/metrics` scrape endpoint.
+    "prometheus-client==0.21.1",
     "sqlalchemy==2.0.36",
     "uvicorn[standard]==0.34.0",
 ]
