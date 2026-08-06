@@ -52,10 +52,14 @@ AGENT_FRAMEWORK_IMPORTS: dict[str, str] = {
 # The composition root, and the only place in `services/api` that may name the
 # agent runtime. Adding an entry here is a design decision about the layer
 # boundary, which is why it is a list of files rather than a directory pattern.
+# `replay.py` earns its entry because a safe replay composes a stored turn
+# record with the current model and the current component versions — the same
+# wiring the root owns — and `FEAT-015` documents it as part of that boundary.
 COMPOSITION_ROOT: frozenset[str] = frozenset(
     {
         "tenantchat/api/app.py",
         "tenantchat/api/agent.py",
+        "tenantchat/api/replay.py",
     }
 )
 

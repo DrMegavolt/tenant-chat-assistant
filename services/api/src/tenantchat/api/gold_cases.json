@@ -1,0 +1,303 @@
+{
+  "cases": [
+    {
+      "case_id": "apex-hvac-hours",
+      "gold_chunks": [
+        {
+          "source_id": "apex-hvac-2",
+          "text": "Apex's business hours are Monday through Friday from 8:00 AM to 6:00 PM and Saturday from 9:00 AM to 2:00 PM. The office is closed on Sunday."
+        }
+      ],
+      "query": "What are Apex's business hours?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-hvac-serves-98103",
+      "gold_chunks": [
+        {
+          "source_id": "apex-hvac-1",
+          "text": "Apex Home Services serves Seattle ZIP codes 98101 through 98105. We do not serve addresses outside those ZIP codes, and we ask callers to confirm their ZIP before scheduling."
+        }
+      ],
+      "query": "Do you serve 98103?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-hvac-heating-repair",
+      "gold_chunks": [
+        {
+          "source_id": "apex-hvac-3",
+          "text": "Heating repair covers furnaces, heat pumps, and boilers. A technician diagnoses the unit on site and explains the repair options before any work begins."
+        },
+        {
+          "source_id": "apex-hvac-8",
+          "text": "Technicians carry proof of licensure and insurance. Carbon monoxide checks are included with every heating service visit."
+        }
+      ],
+      "query": "Can you repair my furnace heating unit?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-hvac-cost",
+      "gold_chunks": [
+        {
+          "source_id": "apex-hvac-5",
+          "text": "Apex does not publish prices for HVAC repair or any other service. A technician inspects the equipment and provides a written estimate that must be approved before work starts."
+        }
+      ],
+      "query": "How much is HVAC repair?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-hvac-warranty",
+      "gold_chunks": [
+        {
+          "source_id": "apex-hvac-6",
+          "text": "Repairs are covered by a one-year parts and labor warranty. Warranty service requires proof of the original appointment."
+        }
+      ],
+      "query": "Is my repair covered by a warranty?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-hvac-same-day",
+      "gold_chunks": [
+        {
+          "source_id": "apex-hvac-7",
+          "text": "Appointments can be booked for the morning or afternoon window on any business day. Same-day emergency calls are accepted until noon when a truck is available."
+        }
+      ],
+      "query": "Can you come out the same day for an AC emergency?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-electrical-panel",
+      "gold_chunks": [
+        {
+          "source_id": "apex-electrical-1",
+          "text": "Apex electricians handle wiring, panel upgrades, outlet and switch replacement, and lighting installation. Work is performed by licensed electricians."
+        },
+        {
+          "source_id": "apex-electrical-4",
+          "text": "Panel upgrades replace outdated service panels and are typically a multi-hour job requiring the utility to schedule an interruption."
+        }
+      ],
+      "query": "Do you upgrade electrical panels?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-electrical-permit",
+      "gold_chunks": [
+        {
+          "source_id": "apex-electrical-5",
+          "text": "Work passes inspection where the jurisdiction requires it. The permit process is handled by the technician and included in the quote."
+        }
+      ],
+      "query": "Who handles the permit for electrical work?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-plumbing-leak",
+      "gold_chunks": [
+        {
+          "source_id": "apex-plumbing-3",
+          "text": "A confirmed water leak is treated as urgent. The plumber isolates the supply, assesses the damage, and recommends repair or replacement."
+        },
+        {
+          "source_id": "apex-plumbing-1",
+          "text": "Plumbing services cover leak repair, drain cleaning, fixture replacement, and water heater work. Call before a leak becomes an emergency."
+        }
+      ],
+      "query": "There is a water leak in my kitchen, is that urgent?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-plumbing-water-heater",
+      "gold_chunks": [
+        {
+          "source_id": "apex-plumbing-5",
+          "text": "Water heater replacement includes removal of the old unit and installation of the new one. Tankless units require an electrical or gas assessment first."
+        }
+      ],
+      "query": "Do you replace tankless water heaters?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-outside-service-area",
+      "gold_chunks": [
+        {
+          "source_id": "apex-plumbing-2",
+          "text": "Plumbers from Apex serve Seattle ZIP codes 98101 through 98105 only. Bellevue and other Eastside cities are outside the service area."
+        }
+      ],
+      "query": "Can you send a plumber to Bellevue?",
+      "scenario": null,
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "apex-window-cross-tenant",
+      "gold_chunks": [],
+      "query": "Do you offer window washing?",
+      "scenario": "cross_tenant",
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "clearview-window-pricing",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-windows-1",
+          "text": "Window cleaning is $150 per hour with a two hour minimum. Exterior-only visits are priced the same; screens are cleaned at no extra charge."
+        }
+      ],
+      "query": "What does window cleaning cost?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-window-minimum",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-windows-6",
+          "text": "Residential visits are scheduled in two hour blocks. A two hour minimum applies to every booking."
+        },
+        {
+          "source_id": "clearview-windows-1",
+          "text": "Window cleaning is $150 per hour with a two hour minimum. Exterior-only visits are priced the same; screens are cleaned at no extra charge."
+        }
+      ],
+      "query": "Is there a minimum booking for window cleaning?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-window-screens",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-windows-4",
+          "text": "We clean interior and exterior glass where safe access allows, and we clean screens too, ending with a final inspection walk with the customer."
+        }
+      ],
+      "query": "Do you clean screens too?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-commercial-contract",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-windows-5",
+          "text": "Commercial contracts receive quarterly cleaning schedules and a dedicated account contact. Invoice terms are net 30 for approved accounts."
+        }
+      ],
+      "query": "Can a business get a quarterly cleaning contract?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-hvac-current-pricing",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-hvac-current-1",
+          "text": "The HVAC diagnostic visit is $120. Repair work is quoted after inspection; replacement of major equipment is always quoted separately."
+        },
+        {
+          "source_id": "clearview-hvac-current-3",
+          "text": "A diagnostic visit tests the system, reports the fault, and ends with a written repair estimate. The $120 fee is credited toward approved repairs."
+        }
+      ],
+      "query": "How much is the HVAC diagnostic at Clearview?",
+      "scenario": "stale",
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-hvac-care-plan",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-hvac-current-4",
+          "text": "The Care Plan covers two tune-ups per year and a 10 percent discount on repairs. Plans are billed annually."
+        }
+      ],
+      "query": "What does the Care Plan cover?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-hvac-emergency",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-hvac-current-6",
+          "text": "Loss of heating in winter or loss of cooling in a heat event is treated as an emergency and moved ahead of routine appointments."
+        }
+      ],
+      "query": "Is loss of heat in January an emergency?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-electrical-diagnostic",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-electrical-1",
+          "text": "The electrical diagnostic visit is $140. Panel work and rewiring are quoted after inspection."
+        }
+      ],
+      "query": "How much is an electrical diagnostic visit?",
+      "scenario": null,
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "clearview-window-fabricated",
+      "gold_chunks": [
+        {
+          "source_id": "clearview-windows-5",
+          "text": "Commercial contracts receive quarterly cleaning schedules and a dedicated account contact. Invoice terms are net 30 for approved accounts."
+        }
+      ],
+      "query": "Is there a discount for quarterly window cleaning?",
+      "scenario": "fabricated_citation",
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "apex-flood-restoration",
+      "gold_chunks": [],
+      "query": "Do you handle flood damage restoration?",
+      "scenario": "unsupported",
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "clearview-pest-control",
+      "gold_chunks": [],
+      "query": "Can you remove termites?",
+      "scenario": "unsupported",
+      "tenant_id": "clearview"
+    },
+    {
+      "case_id": "apex-snow-removal",
+      "gold_chunks": [],
+      "query": "Do you plow driveways in winter?",
+      "scenario": "unsupported",
+      "tenant_id": "apex"
+    },
+    {
+      "case_id": "clearview-roof-gutter",
+      "gold_chunks": [],
+      "query": "Can you clean my gutters and roof?",
+      "scenario": "unsupported",
+      "tenant_id": "clearview"
+    }
+  ],
+  "source": {
+    "cases": "evals/fixtures/cases.json",
+    "corpus": "evals/fixtures/corpus.json"
+  }
+}

@@ -10,13 +10,16 @@ mutations, audited like membership assignment and protected by the same
 double-submit token.
 
 The turn record itself is the envelope `OBS-004` will populate; this router is
-its governance surface, not its content model.
+its governance surface, not its content model. `FEAT-015` adds the explorer
+surface on top: the six Gate B filters, the audited single-read, safe replay,
+and the gold-evidence overlay.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -29,17 +32,24 @@ from tenantchat.api.dependencies import (
     TurnRecords,
     get_settings,
 )
+from tenantchat.api.faults import ChatUnavailableError
+from tenantchat.api.gold import load_gold_cases
 from tenantchat.api.identity import (
     AdminIdentity,
     require_role,
     require_trace_read,
     verify_csrf,
 )
+from tenantchat.api.replay import replay_turn
 from tenantchat.api.schemas import (
+    GoldCaseResponse,
+    GoldCasesResponse,
+    GoldEvidenceItem,
     TraceAccessesResponse,
     TraceAccessRequest,
     TraceAccessResponse,
     TraceReadResponse,
+    TraceReplayResponse,
     TraceSearchResponsePage,
 )
 from tenantchat.api.store import AuditActorType, AuditEvent
@@ -73,6 +83,16 @@ CauseQuery = Annotated[
         description="A Gate B diagnosis cause; only records carrying it match.",
     ),
 ]
+DiagnosisStatusQuery = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        description="A diagnosis status (detected, suspected, confirmed, "
+        "inconclusive); only records carrying it match.",
+    ),
+]
 OutcomeQuery = Annotated[
     str | None,
     Query(
@@ -80,6 +100,19 @@ OutcomeQuery = Annotated[
         max_length=32,
         pattern=r"^[a-z]+$",
         description="How the turn ended: answered, paused, escalated, abstained, clarified.",
+    ),
+]
+RecordedSinceQuery = Annotated[
+    datetime | None,
+    Query(
+        description="Only turns recorded at or after this instant, in the "
+        "`OBS-001` clock's timezone.",
+    ),
+]
+RecordedUntilQuery = Annotated[
+    datetime | None,
+    Query(
+        description="Only turns recorded at or before this instant.",
     ),
 ]
 TraceLimitQuery = Annotated[int, Query(ge=1, le=200)]
@@ -197,6 +230,59 @@ async def revoke_trace_access(
     )
 
 
+@router.get("/api/admin/traces/gold-cases", response_model=GoldCasesResponse)
+async def gold_cases(
+    identity: TraceReader,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    registry: Registry,
+    audit: Audit,
+    request_id: RequestId,
+) -> GoldCasesResponse:
+    """The reviewer-labelled gold evidence the explorer overlays on a turn.
+
+    Gold chunks are synthetic evaluation content, not visitor data, but they
+    are evidence-like text, so this surface sits under the same dedicated role
+    and audit rules as the inference plane itself: an operator who may not read
+    a turn may not read the passages a turn is graded against.
+
+    Registered before ``/api/admin/traces/{turn_id}``: the literal path would
+    otherwise be shadowed by the id route's single segment.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+    """
+    registry.get(tenant_id)
+    cases = tuple(case for case in load_gold_cases() if case.tenant_id == tenant_id)
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.gold_read",
+            resource_type="eval_case",
+            resource_id=None,
+            request_id=request_id,
+            details={"reason": reason.value, "matches": len(cases)},
+        )
+    )
+    return GoldCasesResponse(
+        cases=[
+            GoldCaseResponse(
+                case_id=case.case_id,
+                tenant_id=case.tenant_id,
+                scenario=case.scenario,
+                query=case.query,
+                gold_chunks=[
+                    GoldEvidenceItem(source_id=chunk.source_id, text=chunk.text)
+                    for chunk in case.gold_chunks
+                ],
+            )
+            for case in cases
+        ]
+    )
+
+
 @router.get(
     "/api/admin/traces/{turn_id}",
     response_model=TraceReadResponse,
@@ -252,14 +338,18 @@ async def search_turn_records(
     request_id: RequestId,
     manifest_hash: ManifestHashQuery = None,
     cause: CauseQuery = None,
+    diagnosis_status: DiagnosisStatusQuery = None,
     outcome: OutcomeQuery = None,
+    since: RecordedSinceQuery = None,
+    until: RecordedUntilQuery = None,
     limit: TraceLimitQuery = 50,
 ) -> TraceSearchResponsePage:
     """The `OBS-004` attribution surface: records matching content-free filters.
 
     Filters are the content-free projection only — component-manifest hash,
-    diagnosis cause, outcome — so an operator can ask "which build answered
-    these turns" or "which turns attributed a citation error" without the
+    diagnosis cause, diagnosis status, outcome, recorded time — so an operator
+    can ask "which build answered these turns", "which turns are merely
+    suspected of a citation error", or "what failed this morning" without the
     query touching the opaque content object. Every search is audited with
     the filter that ran, and results carry no content: the record itself is
     fetched through the single-read route.
@@ -272,7 +362,10 @@ async def search_turn_records(
         tenant_id,
         manifest_hash=manifest_hash,
         causes=(cause,) if cause else (),
+        statuses=(diagnosis_status,) if diagnosis_status else (),
         outcome=outcome,
+        since=since,
+        until=until,
         limit=limit,
     )
     await audit.record(
@@ -288,13 +381,79 @@ async def search_turn_records(
                 "reason": reason.value,
                 "manifest_hash": manifest_hash,
                 "cause": cause,
+                "diagnosis_status": diagnosis_status,
                 "outcome": outcome,
+                "since": since.isoformat() if since else None,
+                "until": until.isoformat() if until else None,
                 "limit": limit,
                 "matches": len(records),
             },
         )
     )
     return TraceSearchResponsePage.of(records)
+
+
+@router.post(
+    "/api/admin/traces/{turn_id}/replay",
+    response_model=TraceReplayResponse,
+)
+async def replay_turn_record(
+    identity: TraceReader,
+    turn_id: uuid.UUID,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+    request: Request,
+) -> TraceReplayResponse:
+    """One safe replay of one stored turn through the current model.
+
+    Replaying is a state-changing surface — it launches a model call — so it
+    carries the same double-submit token as every other admin mutation, on top
+    of the dedicated trace-read role (which reads the ``tenant_id`` query
+    parameter, like every other trace surface). The replay rebuilds the stored
+    prompt (`reconstruct_prompt`), re-hashes it against the stored content
+    hash, and sends it through the *current* model with no tools: no booking,
+    lead, or handoff can be touched. The audit row records the manifest
+    comparison, content-free, so "was this replayed against the same
+    components" is answerable without reading the output.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+        NotFoundError: no such turn record, or it belongs to another tenant.
+        ChatUnavailableError: this deployment composed no model to replay with.
+        TraceReplayError: the stored record names no reconstructible prompt.
+    """
+    registry.get(tenant_id)
+    verify_csrf(request, identity, get_settings(request))
+    record = await turns.get(tenant_id, turn_id)
+    model = request.app.state.chat_model
+    if model is None:
+        raise ChatUnavailableError
+    evidence = request.app.state.evidence_source
+    retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+    result = await replay_turn(record=record, model=model, retriever=retriever)
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.replay",
+            resource_type="turn_record",
+            resource_id=record.turn_id,
+            request_id=request_id,
+            details={
+                "reason": reason.value,
+                "manifest_changed": result.manifest_changed,
+                "changed_components": [
+                    component.name for component in result.components if component.changed
+                ],
+            },
+        )
+    )
+    return result
 
 
 @router.get("/api/admin/traces/by-trace-id/{trace_id}", response_model=TraceReadResponse)

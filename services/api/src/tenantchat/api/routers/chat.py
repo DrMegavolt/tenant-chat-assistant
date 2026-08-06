@@ -212,6 +212,13 @@ async def _record_turn(
         )
         if isinstance(diagnoses, list)
         else (),
+        diagnosis_statuses=tuple(
+            str(diagnosis.get("status", ""))
+            for diagnosis in diagnoses
+            if isinstance(diagnosis, dict) and diagnosis.get("status")
+        )
+        if isinstance(diagnoses, list)
+        else (),
         turn_index=(
             raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
         ),

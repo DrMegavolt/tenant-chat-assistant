@@ -1,0 +1,231 @@
+export const RECORD_WIRE = {
+  turn_id: "turn-1",
+  session_id: "session-1",
+  trace_id: "trace-gateb-8",
+  recorded_at: "2026-08-03T20:00:00+00:00",
+  outcome: "answered",
+  component_manifest_hash: "8".repeat(64),
+  diagnosis_causes: ["grounding_or_citation_error"],
+  diagnosis_statuses: ["detected"],
+  turn_index: 8,
+  trace_schema_version: "1"
+};
+
+export const SUSPECTED_RECORD_WIRE = {
+  ...RECORD_WIRE,
+  turn_id: "turn-2",
+  trace_id: "trace-gateb-7",
+  component_manifest_hash: "7".repeat(64),
+  diagnosis_causes: ["model_behavior"],
+  diagnosis_statuses: ["suspected"],
+  turn_index: 7
+};
+
+export const TRACE_READ_WIRE_CONTENT = {
+  schema_version: "1",
+  turn_index: 8,
+  manifest_hash: "8".repeat(64),
+  routing: {
+    rule: "answer",
+    intent: "general",
+    score: 4,
+    threshold: 2.5,
+    policy_version: "intent-routing@1",
+    candidates: [
+      { intent: "general", score: 4, matched_signals: ["discount"] },
+      { intent: "booking", score: 0, matched_signals: [] }
+    ]
+  },
+  retrieval: {
+    query: "Is there a discount for quarterly window cleaning?",
+    sufficient: true,
+    retriever_version: "v1",
+    reranker: "bigram-overlap",
+    min_evidence_score: 0.5,
+    embedding_model: "scripted-embedder.v1",
+    generation_id: "gen-1",
+    filters: { tenant_id: "clearview" },
+    budget: { max_sources: 3, max_context_tokens: 1500 },
+    parameters: {},
+    candidates: [
+      { source_id: "clearview-windows-5", score: 0.8, generation_id: "gen-1" },
+      { source_id: "clearview-windows-6", score: 0.4, generation_id: "gen-1" }
+    ],
+    evidence: [{ source_id: "clearview-windows-5", score: 0.8, generation_id: "gen-1" }]
+  },
+  prompt: {
+    template_ref: "dispatch-system@4",
+    content_hash: "deadbeef",
+    bindings: { business_name: "Clearview Property Care" },
+    excluded: [],
+    messages: [
+      {
+        role: "system",
+        segments: [["briefing", "trusted", "You are the Clearview assistant."]],
+        tool_calls: [],
+        tool_call_id: null
+      },
+      {
+        role: "user",
+        segments: [
+          ["visitor", "untrusted", "Is there a discount?"],
+          ["evidence-1", "untrusted", "Commercial contracts receive quarterly cleaning schedules."]
+        ],
+        tool_calls: [],
+        tool_call_id: null
+      }
+    ]
+  },
+  model: { name: "scripted", usage: {} },
+  output: {
+    answer: "Yes, quarterly plans save 20%.",
+    raw: "Yes, quarterly plans save 20%. [evidence:clearview-windows-99]",
+    claims: ["clearview-windows-99", "clearview-windows-5"]
+  },
+  verdicts: {
+    citations: [{ source_id: "clearview-windows-5", title: "Commercial contracts" }],
+    citation_invalid: ["clearview-windows-99"],
+    refused_tools: [],
+    claims_invalid: []
+  },
+  tools: {
+    tool_calls: [
+      { call_id: "call-1", name: "book_appointment", arguments: {} },
+      { call_id: "call-2", name: "create_lead", arguments: {} }
+    ],
+    tool_results: [
+      {
+        call_id: "call-1",
+        result: '{"error": "booking_already_proposed", "reference": "BK-1"}'
+      },
+      { call_id: "call-2", result: '{"lead_id": "lead-1"}' }
+    ],
+    committed: []
+  },
+  outcome: { status: "answered", rounds: 1, failure: null },
+  component_manifest: { graph: "dispatch@2" },
+  diagnoses: [
+    {
+      cause: "grounding_or_citation_error",
+      stage: "validation",
+      role: "primary",
+      status: "detected",
+      confidence: "high",
+      evidence: ["citation_invalid:clearview-windows-99"],
+      detector_version: "diagnosis@1"
+    }
+  ]
+};
+
+export const SUSPECTED_READ_WIRE_CONTENT = {
+  ...TRACE_READ_WIRE_CONTENT,
+  turn_index: 7,
+  manifest_hash: "7".repeat(64),
+  outcome: { status: "answered", rounds: 1, failure: "unresolved" },
+  diagnoses: [
+    {
+      cause: "model_behavior",
+      stage: "model",
+      role: "primary",
+      status: "suspected",
+      confidence: "medium",
+      evidence: ["outcome.failure:unresolved"],
+      detector_version: "diagnosis@1"
+    }
+  ]
+};
+
+export const PARTIAL_READ_WIRE_CONTENT = {
+  schema_version: "1",
+  turn_index: 3,
+  manifest_hash: "3".repeat(64),
+  retrieval: {
+    query: "What are your hours?",
+    sufficient: false,
+    retriever_version: "unavailable",
+    reranker: null,
+    min_evidence_score: null,
+    embedding_model: "",
+    generation_id: null,
+    filters: {},
+    budget: {},
+    parameters: {},
+    candidates: [],
+    evidence: []
+  },
+  model: { name: "", usage: {} },
+  output: { answer: "", raw: "", claims: [] },
+  verdicts: { citations: [], citation_invalid: [], refused_tools: [], claims_invalid: [] },
+  tools: { tool_calls: [], tool_results: [], committed: [] },
+  outcome: { status: "abstained", rounds: 0, failure: "insufficient_evidence" },
+  diagnoses: [
+    {
+      cause: "ingestion_or_index_error",
+      stage: "retrieval",
+      role: "primary",
+      status: "detected",
+      confidence: "high",
+      evidence: ["retrieval.retriever_version:unavailable"],
+      detector_version: "diagnosis@1"
+    }
+  ]
+};
+
+export function wireTraceContent(turnId: string, content: Record<string, unknown>) {
+  return {
+    turn_id: turnId,
+    tenant_id: "clearview",
+    session_id: "session-1",
+    trace_id:
+      turnId === "turn-2" ? "trace-gateb-7" : `trace-gateb-${turnId === "turn-3" ? "3" : "8"}`,
+    recorded_at: "2026-08-03T20:00:00+00:00",
+    content,
+    projections: []
+  };
+}
+
+export const GOLD_WIRE = {
+  cases: [
+    {
+      case_id: "clearview-window-fabricated",
+      tenant_id: "clearview",
+      scenario: "fabricated_citation",
+      query: "Is there a discount for quarterly window cleaning?",
+      gold_chunks: [
+        {
+          source_id: "clearview-windows-5",
+          text: "Commercial contracts receive quarterly cleaning schedules and a dedicated account contact."
+        }
+      ]
+    }
+  ]
+};
+
+export const REPLAY_WIRE = {
+  turn_id: "turn-1",
+  recorded_at: "2026-08-03T20:00:00+00:00",
+  manifest_hash: "8".repeat(64),
+  current_manifest_hash: "c".repeat(64),
+  manifest_changed: true,
+  stochastic: true,
+  components: [
+    { name: "graph", stored: "dispatch@2", current: "dispatch@2", changed: false },
+    {
+      name: "prompt_template",
+      stored: '"dispatch-system@3"',
+      current: '"dispatch-system@4"',
+      changed: true
+    },
+    { name: "model", stored: '"scripted"', current: '"gpt-9"', changed: true }
+  ],
+  original: {
+    content_hash: "hash-original",
+    model_name: "scripted",
+    output_raw: "Yes, quarterly plans save 20%. [evidence:clearview-windows-99]"
+  },
+  replayed: {
+    content_hash: "hash-replayed",
+    model_name: "gpt-9",
+    output_raw: "Replayed trial output."
+  }
+};

@@ -417,7 +417,10 @@ def test_search_is_gated_by_the_dedicated_role_and_audited_with_its_filters(
         "reason": READ_REASON,
         "manifest_hash": None,
         "cause": None,
+        "diagnosis_status": None,
         "outcome": "answered",
+        "since": None,
+        "until": None,
         "limit": 10,
         "matches": 1,
     }

@@ -155,6 +155,19 @@ class NotFoundError(DomainError):
     message = "That record was not found."
 
 
+class TraceReplayError(DomainError):
+    """A turn record cannot be replayed: it names no reconstructible prompt.
+
+    The record exists and is readable; only the replay step is impossible,
+    because the stored prompt section is absent or malformed. ``detail`` names
+    the field that failed so the operator log can be specific without the
+    published message disclosing any content.
+    """
+
+    code = "trace_replay_error"
+    message = "This turn record cannot be replayed."
+
+
 class InvalidVisitorCredentialError(DomainError):
     """A presented visitor credential is not one this server issued.
 
