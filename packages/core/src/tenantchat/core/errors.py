@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from tenantchat.core.fields import RequiredField
 from tenantchat.core.lifecycle import VersionState
+from tenantchat.core.safety import SafetyState
 
 if TYPE_CHECKING:
     from tenantchat.core.workflows import WorkflowStatus, WorkflowTransition
@@ -217,8 +218,8 @@ class InvalidVersionTransitionError(ConflictError):
     def __init__(
         self,
         *,
-        current: VersionState,
-        permitted: tuple[VersionState, ...],
+        current: VersionState | SafetyState,
+        permitted: tuple[VersionState | SafetyState, ...],
         detail: str | None = None,
     ) -> None:
         if not permitted:

@@ -24,6 +24,12 @@ from tenantchat.api.parsing.chunker import (
     chunk_document,
     chunk_text,
 )
+from tenantchat.api.parsing.injection import (
+    ContentSafetyReport,
+    InjectionSignal,
+    content_fingerprint,
+    scan_for_injection,
+)
 from tenantchat.api.parsing.locations import Chunk, ChunkLocation, ParsedDocument, SourceBlock
 from tenantchat.api.parsing.scan import MAX_DOCUMENT_BYTES, scan_bytes, scan_text
 from tenantchat.api.parsing.tokens import (
@@ -47,17 +53,21 @@ __all__ = [
     "TOKEN_PROFILES",
     "Chunk",
     "ChunkLocation",
+    "ContentSafetyReport",
+    "InjectionSignal",
     "ParsedDocument",
     "SourceBlock",
     "TokenProfile",
     "chunk_document",
     "chunk_text",
+    "content_fingerprint",
     "count_tokens",
     "normalize_media_type",
     "parse_document",
     "parser_version_for",
     "profile_for",
     "scan_bytes",
+    "scan_for_injection",
     "scan_text",
 ]
 

@@ -1004,3 +1004,62 @@ class IndexFindingSummary(BaseModel):
 class IndexFindingsResponse(BaseModel):
     findings: list[IndexFindingSummary]
     limit: int
+
+
+class QuarantinedVersionSummary(BaseModel):
+    """One quarantined version awaiting review, content-free by construction.
+
+    Identifiers and states only: the text that triggered the quarantine lives
+    in object storage, never on this surface.
+    """
+
+    version_id: uuid.UUID
+    document_id: uuid.UUID
+    source_id: uuid.UUID
+    source_name: str
+    external_key: str
+    title: str
+    revision: int
+    state: str
+    visibility: str
+
+    @classmethod
+    def of(cls, document: KnowledgeDocument, version: DocumentVersion) -> QuarantinedVersionSummary:
+        return cls(
+            version_id=version.version_id,
+            document_id=document.document_id,
+            source_id=document.source.source_id,
+            source_name=document.source.display_name,
+            external_key=document.external_key,
+            title=document.title,
+            revision=version.revision,
+            state=version.state.value,
+            visibility=version.visibility.value,
+        )
+
+
+class QuarantineListResponse(BaseModel):
+    versions: list[QuarantinedVersionSummary]
+    limit: int
+
+
+class QuarantineReviewRequest(BaseModel):
+    approved: bool
+    reviewed_by: str = Field(min_length=1, max_length=120)
+    model_config = ConfigDict(extra="forbid")
+
+
+class QuarantineReviewResponse(BaseModel):
+    version_id: uuid.UUID
+    document_id: uuid.UUID
+    state: str
+    safety_state: str
+
+    @classmethod
+    def of(cls, document: KnowledgeDocument, version: DocumentVersion) -> QuarantineReviewResponse:
+        return cls(
+            version_id=version.version_id,
+            document_id=document.document_id,
+            state=version.state.value,
+            safety_state=version.safety_state.value,
+        )

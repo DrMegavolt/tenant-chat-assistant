@@ -43,6 +43,7 @@ from tenantchat.api.store import (
     InMemoryWorkflowStore,
     WorkflowStore,
 )
+from tenantchat.core.ports import EvidenceSource
 from tenantchat.core.privacy import ConsentGrant, ConsentPurpose
 from tenantchat.orchestration.checkpoints import Checkpointer, InMemorySaver
 from tenantchat.orchestration.dependencies import DispatchDependencies
@@ -230,6 +231,7 @@ def build_harness(
     idempotency: InMemoryIdempotencyStore | None = None,
     consent: ConsentStore | None = None,
     workflows: WorkflowStore | None = None,
+    evidence: EvidenceSource | None = None,
 ) -> RuntimeHarness:
     """Compose a runtime over in-memory adapters."""
     model = ScriptedModel(script=list(script))
@@ -250,6 +252,7 @@ def build_harness(
         "idempotency": key_store,
         "consent": consent_store,
         "workflows": workflow_store,
+        "evidence": evidence,
     }
     runtime = build_dispatch_runtime(**adapters, checkpointer=saver)
     return RuntimeHarness(

@@ -43,6 +43,7 @@ from tenantchat.api.parsing import (
     ParsedDocument,
     chunk_document,
     parse_document,
+    scan_for_injection,
 )
 from tenantchat.api.search import (
     Embedder,
@@ -52,7 +53,7 @@ from tenantchat.api.search import (
     SearchIndexOperationError,
 )
 from tenantchat.api.storage import ObjectStore, StorageKey
-from tenantchat.api.store import KnowledgeStore
+from tenantchat.api.store import AuditActorType, AuditEvent, AuditStore, KnowledgeStore
 from tenantchat.core.errors import NotFoundError, ValidationError
 from tenantchat.core.indexing import GenerationStatus, IndexGeneration
 from tenantchat.core.knowledge import DocumentVersion, KnowledgeDocument
@@ -126,12 +127,14 @@ class IngestionDependencies:
         storage: ObjectStore,
         index: SearchIndex,
         embedder: Embedder,
+        audit: AuditStore,
     ) -> None:
         self.knowledge = knowledge
         self.generations = generations
         self.storage = storage
         self.index = index
         self.embedder = embedder
+        self.audit = audit
 
 
 def ingestion_handler(dependencies: IngestionDependencies) -> JobHandler:
@@ -228,6 +231,33 @@ async def _run_generation(
 
         content = await dependencies.storage.read(StorageKey.parse(version.storage_key))
         parsed = parse_document(content, media_type=version.media_type, title=document.title)
+        report = scan_for_injection("\n".join(block.text for block in parsed.blocks))
+        if report.flagged:
+            # A suspicious document is quarantined, never indexed and never
+            # rejected outright: a human review decides, and until then the
+            # version is unretrievable for every audience. The audit record
+            # carries only the signal kinds and the content fingerprint —
+            # never the text that triggered it.
+            await dependencies.knowledge.quarantine(
+                tenant_id, version.version_id, at=datetime.now(UTC)
+            )
+            await dependencies.audit.record(
+                AuditEvent(
+                    tenant_id=tenant_id,
+                    actor_type=AuditActorType.SYSTEM,
+                    principal_id=None,
+                    action="knowledge.quarantine",
+                    resource_type="knowledge_version",
+                    resource_id=version.version_id,
+                    request_id=None,
+                    details={
+                        "document_id": str(version.document_id),
+                        "signals": [signal.value for signal in report.signals],
+                        "content_sha256": report.fingerprint,
+                    },
+                )
+            )
+            raise JobExecutionError("ingestion_content_quarantined", retryable=False)
         chunks = chunk_document(parsed, chunk_tokens=CHUNK_TOKENS, overlap_tokens=CHUNK_OVERLAP)
         # The generation row records the parser that actually ran and the chunk
         # count *before* indexing starts, so a partial write is measurable

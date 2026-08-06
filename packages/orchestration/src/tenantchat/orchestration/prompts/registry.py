@@ -61,6 +61,11 @@ class TemplateVersion:
     segments: tuple[TemplateSegment, ...]
     schema: BindingSchema
     bindings: Bindings
+    # Trusted segments rendered after the untrusted evidence, as the last
+    # content of the system message (`RAG-007`): the final instruction the
+    # model reads before the transcript is the one that says how to treat
+    # everything above it.
+    trailing_segments: tuple[TemplateSegment, ...] = ()
 
     def __post_init__(self) -> None:
         if not _TEMPLATE_ID_RE.match(self.template_id):
@@ -70,7 +75,7 @@ class TemplateVersion:
         if not self.description.strip():
             raise TemplateRegistryError("template description is blank")
         seen: set[str] = set()
-        for segment in self.segments:
+        for segment in (*self.segments, *self.trailing_segments):
             if segment.segment_id in seen:
                 raise TemplateRegistryError(
                     f"duplicate segment id {segment.segment_id!r} in {self.template_id}"

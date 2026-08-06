@@ -24,10 +24,10 @@ from tenantchat.api.retrieval import (
     RetrievalFilters,
     chunk_is_retrievable,
     lexical_overlap,
-    query_words,
     rank_chunks,
 )
 from tenantchat.api.search import ScriptedEmbedder
+from tenantchat.core.text import query_words
 
 
 @dataclass(frozen=True, slots=True)

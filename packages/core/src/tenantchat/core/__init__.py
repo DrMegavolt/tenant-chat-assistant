@@ -7,6 +7,14 @@ model SDK. See ``packages/core/pyproject.toml`` for why, and
 
 from tenantchat.core.catalog import ServiceCatalog, ServiceDefinition, normalize_term
 from tenantchat.core.citations import Citation
+from tenantchat.core.claims import (
+    Claim,
+    ClaimKind,
+    ClaimValidation,
+    ClaimVerdict,
+    sensitive_claims,
+    validate_sensitive_claims,
+)
 from tenantchat.core.commands import (
     BookingCommand,
     HandoffCommand,
@@ -33,6 +41,11 @@ from tenantchat.core.errors import (
     ValidationError,
 )
 from tenantchat.core.fields import RequiredField
+from tenantchat.core.guards import (
+    ToolPermissionVerdict,
+    ToolRefusal,
+    tool_permission,
+)
 from tenantchat.core.indexing import (
     INDEX_LAG_THRESHOLD,
     GenerationStatus,
@@ -74,6 +87,7 @@ from tenantchat.core.ports import (
     LeadService,
     TenantPolicySource,
 )
+from tenantchat.core.safety import QuarantineReviewPlan, SafetyState
 from tenantchat.core.slots import OfferedSlot
 from tenantchat.core.tenant import PricingPolicy, PublicTenantView, TenantPolicy
 from tenantchat.core.visitor_session import (
@@ -93,6 +107,10 @@ __all__ = [
     "BookingNotPermittedError",
     "BookingService",
     "Citation",
+    "Claim",
+    "ClaimKind",
+    "ClaimValidation",
+    "ClaimVerdict",
     "CommittedEffect",
     "ConflictError",
     "Contact",
@@ -138,15 +156,19 @@ __all__ = [
     "PublicDocumentView",
     "PublicTenantView",
     "PublicationPlan",
+    "QuarantineReviewPlan",
     "RequiredField",
     "RetrievalAudience",
     "RetrievalContext",
+    "SafetyState",
     "ServiceCatalog",
     "ServiceDefinition",
     "SlotUnavailableError",
     "SourceKind",
     "TenantPolicy",
     "TenantPolicySource",
+    "ToolPermissionVerdict",
+    "ToolRefusal",
     "UnknownServiceError",
     "ValidationError",
     "VersionState",
@@ -155,4 +177,7 @@ __all__ = [
     "VisitorCredentialSigner",
     "VisitorSessionClaims",
     "normalize_term",
+    "sensitive_claims",
+    "tool_permission",
+    "validate_sensitive_claims",
 ]

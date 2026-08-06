@@ -22,7 +22,7 @@ from tenantchat.api.persistence import (
     PostgresKnowledgeStore,
 )
 from tenantchat.api.registry import TenantRegistry
-from tenantchat.core.errors import InvalidVersionTransitionError, NotFoundError
+from tenantchat.core.errors import ConflictError, InvalidVersionTransitionError, NotFoundError
 from tenantchat.core.knowledge import (
     ContentChecksum,
     DocumentVersion,
@@ -34,6 +34,7 @@ from tenantchat.core.knowledge import (
     Visibility,
 )
 from tenantchat.core.lifecycle import IndexingState, VersionState
+from tenantchat.core.safety import SafetyState
 
 TEST_POOL = DatabasePoolSettings(size=2, max_overflow=1, timeout_seconds=5)
 FINANCING = KnowledgeDomain.parse("financing")
@@ -464,6 +465,11 @@ def test_the_stored_filter_agrees_with_the_domain_predicate(
         await make_current(store, hidden)
         document_ids.append(hidden.document_id)
 
+        _, quarantined = await stage(store, external_key="flagged.md", content=b"flagged")
+        await make_current(store, quarantined)
+        await store.quarantine(TENANT, quarantined.version_id, at=NOW)
+        document_ids.append(quarantined.document_id)
+
         context = visitor(NOW + timedelta(days=1))
         documents = [await store.load_document(TENANT, item) for item in document_ids]
         expected = {
@@ -475,6 +481,143 @@ def test_the_stored_filter_agrees_with_the_domain_predicate(
 
         assert stored == expected
         assert expected == {retrievable.version_id}
+
+    run(repository_database_url, scenario)
+
+
+@pytest.mark.integration
+def test_quarantine_withdraws_a_version_for_every_audience_without_touching_lifecycle(
+    repository_database_url: str,
+) -> None:
+    """Quarantine is a safety flag, not a state transition (`RAG-007`).
+
+    The version stays published — clearing it is a review decision, and the
+    row must survive re-publishing — but the retrieval filter drops it for
+    every audience, and the indexing state is reset so the flagged bytes have
+    to be re-scanned and re-embedded before they can answer again.
+    """
+
+    async def scenario(store: PostgresKnowledgeStore) -> None:
+        _, version = await stage(store)
+        await make_current(store, version)
+
+        document = await store.quarantine(TENANT, version.version_id, at=NOW)
+        held = document.version(version.version_id)
+        assert held.safety_state is SafetyState.QUARANTINED
+        assert held.state is VersionState.PUBLISHED
+        assert held.indexing_state is IndexingState.PENDING
+
+        staff = RetrievalContext(
+            tenant_id=TENANT, domain=FINANCING, audience=RetrievalAudience.STAFF, moment=NOW
+        )
+        assert not await store.retrievable_versions(visitor())
+        assert not await store.retrievable_versions(staff)
+
+        # Idempotent: re-flagging an already-quarantined version changes nothing.
+        await store.quarantine(TENANT, version.version_id, at=NOW)
+
+    run(repository_database_url, scenario)
+
+
+@pytest.mark.integration
+def test_approved_review_clears_the_flag_but_only_reindexing_restores_retrieval(
+    repository_database_url: str,
+) -> None:
+    """Approval is permission to re-embed, not a pass for the old chunks.
+
+    If clearing the flag made the version retrievable from the index it was
+    written to, the reviewed-byte contract in the domain plan would be a
+    comment instead of a rule: the flagged content must not answer again
+    until a successful re-ingestion replaces it.
+    """
+
+    async def scenario(store: PostgresKnowledgeStore) -> None:
+        _, version = await stage(store)
+        await make_current(store, version)
+        await store.quarantine(TENANT, version.version_id, at=NOW)
+
+        document = await store.quarantine_review(
+            TENANT, version.version_id, approved=True, reviewed_by="reviewer@example", at=NOW
+        )
+        held = document.version(version.version_id)
+        assert held.safety_state is SafetyState.CLEAR
+        assert held.indexing_state is IndexingState.PENDING
+        assert not await store.retrievable_versions(visitor())
+
+        # A successful re-ingestion is what makes the version answerable again.
+        await store.record_indexed(TENANT, version.version_id, at=NOW)
+        assert [item.version_id for item in await store.retrievable_versions(visitor())] == [
+            version.version_id
+        ]
+
+    run(repository_database_url, scenario)
+
+
+@pytest.mark.integration
+def test_rejected_review_keeps_the_version_quarantined_forever(
+    repository_database_url: str,
+) -> None:
+    async def scenario(store: PostgresKnowledgeStore) -> None:
+        _, version = await stage(store)
+        await make_current(store, version)
+        await store.quarantine(TENANT, version.version_id, at=NOW)
+
+        document = await store.quarantine_review(
+            TENANT, version.version_id, approved=False, reviewed_by="reviewer@example", at=NOW
+        )
+        held = document.version(version.version_id)
+        assert held.safety_state is SafetyState.QUARANTINED
+        assert not await store.retrievable_versions(visitor())
+
+        # Even a re-index cannot make it retrievable: rejection is terminal.
+        await store.record_indexed(TENANT, version.version_id, at=NOW)
+        assert not await store.retrievable_versions(visitor())
+
+    run(repository_database_url, scenario)
+
+
+@pytest.mark.integration
+def test_reviewing_a_clear_version_is_refused(repository_database_url: str) -> None:
+    async def scenario(store: PostgresKnowledgeStore) -> None:
+        _, version = await stage(store)
+        await make_current(store, version)
+        with pytest.raises(InvalidVersionTransitionError):
+            await store.quarantine_review(
+                TENANT, version.version_id, approved=True, reviewed_by="reviewer@example", at=NOW
+            )
+
+    run(repository_database_url, scenario)
+
+
+@pytest.mark.integration
+def test_a_draft_cannot_be_quarantined(repository_database_url: str) -> None:
+    """Quarantine before review is meaningless: only reviewed content is scanned."""
+
+    async def scenario(store: PostgresKnowledgeStore) -> None:
+        _, version = await stage(store)
+        with pytest.raises(ConflictError):
+            await store.quarantine(TENANT, version.version_id, at=NOW)
+
+    run(repository_database_url, scenario)
+
+
+@pytest.mark.integration
+def test_versions_in_safety_state_is_tenant_qualified(
+    repository_database_url: str,
+) -> None:
+    async def scenario(store: PostgresKnowledgeStore) -> None:
+        _, version = await stage(store)
+        await make_current(store, version)
+        await store.quarantine(TENANT, version.version_id, at=NOW)
+
+        _, other = await stage(
+            store, tenant_id=OTHER_TENANT, external_key="apex-terms.md", content=b"apex"
+        )
+        await make_current(store, other, tenant_id=OTHER_TENANT)
+
+        quarantined = await store.versions_in_safety_state(TENANT, SafetyState.QUARANTINED)
+        assert [item.version_id for item in quarantined] == [version.version_id]
+        assert await store.versions_in_safety_state(OTHER_TENANT, SafetyState.QUARANTINED) == ()
 
     run(repository_database_url, scenario)
 

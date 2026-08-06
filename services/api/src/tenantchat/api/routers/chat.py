@@ -126,9 +126,10 @@ def _turn_record_content(turn: AssistantTurn) -> dict[str, object]:
     """The inference-plane envelope for one completed turn (`RAG-005`).
 
     Everything here is content or content metadata and belongs to the trace
-    plane: the verified citations, the invalid-citation verdicts, and the
-    retrieval that ran. The public response curates from :attr:`AssistantTurn.citations`
-    and never sees the verdicts.
+    plane: the verified citations, the invalid-citation verdicts, the `RAG-007`
+    enforcement records (refused tool codes and unsupported claims, kind and
+    value only), and the retrieval that ran. The public response curates from
+    :attr:`AssistantTurn.citations` and never sees the verdicts.
     """
     return {
         "prompt_version": turn.prompt_version,
@@ -146,6 +147,8 @@ def _turn_record_content(turn: AssistantTurn) -> dict[str, object]:
             for citation in turn.citations
         ],
         "citation_invalid": list(turn.citation_invalid),
+        "refused_tools": list(turn.refused_tools),
+        "claims_invalid": [list(claim) for claim in turn.claims_invalid],
         "retrieval": dict(turn.retrieval) if turn.retrieval is not None else None,
     }
 

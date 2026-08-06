@@ -81,7 +81,9 @@ def test_evidence_is_marked_untrusted_and_visible_on_the_assembled_type() -> Non
         segment for segment in system.segments if segment.segment_id == "evidence:doc-1"
     )
     assert evidence_segment.region is PromptRegion.UNTRUSTED
-    assert evidence_segment.text == "HVAC Policy\nWe fix HVAC."
+    assert evidence_segment.text == (
+        '<evidence source_id="doc-1">\nHVAC Policy\nWe fix HVAC.\n</evidence>'
+    )
     assert evidence_segment.region.value == "untrusted"
 
 
@@ -105,22 +107,27 @@ def test_an_injection_attempt_through_evidence_stays_inside_an_untrusted_segment
         "policy",
         "approved_prices",
         "citation_policy",
+        "boundaries",
+        "system_reminder",
     ]
     assert len(untrusted) == 1
     assert hostile in untrusted[0].text
     assert all(hostile not in segment.text for segment in trusted)
+    # The trailing system reminder closes the system message: the instruction
+    # about untrusted content always follows the content it governs.
+    assert system.segments[-1].segment_id == "system_reminder"
 
 
 def test_evidence_is_rendered_after_the_trusted_template() -> None:
     outcome = assemble(evidence=(PromptEvidence(source_id="doc-1", title="T", content="c"),))
     system = outcome.prompt.messages[0]
+    ids = [segment.segment_id for segment in system.segments]
 
-    last_trusted = max(
-        index
-        for index, segment in enumerate(system.segments)
-        if segment.region is PromptRegion.TRUSTED
-    )
-    assert system.segments[last_trusted + 1].segment_id == "evidence:doc-1"
+    # Evidence sits between the template's own segments (including the
+    # boundary rules) and the trailing system reminder, which is the last
+    # content of the system message.
+    assert ids.index("boundaries") < ids.index("evidence:doc-1") < ids.index("system_reminder")
+    assert ids[-1] == "system_reminder"
 
 
 def test_history_keeps_chronological_order_and_marks_visitor_turns_untrusted() -> None:
@@ -156,7 +163,7 @@ def test_the_resolved_bindings_and_hash_ride_on_the_assembled_prompt() -> None:
     outcome = assemble()
 
     assert outcome.prompt.template_id == "dispatch-system"
-    assert outcome.prompt.template_version == 3
+    assert outcome.prompt.template_version == 4
     assert outcome.prompt.bindings["phone"] == "(555) 816-4420"
     assert len(outcome.prompt.content_hash) == 64
 
@@ -217,7 +224,7 @@ def test_evidence_beyond_the_token_budget_is_excluded_with_a_record() -> None:
         budget=PromptBudget(max_evidence_tokens=100),
     )
 
-    assert outcome.prompt.messages[0].segments[-1].segment_id == "citation_policy"
+    assert outcome.prompt.messages[0].segments[-1].segment_id == "system_reminder"
     assert outcome.excluded[0].reason is ExcludedReason.EVIDENCE_BUDGET
 
 
@@ -254,7 +261,7 @@ def test_excluded_history_is_reported_even_when_the_total_budget_binds() -> None
         HistoryTurn(role=MessageRole.USER, content="x" * 4000),  # ~1000 tokens
         HistoryTurn(role=MessageRole.USER, content="current question"),
     )
-    outcome = assemble(history=history, budget=PromptBudget(max_total_tokens=500))
+    outcome = assemble(history=history, budget=PromptBudget(max_total_tokens=800))
 
     assert outcome.excluded
     assert all(item.reason is ExcludedReason.TOTAL_BUDGET for item in outcome.excluded)

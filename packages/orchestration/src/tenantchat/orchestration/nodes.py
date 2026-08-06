@@ -34,6 +34,7 @@ from typing import Any, Final
 
 from langgraph.types import interrupt
 
+from tenantchat.core.claims import ClaimVerdict, validate_sensitive_claims
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import (
     BookingNotPermittedError,
@@ -43,6 +44,7 @@ from tenantchat.core.errors import (
     UnknownServiceError,
     ValidationError,
 )
+from tenantchat.core.guards import tool_permission
 from tenantchat.core.ports import (
     EvidenceBundle,
     EvidenceItem,
@@ -148,6 +150,19 @@ def _abstention_reply(policy: TenantPolicy) -> str:
     return (
         "I do not have approved material to answer that yet, so I will not "
         f"guess. Ask me about hours, services, or pricing — or call {policy.phone}."
+    )
+
+
+def _claim_refusal_reply(policy: TenantPolicy) -> str:
+    """The deterministic refusal when an answer's sensitive claims are unsupported.
+
+    Like :func:`_abstention_reply`, server-written: the claim validator just
+    proved the model's answer asserted something its own context cannot
+    support, so the model's phrasing must not be republished in any form.
+    """
+    return (
+        "I cannot confirm some of the details in what I was about to say, so I "
+        f"will not say it. The team can confirm it — call {policy.phone}."
     )
 
 
@@ -608,9 +623,12 @@ class DispatchNodes:
         refusal for the rest, instead of a second call that silently never
         receives a result.
 
-        The allowlist is enforced here, deterministically: a call to a tool the
-        routed agent may not use is answered with a refusal and never executed,
-        and the refusal names the allowed set so the model can recover.
+        Execution is gated twice, both out of band from any prompt text
+        (`RAG-007`): the tenant's server-owned policy (a booking-disabled
+        tenant refuses the booking tools no matter what the model or an
+        injected document says) and the routed agent's allowlist. A refused
+        call is answered with a refusal payload and never executed, and the
+        refusal code is recorded on the turn so enforcement is attributable.
         """
         policy = await self._deps.policies.policy(state["tenant_id"])
         pending = state["pending_booking"]
@@ -620,6 +638,7 @@ class DispatchNodes:
         committed: list[CommittedAction] = []
         results: list[ToolResult] = []
         fields: dict[str, str] = {}
+        refused: list[str] = []
         completed_lead = False
 
         for call in unanswered_tool_calls(state):
@@ -631,17 +650,27 @@ class DispatchNodes:
                     tool_entry(call["call_id"], _payload(error="unknown_tool", name=call["name"]))
                 )
                 continue
-            if agent is None or tool not in agent.tools:
+            verdict = tool_permission(
+                call["name"],
+                allowed_tools=agent.tool_names if agent is not None else (),
+                policy=policy,
+            )
+            if not verdict.permitted:
+                refused.append(verdict.refusal_code or "tool_refused")
                 entries.append(
                     tool_entry(
                         call["call_id"],
                         _payload(
-                            error="tool_not_allowed",
+                            error=verdict.refusal_code or "tool_refused",
                             name=call["name"],
                             allowed_tools=list(agent.tool_names) if agent is not None else [],
                         ),
                     )
                 )
+                continue
+            if agent is None:
+                # An agent-less composition gets an empty allowlist, so the
+                # guard refused every tool above; nothing can reach here.
                 continue
             content, action = await self._run_one(state, policy, call)
             entries.append(tool_entry(call["call_id"], content))
@@ -652,7 +681,11 @@ class DispatchNodes:
                 if action["action"] == ToolName.CREATE_LEAD.value:
                     completed_lead = True
 
-        update: dict[str, Any] = {"transcript": entries, "committed": committed}
+        update: dict[str, Any] = {
+            "transcript": entries,
+            "committed": committed,
+            "refused_tools": refused,
+        }
         if agent is not None and agent.workflow and state["workflow_id"]:
             merged = await self._deps.workflows.update(
                 tenant_id=state["tenant_id"],
@@ -693,9 +726,14 @@ class DispatchNodes:
         try:
             command = await self._parse_booking(state, arguments=_arguments(pending))
         except DomainError as error:
+            # The booking path never passes through the tools node, so the
+            # permission guard cannot record its refusals; the domain's refusal
+            # is the same enforcement event and belongs in the same record
+            # (`RAG-007`).
             return {
                 "transcript": [tool_entry(pending["call_id"], _error_payload(error))],
                 "pending_booking": None,
+                "refused_tools": [error.code],
             }
 
         confirmation = {
@@ -963,11 +1001,38 @@ class DispatchNodes:
         is dropped from what is published and reported as an invalid citation
         for the inference plane. Markers are stripped from the answer either
         way, so the widget never renders a dangling reference.
+
+        Sensitive claims are validated deterministically (`RAG-007`): every
+        dollar amount must appear in the admitted evidence or the tenant's
+        approved prices, and every coverage/permit/insurance sentence must be
+        substantially supported by an admitted passage. An answer that fails is
+        refused whole — the model's prose is replaced with a server-written
+        reply and the failing claims are recorded by kind and value only.
         """
         for entry in reversed(state["transcript"]):
             if entry["role"] == "user":
                 break
             if entry["role"] == "assistant" and entry["content"].strip():
+                policy = await self._deps.policies.policy(state["tenant_id"])
+                validation = validate_sensitive_claims(
+                    entry["content"],
+                    evidence_texts=[str(item["content"]) for item in state["evidence"]],
+                    trusted_prices=[
+                        price
+                        for price in (policy.price_for(slug) for slug, _ in policy.approved_prices)
+                        if price is not None
+                    ],
+                )
+                if validation.verdict is ClaimVerdict.UNSUPPORTED:
+                    return {
+                        "answer": _claim_refusal_reply(policy),
+                        "citations": [],
+                        "citation_invalid": [],
+                        "claims_invalid": [
+                            {"kind": claim.kind.value, "value": claim.value}
+                            for claim in validation.unsupported
+                        ],
+                    }
                 found = citation_ids(entry["content"])
                 context = frozenset(state["evidence_ids"])
                 by_id = {str(item["source_id"]): item for item in state["evidence"]}

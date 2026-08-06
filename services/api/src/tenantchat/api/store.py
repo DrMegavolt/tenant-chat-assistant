@@ -53,6 +53,7 @@ from tenantchat.core.routing import (
     RoutingOutcome,
     RoutingRule,
 )
+from tenantchat.core.safety import SafetyState
 from tenantchat.core.workflows import (
     ToolResult,
     WorkflowState,
@@ -1476,6 +1477,38 @@ class KnowledgeStore(Protocol):
     async def versions_in_state(
         self, tenant_id: str, state: VersionState
     ) -> tuple[DocumentVersion, ...]: ...
+    async def quarantine(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        """Withdraw a version from retrieval pending review (`RAG-007`).
+
+        The ingestion worker calls this when the content-safety scan finds
+        suspicious embedded instructions or unsupported active content. Only a
+        :meth:`quarantine_review` may lift it.
+        """
+        ...
+
+    async def quarantine_review(
+        self,
+        tenant_id: str,
+        version_id: uuid.UUID,
+        *,
+        approved: bool,
+        reviewed_by: str,
+        at: datetime,
+    ) -> KnowledgeDocument:
+        """Apply a reviewer's decision on a quarantined version.
+
+        Approval clears the quarantine so ingestion may re-run; rejection
+        leaves the version quarantined.
+        """
+        ...
+
+    async def versions_in_safety_state(
+        self, tenant_id: str, state: SafetyState
+    ) -> tuple[DocumentVersion, ...]:
+        """The tenant's versions in one safety state, for the review queue."""
+        ...
 
 
 class InMemoryKnowledgeStore:
@@ -1727,6 +1760,50 @@ class InMemoryKnowledgeStore:
             if document.tenant_id != tenant_id:
                 continue
             versions.extend(item for item in document.versions if item.state is state)
+        versions.sort(key=lambda item: (item.document_id, item.revision))
+        return tuple(versions)
+
+    async def quarantine(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        document = self._document_for_version(tenant_id, version_id)
+        version = document.version(version_id)
+        updated = self._apply(
+            document,
+            replace(
+                version, safety_state=SafetyState.QUARANTINED, indexing_state=IndexingState.PENDING
+            ),
+        )
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def quarantine_review(
+        self,
+        tenant_id: str,
+        version_id: uuid.UUID,
+        *,
+        approved: bool,
+        reviewed_by: str,
+        at: datetime,
+    ) -> KnowledgeDocument:
+        document = self._document_for_version(tenant_id, version_id)
+        plan = document.plan_quarantine_review(
+            version_id, approved=approved, reviewed_by=reviewed_by, at=at
+        )
+        version = document.version(version_id)
+        safety_state = SafetyState.CLEAR if plan.approved else SafetyState.QUARANTINED
+        updated = self._apply(document, replace(version, safety_state=safety_state))
+        self._documents[document.document_id] = updated
+        return updated
+
+    async def versions_in_safety_state(
+        self, tenant_id: str, state: SafetyState
+    ) -> tuple[DocumentVersion, ...]:
+        versions: list[DocumentVersion] = []
+        for document in self._documents.values():
+            if document.tenant_id != tenant_id:
+                continue
+            versions.extend(item for item in document.versions if item.safety_state is state)
         versions.sort(key=lambda item: (item.document_id, item.revision))
         return tuple(versions)
 

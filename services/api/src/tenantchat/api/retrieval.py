@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import itertools
 import math
-import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -33,54 +32,12 @@ from enum import StrEnum
 from tenantchat.api.parsing.tokens import DEFAULT_TOKEN_PROFILE, TokenProfile, count_tokens
 from tenantchat.api.search import Embedder, IndexedChunk
 from tenantchat.core.knowledge import KnowledgeDomain
+from tenantchat.core.text import query_words, tokenize
 
 HYBRID_RETRIEVER_VERSION = "v1"
 RERANKER_NAME = "bigram-overlap"
 
-_WORD = re.compile(r"[a-z0-9']+")
 _MIN_STEM = 4
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "are",
-        "at",
-        "can",
-        "do",
-        "does",
-        "for",
-        "how",
-        "i",
-        "in",
-        "is",
-        "it",
-        "my",
-        "of",
-        "on",
-        "our",
-        "out",
-        "that",
-        "the",
-        "there",
-        "to",
-        "we",
-        "what",
-        "who",
-        "you",
-        "your",
-    }
-)
-
-
-def tokenize(text: str) -> list[str]:
-    """Lowercased non-stopword tokens in order: the shared lexical vocabulary."""
-    return [word for word in _WORD.findall(text.lower()) if word not in _STOPWORDS]
-
-
-def query_words(text: str) -> frozenset[str]:
-    """The unordered query vocabulary, for overlap scoring."""
-    return frozenset(tokenize(text))
 
 
 def matches(query_word: str, chunk_word: str) -> bool:
