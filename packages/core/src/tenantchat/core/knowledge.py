@@ -5,10 +5,12 @@ column and no ``active`` flag, because a flag is a second copy of the truth that
 drifts from the state it summarizes — a document expires at midnight and nothing
 runs to flip the bit, or a rollback restores an old version and the flag stays on
 the withdrawn one. :meth:`KnowledgeDocument.retrievable_version` computes it from
-approval state, indexing state, the effective window, source ownership, and the
-asking audience, so there is exactly one definition and it cannot go stale. The
-retrieval adapter's index filter (`RAG-004`) implements the same predicate; this
-module is the specification it must match.
+approval state, indexing state, the effective window, source ownership, the
+asking audience, and the content-safety state, so there is exactly one
+definition and it cannot go stale. The retrieval adapter's index filter
+(`RAG-004`) implements the same predicate; this module is the specification
+it must match. Quarantine (`RAG-007`) is an *input* to that predicate, decided
+by the ingestion worker and stored like indexing state — never a derived bit.
 
 **Transitions are planned, not applied.** Approving, publishing, and expiring
 each return a plan describing the exact rows to change, because a publish is two
@@ -40,6 +42,7 @@ from tenantchat.core.errors import (
     ValidationError,
 )
 from tenantchat.core.lifecycle import IndexingState, VersionState
+from tenantchat.core.safety import QuarantineReviewPlan, SafetyState
 
 # Matches the tenant ID format, so a domain reads the same everywhere it appears:
 # storage, index filters, metric labels, and object-storage prefixes.
@@ -230,6 +233,7 @@ class DocumentVersion:
     byte_size: int
     media_type: str
     storage_key: str
+    safety_state: SafetyState = SafetyState.CLEAR
     effective_at: datetime | None = None
     expires_at: datetime | None = None
 
@@ -435,9 +439,10 @@ class KnowledgeDocument:
 
         ``None`` covers every reason at once — wrong tenant or domain, deleted
         document, disabled source, nothing published, outside the effective
-        window, not yet indexed, or visibility above the audience — because a
-        caller must not branch on *why* content is unavailable. Distinguishing
-        "another tenant owns this" from "this tenant has nothing" is the leak.
+        window, quarantined, not yet indexed, or visibility above the audience —
+        because a caller must not branch on *why* content is unavailable.
+        Distinguishing "another tenant owns this" from "this tenant has nothing"
+        is the leak.
         """
         if self.deleted or not self.source.enabled:
             return None
@@ -448,6 +453,8 @@ class KnowledgeDocument:
         if current is None:
             return None
         if current.indexing_state is not IndexingState.INDEXED:
+            return None
+        if current.safety_state is not SafetyState.CLEAR:
             return None
         if not current.is_effective_at(context.moment):
             return None
@@ -603,6 +610,43 @@ class KnowledgeDocument:
             document_id=self.document_id,
             version_id=version_id,
             expires_at=expires_at,
+        )
+
+    def plan_quarantine_review(
+        self,
+        version_id: uuid.UUID,
+        *,
+        approved: bool,
+        reviewed_by: str,
+        at: datetime,
+    ) -> QuarantineReviewPlan:
+        """Record a reviewer's decision on a quarantined version.
+
+        The version must already be quarantined: approving a clear version is a
+        no-op and rejecting one is meaningless, so both are refused rather than
+        quietly ignored. Approval clears the quarantine, which is what permits
+        the ingestion worker to re-run and embed the reviewed bytes; rejection
+        keeps the version out of retrieval, the safe default.
+
+        Raises:
+            NotFoundError: if the document is deleted or the version is unknown.
+            InvalidVersionTransitionError: if the version is not quarantined.
+            ValidationError: ``reviewed_by`` is blank, or ``at`` is naive.
+        """
+        version = self._live_version(version_id)
+        if version.safety_state is not SafetyState.QUARANTINED:
+            raise InvalidVersionTransitionError(
+                current=version.safety_state,
+                permitted=(SafetyState.QUARANTINED,),
+                detail=f"version {version_id} is not quarantined",
+            )
+        return QuarantineReviewPlan(
+            tenant_id=self.tenant_id,
+            document_id=self.document_id,
+            version_id=version_id,
+            approved=approved,
+            reviewed_by=_require_text("reviewed_by", reviewed_by, _MAX_DISPLAY_NAME),
+            reviewed_at=_require_aware("at", at),
         )
 
     def _live_version(self, version_id: uuid.UUID) -> DocumentVersion:

@@ -143,6 +143,8 @@ def _turn(result: TurnResult) -> AssistantTurn:
         prompt_version=result.prompt_version,
         citations=result.citations,
         citation_invalid=result.citation_invalid,
+        refused_tools=result.refused_tools,
+        claims_invalid=result.claims_invalid,
         retrieval=result.retrieval,
     )
 

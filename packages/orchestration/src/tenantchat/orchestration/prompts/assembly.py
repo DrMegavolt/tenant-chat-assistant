@@ -5,9 +5,12 @@ The template and everything the server wrote are **trusted** and are never
 excluded: if they do not fit the budget, assembly fails loudly. Visitor turns
 and retrieved evidence are **untrusted** — they are marked as such on the
 assembled type, which is the single boundary `RAG-007` enforces — and they are
-admitted until the budgets are spent. Everything left out is returned in
-:attr:`AssemblyOutcome.excluded` with its reason; nothing is dropped without a
-record.
+admitted until the budgets are spent. Evidence is additionally delimited
+(``<evidence source_id=...>...</evidence>``) and the template's trailing
+reminder is rendered after it, as the final content of the system message, so
+the instruction about untrusted content always follows the content it governs.
+Everything left out is returned in :attr:`AssemblyOutcome.excluded` with its
+reason; nothing is dropped without a record.
 """
 
 from __future__ import annotations
@@ -146,11 +149,12 @@ def assemble_prompt(
 ) -> AssemblyOutcome:
     """Assemble the one prompt a model call may receive.
 
-    The system message is the rendered template (trusted segments) followed by
-    the admitted evidence (untrusted segments). The transcript follows in
-    chronological order, with visitor turns marked untrusted. Discretionary
-    history is admitted newest-first and evidence in the order given, each until
-    its budget is spent; every item left out is returned in
+    The system message is the rendered template (trusted segments), the
+    admitted evidence (untrusted, delimited segments), and the template's
+    trailing reminder (trusted, last). The transcript follows in chronological
+    order, with visitor turns marked untrusted. Discretionary history is
+    admitted newest-first and evidence in the order given, each until its
+    budget is spent; every item left out is returned in
     :attr:`AssemblyOutcome.excluded` with its reason.
 
     Raises:
@@ -161,8 +165,10 @@ def assemble_prompt(
     values = dict(template.bindings(policy, workflow))
     template.schema.validate(values)
     system_segments = _render(template, values)
-    system_tokens = estimate_tokens("".join(segment.text for segment in system_segments))
-
+    trailing_segments = _render_trailing(template, values)
+    system_tokens = estimate_tokens(
+        "".join(segment.text for segment in (*system_segments, *trailing_segments))
+    )
     mandatory_indexes, discretionary = _history_split(history)
     mandatory_tokens = sum(estimate_tokens(history[index].content) for index in mandatory_indexes)
     fixed_tokens = system_tokens + mandatory_tokens
@@ -192,7 +198,10 @@ def assemble_prompt(
         PromptSegment(
             segment_id=f"evidence:{item.source_id}",
             region=PromptRegion.UNTRUSTED,
-            text=f"{item.title}\n{item.content}",
+            text=(
+                f'<evidence source_id="{item.source_id}">\n'
+                f"{item.title}\n{item.content}\n</evidence>"
+            ),
         )
         for item in selected_evidence
     )
@@ -201,7 +210,10 @@ def assemble_prompt(
         template_version=template.version,
         bindings=values,
         messages=(
-            AssembledMessage(role=MessageRole.SYSTEM, segments=system_segments + evidence_segments),
+            AssembledMessage(
+                role=MessageRole.SYSTEM,
+                segments=system_segments + evidence_segments + trailing_segments,
+            ),
             *history_messages,
         ),
     )
@@ -235,6 +247,38 @@ def _render(template: TemplateVersion, values: Mapping[str, str]) -> tuple[Promp
             )
         )
     return tuple(segments)
+
+
+def _render_trailing(
+    template: TemplateVersion, values: Mapping[str, str]
+) -> tuple[PromptSegment, ...]:
+    """Render the template's trailing reminder segments, dropping empty ones.
+
+    The reminder is trusted template code; the same budget rules that protect
+    the system message apply to it, so it is counted in ``system_tokens``.
+    """
+    if not template.trailing_segments:
+        return ()
+    rendered: list[PromptSegment] = []
+    for template_segment in template.trailing_segments:
+        placeholders = _PLACEHOLDER_RE.findall(template_segment.text)
+        if placeholders and all(not values[name] for name in placeholders):
+            continue
+        try:
+            text = template_segment.text.format(**values)
+        except (KeyError, ValueError) as error:
+            raise PromptBindingError(
+                f"template {template.ref} cannot render trailing segment "
+                f"{template_segment.segment_id!r}: {error}"
+            ) from error
+        rendered.append(
+            PromptSegment(
+                segment_id=template_segment.segment_id,
+                region=template_segment.region,
+                text=text,
+            )
+        )
+    return tuple(rendered)
 
 
 def _history_split(

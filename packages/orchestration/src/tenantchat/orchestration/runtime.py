@@ -65,6 +65,12 @@ class TurnResult:
     prompt_version: str = DISPATCH_SYSTEM_REF
     citations: tuple[Citation, ...] = ()
     citation_invalid: tuple[str, ...] = ()
+    # `RAG-007` enforcement record: the refusal codes of tool calls the
+    # permission guard stopped, and the sensitive claims (kind and value) that
+    # failed deterministic validation and got the answer refused. For the
+    # inference plane, not the public client.
+    refused_tools: tuple[str, ...] = ()
+    claims_invalid: tuple[tuple[str, str], ...] = ()
     retrieval: Mapping[str, object] | None = None
 
     @property
@@ -167,6 +173,11 @@ class DispatchRuntime:
         )
         citations = raw.get("citations", ())
         retrieval = raw.get("evidence_meta") or None
+        claims_invalid = tuple(
+            (str(item["kind"]), str(item["value"]))
+            for item in raw.get("claims_invalid", ())
+            if isinstance(item, Mapping)
+        )
         return TurnResult(
             answer=str(raw.get("answer", "")),
             committed=tuple(raw.get("committed", ())),
@@ -174,6 +185,8 @@ class DispatchRuntime:
             model_name=str(raw.get("model_name", "")),
             citations=tuple(_citation(item) for item in citations),
             citation_invalid=tuple(str(item) for item in raw.get("citation_invalid", ())),
+            refused_tools=tuple(str(item) for item in raw.get("refused_tools", ())),
+            claims_invalid=claims_invalid,
             retrieval=dict(retrieval) if retrieval is not None else None,
         )
 

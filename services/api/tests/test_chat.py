@@ -58,7 +58,7 @@ def test_a_turn_is_answered_and_recorded(
     assert body["provenance"] == {
         "model_name": "scripted",
         "graph_version": "dispatch@2",
-        "prompt_version": "dispatch-system@3",
+        "prompt_version": "dispatch-system@4",
     }
 
     transcript = client.get("/api/chat/session", headers=visitor.headers).json()["messages"]

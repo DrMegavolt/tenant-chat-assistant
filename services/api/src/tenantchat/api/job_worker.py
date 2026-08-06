@@ -159,6 +159,7 @@ def ingestion_job_handler(
             base_url=settings.embedding_url,
             token=settings.embedding_token,
         ),
+        audit=PostgresAuditStore(knowledge.engine),
     )
     return ingestion_handler(dependencies)
 

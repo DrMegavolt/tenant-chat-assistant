@@ -504,7 +504,7 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
 
     assert len(records) == 1
     content = records[0].content
-    assert content["prompt_version"] == "dispatch-system@3"
+    assert content["prompt_version"] == "dispatch-system@4"
     assert content["citations"] == [
         {
             "source_id": "clearview-hvac-2",

@@ -125,6 +125,12 @@ class DispatchState(TypedDict):
     # record; the public schema publishes only the verified side.
     citations: list[dict[str, object]]
     citation_invalid: list[str]
+    # `RAG-007` enforcement records, for the inference plane: the refusal code
+    # of every tool call the permission guard stopped, and the sensitive claims
+    # (kind and value only, never evidence) that failed deterministic
+    # validation and caused the answer to be refused.
+    refused_tools: list[str]
+    claims_invalid: list[dict[str, str]]
 
 
 def visitor_entry(content: str) -> TranscriptEntry:
@@ -170,6 +176,8 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "evidence_meta": {},
         "citations": [],
         "citation_invalid": [],
+        "refused_tools": [],
+        "claims_invalid": [],
     }
 
 
@@ -201,4 +209,6 @@ def next_turn(message: str) -> dict[str, object]:
         "evidence_meta": {},
         "citations": [],
         "citation_invalid": [],
+        "refused_tools": [],
+        "claims_invalid": [],
     }

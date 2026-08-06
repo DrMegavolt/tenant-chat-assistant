@@ -68,6 +68,11 @@ PUBLISHED_OPERATIONS = {
     ("post", "/api/admin/knowledge/uploads"),
     ("get", "/api/admin/knowledge/index-findings"),
     ("post", "/api/admin/knowledge/index-integrity-check"),
+    # RAG-007: the quarantine review queue. Both routes are content-free by
+    # construction — the flagged text lives in object storage, never on this
+    # surface.
+    ("get", "/api/admin/knowledge/quarantine"),
+    ("post", "/api/admin/knowledge/quarantine/{version_id}/review"),
 }
 
 

@@ -40,6 +40,7 @@ from tenantchat.core.knowledge import (
     Visibility,
 )
 from tenantchat.core.lifecycle import IndexingState, VersionState
+from tenantchat.core.safety import SafetyState
 
 _DOCUMENT_COLUMNS = """
     d.id AS document_id, d.tenant_id, d.domain, d.external_key, d.title, d.deleted_at,
@@ -49,7 +50,7 @@ _DOCUMENT_COLUMNS = """
 
 _VERSION_COLUMNS = """
     v.id, v.tenant_id, v.document_id, v.revision, v.state, v.indexing_state,
-    v.visibility, v.checksum, v.byte_size, v.media_type, v.storage_key,
+    v.visibility, v.safety_state, v.checksum, v.byte_size, v.media_type, v.storage_key,
     v.effective_at, v.expires_at
 """
 
@@ -76,6 +77,7 @@ def _version(row: object) -> DocumentVersion:
         state=VersionState(mapping["state"]),
         indexing_state=IndexingState(mapping["indexing_state"]),
         visibility=Visibility(mapping["visibility"]),
+        safety_state=SafetyState(mapping["safety_state"]),
         checksum=ContentChecksum.parse(mapping["checksum"]),
         byte_size=mapping["byte_size"],
         media_type=mapping["media_type"],
@@ -162,6 +164,22 @@ async def _document_id_for_version(
     if document_id is None:
         raise NotFoundError(detail=f"version {version_id} absent or outside tenant {tenant_id}")
     return document_id
+
+
+def _live_version_or_raise(document: KnowledgeDocument, version_id: uuid.UUID) -> None:
+    """Fail when a version cannot be acted on because its document is gone.
+
+    The worker-facing paths (quarantine) bypass the domain plans, which are the
+    only other guard against a stale aggregate; the SQL state guard catches
+    state races, this catches deletion races.
+
+    Raises:
+        NotFoundError: if the document or the version is deleted.
+    """
+    if document.deleted or not any(
+        version.version_id == version_id for version in document.versions
+    ):
+        raise NotFoundError(detail=f"version {version_id} absent or deleted")
 
 
 class PostgresKnowledgeStore:
@@ -619,6 +637,7 @@ class PostgresKnowledgeStore:
                       AND v.domain = :domain
                       AND v.state = 'published'
                       AND v.indexing_state = 'indexed'
+                      AND v.safety_state = 'clear'
                       AND d.deleted_at IS NULL
                       AND s.enabled
                       AND v.effective_at <= :moment
@@ -662,6 +681,122 @@ class PostgresKnowledgeStore:
                     """  # noqa: S608 - interpolates a module constant, never caller input
                 ),
                 {"tenant_id": tenant_id, "state": state.value},
+            )
+            return tuple(_version(row) for row in result.all())
+
+    @property
+    def engine(self) -> AsyncEngine:
+        """Expose the engine so sibling stores can share one connection pool."""
+        return self._engine
+
+    async def quarantine(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        """Quarantine a version at the worker's request.
+
+        A worker safety action, not a reviewer decision. Only the safety state
+        is written — the lifecycle state is untouched, because quarantine
+        survives across re-publishing and only a review clears it (`RAG-007`).
+        The indexing state is reset, so even a version that was fully indexed
+        must be re-scanned and re-embedded after review approval before it can
+        answer again: the flagged bytes cannot return to retrieval from the
+        index they were written to.
+
+        Raises:
+            NotFoundError: if the document is deleted or the version is unknown.
+            ConflictError: if the version is a draft or deleted — quarantine
+                before review is meaningless, and withdrawing it is the
+                operator's job.
+        """
+        async with self._engine.begin() as connection:
+            document_id = await _document_id_for_version(connection, tenant_id, version_id)
+            document = await _load(connection, tenant_id, document_id, lock=True)
+            _live_version_or_raise(document, version_id)
+
+            updated = await connection.execute(
+                text(
+                    """
+                    UPDATE knowledge_document_versions
+                    SET safety_state = 'quarantined', indexing_state = 'pending',
+                        indexed_at = NULL, index_error_code = NULL, updated_at = now()
+                    WHERE tenant_id = :tenant_id AND id = :version_id
+                      AND state IN ('approved', 'published', 'superseded')
+                    """
+                ),
+                {"tenant_id": tenant_id, "version_id": version_id, "at": at},
+            )
+            _expect_one(updated.rowcount, "quarantine")
+            return await _load(connection, tenant_id, document_id, lock=False)
+
+    async def quarantine_review(
+        self,
+        tenant_id: str,
+        version_id: uuid.UUID,
+        *,
+        approved: bool,
+        reviewed_by: str,
+        at: datetime,
+    ) -> KnowledgeDocument:
+        """Apply a reviewer's decision on a quarantined version.
+
+        Approval clears the quarantine so the ingestion worker re-embeds the
+        reviewed bytes; rejection leaves the version quarantined and superseded.
+
+        Raises:
+            NotFoundError: if the document is deleted or the version is unknown.
+            InvalidVersionTransitionError: if the version is not quarantined.
+        """
+        async with self._engine.begin() as connection:
+            document_id = await _document_id_for_version(connection, tenant_id, version_id)
+            document = await _load(connection, tenant_id, document_id, lock=True)
+            plan = document.plan_quarantine_review(
+                version_id, approved=approved, reviewed_by=reviewed_by, at=at
+            )
+
+            updated = await connection.execute(
+                text(
+                    """
+                    UPDATE knowledge_document_versions
+                    SET safety_state = :safety_state, updated_at = now()
+                    WHERE tenant_id = :tenant_id AND id = :version_id
+                      AND safety_state = 'quarantined'
+                    """
+                ),
+                {
+                    "tenant_id": plan.tenant_id,
+                    "version_id": plan.version_id,
+                    "safety_state": (
+                        SafetyState.CLEAR.value if plan.approved else SafetyState.QUARANTINED.value
+                    ),
+                },
+            )
+            _expect_one(updated.rowcount, "quarantine review")
+            return await _load(connection, tenant_id, document_id, lock=False)
+
+    async def versions_in_safety_state(
+        self, tenant_id: str, safety_state: SafetyState
+    ) -> tuple[DocumentVersion, ...]:
+        """Every version of one tenant in one safety state.
+
+        Feeds the policy detector: quarantined versions must never be indexed
+        or retrievable, and a version the worker quarantined behind the
+        detector's back is exactly what this sweep surfaces.
+
+        Raises:
+            NotFoundError: if the tenant is absent or inactive.
+        """
+        async with self._engine.begin() as connection:
+            await require_active_tenant(connection, tenant_id)
+            result = await connection.execute(
+                text(
+                    f"""
+                    SELECT {_VERSION_COLUMNS}
+                    FROM knowledge_document_versions v
+                    WHERE v.tenant_id = :tenant_id AND v.safety_state = :safety_state
+                    ORDER BY v.document_id, v.revision
+                    """  # noqa: S608 - interpolates a module constant, never caller input
+                ),
+                {"tenant_id": tenant_id, "safety_state": safety_state.value},
             )
             return tuple(_version(row) for row in result.all())
 

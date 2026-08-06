@@ -273,6 +273,12 @@ class AssistantTurn:
     never publishes them. ``retrieval`` is the safe metadata of the retrieval
     that grounded the turn (sufficiency verdict and retriever versions), for
     the inference plane only.
+
+    ``refused_tools`` and ``claims_invalid`` are the `RAG-007` enforcement
+    records: the refusal codes of tool calls the permission guard stopped,
+    and the sensitive claims (kind and value only, never evidence or the full
+    answer) that failed deterministic validation. Like ``citation_invalid``
+    they ride the inference plane, never the public response.
     """
 
     answer: str
@@ -283,6 +289,8 @@ class AssistantTurn:
     prompt_version: str
     citations: tuple[Citation, ...] = ()
     citation_invalid: tuple[str, ...] = ()
+    refused_tools: tuple[str, ...] = ()
+    claims_invalid: tuple[tuple[str, str], ...] = ()
     retrieval: Mapping[str, object] | None = None
 
     @property

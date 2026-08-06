@@ -11,7 +11,13 @@ Two capabilities land here in `RAG-002`:
   produces, tenant-qualified, for `FEAT-001`'s console and `OBS-004`'s
   attribution to read.
 
-Both surfaces are tenant-scoped exactly like the other admin routes: an
+`RAG-007` adds the third: **quarantine review.** The ingestion worker's
+content-safety scan files suspicious content as a quarantined version; the
+review queue lists those versions and the review action clears or keeps the
+quarantine. Both surfaces are content-free by construction — the text that
+triggered the scan lives in object storage and never crosses this API.
+
+All surfaces are tenant-scoped exactly like the other admin routes: an
 operator may touch only tenants their membership grants, and a refused request
 is indistinguishable from an absent record.
 """
@@ -19,16 +25,19 @@ is indistinguishable from an absent record.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 
 from tenantchat.api.dependencies import (
+    Audit,
     GenerationFindings,
     Knowledge,
     Memberships,
     ObjectStores,
     Registry,
+    RequestId,
     SearchIndexes,
     get_settings,
 )
@@ -45,11 +54,17 @@ from tenantchat.api.parsing import MAX_DOCUMENT_BYTES, SUPPORTED_MEDIA_TYPES
 from tenantchat.api.schemas import (
     IndexFindingsResponse,
     IndexFindingSummary,
+    QuarantinedVersionSummary,
+    QuarantineListResponse,
+    QuarantineReviewRequest,
+    QuarantineReviewResponse,
     UploadedVersionResponse,
 )
 from tenantchat.api.storage import StorageKey, validated_filename
+from tenantchat.api.store import AuditActorType, AuditEvent
 from tenantchat.core.errors import ValidationError
 from tenantchat.core.knowledge import ContentChecksum, Visibility
+from tenantchat.core.safety import SafetyState
 
 router = APIRouter(tags=["admin-knowledge"])
 
@@ -207,3 +222,82 @@ async def run_index_integrity_check(
     return IndexFindingsResponse(
         findings=[IndexFindingSummary.of(item) for item in shown], limit=limit
     )
+
+
+@router.get("/api/admin/knowledge/quarantine", response_model=QuarantineListResponse)
+async def list_quarantined_versions(
+    identity: TenantReader,
+    tenant_id: TenantIdQuery,
+    registry: Registry,
+    knowledge: Knowledge,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> QuarantineListResponse:
+    """The tenant's quarantined versions, the review queue.
+
+    The queue the policy detector files into: every version the ingestion
+    worker's content-safety scan flagged, still unretrievable for every
+    audience until a reviewer acts. Identifiers and states only — the text
+    that triggered the quarantine never crosses this surface.
+
+    Raises:
+        NotFoundError: no such tenant.
+    """
+    registry.get(tenant_id)
+    versions = await knowledge.versions_in_safety_state(tenant_id, SafetyState.QUARANTINED)
+    shown = tuple(versions[-limit:])
+    summaries: list[QuarantinedVersionSummary] = []
+    for version in shown:
+        document = await knowledge.document_for_version(tenant_id, version.version_id)
+        summaries.append(QuarantinedVersionSummary.of(document, version))
+    return QuarantineListResponse(versions=summaries, limit=limit)
+
+
+@router.post(
+    "/api/admin/knowledge/quarantine/{version_id}/review",
+    response_model=QuarantineReviewResponse,
+)
+async def review_quarantined_version(
+    request: Request,
+    identity: MutationIdentity,
+    memberships: Memberships,
+    tenant_id: TenantIdQuery,
+    version_id: uuid.UUID,
+    payload: QuarantineReviewRequest,
+    knowledge: Knowledge,
+    audit: Audit,
+    request_id: RequestId,
+) -> QuarantineReviewResponse:
+    """Record a reviewer's decision on one quarantined version.
+
+    Approval clears the quarantine so the version may be re-published and
+    re-indexed; rejection keeps it quarantined and superseded, the safe
+    default. The decision is audited with the reviewer's identity; the
+    flagged content itself remains in object storage.
+
+    Raises:
+        NotFoundError: the version is absent, deleted, or belongs to another
+            tenant.
+        InvalidVersionTransitionError: the version is not quarantined.
+    """
+    await _authorize_mutation(request, identity, memberships, tenant_id)
+    document = await knowledge.quarantine_review(
+        tenant_id,
+        version_id,
+        approved=payload.approved,
+        reviewed_by=payload.reviewed_by,
+        at=datetime.now(UTC),
+    )
+    version = document.version(version_id)
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="knowledge.quarantine_review",
+            resource_type="knowledge_version",
+            resource_id=version_id,
+            request_id=request_id,
+            details={"document_id": str(document.document_id), "approved": payload.approved},
+        )
+    )
+    return QuarantineReviewResponse.of(document, version)

@@ -288,7 +288,7 @@ runbooks.
 - [x] `RAG-004` — Hybrid retrieval, reranking, and abstention — `Done`
 - [x] `RAG-005` — Evidence and citation contract — `P1`
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
-- [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
+- [x] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
 - [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
 - [ ] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
@@ -1882,7 +1882,7 @@ guarantees by construction.
 
 ### RAG-007 — RAG prompt-injection and content safety defenses
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI security`
 - Depends on: `RAG-002`, `RAG-005`
@@ -1898,7 +1898,29 @@ guarantees by construction.
   - Security decisions are auditable without storing unsafe full content in logs.
 - Verification:
   - Run a maintained adversarial RAG test corpus in CI.
-- Completion notes: _Pending._
+- Completion notes: Delivered as three independent layers so no single failure is the
+  whole defense. (1) **Ingestion**: `parsing/injection.py` scans extracted text with
+  narrow, deterministic patterns and returns only signal kinds plus a SHA-256
+  fingerprint; the worker quarantines flagged versions (migration `0013_quarantine`
+  adds `knowledge_safety_state`), resets indexing, and audits the decision by
+  fingerprint — never the text. Quarantine joins `retrievable_version` and the
+  Postgres filter, so flagged content is unretrievable for every audience until a
+  reviewer acts through the content-free `/api/admin/knowledge/quarantine` surface.
+  (2) **Prompt**: `dispatch-system@4` renders evidence as delimited
+  `<evidence>` untrusted segments between the template and a trailing trusted
+  reminder, so the instruction about untrusted content always follows it. (3)
+  **Runtime**: `tool_permission` in core gates every tool call against the tenant's
+  server-owned policy and the agent allowlist, out of band from any prompt text;
+  `validate_sensitive_claims` deterministically refuses answers whose prices or
+  coverage/permit/insurance sentences are not grounded in the admitted evidence or
+  approved prices, replacing them with a server-written refusal. The maintained
+  adversarial corpus (`tests/security/fixtures/adversarial_corpus.json`, 8
+  documents) runs in the hermetic suite: scanner detection, quarantine, prompt
+  boundary, guard refusals, and claim refusals are each asserted end to end, and
+  refusal codes and invalid claims ride the inference-plane turn record only.
+  Follow-ups for `RAG-008`: grow the corpus with multi-turn attacks; score
+  scanner precision/recall on the reviewed-false-positive backlog; re-use
+  `claims_invalid` verdicts as dataset labels.
 
 ### RAG-009 — Golden evaluation harness and scoreboard
 
