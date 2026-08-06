@@ -25,7 +25,7 @@ import hashlib
 import re
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
@@ -279,6 +279,12 @@ class AssistantTurn:
     and the sensitive claims (kind and value only, never evidence or the full
     answer) that failed deterministic validation. Like ``citation_invalid``
     they ride the inference plane, never the public response.
+
+    ``trace`` is the `OBS-004` inference trace of the turn as JSON-safe data:
+    the router decision, the retrieval that ran, the assembled prompt
+    reference and content hash, model usage, verdicts, tool effects, the
+    component manifest, and the auto-detected diagnoses. It is content and
+    belongs to the inference plane only, exactly like ``pending``.
     """
 
     answer: str
@@ -292,6 +298,7 @@ class AssistantTurn:
     refused_tools: tuple[str, ...] = ()
     claims_invalid: tuple[tuple[str, str], ...] = ()
     retrieval: Mapping[str, object] | None = None
+    trace: Mapping[str, object] | None = None
 
     @property
     def is_paused(self) -> bool:
@@ -363,6 +370,10 @@ class EvidenceItem:
     are the published version's, resolved by the adapter from the knowledge
     system of record; a version that is no longer retrievable for a visitor is
     not offered as evidence at all (`RAG-005`).
+
+    ``generation_id`` and ``embedding_model`` pin the passage to the index
+    generation and embedder that produced it, so `OBS-004` can attribute a
+    retrieval regression to an index rebuild or a model change.
     """
 
     source_id: str
@@ -372,6 +383,8 @@ class EvidenceItem:
     content: str
     document_id: uuid.UUID
     version_id: uuid.UUID
+    generation_id: uuid.UUID
+    embedding_model: str
     score: float
     revision: int
     effective_at: datetime
@@ -383,7 +396,9 @@ class EvidenceBundle:
 
     ``retriever_version``, ``reranker``, and ``min_evidence_score`` pin the
     retrieval that grounded the turn, for the inference plane (`OBS-004`);
-    they are safe metadata and carry no content.
+    they are safe metadata and carry no content. ``filters``, ``budget``, and
+    ``retriever_parameters`` are the exact values the adapter ran with, so a
+    stored trace can say which filter or budget cut a candidate out.
 
     ``sufficient`` is the abstention verdict: when it is ``False`` the graph
     refuses to call the model for a tool-less answer instead of letting it
@@ -395,6 +410,11 @@ class EvidenceBundle:
     retriever_version: str
     reranker: str | None
     min_evidence_score: float
+    embedding_model: str = ""
+    generation_id: uuid.UUID | None = None
+    retriever_parameters: Mapping[str, object] = field(default_factory=dict)
+    filters: Mapping[str, object] = field(default_factory=dict)
+    budget: Mapping[str, object] = field(default_factory=dict)
 
 
 class EvidenceSource(Protocol):

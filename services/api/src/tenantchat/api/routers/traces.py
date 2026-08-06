@@ -40,6 +40,7 @@ from tenantchat.api.schemas import (
     TraceAccessRequest,
     TraceAccessResponse,
     TraceReadResponse,
+    TraceSearchResponsePage,
 )
 from tenantchat.api.store import AuditActorType, AuditEvent
 from tenantchat.core.privacy import TurnRecordReadReason
@@ -54,6 +55,34 @@ TenantIdQuery = Annotated[
     str, Query(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$", alias="tenant_id")
 ]
 SubjectQuery = Annotated[str, Query(min_length=1, max_length=200)]
+ManifestHashQuery = Annotated[
+    str | None,
+    Query(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+        description="The exact component-manifest SHA-256 a turn's record pins.",
+    ),
+]
+CauseQuery = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        description="A Gate B diagnosis cause; only records carrying it match.",
+    ),
+]
+OutcomeQuery = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z]+$",
+        description="How the turn ended: answered, paused, escalated, abstained, clarified.",
+    ),
+]
+TraceLimitQuery = Annotated[int, Query(ge=1, le=200)]
 
 
 def _authorized_grants(request: Request) -> AdminIdentity:
@@ -207,6 +236,101 @@ async def read_turn_record(
             resource_id=record.turn_id,
             request_id=request_id,
             details={"reason": reason.value},
+        )
+    )
+    return TraceReadResponse.of(record, projections)
+
+
+@router.get("/api/admin/traces", response_model=TraceSearchResponsePage)
+async def search_turn_records(
+    identity: TraceReader,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+    manifest_hash: ManifestHashQuery = None,
+    cause: CauseQuery = None,
+    outcome: OutcomeQuery = None,
+    limit: TraceLimitQuery = 50,
+) -> TraceSearchResponsePage:
+    """The `OBS-004` attribution surface: records matching content-free filters.
+
+    Filters are the content-free projection only — component-manifest hash,
+    diagnosis cause, outcome — so an operator can ask "which build answered
+    these turns" or "which turns attributed a citation error" without the
+    query touching the opaque content object. Every search is audited with
+    the filter that ran, and results carry no content: the record itself is
+    fetched through the single-read route.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+    """
+    registry.get(tenant_id)
+    records = await turns.search(
+        tenant_id,
+        manifest_hash=manifest_hash,
+        causes=(cause,) if cause else (),
+        outcome=outcome,
+        limit=limit,
+    )
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.search",
+            resource_type="turn_record",
+            resource_id=None,
+            request_id=request_id,
+            details={
+                "reason": reason.value,
+                "manifest_hash": manifest_hash,
+                "cause": cause,
+                "outcome": outcome,
+                "limit": limit,
+                "matches": len(records),
+            },
+        )
+    )
+    return TraceSearchResponsePage.of(records)
+
+
+@router.get("/api/admin/traces/by-trace-id/{trace_id}", response_model=TraceReadResponse)
+async def read_turn_record_by_trace_id(
+    identity: TraceReader,
+    trace_id: str,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+) -> TraceReadResponse:
+    """The record the `OBS-001` correlation id names, under the same gates.
+
+    This is the lookup a distributed trace answers with: given the request's
+    trace id, the full inference record of the turn it produced — audited like
+    any other read.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+        NotFoundError: no such record, or it belongs to another tenant.
+    """
+    registry.get(tenant_id)
+    record = await turns.for_trace_id(tenant_id, trace_id)
+    projections = await turns.projections_for_turn(tenant_id, record.turn_id)
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.read",
+            resource_type="turn_record",
+            resource_id=record.turn_id,
+            request_id=request_id,
+            details={"reason": reason.value, "trace_id": trace_id},
         )
     )
     return TraceReadResponse.of(record, projections)

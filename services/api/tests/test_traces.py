@@ -372,6 +372,169 @@ def test_granting_and_reading_are_tenant_scoped(trace_app: TraceApp) -> None:
     assert read.json()["code"] == "forbidden"
 
 
+def test_search_is_gated_by_the_dedicated_role_and_audited_with_its_filters(
+    trace_app: TraceApp,
+) -> None:
+    """The attribution surface: same role gate as reads, one audit row per search."""
+    client, turns, grants, audit = trace_app
+    session_id = uuid.uuid4()
+    asyncio.run(
+        turns.record(
+            TRACE_TENANT,
+            session_id,
+            content={"output": "We are open until 7pm."},
+            outcome="answered",
+        )
+    )
+
+    refused = client.get(
+        "/api/admin/traces",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+    assert refused.status_code == 403
+
+    asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+    search = client.get(
+        "/api/admin/traces",
+        params={
+            "tenant_id": TRACE_TENANT,
+            "reason": READ_REASON,
+            "outcome": "answered",
+            "limit": 10,
+        },
+        headers=_operator(),
+    )
+    assert search.status_code == 200, search.text
+    body = search.json()
+    assert [record["outcome"] for record in body["records"]] == ["answered"]
+    assert all("prompt" not in record and "output" not in record for record in body["records"])
+
+    searches = [event for event in audit._events if event.action == "trace.search"]
+    assert len(searches) == 1
+    assert searches[0].principal_id == "operator-7"
+    assert searches[0].details == {
+        "reason": READ_REASON,
+        "manifest_hash": None,
+        "cause": None,
+        "outcome": "answered",
+        "limit": 10,
+        "matches": 1,
+    }
+
+
+def test_search_filters_by_manifest_hash_and_cause(trace_app: TraceApp) -> None:
+    """The attribution query surface: component-version and cause filtering."""
+    client, turns, grants, _audit = trace_app
+    asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+    session_id = uuid.uuid4()
+    asyncio.run(
+        turns.record(
+            TRACE_TENANT,
+            session_id,
+            content={},
+            outcome="answered",
+            component_manifest_hash="a" * 64,
+            diagnosis_causes=("grounding_or_citation_error",),
+        )
+    )
+    asyncio.run(
+        turns.record(
+            TRACE_TENANT,
+            session_id,
+            content={},
+            outcome="abstained",
+            component_manifest_hash="b" * 64,
+            diagnosis_causes=("retrieval_miss",),
+        )
+    )
+    headers = _operator()
+
+    by_manifest = client.get(
+        "/api/admin/traces",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON, "manifest_hash": "a" * 64},
+        headers=headers,
+    )
+    assert by_manifest.status_code == 200
+    assert [record["outcome"] for record in by_manifest.json()["records"]] == ["answered"]
+
+    by_cause = client.get(
+        "/api/admin/traces",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON, "cause": "retrieval_miss"},
+        headers=headers,
+    )
+    assert by_cause.status_code == 200
+    assert [record["outcome"] for record in by_cause.json()["records"]] == ["abstained"]
+
+    malformed = client.get(
+        "/api/admin/traces",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON, "manifest_hash": "short"},
+        headers=headers,
+    )
+    assert malformed.status_code == 422
+
+
+def test_the_correlation_lookup_returns_the_record_and_is_audited(
+    trace_app: TraceApp,
+) -> None:
+    """by-trace-id: the OBS-001 correlation id names exactly one turn record."""
+    client, turns, grants, audit = trace_app
+    session_id = uuid.uuid4()
+    recorded = asyncio.run(
+        turns.record(
+            TRACE_TENANT,
+            session_id,
+            trace_id="trace-request-1",
+            content={"output": "We are open until 7pm."},
+        )
+    )
+    asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+
+    found = client.get(
+        "/api/admin/traces/by-trace-id/trace-request-1",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+
+    assert found.status_code == 200, found.text
+    assert found.json()["turn_id"] == str(recorded.turn_id)
+    assert found.json()["content"]["output"] == "We are open until 7pm."
+    reads = [event for event in audit._events if event.action == "trace.read"]
+    assert len(reads) == 1
+    assert reads[0].details == {"reason": READ_REASON, "trace_id": "trace-request-1"}
+
+    missing = client.get(
+        "/api/admin/traces/by-trace-id/trace-unknown",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "not_found"
+
+
+def test_the_correlation_lookup_is_tenant_scoped(trace_app: TraceApp) -> None:
+    """A trace id from another tenant is indistinguishable from a missing one."""
+    client, turns, grants, _audit = trace_app
+    asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+    asyncio.run(
+        turns.record(
+            OTHER_TENANT,
+            uuid.uuid4(),
+            trace_id="trace-foreign",
+            content={},
+        )
+    )
+
+    response = client.get(
+        "/api/admin/traces/by-trace-id/trace-foreign",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
 def test_a_grant_mutation_requires_the_csrf_token(trace_app: TraceApp) -> None:
     client, _turns, grants, _audit = trace_app
 

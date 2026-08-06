@@ -1,10 +1,13 @@
 """PostgreSQL adapters for the PRIV-002 inference plane.
 
-``PostgresTurnRecordStore`` is the envelope `OBS-004` will populate: it writes
-the opaque content object and reads it back for the trace viewer. The erasure
-and retention of these rows deliberately stay in :mod:`tenantchat.api.persistence.privacy`,
-which runs under the erasure role — the application role holds no ``DELETE`` on
-``turn_records`` or ``turn_record_projections`` (see ``provision_app_role.sql``).
+``PostgresTurnRecordStore`` is the envelope `OBS-004` populates: it writes
+the opaque content object and reads it back for the trace viewer, and it
+serves the content-free attribution query surface (`OBS-004`) over the
+derived columns — outcome, component-manifest hash, and diagnosis causes.
+The erasure and retention of these rows deliberately stay in
+:mod:`tenantchat.api.persistence.privacy`, which runs under the erasure
+role — the application role holds no ``DELETE`` on ``turn_records`` or
+``turn_record_projections`` (see ``provision_app_role.sql``).
 
 ``PostgresTraceAccessStore`` is the dedicated read role, a grant table rather
 than a membership role: it is tenant-qualified, audited on grant and revoke by
@@ -25,7 +28,24 @@ from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.api.store import TraceAccessGrant, TurnRecord, TurnRecordProjection
 from tenantchat.core.errors import NotFoundError
 
-_MAX_TRACE_LIST_LIMIT = 200
+_MAX_TRACE_SEARCH_LIMIT = 200
+
+_TRACE_COLUMNS = (
+    "id",
+    "tenant_id",
+    "chat_session_id",
+    "trace_id",
+    "content",
+    "recorded_at",
+    "outcome",
+    "component_manifest_hash",
+    "diagnosis_causes",
+    "turn_index",
+    "trace_schema_version",
+)
+
+# A module constant, never a format site: every read selects the same columns.
+_TRACE_SELECT = "SELECT " + ", ".join(_TRACE_COLUMNS)
 
 
 def _turn_record(row: object) -> TurnRecord:
@@ -37,6 +57,11 @@ def _turn_record(row: object) -> TurnRecord:
         trace_id=mapping["trace_id"],
         content=dict(mapping["content"]),
         recorded_at=mapping["recorded_at"],
+        outcome=mapping["outcome"],
+        component_manifest_hash=mapping["component_manifest_hash"],
+        diagnosis_causes=tuple(mapping["diagnosis_causes"]),
+        turn_index=mapping["turn_index"],
+        trace_schema_version=mapping["trace_schema_version"],
     )
 
 
@@ -75,6 +100,11 @@ class PostgresTurnRecordStore:
         content: dict[str, object],
         trace_id: str | None = None,
         recorded_at: datetime | None = None,
+        outcome: str = "unknown",
+        component_manifest_hash: str = "",
+        diagnosis_causes: tuple[str, ...] = (),
+        turn_index: int = 0,
+        trace_schema_version: str = "1",
     ) -> TurnRecord:
         try:
             async with self._engine.begin() as connection:
@@ -85,10 +115,16 @@ class PostgresTurnRecordStore:
                     text(
                         """
                         INSERT INTO turn_records
-                            (id, tenant_id, chat_session_id, trace_id, content, recorded_at)
+                            (id, tenant_id, chat_session_id, trace_id, content, recorded_at,
+                             outcome, component_manifest_hash, diagnosis_causes, turn_index,
+                             trace_schema_version)
                         VALUES
-                            (:id, :tenant_id, :session_id, :trace_id, :content, :recorded_at)
-                        RETURNING id, tenant_id, chat_session_id, trace_id, content, recorded_at
+                            (:id, :tenant_id, :session_id, :trace_id, :content, :recorded_at,
+                             :outcome, :manifest_hash, :diagnosis_causes, :turn_index,
+                             :schema_version)
+                        RETURNING id, tenant_id, chat_session_id, trace_id, content, recorded_at,
+                                  outcome, component_manifest_hash, diagnosis_causes, turn_index,
+                                  trace_schema_version
                         """
                     ).bindparams(bindparam("content", type_=JSONB)),
                     {
@@ -98,6 +134,11 @@ class PostgresTurnRecordStore:
                         "trace_id": trace_id,
                         "content": content,
                         "recorded_at": recorded_at or datetime.now(UTC),
+                        "outcome": outcome,
+                        "manifest_hash": component_manifest_hash,
+                        "diagnosis_causes": list(diagnosis_causes),
+                        "turn_index": turn_index,
+                        "schema_version": trace_schema_version,
                     },
                 )
                 return _turn_record(result.one())
@@ -111,11 +152,8 @@ class PostgresTurnRecordStore:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
-                    """
-                    SELECT id, tenant_id, chat_session_id, trace_id, content, recorded_at
-                    FROM turn_records
-                    WHERE tenant_id = :tenant_id AND id = :turn_id
-                    """
+                    _TRACE_SELECT
+                    + " FROM turn_records WHERE tenant_id = :tenant_id AND id = :turn_id"
                 ),
                 {"tenant_id": tenant_id, "turn_id": turn_id},
             )
@@ -127,19 +165,64 @@ class PostgresTurnRecordStore:
     async def for_session(
         self, tenant_id: str, session_id: uuid.UUID, *, limit: int
     ) -> tuple[TurnRecord, ...]:
-        bounded = min(limit, _MAX_TRACE_LIST_LIMIT)
+        bounded = min(limit, _MAX_TRACE_SEARCH_LIMIT)
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
-                    """
-                    SELECT id, tenant_id, chat_session_id, trace_id, content, recorded_at
-                    FROM turn_records
-                    WHERE tenant_id = :tenant_id AND chat_session_id = :session_id
-                    ORDER BY recorded_at, id
-                    LIMIT :limit
-                    """
+                    _TRACE_SELECT + " FROM turn_records WHERE tenant_id = :tenant_id AND "
+                    "chat_session_id = :session_id ORDER BY recorded_at, id LIMIT :limit"
                 ),
                 {"tenant_id": tenant_id, "session_id": session_id, "limit": bounded},
+            )
+            return tuple(_turn_record(row) for row in result.all())
+
+    async def for_trace_id(self, tenant_id: str, trace_id: str) -> TurnRecord:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    _TRACE_SELECT
+                    + " FROM turn_records WHERE tenant_id = :tenant_id AND trace_id = :trace_id "
+                    "ORDER BY recorded_at DESC LIMIT 1"
+                ),
+                {"tenant_id": tenant_id, "trace_id": trace_id},
+            )
+            row = result.first()
+        if row is None:
+            raise NotFoundError(detail="turn record absent or outside tenant")
+        return _turn_record(row)
+
+    async def search(
+        self,
+        tenant_id: str,
+        *,
+        manifest_hash: str | None = None,
+        causes: tuple[str, ...] = (),
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> tuple[TurnRecord, ...]:
+        clauses = ["tenant_id = :tenant_id"]
+        params: dict[str, object] = {"tenant_id": tenant_id}
+        if manifest_hash is not None:
+            clauses.append("component_manifest_hash = :manifest_hash")
+            params["manifest_hash"] = manifest_hash
+        if causes:
+            clauses.append("diagnosis_causes @> :causes")
+            params["causes"] = list(causes)
+        if outcome is not None:
+            clauses.append("outcome = :outcome")
+            params["outcome"] = outcome
+        bounded = min(limit, _MAX_TRACE_SEARCH_LIMIT)
+        # The WHERE clause is built from a fixed clause list and bound
+        # parameters only; no caller text ever reaches the statement.
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    _TRACE_SELECT
+                    + " FROM turn_records WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY recorded_at DESC, id LIMIT :limit"
+                ),
+                {**params, "limit": bounded},
             )
             return tuple(_turn_record(row) for row in result.all())
 

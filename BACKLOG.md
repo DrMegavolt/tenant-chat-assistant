@@ -294,7 +294,7 @@ runbooks.
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
 - [ ] `OBS-001` — Structured logging and request correlation — `P1`
 - [ ] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
-- [ ] `OBS-004` — Inference trace, answer provenance, and failure attribution — `P1`
+- [x] `OBS-004` — Inference trace, answer provenance, and failure attribution — `P1`
 - [ ] `PRIV-002` — Inference trace data plane, retention, and access control — `P1`
 
 ### P1 demo-critical business actions
@@ -1329,7 +1329,7 @@ guarantees by construction.
 
 ### OBS-004 — Inference trace, answer provenance, and failure attribution
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI observability`
 - Depends on: `OBS-001`, `AI-001`, `AI-003`, `RAG-005`, `PRIV-002`
@@ -1359,7 +1359,15 @@ guarantees by construction.
   - The operational plane contains no message content, contact details, or document text.
 - Verification:
   - Run provenance reconstruction, executed-graph fidelity, immutable-index replay, stochastic replay labeling, gold-evidence substitution, zero-domain-write replay, trace-finalization failure, diagnosis fixture, RBAC/audit, and operational-plane redaction tests. `FEAT-015` owns the browser walkthrough.
-- Completion notes: _Pending._
+- Completion notes:
+  - The trace is built in `packages/orchestration/src/tenantchat/orchestration/trace.py` as a pure function over the checkpointed state (`build_turn_trace`), so capture cannot be forgotten and costs no extra I/O: the route node records the full router decision, the model node records the one assembled prompt (reference, content hash, rendered messages, budget exclusions) and provider usage, and the runtime derives the trace at result time. `reconstruct_prompt` rebuilds the exact prompt the provider received from a stored record and re-derives its content hash — the reconstruction contract, proven end to end in `services/api/tests/test_trace_record.py::test_a_turn_is_reconstructible_from_its_record_alone`.
+  - The component manifest pins graph, prompt template, routing policy, agent registry, tool schema, and the full retrieval envelope (retriever version, reranker, embedding model, index generation, filters, budgets, parameters) to a content-free SHA-256 (`manifest_hash`) that is stable across wording and changes with any component — same versions, same hash, no matter what was said.
+  - Attribution is `trace.diagnose`: deterministic detectors over the record alone emit only the Gate B causes the record proves (`retrieval_miss`, `ingestion_or_index_error`, `grounding_or_citation_error`, `context_truncation`, `routing_error` suspected, `provider_failure`, `model_behavior` suspected, `tool_error`, `application_error`) with bounded stage/role/status/confidence enums safe as metric dimensions; causes needing replay or review stay unemitted. A weak-but-in-policy retrieval is not a diagnosis — the record itself shows the candidates, scores, and verdict that let them through.
+  - Migration `0014_inference_trace` adds the content-free query surface to the PRIV-002 envelope: `outcome`, `component_manifest_hash`, `diagnosis_causes`, `turn_index`, `trace_schema_version`, plus `(tenant_id, trace_id)` and manifest/cause/outcome indexes. Content still lives only in the opaque `content` object; the columns are derived at write time by `routers/chat.py::_record_turn`, which now records paused turns too.
+  - The admin API (`routers/traces.py`) gains the attribution surface under the same `trace_viewer` grant and audit rules: `GET /api/admin/traces` (filter by manifest hash, cause, outcome; results carry no content) and `GET /api/admin/traces/by-trace-id/{trace_id}` (the OBS-001 correlation lookup).
+  - Every committed domain effect is attributed to the idempotency key it committed under (`CommittedAction.key`), and each retrieval candidate is pinned to its index generation and embedding model (`EvidenceItem.generation_id`/`embedding_model`).
+  - Not built (documented follow-ups): executed-graph node/edge capture (needs a LangGraph callback listener), immutable-index replay, and the replay service; the trace stores the data those need but does not tax the hot path to gather them.
+  - Files: `packages/orchestration/src/tenantchat/orchestration/trace.py` (new), `state.py`, `nodes.py`, `runtime.py`, `tools.py`; `packages/core/src/tenantchat/core/ports.py`; `services/api/migrations/versions/0014_inference_trace.py`; `services/api/src/tenantchat/api/{store.py, persistence/traces.py, routers/chat.py, routers/traces.py, schemas.py, evidence.py, agent.py}`; tests in `packages/orchestration/tests/test_trace.py`, `services/api/tests/test_trace_record.py`, `test_traces.py`, `test_citations.py`, `tests/repositories/test_trace_governance.py`, `tests/privacy/test_privacy_lifecycle.py` (chat-generated turn records now count toward export/erasure), `tests/migrations/test_migrations.py`; `docs/runbooks/inference-trace-plane.md`.
 
 ### ARCH-001 — LangGraph agent runtime over a framework-free domain
 

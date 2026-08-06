@@ -61,6 +61,11 @@ PUBLISHED_OPERATIONS = {
     # trace-read grant and audited per read; grant and revoke are platform-admin
     # mutations like membership assignment.
     ("get", "/api/admin/traces/{turn_id}"),
+    # OBS-004: the attribution surface. Search filters on the content-free
+    # projection (manifest hash, cause, outcome); by-trace-id is the correlation
+    # lookup, audited like the direct read.
+    ("get", "/api/admin/traces"),
+    ("get", "/api/admin/traces/by-trace-id/{trace_id}"),
     ("get", "/api/admin/trace-access"),
     ("post", "/api/admin/trace-access"),
     ("delete", "/api/admin/trace-access"),

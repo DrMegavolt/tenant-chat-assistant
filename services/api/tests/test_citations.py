@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -56,6 +56,20 @@ HOURS_ANSWER = "We are open daily from 7 AM to 7 PM."
 def _effective_at(version: DocumentVersion) -> datetime:
     assert version.effective_at is not None  # a published version always carries one
     return version.effective_at
+
+
+def _section(content: dict[str, object], key: str) -> dict[str, object]:
+    """One trace section as the record holds it."""
+    value = content[key]
+    assert isinstance(value, Mapping)
+    return dict(value)
+
+
+def _list(content: dict[str, object], key: str) -> list[dict[str, object]]:
+    """One trace list of records as the record holds it."""
+    value = content[key]
+    assert isinstance(value, list)
+    return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
 class _UniformEmbedder:
@@ -474,7 +488,7 @@ def test_another_tenants_source_cannot_be_cited_or_resolved() -> None:
 
 def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> None:
     """The inference-plane envelope: verified citations, invalid citations, and
-    the retrieval manifest ride the turn record, not the public response."""
+    the retrieval manifest ride the `OBS-004` trace, not the public response."""
     knowledge = InMemoryKnowledgeStore()
     version = _published_version(knowledge, title="Clearview hours")
     client, _, _, turn_records = _client(
@@ -504,8 +518,8 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
 
     assert len(records) == 1
     content = records[0].content
-    assert content["prompt_version"] == "dispatch-system@4"
-    assert content["citations"] == [
+    assert _section(content, "prompt")["template_ref"] == "dispatch-system@4"
+    assert _section(content, "verdicts")["citations"] == [
         {
             "source_id": "clearview-hvac-2",
             "title": "Hours and availability",
@@ -515,13 +529,37 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
             "effective_at": _effective_at(version).isoformat(),
         }
     ]
-    assert content["citation_invalid"] == ["clearview-hvac-999"]
-    assert content["retrieval"] == {
-        "sufficient": True,
-        "retriever_version": "v1",
-        "reranker": "bigram-overlap",
-        "min_evidence_score": 0.5,
+    assert _section(content, "verdicts")["citation_invalid"] == ["clearview-hvac-999"]
+    retrieval = _section(content, "retrieval")
+    assert retrieval["sufficient"] is True
+    assert retrieval["retriever_version"] == "v1"
+    assert retrieval["reranker"] == "bigram-overlap"
+    assert retrieval["min_evidence_score"] == 0.5
+    (candidate,) = _list(retrieval, "candidates")
+    assert candidate["source_id"] == "clearview-hvac-2"
+    assert candidate["score"] == 1.0
+    assert candidate["embedding_model"] == "scripted-embedder.v1"
+    assert candidate["generation_id"] is not None
+    assert content["outcome"] == {
+        "status": "answered",
+        "rounds": 1,
+        "failure": None,
     }
+    manifest = _section(content, "component_manifest")
+    assert manifest["graph"] == "dispatch@2"
+    assert manifest["prompt_template"] == {"ref": "dispatch-system@3"}
+    assert manifest["routing_policy"] == "intent-routing@1"
+    assert _list(content, "diagnoses") == [
+        {
+            "cause": "grounding_or_citation_error",
+            "stage": "validation",
+            "role": "primary",
+            "status": "detected",
+            "confidence": "high",
+            "evidence": ["citation_invalid:clearview-hvac-999"],
+            "detector_version": "diagnosis@1",
+        }
+    ]
 
 
 def test_insufficient_evidence_abstains_without_calling_the_model() -> None:

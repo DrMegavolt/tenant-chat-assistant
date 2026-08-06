@@ -62,12 +62,15 @@ class CommittedAction(TypedDict):
     Kept so a resumed run can see what it did before it was interrupted without
     querying the domain, and so a caller can report the booking reference back to
     the customer. ``replayed`` records that the idempotency key matched an
-    existing record rather than creating one.
+    existing record rather than creating one. ``key`` is the derived idempotency
+    key the effect committed under, for the `OBS-004` trace: every effect is
+    attributable to the key that made it happen exactly once.
     """
 
     action: str
     reference: str
     replayed: bool
+    key: str
 
 
 class DispatchState(TypedDict):
@@ -131,6 +134,16 @@ class DispatchState(TypedDict):
     # validation and caused the answer to be refused.
     refused_tools: list[str]
     claims_invalid: list[dict[str, str]]
+    # The `OBS-004` trace inputs, each replaced by the node that produced it:
+    # the full router decision (every candidate with its score), the one
+    # assembled prompt of the model call that produced the published answer
+    # (reference, content hash, resolved bindings, rendered messages, and what
+    # the budget excluded), and the provider's usage accounting for the last
+    # model call. The trace itself is derived from these in
+    # :mod:`tenantchat.orchestration.trace`, never stored separately.
+    routing_decision: dict[str, object]
+    prompt_assembly: dict[str, object]
+    model_usage: dict[str, int]
 
 
 def visitor_entry(content: str) -> TranscriptEntry:
@@ -178,6 +191,9 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "citation_invalid": [],
         "refused_tools": [],
         "claims_invalid": [],
+        "routing_decision": {},
+        "prompt_assembly": {},
+        "model_usage": {},
     }
 
 
@@ -211,4 +227,9 @@ def next_turn(message: str) -> dict[str, object]:
         "citation_invalid": [],
         "refused_tools": [],
         "claims_invalid": [],
+        # The route node re-decides every turn; the previous turn's trace
+        # inputs must not leak into the next one.
+        "routing_decision": {},
+        "prompt_assembly": {},
+        "model_usage": {},
     }

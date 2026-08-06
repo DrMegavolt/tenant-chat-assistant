@@ -146,6 +146,7 @@ def _turn(result: TurnResult) -> AssistantTurn:
         refused_tools=result.refused_tools,
         claims_invalid=result.claims_invalid,
         retrieval=result.retrieval,
+        trace=result.trace,
     )
 
 

@@ -123,34 +123,19 @@ async def _record_answer(
 
 
 def _turn_record_content(turn: AssistantTurn) -> dict[str, object]:
-    """The inference-plane envelope for one completed turn (`RAG-005`).
+    """The inference-plane envelope for one completed turn (`OBS-004`).
 
-    Everything here is content or content metadata and belongs to the trace
-    plane: the verified citations, the invalid-citation verdicts, the `RAG-007`
-    enforcement records (refused tool codes and unsupported claims, kind and
-    value only), and the retrieval that ran. The public response curates from
-    :attr:`AssistantTurn.citations` and never sees the verdicts.
+    The trace is the whole envelope: the router decision with every candidate,
+    the retrieval that ran and the candidates it admitted, the assembled
+    prompt reference and content hash, model usage, the raw output and its
+    parsed claims, the citation verdicts, the `RAG-007` enforcement records
+    (refused tool codes and unsupported claims), the tool effects with their
+    idempotency keys, the outcome, the component manifest with its content-free
+    hash, and the auto-detected diagnoses. Everything here is content or
+    content metadata and belongs to the trace plane; the public response
+    curates from :attr:`AssistantTurn.citations` and never sees the verdicts.
     """
-    return {
-        "prompt_version": turn.prompt_version,
-        "graph_version": turn.graph_version,
-        "model_name": turn.model_name,
-        "citations": [
-            {
-                "source_id": citation.source_id,
-                "title": citation.title,
-                "source_name": citation.source_name,
-                "location": citation.location,
-                "revision": citation.revision,
-                "effective_at": citation.effective_at.isoformat(),
-            }
-            for citation in turn.citations
-        ],
-        "citation_invalid": list(turn.citation_invalid),
-        "refused_tools": list(turn.refused_tools),
-        "claims_invalid": [list(claim) for claim in turn.claims_invalid],
-        "retrieval": dict(turn.retrieval) if turn.retrieval is not None else None,
-    }
+    return dict(turn.trace) if turn.trace is not None else {}
 
 
 async def _record_turn(
@@ -159,19 +144,39 @@ async def _record_turn(
     session_id: uuid.UUID,
     turn: AssistantTurn,
 ) -> None:
-    """Persist the turn's inference-plane envelope, when one was completed.
+    """Persist the turn's inference-plane envelope (`OBS-004`).
 
-    A paused turn produced no answer, so there is nothing to attribute yet; the
-    record for the turn is written when the confirmation resumes and completes
-    it.
+    Every conversation turn earns a record, paused ones included: a proposed
+    booking that is still awaiting the customer's yes is the most attributable
+    thing a turn can be, and its trace names the tool call that proposed it.
+
+    The metadata columns are copied out of the trace's own fields — never
+    re-derived from content — so the derived columns can disagree with the
+    envelope only if the runtime and the writer disagree about where the trace
+    lives.
     """
-    if turn.is_paused or not turn.answer:
-        return
+    trace = turn.trace or {}
+    outcome = trace.get("outcome")
+    raw_index = trace.get("turn_index")
+    diagnoses = trace.get("diagnoses")
     await turns.record(
         tenant_id,
         session_id,
         content=_turn_record_content(turn),
         trace_id=current_trace_id(),
+        outcome=str(outcome.get("status", "unknown")) if isinstance(outcome, dict) else "unknown",
+        component_manifest_hash=str(trace.get("manifest_hash", "")),
+        diagnosis_causes=tuple(
+            str(diagnosis.get("cause", ""))
+            for diagnosis in diagnoses
+            if isinstance(diagnosis, dict) and diagnosis.get("cause")
+        )
+        if isinstance(diagnoses, list)
+        else (),
+        turn_index=(
+            raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
+        ),
+        trace_schema_version=str(trace.get("schema_version", "1")),
     )
 
 
