@@ -184,10 +184,13 @@ def case_passes(report: Mapping[str, object], case_id: str) -> bool:
 
     This is the per-case reading of the harness's report: a case passes when
     its abstention decision was correct, nothing retrieved leaked across
-    tenants, and every score it declared meets the run's thresholds. A case
-    with no gold chunks (``recall``/``citation_precision`` are ``null``) is
-    judged on abstention alone. ``RAG-008`` will use exactly this predicate
-    when it gates releases on the report.
+    tenants, every score it declared meets the run's thresholds, and — when
+    the row carries a grounding verdict — the answer's sensitive claims were
+    grounded in the admitted evidence. A case with no gold chunks
+    (``recall``/``citation_precision`` are ``null``) is judged on abstention
+    alone; a row without a grounding verdict (no ``grounding_correct`` key)
+    is not judged on grounding. ``RAG-008`` uses exactly this predicate when
+    it gates releases on the report.
     """
     components = report.get("components")
     min_recall = _component_float(components, "min_recall")
@@ -216,7 +219,10 @@ def case_passes(report: Mapping[str, object], case_id: str) -> bool:
             and not isinstance(citation, bool)
             and float(citation) < min_citation
         )
-        return not citation_too_low
+        if citation_too_low:
+            return False
+        grounding = row.get("grounding_correct")
+        return grounding is not False
     return False
 
 
