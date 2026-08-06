@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any, Final
 
@@ -42,7 +43,12 @@ from tenantchat.core.errors import (
     UnknownServiceError,
     ValidationError,
 )
-from tenantchat.core.ports import IdempotencyKey
+from tenantchat.core.ports import (
+    EvidenceBundle,
+    EvidenceItem,
+    EvidenceUnavailableError,
+    IdempotencyKey,
+)
 from tenantchat.core.routing import IntentName, RoutingOutcome, clarify_question
 from tenantchat.core.tenant import TenantPolicy
 from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
@@ -55,6 +61,7 @@ from tenantchat.orchestration.prompts import (
     DISPATCH_SYSTEM_TEMPLATE_ID,
     AssemblyOutcome,
     HistoryTurn,
+    PromptEvidence,
     assemble_prompt,
 )
 from tenantchat.orchestration.state import (
@@ -73,6 +80,75 @@ logger = logging.getLogger(__name__)
 # one to spare. Past that the model is looping, and looping costs the customer
 # time they would rather spend talking to a person.
 MAX_TOOL_ROUNDS: Final = 4
+
+# The citation marker the `dispatch-system@3` prompt asks for:
+# [evidence:<source_id>]. The source id is an index chunk id, so the same
+# charset as an Elasticsearch document id.
+_CITATION_RE = re.compile(r"\[evidence:([A-Za-z0-9][A-Za-z0-9._:-]{0,199})\]")
+
+
+def citation_ids(text: str) -> tuple[str, ...]:
+    """The source ids an answer cites, in the order written, deduplicated."""
+    seen: set[str] = set()
+    ids: list[str] = []
+    for match in _CITATION_RE.finditer(text):
+        if match.group(1) not in seen:
+            seen.add(match.group(1))
+            ids.append(match.group(1))
+    return tuple(ids)
+
+
+def strip_citation_markers(text: str) -> str:
+    """Remove citation markers from an answer before it is published.
+
+    The widget renders the curated citation list, never the raw marker, so an
+    answer is delivered without the labels — including for a citation that
+    failed validation, which must not surface as a dangling reference.
+    """
+    return _CITATION_RE.sub("", text).strip()
+
+
+def _evidence_item_dict(item: EvidenceItem) -> dict[str, object]:
+    """One passage as the checkpoint stores it: JSON-safe, with its curated
+    citation metadata resolved by the adapter."""
+    return {
+        "source_id": item.source_id,
+        "title": item.title,
+        "source_name": item.source_name,
+        "location": item.location,
+        "content": item.content,
+        "document_id": str(item.document_id),
+        "version_id": str(item.version_id),
+        "score": item.score,
+        "revision": item.revision,
+        "effective_at": item.effective_at.isoformat(),
+    }
+
+
+def _citation_dict(item: dict[str, object]) -> dict[str, object]:
+    """The curated citation metadata of one verified passage."""
+    return {
+        "source_id": item["source_id"],
+        "title": item["title"],
+        "source_name": item["source_name"],
+        "location": item["location"],
+        "revision": item["revision"],
+        "effective_at": item["effective_at"],
+    }
+
+
+def _abstention_reply(policy: TenantPolicy) -> str:
+    """The deterministic refusal for a question no approved material answers.
+
+    Written by the server, not the model: the retrieval verdict that produces
+    it means the model has nothing trustworthy to say, so letting the model
+    improvise the refusal would defeat the abstention. Quotes nothing from the
+    question, which is content and stays in the inference plane.
+    """
+    return (
+        "I do not have approved material to answer that yet, so I will not "
+        f"guess. Ask me about hours, services, or pricing — or call {policy.phone}."
+    )
 
 
 class DispatchNode(StrEnum):
@@ -211,12 +287,17 @@ def unanswered_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
     return ()
 
 
-def _assemble_prompt(policy: TenantPolicy, state: DispatchState) -> AssemblyOutcome:
+def _assemble_prompt(
+    policy: TenantPolicy,
+    state: DispatchState,
+    evidence: Sequence[PromptEvidence] = (),
+) -> AssemblyOutcome:
     """Build the one prompt a model call may receive (`AI-003`).
 
     The whole transcript goes in; the assembly budget decides what fits and
-    returns what it excluded rather than truncating silently. Evidence is empty
-    until `RAG-005` wires retrieval into the graph.
+    returns what it excluded rather than truncating silently. Evidence is the
+    retrieval this turn grounded the call in (`RAG-005`); assembly admits it
+    as untrusted segments and reports what the budget left out.
     """
     return assemble_prompt(
         DEFAULT_REGISTRY.current(DISPATCH_SYSTEM_TEMPLATE_ID),
@@ -231,7 +312,7 @@ def _assemble_prompt(policy: TenantPolicy, state: DispatchState) -> AssemblyOutc
             )
             for entry in state["transcript"]
         ],
-        evidence=(),
+        evidence=evidence,
         budget=DEFAULT_BUDGET,
     )
 
@@ -370,10 +451,22 @@ class DispatchNodes:
         }
 
     async def call_model(self, state: DispatchState) -> dict[str, Any]:
-        """Ask the model what to do next."""
+        """Ask the model what to do next, grounded in this turn's evidence."""
         policy = await self._deps.policies.policy(state["tenant_id"])
-        outcome = _assemble_prompt(policy, state)
         agent = _agent_for(self._deps, state)
+        bundle = await self._retrieve_evidence(state)
+        if self._should_abstain(agent, bundle):
+            return self._abstention_update(state, policy)
+        evidence = tuple(
+            PromptEvidence(source_id=item.source_id, title=item.title, content=item.content)
+            for item in (bundle.items if bundle is not None else ())
+        )
+        outcome = _assemble_prompt(policy, state, evidence)
+        if self._should_abstain_after_assembly(agent, bundle, outcome):
+            # The retrieval verdict passed, but the assembled prompt carried no
+            # evidence segment — a budget cut, not a retriever failure. The
+            # model must still not guess from an empty context.
+            return self._abstention_update(state, policy)
         # The model is offered only the tools the routed agent may call; the
         # tools node enforces the same allowlist against whatever it sends.
         allowed = tuple(
@@ -397,11 +490,114 @@ class DispatchNodes:
             return {"failure": HandoffReason.UNRESOLVED.value, "rounds": state["rounds"] + 1}
 
         booking = next((call for call in calls if call.name == ToolName.BOOK_APPOINTMENT), None)
-        return {
+        update: dict[str, Any] = {
             "transcript": [assistant_entry(response.content, [_store(call) for call in calls])],
             "rounds": state["rounds"] + 1,
             "model_name": response.model_name,
             "pending_booking": _store(booking) if booking is not None else None,
+        }
+        if response.content.strip():
+            update.update(self._evidence_update(bundle, outcome))
+        return update
+
+    @staticmethod
+    def _abstention_update(state: DispatchState, policy: TenantPolicy) -> dict[str, Any]:
+        return {
+            "transcript": [assistant_entry(_abstention_reply(policy), [])],
+            "rounds": state["rounds"] + 1,
+        }
+
+    async def _retrieve_evidence(self, state: DispatchState) -> EvidenceBundle | None:
+        """The passages that may ground this turn, or ``None`` without retrieval.
+
+        A retrieval failure is treated as "no evidence": an index that is down
+        must make the assistant abstain for knowledge questions, never answer
+        from nothing.
+        """
+        source = self._deps.evidence
+        if source is None:
+            return None
+        try:
+            return await source.retrieve(
+                tenant_id=state["tenant_id"],
+                query=latest_visitor_message(state),
+            )
+        except EvidenceUnavailableError:
+            logger.warning(
+                "retrieval unavailable for turn",
+                extra={"tenant_id": state["tenant_id"], "turn_index": state["turn_index"]},
+            )
+            return EvidenceBundle(
+                items=(),
+                sufficient=False,
+                retriever_version="unavailable",
+                reranker=None,
+                min_evidence_score=0.0,
+            )
+
+    @staticmethod
+    def _should_abstain(agent: AgentSpec | None, bundle: EvidenceBundle | None) -> bool:
+        """Whether this turn must refuse rather than call the model.
+
+        Only the general-knowledge agent abstains: every other agent answers
+        from tool results or a workflow, which evidence does not gate. ``None``
+        is a composition without retrieval, which answers as it did before
+        `RAG-005`.
+        """
+        return (
+            agent is not None
+            and agent.intent is IntentName.GENERAL
+            and bundle is not None
+            and not bundle.sufficient
+        )
+
+    @classmethod
+    def _should_abstain_after_assembly(
+        cls, agent: AgentSpec | None, bundle: EvidenceBundle | None, outcome: AssemblyOutcome
+    ) -> bool:
+        """Whether admission dropped the evidence the verdict relied on.
+
+        The verdict speaks about the retrieved pool; the model only sees what
+        the prompt budget admitted. If nothing was admitted, the context is
+        empty and the model must not be called regardless of the verdict.
+        """
+        if agent is None or agent.intent is not IntentName.GENERAL or bundle is None:
+            return False
+        return not any(
+            segment.segment_id.startswith("evidence:")
+            for segment in outcome.prompt.messages[0].segments
+        )
+
+    @staticmethod
+    def _evidence_update(
+        bundle: EvidenceBundle | None, outcome: AssemblyOutcome
+    ) -> dict[str, object]:
+        """The evidence the answer this call produced was grounded in.
+
+        Recorded only when the model produced content, so finalize validates
+        the published answer against the context of the call that wrote it.
+        ``evidence_ids`` is the *exact* context: the ids assembly admitted to
+        the prompt, not the wider retrieved pool.
+        """
+        admitted = [
+            segment.segment_id.removeprefix("evidence:")
+            for segment in outcome.prompt.messages[0].segments
+            if segment.segment_id.startswith("evidence:")
+        ]
+        if bundle is None:
+            return {"evidence_ids": admitted, "evidence_sufficient": False, "evidence_meta": {}}
+        by_id = {item.source_id: item for item in bundle.items}
+        admitted_items = [by_id[source_id] for source_id in admitted if source_id in by_id]
+        return {
+            "evidence": [_evidence_item_dict(item) for item in admitted_items],
+            "evidence_ids": admitted,
+            "evidence_sufficient": bundle.sufficient,
+            "evidence_meta": {
+                "sufficient": bundle.sufficient,
+                "retriever_version": bundle.retriever_version,
+                "reranker": bundle.reranker,
+                "min_evidence_score": bundle.min_evidence_score,
+            },
         }
 
     async def run_tools(self, state: DispatchState) -> dict[str, Any]:
@@ -754,18 +950,39 @@ class DispatchNodes:
         }
 
     async def finalize(self, state: DispatchState) -> dict[str, Any]:
-        """Publish the assistant's answer for this turn.
+        """Publish the assistant's answer for this turn, with its citations.
 
         The search stops at the visitor's message. Reading further back would
         find the *previous* turn's answer and republish it, which is worse than
         the fallback: a customer who asked a new question would be told the
         thing they were already told.
+
+        Citations are validated against the exact evidence context the answer's
+        model call was assembled from (`RAG-005`): a source id the model wrote
+        that is not in that context — fabricated, stale, or another tenant's —
+        is dropped from what is published and reported as an invalid citation
+        for the inference plane. Markers are stripped from the answer either
+        way, so the widget never renders a dangling reference.
         """
         for entry in reversed(state["transcript"]):
             if entry["role"] == "user":
                 break
             if entry["role"] == "assistant" and entry["content"].strip():
-                return {"answer": entry["content"].strip()}
+                found = citation_ids(entry["content"])
+                context = frozenset(state["evidence_ids"])
+                by_id = {str(item["source_id"]): item for item in state["evidence"]}
+                citations = [
+                    _citation_dict(by_id[source_id])
+                    for source_id in found
+                    if source_id in context and source_id in by_id
+                ]
+                return {
+                    "answer": strip_citation_markers(entry["content"]),
+                    "citations": citations,
+                    "citation_invalid": [
+                        source_id for source_id in found if source_id not in context
+                    ],
+                }
         policy = await self._deps.policies.policy(state["tenant_id"])
         return {"answer": f"I can help with that — the team is on {policy.phone}."}
 

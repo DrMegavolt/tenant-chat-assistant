@@ -46,6 +46,7 @@ from tenantchat.core.ports import (
     AssistantTurn,
     AvailabilityProvider,
     CommittedEffect,
+    EvidenceSource,
 )
 from tenantchat.core.routing import ROUTING_POLICY
 from tenantchat.orchestration.agents import DEFAULT_AGENT_REGISTRY
@@ -67,12 +68,18 @@ def build_dispatch_dependencies(
     consent: ConsentStore,
     workflows: WorkflowStore,
     availability: AvailabilityProvider | None = None,
+    evidence: EvidenceSource | None = None,
 ) -> DispatchDependencies:
     """Wrap this service's adapters in the ports the graph runs against.
 
     ``availability`` defaults to the in-process demo provider so a test harness
     can omit it; the production composition passes the database-backed provider
     explicitly rather than silently falling back to a fake.
+
+    ``evidence`` is the `RAG-005` retrieval port. It is optional on purpose: a
+    deployment without it answers as the pre-`RAG-005` graph did, with no
+    abstention and no citations, so the feature adds risk only where it is
+    composed in.
     """
     source = availability or DemoAvailabilityProvider(registry)
     return DispatchDependencies(
@@ -85,6 +92,7 @@ def build_dispatch_dependencies(
         workflows=RecordedWorkflowService(workflows),
         routing=ROUTING_POLICY,
         agents=DEFAULT_AGENT_REGISTRY,
+        evidence=evidence,
     )
 
 
@@ -100,6 +108,7 @@ def build_dispatch_runtime(
     workflows: WorkflowStore,
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
+    evidence: EvidenceSource | None = None,
 ) -> DispatchRuntime:
     """Build the runtime one deployment will serve conversations from."""
     dependencies = build_dispatch_dependencies(
@@ -112,6 +121,7 @@ def build_dispatch_runtime(
         availability=availability,
         consent=consent,
         workflows=workflows,
+        evidence=evidence,
     )
     return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
 
@@ -131,6 +141,9 @@ def _turn(result: TurnResult) -> AssistantTurn:
         model_name=result.model_name,
         graph_version=result.graph_version,
         prompt_version=result.prompt_version,
+        citations=result.citations,
+        citation_invalid=result.citation_invalid,
+        retrieval=result.retrieval,
     )
 
 
@@ -177,6 +190,7 @@ def build_conversation_runtime(
     workflows: WorkflowStore,
     checkpointer: Checkpointer,
     availability: AvailabilityProvider | None = None,
+    evidence: EvidenceSource | None = None,
 ) -> GraphConversationRuntime:
     """Build the runtime the HTTP layer serves conversations from."""
     return GraphConversationRuntime(
@@ -191,5 +205,6 @@ def build_conversation_runtime(
             workflows=workflows,
             checkpointer=checkpointer,
             availability=availability,
+            evidence=evidence,
         )
     )

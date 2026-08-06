@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from tenantchat.core.ports import (
     AvailabilityProvider,
     BookingService,
+    EvidenceSource,
     HandoffService,
     LeadService,
     TenantPolicySource,
@@ -41,3 +42,7 @@ class DispatchDependencies:
     workflows: WorkflowService
     routing: RoutingPolicy
     agents: AgentRegistry
+    # `None` is a deployment that composed no retrieval: the graph then runs
+    # exactly as before `RAG-005`, with no evidence, no abstention, and no
+    # citations. A composition with a retrieval adapter never passes `None`.
+    evidence: EvidenceSource | None = None

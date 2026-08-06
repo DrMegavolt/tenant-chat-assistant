@@ -195,6 +195,23 @@ server {
         proxy_pass ${CHAT_BACKEND_ORIGIN};
     }
 
+    # The authorized view a citation resolves to (`RAG-005`). The chunk id the
+    # widget renders is a retrieval-index document id, so the location is a
+    # regex narrowed to that charset rather than an open parameter.
+    location ~ "^/api/chat/sources/[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$" {
+        if ($request_method = OPTIONS) {
+            add_header Vary Origin always;
+            add_header Access-Control-Allow-Origin $widget_cors_origin always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, X-Visitor-Credential" always;
+            add_header Access-Control-Max-Age 86400 always;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin $widget_cors_origin always;
+        add_header Vary Origin always;
+        proxy_pass ${CHAT_BACKEND_ORIGIN};
+    }
+
     location = /api/book {
         if ($request_method = OPTIONS) {
             add_header Vary Origin always;

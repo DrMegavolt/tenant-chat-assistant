@@ -22,7 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -71,6 +71,43 @@ class IndexedChunk:
             "embedding": list(self.embedding),
         }
 
+    @classmethod
+    def from_document(cls, raw: Mapping[str, object], *, chunk_id: str) -> IndexedChunk:
+        """Rebuild a chunk from a stored index document (the read side of
+        :meth:`to_document`), used by the retrieval-pool and citation reads.
+
+        ``chunk_id`` is the document's ``_id``, which the stored source does
+        not repeat.
+
+        Raises:
+            ValueError: the document is missing or malformed. A stored index
+                document is derived data this adapter wrote, so a shape change
+                fails loudly here rather than silently yielding a chunk with
+                no embeddings.
+        """
+        try:
+            embedding_values = raw["embedding"]
+            if not isinstance(embedding_values, list | tuple):
+                raise ValueError("embedding is not a list")
+            embedding = tuple(float(value) for value in embedding_values)
+            return cls(
+                chunk_id=chunk_id,
+                tenant_id=str(raw["tenant_id"]),
+                domain=str(raw["domain"]),
+                document_id=uuid.UUID(str(raw["document_id"])),
+                version_id=uuid.UUID(str(raw["version_id"])),
+                generation_id=uuid.UUID(str(raw["generation_id"])),
+                title=str(raw["title"]),
+                section=str(raw["section"]),
+                text=str(raw["text"]),
+                embedding_model=str(raw["embedding_model"]),
+                embedding=embedding,
+                active=bool(raw.get("active", True)),
+                created_at=datetime.fromisoformat(str(raw.get("created_at"))),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"index document is not a valid chunk: {error}") from error
+
 
 class SearchIndex(Protocol):
     """The retrieval store's write and integrity-query surface."""
@@ -118,6 +155,23 @@ class SearchIndex(Protocol):
         self, *, tenant_id: str, document_id: uuid.UUID
     ) -> tuple[uuid.UUID, ...]:
         """Versions of one document that still have active chunks in the index."""
+        ...
+
+    async def active_chunks(self, *, tenant_id: str) -> tuple[IndexedChunk, ...]:
+        """The tenant's active chunks: the pool retrieval ranks (`RAG-005`).
+
+        Derived data read back for ranking; the caller still applies the
+        retrievability predicate (`RAG-004`), because the index cannot see
+        publication state.
+        """
+        ...
+
+    async def chunk_by_id(self, *, tenant_id: str, chunk_id: str) -> IndexedChunk | None:
+        """One active chunk of the tenant's, for a citation's source view.
+
+        ``None`` covers absent, inactive, and other-tenant alike: a citation
+        resolution must not distinguish why a source is unavailable.
+        """
         ...
 
 
@@ -204,11 +258,44 @@ class InMemorySearchIndex:
             )
         )
 
+    async def active_chunks(self, *, tenant_id: str) -> tuple[IndexedChunk, ...]:
+        return tuple(
+            sorted(
+                (
+                    chunk
+                    for chunk in self._chunks.values()
+                    if chunk.tenant_id == tenant_id and chunk.active
+                ),
+                key=lambda chunk: chunk.chunk_id,
+            )
+        )
+
+    async def chunk_by_id(self, *, tenant_id: str, chunk_id: str) -> IndexedChunk | None:
+        chunk = self._chunks.get(chunk_id)
+        if chunk is None or chunk.tenant_id != tenant_id or not chunk.active:
+            return None
+        return chunk
+
 
 def _inactive(chunk: IndexedChunk) -> IndexedChunk:
     # dataclasses.replace preserves the frozen contract without hand-writing
     # the constructor call.
     return replace(chunk, active=False)
+
+
+def _chunk_from_hit(hit: Mapping[str, object]) -> IndexedChunk:
+    """One Elasticsearch hit as a chunk, with the document ``_id`` as its id.
+
+    Raises:
+        SearchIndexOperationError: the hit carries no source document.
+    """
+    source = hit.get("_source")
+    if not isinstance(source, Mapping):
+        raise SearchIndexOperationError("search index returned a hit without a source")
+    chunk_id = hit.get("_id")
+    if not isinstance(chunk_id, str) or not chunk_id:
+        raise SearchIndexOperationError("search index returned a hit without an _id")
+    return IndexedChunk.from_document(source, chunk_id=chunk_id)
 
 
 class ElasticsearchSearchIndex:
@@ -360,6 +447,48 @@ class ElasticsearchSearchIndex:
         buckets = response.get("aggregations", {}).get("versions", {}).get("buckets", [])
         version_ids = [uuid.UUID(str(bucket["key"])) for bucket in buckets]
         return tuple(sorted(version_ids))
+
+    async def active_chunks(self, *, tenant_id: str) -> tuple[IndexedChunk, ...]:
+        # Bounded by the cluster's search window: a tenant beyond it is an
+        # operator problem, not something retrieval should silently truncate.
+        query = {
+            "size": 10000,
+            "sort": [{"chunk_id": "asc"}],
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"tenant_id": tenant_id}},
+                        {"term": {"active": True}},
+                    ]
+                }
+            },
+        }
+        response = await self._request(
+            "POST", self._url("_search"), json.dumps(query), use_index=True
+        )
+        hits = response.get("hits", {}).get("hits", [])
+        return tuple(_chunk_from_hit(hit) for hit in hits)
+
+    async def chunk_by_id(self, *, tenant_id: str, chunk_id: str) -> IndexedChunk | None:
+        query = {
+            "size": 1,
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"tenant_id": tenant_id}},
+                        {"term": {"active": True}},
+                        {"ids": {"values": [chunk_id]}},
+                    ]
+                }
+            },
+        }
+        response = await self._request(
+            "POST", self._url("_search"), json.dumps(query), use_index=True
+        )
+        hits = response.get("hits", {}).get("hits", [])
+        if not hits:
+            return None
+        return _chunk_from_hit(hits[0])
 
     async def ensure_mapping(self, dimensions: int) -> None:
         """Create the index with the chunk mapping when it does not exist yet."""

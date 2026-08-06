@@ -17,6 +17,11 @@ call, and the workflow status, all bound from the graph's checkpoint state. The
 model reads its current job from the same durable record the workflow service
 writes, so a resumed conversation is told the same job it was told before it
 was interrupted.
+
+``dispatch-system@3`` adds the `RAG-005` citation contract: retrieved passages
+are labeled ``evidence:<source_id>`` and the model must cite a passage it used,
+by writing ``[evidence:<source_id>]`` after the claim. The answer validator
+then checks every citation against the exact context the prompt carried.
 """
 
 from __future__ import annotations
@@ -33,7 +38,8 @@ from tenantchat.orchestration.prompts.schema import BindingSchema, SlotKind, Slo
 DISPATCH_SYSTEM_TEMPLATE_ID = "dispatch-system"
 DISPATCH_SYSTEM_VERSION = 1
 DISPATCH_SYSTEM_V2_VERSION = 2
-DISPATCH_SYSTEM_REF = f"{DISPATCH_SYSTEM_TEMPLATE_ID}@{DISPATCH_SYSTEM_V2_VERSION}"
+DISPATCH_SYSTEM_V3_VERSION = 3
+DISPATCH_SYSTEM_REF = f"{DISPATCH_SYSTEM_TEMPLATE_ID}@{DISPATCH_SYSTEM_V3_VERSION}"
 
 # The tone bullet a tenant gets unless it supplies one of its own.
 DEFAULT_TONE = (
@@ -272,5 +278,35 @@ DISPATCH_SYSTEM_V2 = TemplateVersion(
             SlotSpec("workflow_status", SlotKind.WORKFLOW_CONTEXT, max_chars=300),
         )
     ),
+    bindings=_dispatch_bindings_v2,
+)
+
+
+# The active template (`RAG-005`): the v2 prompt plus the citation contract.
+# Retrieved passages are appended to the system message as untrusted segments
+# labeled `evidence:<source_id>`; this segment is what tells the model to cite
+# them that way, and the answer validator reads the same labels back.
+DISPATCH_SYSTEM_V3 = TemplateVersion(
+    template_id=DISPATCH_SYSTEM_TEMPLATE_ID,
+    version=DISPATCH_SYSTEM_V3_VERSION,
+    description="The dispatcher system prompt with the citation contract: "
+    "ground factual claims in the retrieved passages, cited as "
+    "[evidence:<source_id>], and never cite a passage that was not provided.",
+    segments=(
+        *DISPATCH_SYSTEM_V2.segments,
+        TemplateSegment(
+            "citation_policy",
+            PromptRegion.TRUSTED,
+            "Citations:\n"
+            "- The retrieved passages at the end of this message are labeled "
+            "evidence:<source_id>. Ground every factual claim about the "
+            "business in them.\n"
+            "- After a claim you grounded in a passage, write "
+            "[evidence:<source_id>] using exactly that passage's label.\n"
+            "- Never cite a label that is not present below, and never invent a "
+            "passage.",
+        ),
+    ),
+    schema=BindingSchema(DISPATCH_SYSTEM_V2.schema.slots),
     bindings=_dispatch_bindings_v2,
 )

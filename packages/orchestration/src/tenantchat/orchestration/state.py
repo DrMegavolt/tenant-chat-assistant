@@ -109,6 +109,22 @@ class DispatchState(TypedDict):
     # the durable workflow row for the same reason. Replaced wholesale by the
     # tools node, never accumulated.
     collected_fields: dict[str, str]
+    # The `RAG-005` evidence of the most recent model call that produced
+    # content: the full passages (as JSON-safe dicts), the source ids that
+    # were actually admitted to the prompt context, the sufficiency verdict,
+    # and the retrieval parameters that produced them. Replaced by each model
+    # call, so finalize validates against the exact context of the answer it
+    # publishes.
+    evidence: list[dict[str, object]]
+    evidence_ids: list[str]
+    evidence_sufficient: bool
+    evidence_meta: dict[str, object]
+    # Citation verdicts for the published answer: the verified citations (as
+    # JSON-safe dicts of the curated metadata) and the source ids the model
+    # wrote that were not in the context. `OBS-004` reads these from the turn
+    # record; the public schema publishes only the verified side.
+    citations: list[dict[str, object]]
+    citation_invalid: list[str]
 
 
 def visitor_entry(content: str) -> TranscriptEntry:
@@ -148,6 +164,12 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "workflow_id": "",
         "clarification_question": "",
         "collected_fields": {},
+        "evidence": [],
+        "evidence_ids": [],
+        "evidence_sufficient": False,
+        "evidence_meta": {},
+        "citations": [],
+        "citation_invalid": [],
     }
 
 
@@ -173,4 +195,10 @@ def next_turn(message: str) -> dict[str, object]:
         "workflow_id": "",
         "clarification_question": "",
         "collected_fields": {},
+        "evidence": [],
+        "evidence_ids": [],
+        "evidence_sufficient": False,
+        "evidence_meta": {},
+        "citations": [],
+        "citation_invalid": [],
     }

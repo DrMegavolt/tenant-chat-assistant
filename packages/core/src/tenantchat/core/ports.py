@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from tenantchat.core.citations import Citation
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import ValidationError
 from tenantchat.core.privacy import ConsentGrant
@@ -263,6 +265,14 @@ class AssistantTurn:
 
     The three version fields pin the answer to the components that produced it,
     which is what `OBS-004` reconstructs a turn from.
+
+    ``citations`` are the grounded claims' sources, built only from the
+    evidence that was in the model's context (`RAG-005`). ``citation_invalid``
+    lists the source identifiers the model wrote that were not in that context
+    — the verdict an operator and the inference plane need; the public schema
+    never publishes them. ``retrieval`` is the safe metadata of the retrieval
+    that grounded the turn (sufficiency verdict and retriever versions), for
+    the inference plane only.
     """
 
     answer: str
@@ -271,6 +281,9 @@ class AssistantTurn:
     model_name: str
     graph_version: str
     prompt_version: str
+    citations: tuple[Citation, ...] = ()
+    citation_invalid: tuple[str, ...] = ()
+    retrieval: Mapping[str, object] | None = None
 
     @property
     def is_paused(self) -> bool:
@@ -331,6 +344,79 @@ class AvailabilityProvider(Protocol):
     async def offered_slots(self, tenant_id: str, service_slug: str) -> tuple[OfferedSlot, ...]:
         """Slots currently bookable for one service, empty when it has none."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceItem:
+    """One retrieved passage, with everything citation validation needs.
+
+    ``source_id`` is the identifier the model is asked to cite — the index
+    chunk id admitted to the prompt context. ``revision`` and ``effective_at``
+    are the published version's, resolved by the adapter from the knowledge
+    system of record; a version that is no longer retrievable for a visitor is
+    not offered as evidence at all (`RAG-005`).
+    """
+
+    source_id: str
+    title: str
+    source_name: str
+    location: str
+    content: str
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    score: float
+    revision: int
+    effective_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBundle:
+    """One retrieval result: the passages, the verdict, and what produced them.
+
+    ``retriever_version``, ``reranker``, and ``min_evidence_score`` pin the
+    retrieval that grounded the turn, for the inference plane (`OBS-004`);
+    they are safe metadata and carry no content.
+
+    ``sufficient`` is the abstention verdict: when it is ``False`` the graph
+    refuses to call the model for a tool-less answer instead of letting it
+    guess.
+    """
+
+    items: tuple[EvidenceItem, ...]
+    sufficient: bool
+    retriever_version: str
+    reranker: str | None
+    min_evidence_score: float
+
+
+class EvidenceSource(Protocol):
+    """The retrieval a turn may ground itself in, scoped to one tenant.
+
+    Implemented by the application service that owns the index, the embedding
+    provider, and the knowledge store; the graph never sees those. Every item
+    is tenant-scoped by the adapter at retrieval time, so the passage set a
+    citation may reference can never include another tenant's document — the
+    graph's validation against :attr:`EvidenceBundle.items` checks the
+    adapter's promise rather than hoping for it.
+    """
+
+    async def retrieve(self, *, tenant_id: str, query: str) -> EvidenceBundle:
+        """Retrieve the passages that may ground one answer.
+
+        The adapter returns only passages a visitor of ``tenant_id`` may be
+        told, in rank order, bounded by its configured budget; it also decides
+        :attr:`EvidenceBundle.sufficient`.
+
+        Raises:
+            EvidenceUnavailableError: retrieval could not run at all. The
+                graph treats this as insufficient evidence, so a failed index
+                makes the assistant abstain rather than answer ungrounded.
+        """
+        ...
+
+
+class EvidenceUnavailableError(Exception):
+    """Retrieval could not run for this turn."""
 
 
 @dataclass(frozen=True, slots=True)

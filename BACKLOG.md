@@ -286,7 +286,7 @@ runbooks.
 - [x] `RAG-002` — Secure asynchronous ingestion lifecycle — `Done`
 - [x] `RAG-003` — Production document parsing and chunking — `Done`
 - [x] `RAG-004` — Hybrid retrieval, reranking, and abstention — `Done`
-- [ ] `RAG-005` — Evidence and citation contract — `P1`
+- [x] `RAG-005` — Evidence and citation contract — `P1`
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
 - [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
 - [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
@@ -1815,7 +1815,7 @@ guarantees by construction.
 
 ### RAG-005 — Evidence and citation contract
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `RAG/API`
 - Depends on: `RAG-004`, `AI-001`
@@ -1831,7 +1831,35 @@ guarantees by construction.
   - Public clients receive curated citation data, not raw tool/debug payloads.
 - Verification:
   - Citation-integrity tests cover valid, missing, fabricated, stale, and unauthorized citations.
-- Completion notes: _Pending._
+- Completion notes: `Done`. The evidence contract lives in
+  `packages/core/src/tenantchat/core/ports.py` (`EvidenceSource`, `EvidenceItem`,
+  `EvidenceBundle`, `EvidenceUnavailableError`) so the API's adapter can satisfy
+  it without violating the dependency-direction invariant; `dispatch-system@3`
+  (`prompts/dispatch.py`) adds the trusted `citation_policy` segment that labels
+  retrieved passages `evidence:<source_id>`. `nodes.call_model` retrieves each
+  turn, abstains deterministically when the verdict fails or the budget admitted
+  no passage (server-written refusal; the model is never called), and records
+  the exact admitted context; `nodes.finalize` validates every `[evidence:...]`
+  marker against that context, strips the markers from the published answer, and
+  emits curated `citations` plus an invalid-citation verdict for the inference
+  plane. `services/api/src/tenantchat/api/evidence.py` (`RetrievalEvidenceSource`)
+  runs the RAG-004 hybrid over the tenant's active chunks, re-derives the
+  abstention verdict over the passages that actually became evidence, and drops
+  any version the domain retrievability predicate withdraws (superseded,
+  expired, unindexed) — stale citations are impossible by construction. The
+  public surface gains `GET /api/chat/sources/{source_id}`: the citation a
+  widget renders resolves to a tenant-scoped, visitor-audience source view, and
+  every reason a source is not answerable is the same 404. Turn records carry
+  the verified citations, invalid-citation verdicts, and retrieval manifest
+  (`_record_turn`); public responses never do. Verified: `make check` (incl.
+  `services/api/tests/test_citations.py`: valid, missing, fabricated, stale,
+  unauthorized, abstention on insufficient/absent/failed retrieval, and
+  budget-cut abstention; `test_prompts.py`/`test_prompt_assembly.py`/`test_chat.py`
+  pins moved to `@3`; `test_openapi_contract.py` pins the new route) and
+  `make eval` (citation precision 0.95, abstention 1.0, recall 1.0, zero
+  cross-tenant leaks). Follow-ups: `OBS-004` attributes refusals and invalid
+  citations from the turn record; `RAG-007` hardens against adversarial
+  passages.
 
 ### RAG-006 — Conversation-aware retrieval
 

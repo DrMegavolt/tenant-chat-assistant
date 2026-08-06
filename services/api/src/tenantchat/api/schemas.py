@@ -33,6 +33,7 @@ from tenantchat.api.store import (
     TurnRecord,
     TurnRecordProjection,
 )
+from tenantchat.core.citations import Citation
 from tenantchat.core.indexing import IndexIntegrityFinding
 from tenantchat.core.knowledge import DocumentVersion, KnowledgeDocument
 from tenantchat.core.ports import AssistantTurn, BookingConfirmation
@@ -40,6 +41,9 @@ from tenantchat.core.tenant import PublicTenantView
 
 # Generous outer bounds. The domain applies the meaningful limits.
 _TENANT_ID = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
+# A citation's source identifier is an index chunk id: bounded like an
+# Elasticsearch document id, which is what it is.
+_SOURCE_ID = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 # A correlation label, never an identity. It is client-supplied, so it must not
 # be used to authorize a read or to bind a record to a visitor. DATA-002 uses it
 # only to group write-only action records inside one tenant; it never
@@ -286,6 +290,52 @@ class TurnProvenance(BaseModel):
     prompt_version: str
 
 
+class CitationSummary(BaseModel):
+    """One source a claim in the answer was grounded in, as a client may see it.
+
+    This is the curated projection of :class:`~tenantchat.core.citations.Citation`
+    — verified by the graph against the exact evidence context, tenant-scoped by
+    the retrieval adapter, and free of any storage or operator detail. The raw
+    citation markers and the invalid-citation verdict are inference-plane data
+    and never appear here.
+    """
+
+    source_id: str
+    title: str
+    source_name: str
+    location: str
+    revision: int
+    effective_at: datetime
+
+    @classmethod
+    def of(cls, citation: Citation) -> CitationSummary:
+        return cls(
+            source_id=citation.source_id,
+            title=citation.title,
+            source_name=citation.source_name,
+            location=citation.location,
+            revision=citation.revision,
+            effective_at=citation.effective_at,
+        )
+
+
+class SourceViewResponse(BaseModel):
+    """The authorized view a citation resolves to (`RAG-005`).
+
+    The passage itself plus the version-window metadata that pins what was
+    answered from; served only when the citation's chunk belongs to the caller's
+    tenant and is still retrievable.
+    """
+
+    source_id: str
+    title: str
+    source_name: str
+    location: str
+    text: str
+    revision: int
+    effective_at: datetime
+
+
 class ChatTurnResponse(BaseModel):
     """What one turn produced, and what it committed on the way.
 
@@ -302,6 +352,7 @@ class ChatTurnResponse(BaseModel):
     reply: str
     pending: PendingConfirmation | None
     committed: list[CommittedActionSummary]
+    citations: list[CitationSummary]
     provenance: TurnProvenance
     credential: str
 
@@ -322,6 +373,7 @@ class ChatTurnResponse(BaseModel):
                 )
                 for effect in turn.committed
             ],
+            citations=[CitationSummary.of(citation) for citation in turn.citations],
             provenance=TurnProvenance(
                 model_name=turn.model_name,
                 graph_version=turn.graph_version,

@@ -18,11 +18,13 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Final, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
+from tenantchat.core.citations import Citation
 from tenantchat.orchestration.graph import GRAPH_VERSION, CompiledDispatchGraph
 from tenantchat.orchestration.nodes import BookingDecision
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
@@ -45,6 +47,12 @@ class TurnResult:
     the graph wants answered, and its presence means ``answer`` is not final.
     ``committed`` lists the domain actions this thread has caused so far, so a
     caller can report a booking reference without querying for it.
+
+    ``citations`` are the verified sources the answer was grounded in, already
+    curated for the public client; ``citation_invalid`` names the markers the
+    model wrote that were *not* in its context, for the inference plane only.
+    ``retrieval`` is the retrieval that ran for this turn (verdict and
+    versions), or ``None`` when this deployment composed no retrieval.
     """
 
     answer: str
@@ -55,6 +63,9 @@ class TurnResult:
     # The template the model calls in this turn were assembled from; the
     # registry guarantees a stored reference keeps naming the same artifact.
     prompt_version: str = DISPATCH_SYSTEM_REF
+    citations: tuple[Citation, ...] = ()
+    citation_invalid: tuple[str, ...] = ()
+    retrieval: Mapping[str, object] | None = None
 
     @property
     def is_paused(self) -> bool:
@@ -154,9 +165,31 @@ class DispatchRuntime:
         pending = next(
             (entry.value for entry in interrupts if isinstance(entry.value, Mapping)), None
         )
+        citations = raw.get("citations", ())
+        retrieval = raw.get("evidence_meta") or None
         return TurnResult(
             answer=str(raw.get("answer", "")),
             committed=tuple(raw.get("committed", ())),
             pending=dict(pending) if pending is not None else None,
             model_name=str(raw.get("model_name", "")),
+            citations=tuple(_citation(item) for item in citations),
+            citation_invalid=tuple(str(item) for item in raw.get("citation_invalid", ())),
+            retrieval=dict(retrieval) if retrieval is not None else None,
         )
+
+
+def _citation(item: Any) -> Citation:
+    """One verified citation from the checkpoint's JSON-safe form.
+
+    ``effective_at`` round-trips through ISO-8601, the only datetime form the
+    checkpoint stores; anything else would fail loudly here rather than publish
+    a citation with a wrong version window.
+    """
+    return Citation(
+        source_id=str(item["source_id"]),
+        title=str(item["title"]),
+        source_name=str(item["source_name"]),
+        location=str(item["location"]),
+        revision=int(item["revision"]),
+        effective_at=datetime.fromisoformat(str(item["effective_at"])),
+    )

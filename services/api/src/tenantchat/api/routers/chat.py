@@ -31,13 +31,17 @@ from datetime import datetime
 
 from fastapi import APIRouter, status
 
+from tenantchat.api.correlation import trace_id as current_trace_id
 from tenantchat.api.dependencies import (
     ComposedRuntime,
     Configuration,
     Consent,
     Conversations,
+    Knowledge,
     Registry,
     Runtime,
+    SearchIndexes,
+    TurnRecords,
 )
 from tenantchat.api.schemas import (
     BookingConfirmationRequest,
@@ -48,12 +52,14 @@ from tenantchat.api.schemas import (
     ConsentRequest,
     ConsentResponse,
     PendingConfirmation,
+    SourceViewResponse,
     TranscriptMessage,
     VisitorSessionResponse,
 )
-from tenantchat.api.store import ConversationStore, MessageRole
+from tenantchat.api.store import ConversationStore, MessageRole, TurnRecordStore
 from tenantchat.api.visitor import VisitorClock, VisitorIdentity, VisitorSigner, issue
-from tenantchat.core.errors import ConflictError
+from tenantchat.core.errors import ConflictError, NotFoundError
+from tenantchat.core.knowledge import RetrievalAudience, RetrievalContext
 from tenantchat.core.ports import AssistantTurn
 from tenantchat.core.privacy import ConsentPurpose, consent_statement
 from tenantchat.core.visitor_session import VisitorCredentialSigner
@@ -113,6 +119,56 @@ async def _record_answer(
                 for effect in turn.committed
             ],
         },
+    )
+
+
+def _turn_record_content(turn: AssistantTurn) -> dict[str, object]:
+    """The inference-plane envelope for one completed turn (`RAG-005`).
+
+    Everything here is content or content metadata and belongs to the trace
+    plane: the verified citations, the invalid-citation verdicts, and the
+    retrieval that ran. The public response curates from :attr:`AssistantTurn.citations`
+    and never sees the verdicts.
+    """
+    return {
+        "prompt_version": turn.prompt_version,
+        "graph_version": turn.graph_version,
+        "model_name": turn.model_name,
+        "citations": [
+            {
+                "source_id": citation.source_id,
+                "title": citation.title,
+                "source_name": citation.source_name,
+                "location": citation.location,
+                "revision": citation.revision,
+                "effective_at": citation.effective_at.isoformat(),
+            }
+            for citation in turn.citations
+        ],
+        "citation_invalid": list(turn.citation_invalid),
+        "retrieval": dict(turn.retrieval) if turn.retrieval is not None else None,
+    }
+
+
+async def _record_turn(
+    turns: TurnRecordStore,
+    tenant_id: str,
+    session_id: uuid.UUID,
+    turn: AssistantTurn,
+) -> None:
+    """Persist the turn's inference-plane envelope, when one was completed.
+
+    A paused turn produced no answer, so there is nothing to attribute yet; the
+    record for the turn is written when the confirmation resumes and completes
+    it.
+    """
+    if turn.is_paused or not turn.answer:
+        return
+    await turns.record(
+        tenant_id,
+        session_id,
+        content=_turn_record_content(turn),
+        trace_id=current_trace_id(),
     )
 
 
@@ -225,6 +281,7 @@ async def send_message(
     registry: Registry,
     conversations: Conversations,
     runtime: Runtime,
+    turn_records: TurnRecords,
     signer: VisitorSigner,
     clock: VisitorClock,
     settings: Configuration,
@@ -252,6 +309,7 @@ async def send_message(
 
     turn = await runtime.send(tenant_id, str(session_id), payload.message)
     await _record_answer(conversations, tenant_id, session_id, turn)
+    await _record_turn(turn_records, tenant_id, session_id, turn)
     _log_turn(turn)
 
     return ChatTurnResponse.of(
@@ -315,6 +373,7 @@ async def confirm_booking(
     registry: Registry,
     conversations: Conversations,
     runtime: Runtime,
+    turn_records: TurnRecords,
     signer: VisitorSigner,
     clock: VisitorClock,
     settings: Configuration,
@@ -341,6 +400,7 @@ async def confirm_booking(
 
     turn = await runtime.resume(tenant_id, session_key, approved=payload.decision == "approved")
     await _record_answer(conversations, tenant_id, session_id, turn)
+    await _record_turn(turn_records, tenant_id, session_id, turn)
     _log_turn(turn)
 
     return ChatTurnResponse.of(
@@ -353,4 +413,55 @@ async def confirm_booking(
             tenant_id=tenant_id,
             session_id=session_id,
         ),
+    )
+
+
+@router.get("/api/chat/sources/{source_id}", response_model=SourceViewResponse)
+async def read_source(
+    source_id: str,
+    claims: VisitorIdentity,
+    registry: Registry,
+    index: SearchIndexes,
+    knowledge: Knowledge,
+    clock: VisitorClock,
+) -> SourceViewResponse:
+    """Resolve a citation to the authorized view of its source (`RAG-005`).
+
+    The citation a widget renders addresses a chunk by its index id. This route
+    serves the passage and the version-window metadata — and nothing else:
+    the chunk must belong to the credential's tenant and still be retrievable
+    for a visitor, and every reason it is not (absent, inactive, expired,
+    superseded, another tenant's) is the same 404, so a citation cannot be
+    used to probe what a tenant has.
+
+    Raises:
+        NotFoundError: no such tenant, or the source is not answerable for it.
+    """
+    tenant_id = claims.tenant_id
+    registry.get(tenant_id)
+    if index is None:
+        raise NotFoundError(detail=f"source {source_id} is not answerable")
+    chunk = await index.chunk_by_id(tenant_id=tenant_id, chunk_id=source_id)
+    if chunk is None:
+        raise NotFoundError(detail=f"source {source_id} is not answerable")
+    document = await knowledge.document_for_version(tenant_id, chunk.version_id)
+    retrievable = document.retrievable_version(
+        RetrievalContext(
+            tenant_id=tenant_id,
+            domain=document.domain,
+            audience=RetrievalAudience.VISITOR,
+            moment=clock(),
+        )
+    )
+    if retrievable is None or retrievable.version_id != chunk.version_id:
+        raise NotFoundError(detail=f"source {source_id} is not answerable")
+    view = document.public_view(retrievable)
+    return SourceViewResponse(
+        source_id=chunk.chunk_id,
+        title=chunk.title,
+        source_name=view.source_name,
+        location=chunk.section,
+        text=chunk.text,
+        revision=view.revision,
+        effective_at=view.effective_at,
     )

@@ -141,7 +141,7 @@ def test_the_assembled_prompt_carries_a_template_id_and_version(
     )
 
     assert outcome.prompt.template_id == "dispatch-system"
-    assert outcome.prompt.template_version == 2
+    assert outcome.prompt.template_version == 3
     assert outcome.prompt.template_ref == DISPATCH_SYSTEM_REF
     assert outcome.prompt.content_hash
 
@@ -237,6 +237,7 @@ def test_template_segments_are_all_trusted_and_in_declared_order(
         "business_facts",
         "policy",
         "approved_prices",
+        "citation_policy",
     ]
     assert all(
         segment.region is PromptRegion.TRUSTED for segment in outcome.prompt.messages[0].segments
@@ -273,8 +274,9 @@ def test_hostile_tenant_text_cannot_change_the_template_segment_set(
         "policy",
         "approved_prices",
         "disclaimers",
+        "citation_policy",
     ]
-    disclaimer = system.segments[-1]
+    disclaimer = system.segments[-2]
     assert disclaimer.text == f"Note: {hostile}"
     assert sum(hostile in segment.text for segment in system.segments) == 1
 
