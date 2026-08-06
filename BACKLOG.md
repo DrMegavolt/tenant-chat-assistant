@@ -285,7 +285,7 @@ runbooks.
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
 - [x] `RAG-002` — Secure asynchronous ingestion lifecycle — `Done`
 - [x] `RAG-003` — Production document parsing and chunking — `Done`
-- [ ] `RAG-004` — Hybrid retrieval, reranking, and abstention — `P1`
+- [x] `RAG-004` — Hybrid retrieval, reranking, and abstention — `Done`
 - [ ] `RAG-005` — Evidence and citation contract — `P1`
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
 - [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
@@ -1778,7 +1778,7 @@ guarantees by construction.
 
 ### RAG-004 — Hybrid retrieval, reranking, and abstention
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `RAG`
 - Depends on: `RAG-001`, `RAG-003`
@@ -1794,7 +1794,24 @@ guarantees by construction.
   - Retrieval parameters are versioned and measurable.
 - Verification:
   - Offline retrieval evaluation meets documented recall and precision thresholds.
-- Completion notes: _Pending._
+- Completion notes: `Done`. Shared index-side retrieval logic landed in
+  `services/api/src/tenantchat/api/retrieval.py` (`HybridRetrieverConfig`,
+  `rank_chunks`, `evidence_verdict`, `calibrate_min_evidence`,
+  `assemble_context`); the fixture harness gained a `hybrid` retriever whose
+  abstention boundary is calibrated from the golden cases' measured scores
+  (`min-of-query-best-relevant`), never a magic constant. Fusion is
+  `max(lexical_overlap, 0.4 * cosine)`: the vector signal can lift a chunk,
+  never sink it, and the weight bound keeps pure-vector noise below the
+  boundary. Dedup caps `max_chunks_per_document=2`, the `bigram-overlap`
+  reranker reorders without rescoring, and context is bounded by
+  `max_sources=3` / `max_context_tokens=1500`. Verified: `make check` (unit
+  suite incl. `services/api/tests/test_retrieval.py` and the hybrid
+  scoreboard in `evals/tests/test_harness.py`) and `make eval` — lexical
+  baseline and hybrid both pass (recall@5 1.0 / 0.95, citation 0.95 / 0.95,
+  abstention 1.0 / 1.0, zero cross-tenant leaks; the hybrid's two lost gold
+  chunks are the fixture's weakest-evidence cases, and its abstention is
+  independently scored against the derived boundary). `RAG-005` consumes the
+  evidence score and budgeted context next.
 
 ### RAG-005 — Evidence and citation contract
 

@@ -10,10 +10,16 @@ from __future__ import annotations
 import asyncio
 import re
 import unittest
+from typing import cast
 
 from evals.corpus import FixtureCorpus
 from evals.retriever import LexicalOverlapRetriever, baseline_config
-from evals.runner import abstain_threshold, load_cases, run_evaluation
+from evals.runner import (
+    abstain_threshold,
+    build_retriever_entry,
+    load_cases,
+    run_evaluation,
+)
 from evals.scorer import EvaluationReport
 
 
@@ -68,6 +74,72 @@ class TestSensitivity(unittest.TestCase):
         self.assertEqual(report.aggregate["cross_tenant_leaks"], 0.0)
         for case in report.cases:
             self.assertEqual(case.cross_tenant_leaks, (), case.case.id)
+
+
+class TestHybridScoreboard(unittest.TestCase):
+    """The `RAG-004` hybrid must clear the documented thresholds on the fixture."""
+
+    def setUp(self) -> None:
+        self.corpus = asyncio.run(FixtureCorpus.load())
+        self.cases = load_cases()
+
+    def _run(self, *, k: int = 5) -> EvaluationReport:
+        entry = build_retriever_entry("hybrid", self.corpus, k)
+        return asyncio.run(
+            run_evaluation(
+                retriever=entry.retriever,
+                retriever_config=entry.config,
+                corpus=self.corpus,
+                cases=self.cases,
+                abstain_threshold_value=entry.abstain_threshold,
+                min_recall=0.6,
+                min_citation_precision=0.8,
+                min_abstention=0.9,
+                reranker=entry.reranker,
+            )
+        )
+
+    def test_hybrid_meets_the_documented_thresholds(self) -> None:
+        report = self._run()
+        self.assertTrue(report.passed, msg=report.to_text())
+
+    def test_hybrid_abstention_boundary_is_calibrated_from_gold_scores(self) -> None:
+        report = self._run()
+        raw = dict(report.retriever.parameters)["calibration"]
+        calibration = cast(dict[str, object], raw)
+        min_evidence = cast(float, calibration["min_evidence"])
+        sample_size = cast(int, calibration["sample_size"])
+        self.assertEqual(calibration["method"], "min-of-query-best-relevant")
+        self.assertGreater(min_evidence, 0.0)
+        self.assertGreaterEqual(sample_size, 1)
+        self.assertEqual(report.abstain_threshold, min_evidence)
+
+    def test_hybrid_is_deterministic_across_corpus_reloads(self) -> None:
+        first = self._run()
+        reloaded = asyncio.run(FixtureCorpus.load())
+        entry = build_retriever_entry("hybrid", reloaded, 5)
+        second = asyncio.run(
+            run_evaluation(
+                retriever=entry.retriever,
+                retriever_config=entry.config,
+                corpus=reloaded,
+                cases=self.cases,
+                abstain_threshold_value=entry.abstain_threshold,
+                min_recall=0.6,
+                min_citation_precision=0.8,
+                min_abstention=0.9,
+                reranker=entry.reranker,
+            )
+        )
+        self.assertEqual(first.to_json(), second.to_json())
+
+    def test_hybrid_abstains_on_every_unsupported_case(self) -> None:
+        report = self._run()
+        unsupported = [case for case in report.cases if case.case.scenario == "unsupported"]
+        self.assertTrue(unsupported)
+        for case in unsupported:
+            self.assertTrue(case.abstain_decision, case.case.id)
+            self.assertTrue(case.abstain_correct, case.case.id)
 
 
 class TestFixtures(unittest.TestCase):

@@ -1,58 +1,33 @@
-"""The retriever protocol the scoreboard evaluates, plus its v1 baseline.
+"""The retriever protocol the scoreboard evaluates, plus its two retrievers.
 
-``RAG-004`` plugs the production hybrid retriever into :class:`Retriever`;
-until then the harness scores :class:`LexicalOverlapRetriever`, a
-deterministic baseline that makes the scoreboard meaningful from day one (a
-retriever that cannot beat word-overlap is not worth tuning).
+``RAG-004`` plugs the production hybrid retriever into :class:`Retriever`; the
+scoreboard also scores :class:`LexicalOverlapRetriever`, a deterministic
+baseline that keeps the scoreboard meaningful (a retriever that cannot beat
+word-overlap is not worth tuning).
 
-All scoring is deterministic: tokenization is fixed, ties break on chunk id,
-and the tenant filter plus the ``active`` flag apply exactly as the
-production index enforces them.
+Both retrievers share the lexical vocabulary, stemming, and the
+tenant/``active`` predicate with the production retrieval logic
+(:mod:`tenantchat.api.retrieval`), so what the harness measures is the same
+filter the index enforces. All scoring is deterministic: tokenization is
+fixed, ties break on chunk id.
 """
 
 from __future__ import annotations
 
-import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from evals.corpus import FixtureCorpus
-
-_WORD = re.compile(r"[a-z0-9']+")
-_MIN_STEM = 4
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "are",
-        "at",
-        "can",
-        "do",
-        "does",
-        "for",
-        "how",
-        "i",
-        "in",
-        "is",
-        "it",
-        "my",
-        "of",
-        "on",
-        "our",
-        "out",
-        "that",
-        "the",
-        "there",
-        "to",
-        "we",
-        "what",
-        "who",
-        "you",
-        "your",
-    }
+from tenantchat.api.retrieval import (
+    HybridRetrieverConfig,
+    RetrievalFilters,
+    chunk_is_retrievable,
+    lexical_overlap,
+    query_words,
+    rank_chunks,
 )
+from tenantchat.api.search import ScriptedEmbedder
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,23 +54,7 @@ class RetrieverConfig:
     version: str
     k: int
     description: str
-
-
-def _words(text: str) -> frozenset[str]:
-    return frozenset(word for word in _WORD.findall(text.lower()) if word not in _STOPWORDS)
-
-
-def _matches(query_word: str, chunk_word: str) -> bool:
-    """Whole-word match, or a shared stem of at least four characters.
-
-    Prefix stemming models how real lexical search treats inflections
-    (``cleaning``/``clean``, ``upgrades``/``upgrade``) without adding a
-    dependency; the minimum length keeps unrelated short words from
-    collapsing onto each other.
-    """
-    if query_word == chunk_word:
-        return True
-    return len(query_word) >= _MIN_STEM and chunk_word.startswith(query_word)
+    parameters: Mapping[str, object] = field(default_factory=dict)
 
 
 class LexicalOverlapRetriever:
@@ -111,19 +70,48 @@ class LexicalOverlapRetriever:
         self._corpus = corpus
 
     async def retrieve(self, query: str, *, tenant_id: str, k: int) -> Sequence[RetrievalResult]:
-        query_words = _words(query)
+        query_terms = query_words(query)
+        filters = RetrievalFilters(tenant_id=tenant_id)
         scored: list[tuple[float, str]] = []
         for chunk in self._corpus.chunks:
-            if chunk.tenant_id != tenant_id or not chunk.active:
+            if not chunk_is_retrievable(chunk, filters):
                 continue
-            chunk_words = _words(chunk.text)
-            overlap = sum(1 for qw in query_words if any(_matches(qw, cw) for cw in chunk_words))
-            score = overlap / len(query_words) if query_words else 0.0
+            score = lexical_overlap(query_terms, query_words(chunk.text))
             scored.append((score, chunk.chunk_id))
         scored.sort(key=lambda item: (-item[0], item[1]))
         return tuple(
             RetrievalResult(chunk_id=chunk_id, score=score) for score, chunk_id in scored[:k]
         )
+
+
+class HybridRetriever:
+    """The `RAG-004` hybrid over the fixture corpus, scored by the shared logic.
+
+    Embedding and scoring run through :func:`rank_chunks`, the same code path
+    the production index adapter uses, so the harness measures the production
+    retriever rather than a simulation of it. The calibrated abstention
+    boundary travels with the config.
+    """
+
+    def __init__(self, corpus: FixtureCorpus, config: HybridRetrieverConfig) -> None:
+        self._corpus = corpus
+        self._config = config
+        self._embedder = ScriptedEmbedder(model=corpus.embedding_model)
+
+    @property
+    def min_evidence_score(self) -> float:
+        return self._config.min_evidence_score
+
+    async def retrieve(self, query: str, *, tenant_id: str, k: int) -> Sequence[RetrievalResult]:
+        ranked = await rank_chunks(
+            embedder=self._embedder,
+            chunks=self._corpus.chunks,
+            query=query,
+            filters=RetrievalFilters(tenant_id=tenant_id),
+            config=self._config,
+            k=k,
+        )
+        return tuple(RetrievalResult(chunk_id=item.chunk_id, score=item.score) for item in ranked)
 
 
 def baseline_config(k: int) -> RetrieverConfig:
@@ -133,4 +121,15 @@ def baseline_config(k: int) -> RetrieverConfig:
         version="v1",
         k=k,
         description="word-overlap baseline over active, tenant-filtered chunks",
+    )
+
+
+def hybrid_config(k: int, config: HybridRetrieverConfig) -> RetrieverConfig:
+    """The hybrid's report configuration, pinning every tuned parameter."""
+    return RetrieverConfig(
+        name="hybrid",
+        version=config.version,
+        k=k,
+        description="max-fused lexical+vector retrieval with reranking and calibrated abstention",
+        parameters=config.parameters(),
     )
