@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx2 import Response
@@ -141,6 +142,35 @@ def test_an_unsupported_media_type_is_refused(
 
     assert response.status_code == 422
     assert response.json()["code"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    ("filename", "media_type", "content"),
+    [
+        ("terms.pdf", "application/pdf", b"%PDF-1.4\n% mock"),
+        (
+            "terms.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            b"PK\x03\x04 mock",
+        ),
+    ],
+)
+def test_every_parser_media_type_is_an_acceptable_upload(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+    filename: str,
+    media_type: str,
+    content: bytes,
+) -> None:
+    """RAG-003: the upload route accepts exactly what the adapters can parse."""
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+
+    response = _upload(client, headers, filename=filename, media_type=media_type, content=content)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["indexing_state"] == "pending"
 
 
 def test_index_findings_are_tenant_scoped_and_content_free(

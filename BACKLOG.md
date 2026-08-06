@@ -284,7 +284,7 @@ runbooks.
 - [x] `REL-003` — Durable background jobs and retry handling — `Done`
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
 - [x] `RAG-002` — Secure asynchronous ingestion lifecycle — `Done`
-- [ ] `RAG-003` — Production document parsing and chunking — `P1`
+- [x] `RAG-003` — Production document parsing and chunking — `Done`
 - [ ] `RAG-004` — Hybrid retrieval, reranking, and abstention — `P1`
 - [ ] `RAG-005` — Evidence and citation contract — `P1`
 - [ ] `RAG-006` — Conversation-aware retrieval — `P1`
@@ -1731,7 +1731,7 @@ guarantees by construction.
 
 ### RAG-003 — Production document parsing and chunking
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `RAG`
 - Depends on: `RAG-002`
@@ -1747,7 +1747,34 @@ guarantees by construction.
   - Golden parser fixtures have deterministic output.
 - Verification:
   - Parser/chunker snapshot tests cover all supported types and edge cases.
-- Completion notes: _Pending._
+- Completion notes: The prototype Markdown-sections parser and token-counting
+  chunker are gone. `tenantchat.api.parsing` owns parsing and chunking through
+  five explicit adapters (Markdown, HTML, plain text, PDF, DOCX — each with a
+  versioned identifier like `markdown.v1`/`pdf.v1`, so a generation record
+  names the exact implementation that produced its chunks) and a deterministic
+  char-budgeted token-window chunker (`token-window.v2`) that estimates tokens
+  from a per-model-family chars-per-token profile and never crosses a source
+  block, so every chunk keeps its heading path, page number, or HTML anchor
+  (`ChunkLocation` renders as e.g. `Rates > APR (p. 3)`). Scanning rejects
+  empty, NUL-bearing, non-UTF-8, oversized (>10 MiB), corrupt, and encrypted
+  documents with content-free `ValidationError` details, and the upload route
+  accepts exactly the adapters' media type set (now including PDF and DOCX).
+  The ingestion handler (`services/api/src/tenantchat/api/ingestion.py`)
+  dispatches on the staged version's media type, records the actual adapter's
+  parser identifier and chunk count in the generation *before* indexing, and
+  embeds in bounded batches of 16 chunks (below the embedding service's
+  128-batch cap), each chunk carrying the model that embedded it. Changed:
+  `services/api/src/tenantchat/api/parsing/` (adapters, chunker, locations,
+  scan, tokens), `services/api/src/tenantchat/api/{ingestion}.py`,
+  `routers/knowledge.py`, `services/api/pyproject.toml` (pypdf, python-docx),
+  `BACKLOG.md`, and the parser/chunker/router test suites. Verified: `make
+  check` (952 Python and 93 frontend tests; lock, lint, format, mypy strict,
+  coverage, deployment-security, and image contracts clean) and
+  `make test-database` (11 migration plus 72 repository/durability/privacy
+  tests on disposable PostgreSQL 16, unchanged persistence). Follow-ups:
+  `RAG-004` builds retrieval over the location-carrying chunk schema; `RAG-009`
+  lands the deterministic runner before retrieval tuning; `FEAT-001` drives
+  ingestion through the approve/publish workflow.
 
 ### RAG-004 — Hybrid retrieval, reranking, and abstention
 

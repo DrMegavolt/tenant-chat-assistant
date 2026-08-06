@@ -16,15 +16,20 @@ import pytest
 
 from tenantchat.api.index_integrity import InMemoryIndexIntegrityStore
 from tenantchat.api.ingestion import (
+    EMBED_BATCH_SIZE,
     IngestionDependencies,
-    chunk_text,
     generation_id_for,
     ingestion_handler,
-    parse_markdown,
-    scan_content,
     submit_ingestion,
 )
 from tenantchat.api.jobs import InMemoryJobStore, JobExecutionError
+from tenantchat.api.parsing import (
+    CHUNK_OVERLAP,
+    CHUNK_TOKENS,
+    chunk_document,
+    chunk_text,
+    parse_document,
+)
 from tenantchat.api.search import (
     EmbeddingResult,
     EmbeddingUnavailableError,
@@ -56,7 +61,13 @@ CONTENT = (
     + b"\n"
 )
 
-TWO_CHUNKS = 2
+TWO_CHUNKS = len(
+    chunk_document(
+        parse_document(CONTENT, media_type="text/markdown", title="Financing plan terms"),
+        chunk_tokens=CHUNK_TOKENS,
+        overlap_tokens=CHUNK_OVERLAP,
+    )
+)
 
 
 class Pipeline:
@@ -92,6 +103,7 @@ class Pipeline:
         *,
         tenant_id: str = "clearview",
         external_key: str = "financing-options.md",
+        media_type: str = "text/markdown",
     ) -> tuple[uuid.UUID, uuid.UUID]:
         """Store bytes and stage a draft, exactly as the upload route does."""
         source_id = await self.register_source(tenant_id=tenant_id)
@@ -110,7 +122,7 @@ class Pipeline:
             title="Financing plan terms",
             checksum=checksum,
             byte_size=len(content),
-            media_type="text/markdown",
+            media_type=media_type,
             storage_key=str(key),
         )
         version = document.version_with_checksum(checksum)
@@ -154,8 +166,8 @@ def test_a_published_version_is_ingested_end_to_end() -> None:
         assert generation is not None
         assert generation.status is GenerationStatus.COMPLETE
         assert generation.chunk_count == generation.indexed_chunk_count == TWO_CHUNKS
-        assert generation.parser_version == "markdown-sections.v1"
-        assert generation.chunker_version == "token-window.v1"
+        assert generation.parser_version == "markdown.v1"
+        assert generation.chunker_version == "token-window.v2"
         assert generation.embedding_model == "scripted-embedder.v1"
         assert (
             await pipeline.index.active_chunk_count(tenant_id="clearview", version_id=version_id)
@@ -403,21 +415,194 @@ def test_chunking_is_deterministic_and_bounded() -> None:
     text = " ".join(f"token-{index}" for index in range(500))
     chunks = chunk_text(text)
     assert chunks
-    assert len(chunks) == 1
+    # The window budget is measured in estimated characters, so 500 tokens
+    # span more than one window — but every window stays within the token
+    # budget and repeated runs are identical.
+    assert len(chunks) > 1
     assert all(len(chunk.split()) <= 650 for chunk in chunk_text(text * 3))
+    assert chunk_text(text) == chunk_text(text)
 
 
 def test_scanning_rejects_corrupt_and_hostile_content() -> None:
     with pytest.raises(ValidationError):
-        scan_content(b"\xff\xfe not utf8")
+        parse_document(b"\xff\xfe not utf8", media_type="text/plain", title="T")
     with pytest.raises(ValidationError):
-        scan_content(b"# title\n\n\x00null bytes")
+        parse_document(b"# title\n\n\x00null bytes", media_type="text/markdown", title="T")
     with pytest.raises(ValidationError):
-        scan_content(b"   \n  ")
+        parse_document(b"   \n  ", media_type="text/plain", title="T")
+    with pytest.raises(ValidationError):
+        parse_document(b"anything", media_type="application/x-msdownload", title="T")
 
 
 def test_the_parser_is_markdown_section_aware() -> None:
-    parsed = parse_markdown(b"# Financing\n\nSome terms.\n\n## Rates\n\n4.9% APR.", title="Terms")
+    parsed = parse_document(
+        b"# Financing\n\nSome terms.\n\n## Rates\n\n4.9% APR.",
+        media_type="text/markdown",
+        title="Terms",
+    )
     assert parsed.title == "Terms"
-    assert parsed.section == "Rates"
-    assert "4.9% APR." in parsed.text
+    assert parsed.blocks[0].location.section_path == ("Financing",)
+    assert parsed.blocks[1].location.section_path == ("Financing", "Rates")
+    assert "4.9% APR." in parsed.blocks[1].text
+
+
+def test_large_documents_are_embedded_in_bounded_batches() -> None:
+    """RAG-003 acceptance: batches stay below the per-request embedding limit."""
+
+    async def scenario() -> None:
+        pipeline = Pipeline()
+        # ~14 000 tokens: far more chunks than a single batch may carry.
+        content = (
+            b"# Terms\n\n" + (" ".join(f"term-{index}" for index in range(14000)).encode()) + b"\n"
+        )
+        _, version_id = await pipeline.upload_and_stage(content=content)
+        await pipeline.make_indexable(version_id)
+
+        await pipeline.run_job("clearview", version_id)
+
+        assert len(pipeline.embedder.calls) > 1
+        assert all(len(call) <= EMBED_BATCH_SIZE for call in pipeline.embedder.calls)
+        generation = await pipeline.generations.generation("clearview", version_id)
+        assert generation is not None
+        assert generation.status is GenerationStatus.COMPLETE
+        assert generation.parser_version == "markdown.v1"
+        assert generation.chunker_version == "token-window.v2"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("content", "media_type", "parser_version"),
+    [
+        (b"# Heading\n\nPlain paragraph.", "text/markdown", "markdown.v1"),
+        (b"<h1>Heading</h1>\n<p>Plain paragraph.</p>", "text/html", "html.v1"),
+        (b"Plain paragraph.", "text/plain", "text.v1"),
+    ],
+)
+def test_every_supported_text_format_is_ingested_end_to_end(
+    content: bytes, media_type: str, parser_version: str
+) -> None:
+    async def scenario() -> None:
+        pipeline = Pipeline()
+        _, version_id = await pipeline.upload_and_stage(content=content, media_type=media_type)
+        await pipeline.make_indexable(version_id)
+
+        await pipeline.run_job("clearview", version_id)
+
+        generation = await pipeline.generations.generation("clearview", version_id)
+        assert generation is not None
+        assert generation.status is GenerationStatus.COMPLETE
+        assert generation.parser_version == parser_version
+        assert generation.chunker_version == "token-window.v2"
+        assert await pipeline.retrievable()
+
+    asyncio.run(scenario())
+
+
+def test_a_pdf_is_ingested_end_to_end_with_page_locations() -> None:
+    async def scenario() -> None:
+        pipeline = Pipeline()
+        content = _two_page_pdf()
+        _, version_id = await pipeline.upload_and_stage(
+            content=content, media_type="application/pdf"
+        )
+        await pipeline.make_indexable(version_id)
+
+        await pipeline.run_job("clearview", version_id)
+
+        generation = await pipeline.generations.generation("clearview", version_id)
+        assert generation is not None
+        assert generation.status is GenerationStatus.COMPLETE
+        assert generation.parser_version == "pdf.v1"
+        sections = {chunk.section for chunk in pipeline.index._chunks.values()}
+        assert sections == {"Section One (p. 1)", "Section Two (p. 2)"}
+
+    asyncio.run(scenario())
+
+
+def test_a_docx_is_ingested_end_to_end_with_heading_hierarchy() -> None:
+    async def scenario() -> None:
+        pipeline = Pipeline()
+        content = _docx_bytes()
+        _, version_id = await pipeline.upload_and_stage(
+            content=content, media_type=_DOCX_MEDIA_TYPE
+        )
+        await pipeline.make_indexable(version_id)
+
+        await pipeline.run_job("clearview", version_id)
+
+        generation = await pipeline.generations.generation("clearview", version_id)
+        assert generation is not None
+        assert generation.status is GenerationStatus.COMPLETE
+        assert generation.parser_version == "docx.v1"
+        sections = {chunk.section for chunk in pipeline.index._chunks.values()}
+        assert sections == {"Terms and conditions", "Terms and conditions > Rates"}
+
+    asyncio.run(scenario())
+
+
+def test_an_unsupported_media_type_fails_the_job_permanently() -> None:
+    async def scenario() -> None:
+        pipeline = Pipeline()
+        _, version_id = await pipeline.upload_and_stage(
+            content=b"MZ\x90\x00", media_type="application/x-msdownload"
+        )
+        await pipeline.make_indexable(version_id)
+
+        with pytest.raises(JobExecutionError) as captured:
+            await pipeline.run_job("clearview", version_id)
+        assert captured.value.error_code == "ingestion_scan_rejected"
+        assert not captured.value.retryable
+        assert not await pipeline.retrievable()
+
+    asyncio.run(scenario())
+
+
+def _two_page_pdf() -> bytes:
+    import io
+
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, StreamObject
+
+    writer = PdfWriter()
+    for number, text in enumerate(("Page one text.", "Page two text.")):
+        page = writer.add_blank_page(width=612, height=792)
+        stream = StreamObject()
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode())
+        page[NameObject("/Contents")] = stream
+        font = DictionaryObject(
+            {
+                NameObject("/F1"): DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/Font"),
+                        NameObject("/Subtype"): NameObject("/Type1"),
+                        NameObject("/BaseFont"): NameObject("/Helvetica"),
+                    }
+                )
+            }
+        )
+        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): font})
+        if number == 1:
+            writer.add_outline_item("Section Two", 1)
+    writer.add_outline_item("Section One", 0)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+_DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _docx_bytes() -> bytes:
+    import io
+
+    from docx import Document
+
+    document = Document()
+    document.add_heading("Terms and conditions", level=1)
+    document.add_paragraph("First paragraph.")
+    document.add_heading("Rates", level=2)
+    document.add_paragraph("4.9% APR.")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
