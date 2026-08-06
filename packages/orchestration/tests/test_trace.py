@@ -277,7 +277,7 @@ def test_a_stored_prompt_reconstructs_the_exact_prompt_and_its_hash() -> None:
     received, byte for byte, and the re-derived hash matches the stored one."""
     original = AssembledPrompt(
         template_id="dispatch-system",
-        template_version=3,
+        template_version=4,
         bindings={"business_name": "Clearview Property Care"},
         messages=(
             AssembledMessage(

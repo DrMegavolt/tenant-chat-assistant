@@ -281,7 +281,7 @@ def test_the_turn_record_pins_every_component_and_a_content_free_hash() -> None:
     assert re.fullmatch(r"[0-9a-f]{64}", str(content["manifest_hash"]))
     manifest = _section(content, "component_manifest")
     assert manifest["graph"] == "dispatch@2"
-    assert manifest["prompt_template"] == {"ref": "dispatch-system@3"}
+    assert manifest["prompt_template"] == {"ref": "dispatch-system@4"}
     assert manifest["routing_policy"] == "intent-routing@1"
     assert manifest["tools"] == "tools@1"
     assert manifest["retriever"] == {
@@ -359,7 +359,7 @@ def test_a_turn_is_reconstructible_from_its_record_alone() -> None:
     stored_prompt = _section(record.content, "prompt")
     rebuilt = reconstruct_prompt(stored_prompt)
     assert rebuilt.content_hash == stored_prompt["content_hash"]
-    assert rebuilt.template_ref == "dispatch-system@3"
+    assert rebuilt.template_ref == "dispatch-system@4"
     assert "Clearview is open daily" in rebuilt.messages[0].content
 
     replay_model = ScriptedModel(

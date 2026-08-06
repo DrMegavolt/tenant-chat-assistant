@@ -66,7 +66,7 @@ from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolC
 from tenantchat.orchestration.prompts import DEFAULT_REGISTRY, DISPATCH_SYSTEM_TEMPLATE_ID
 from tenantchat.orchestration.tools import ToolName
 
-TEMPLATE_REF = "dispatch-system@3"
+TEMPLATE_REF = "dispatch-system@4"
 
 
 def _histogram_bucket_boundaries() -> frozenset[str]:
@@ -387,7 +387,13 @@ class TestAnAnsweredTurn:
         )
 
         assert first.status_code == second.status_code == 200
-        assert _exemplar_trace_ids() == [second.headers["x-trace-id"]]
+        # Exemplars persist per histogram bucket, so two observations may share
+        # a bucket (one retained trace) or straddle buckets (two retained).
+        # Either way the drill-through must resolve to requests this test made,
+        # and the spike of the latest turn must name that turn.
+        exemplars = _exemplar_trace_ids()
+        assert set(exemplars) <= {first.headers["x-trace-id"], second.headers["x-trace-id"]}
+        assert second.headers["x-trace-id"] in exemplars
         counts = [
             sample
             for sample in tenantchat_samples()
@@ -798,7 +804,9 @@ class TestBusinessFunnel:
             sample.name.startswith("tenantchat_business_latency_seconds")
             for sample in tenantchat_samples()
         )
-        assert _exemplar_trace_ids() == [resumed.headers["x-trace-id"]]
+        exemplars = _exemplar_trace_ids()
+        assert set(exemplars) <= {paused.headers["x-trace-id"], resumed.headers["x-trace-id"]}
+        assert resumed.headers["x-trace-id"] in exemplars
 
     def test_a_clarification_is_its_own_outcome_and_routes_to_no_intent(
         self, client: TestClient, model: ScriptedModel

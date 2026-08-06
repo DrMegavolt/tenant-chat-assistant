@@ -130,6 +130,8 @@ def _evidence_item(document: CorpusDocument, source_id: str) -> EvidenceItem:
         content=document.text,
         document_id=uuid.uuid5(uuid.NAMESPACE_URL, f"adversarial/{document.id}"),
         version_id=uuid.uuid5(uuid.NAMESPACE_URL, f"adversarial/{document.id}/v1"),
+        generation_id=uuid.uuid5(uuid.NAMESPACE_URL, f"adversarial/{document.id}/gen"),
+        embedding_model="scripted-embedder.v1",
         score=1.0,
         revision=1,
         effective_at=NOW,

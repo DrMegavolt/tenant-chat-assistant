@@ -189,9 +189,7 @@ def build_turn_trace(
         "citations": _list_of_dicts(state.get("citations")),
         "citation_invalid": _list_of_str(state.get("citation_invalid")),
         "refused_tools": _list_of_str(state.get("refused_tools")),
-        "claims_invalid": [
-            dict(claim) for claim in _list_of_dicts(state.get("claims_invalid"))
-        ],
+        "claims_invalid": [dict(claim) for claim in _list_of_dicts(state.get("claims_invalid"))],
     }
     trace: dict[str, object] = {
         "schema_version": TRACE_SCHEMA_VERSION,
