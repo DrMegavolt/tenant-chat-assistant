@@ -242,6 +242,43 @@ class InvalidVersionTransitionError(ConflictError):
         super().__init__(detail)
 
 
+class ReviewTransitionError(ConflictError):
+    """A review queue entry is not in a state the requested transition may leave.
+
+    A conflict rather than a validation failure: the queue moved under the
+    caller — another reviewer took it, or an evaluation run already closed it.
+    Carries the current status and the transitions the entry would have
+    accepted so the caller can reload the queue instead of guessing.
+    """
+
+    code = "invalid_review_transition"
+    message = "That review has moved on. Reload it and try again."
+
+    def __init__(
+        self,
+        *,
+        current: str,
+        permitted: frozenset[str],
+        detail: str | None = None,
+    ) -> None:
+        self.current = current
+        self.permitted = frozenset(permitted)
+        super().__init__(detail)
+
+
+class PromotionPrivacyError(PolicyViolationError):
+    """A reviewed turn cannot become an evaluation case: the anonymized payload
+    would still carry contact data.
+
+    The refusal is the privacy check (acceptance 6): promotion never silently
+    redacts a case the reviewer approved, it sends the reviewer back to make
+    the query releasable.
+    """
+
+    code = "promotion_privacy_refused"
+    message = "That turn cannot be promoted until its query is anonymized."
+
+
 class WorkflowTransitionError(ConflictError):
     """A workflow is not in a state the requested transition may leave.
 

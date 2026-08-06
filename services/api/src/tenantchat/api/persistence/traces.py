@@ -17,6 +17,7 @@ the calling route, and orthogonal to transcript memberships.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from sqlalchemy import bindparam, text
@@ -85,6 +86,7 @@ def _projection(row: object) -> TurnRecordProjection:
         turn_record_id=mapping["turn_record_id"],
         kind=mapping["kind"],
         created_at=mapping["created_at"],
+        payload=dict(mapping["payload"]),
     )
 
 
@@ -249,7 +251,7 @@ class PostgresTurnRecordStore:
             result = await connection.execute(
                 text(
                     """
-                    SELECT id, tenant_id, turn_record_id, kind, created_at
+                    SELECT id, tenant_id, turn_record_id, kind, created_at, payload
                     FROM turn_record_projections
                     WHERE tenant_id = :tenant_id AND turn_record_id = :turn_id
                     ORDER BY created_at, id
@@ -258,6 +260,45 @@ class PostgresTurnRecordStore:
                 {"tenant_id": tenant_id, "turn_id": turn_id},
             )
             return tuple(_projection(row) for row in result.all())
+
+    async def create_projection(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        kind: str,
+        payload: Mapping[str, object],
+    ) -> TurnRecordProjection:
+        """Pin a derived dataset (an `FEAT-008` evaluation case) to a turn.
+
+        The composite foreign key proves the turn exists and belongs to the
+        tenant; its violation is a plain 404, like every other absent-or-
+        outside-tenant read.
+        """
+        try:
+            async with self._engine.begin() as connection:
+                await require_active_tenant(connection, tenant_id)
+                result = await connection.execute(
+                    text(
+                        """
+                        INSERT INTO turn_record_projections
+                            (id, tenant_id, turn_record_id, kind, payload)
+                        VALUES
+                            (:id, :tenant_id, :turn_id, :kind, :payload)
+                        RETURNING id, tenant_id, turn_record_id, kind, created_at, payload
+                        """
+                    ).bindparams(bindparam("payload", type_=JSONB)),
+                    {
+                        "id": uuid.uuid4(),
+                        "tenant_id": tenant_id,
+                        "turn_id": turn_id,
+                        "kind": kind,
+                        "payload": dict(payload),
+                    },
+                )
+                return _projection(result.one())
+        except IntegrityError as exc:
+            raise NotFoundError(detail="turn record absent or outside tenant") from exc
 
 
 class PostgresTraceAccessStore:

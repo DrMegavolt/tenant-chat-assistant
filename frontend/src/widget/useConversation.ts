@@ -70,6 +70,10 @@ export interface Conversation {
   status: string;
   /** Staff replies that arrived while the panel was closed. */
   unreadStaffCount: number;
+  /** How the visitor rated a turn, when they did (`FEAT-008`). */
+  ratingFor: (turnId: string) => "up" | "down" | null;
+  /** Rate one turn the assistant answered; a thumbs-down enqueues a review. */
+  rate: (turnId: string, rating: "up" | "down", reason?: string) => Promise<void>;
   send: (text: string) => Promise<void>;
   /** Approve or decline a booking the assistant proposed and is waiting on. */
   decide: (decision: "approved" | "declined") => Promise<void>;
@@ -97,6 +101,7 @@ export function useConversation({
   const [isSending, setIsSending] = useState(false);
   const [status, setStatus] = useState("");
   const [unreadStaffCount, setUnreadStaffCount] = useState(0);
+  const [ratings, setRatings] = useState<Record<string, "up" | "down">>({});
 
   // A turn has to post the transcript *including* the message just typed, so
   // the sender reads the list it is extending rather than the last render's.
@@ -213,7 +218,8 @@ export function useConversation({
           id: nextId("assistant"),
           role: "assistant",
           source: "assistant",
-          text: payload.reply
+          text: payload.reply,
+          ...(payload.turnId ? { turnId: payload.turnId } : {})
         });
       }
       setEntries((previous) =>
@@ -342,6 +348,32 @@ export function useConversation({
     [api, applyTurn, setEntries, setSending, visitor]
   );
 
+  /** How the visitor rated a turn, when they did. */
+  const ratingFor = useCallback((turnId: string) => ratings[turnId] ?? null, [ratings]);
+
+  /**
+   * Rate one turn the assistant answered (`FEAT-008`). Only turns the visitor's
+   * own conversation produced can be rated; the server enforces that. The
+   * rating is best-effort: a network failure leaves the control available.
+   */
+  const rate = useCallback(
+    async (turnId: string, rating: "up" | "down", reason?: string) => {
+      const credential = credentialRef.current;
+      if (!isValidCredential(credential)) return;
+      try {
+        await api.feedback(credential, {
+          turnId,
+          rating,
+          ...(reason ? { reason } : {})
+        });
+        setRatings((current) => ({ ...current, [turnId]: rating }));
+      } catch {
+        // The visitor can retry; nothing here is worth a failure bubble.
+      }
+    },
+    [api]
+  );
+
   const forget = useCallback(() => {
     visitor.clear();
     seenServerMessageIds.current.clear();
@@ -350,6 +382,7 @@ export function useConversation({
     clearProactiveTimer();
     setEntries(() => [welcomeEntry(config)]);
     setUnreadStaffCount(0);
+    setRatings({});
     setStatus(RESET_STATUS);
   }, [clearProactiveTimer, config, setEntries, visitor]);
 
@@ -388,5 +421,16 @@ export function useConversation({
     return () => window.clearInterval(timer);
   }, [api, isOpen, refreshCredential, setEntries, visitor]);
 
-  return { entries, isSending, status, unreadStaffCount, send, decide, forget, markRead };
+  return {
+    entries,
+    isSending,
+    status,
+    unreadStaffCount,
+    ratingFor,
+    rate,
+    send,
+    decide,
+    forget,
+    markRead
+  };
 }

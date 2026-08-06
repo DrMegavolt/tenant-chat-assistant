@@ -38,13 +38,16 @@ from tenantchat.api.dependencies import (
     Configuration,
     Consent,
     Conversations,
+    Feedback,
     Knowledge,
     Registry,
+    Reviews,
     Runtime,
     SearchIndexes,
     TurnRecords,
 )
 from tenantchat.api.metrics import METRICS
+from tenantchat.api.review import enqueue_automatic, record_feedback_and_enqueue
 from tenantchat.api.schemas import (
     BookingConfirmationRequest,
     ChatRequest,
@@ -53,12 +56,21 @@ from tenantchat.api.schemas import (
     ChatTurnResponse,
     ConsentRequest,
     ConsentResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     PendingConfirmation,
     SourceViewResponse,
     TranscriptMessage,
     VisitorSessionResponse,
 )
-from tenantchat.api.store import ConversationStore, MessageRole, TurnRecordStore
+from tenantchat.api.settings import Settings
+from tenantchat.api.store import (
+    ConversationStore,
+    MessageRole,
+    ReviewQueueStore,
+    TurnRecord,
+    TurnRecordStore,
+)
 from tenantchat.api.visitor import VisitorClock, VisitorIdentity, VisitorSigner, issue
 from tenantchat.core.errors import ConflictError, NotFoundError
 from tenantchat.core.knowledge import RetrievalAudience, RetrievalContext
@@ -182,7 +194,7 @@ async def _record_turn(
     tenant_id: str,
     session_id: uuid.UUID,
     turn: AssistantTurn,
-) -> None:
+) -> TurnRecord:
     """Persist the turn's inference-plane envelope (`OBS-004`).
 
     Every conversation turn earns a record, paused ones included: a proposed
@@ -198,7 +210,7 @@ async def _record_turn(
     outcome = trace.get("outcome")
     raw_index = trace.get("turn_index")
     diagnoses = trace.get("diagnoses")
-    await turns.record(
+    return await turns.record(
         tenant_id,
         session_id,
         content=_turn_record_content(turn),
@@ -223,6 +235,47 @@ async def _record_turn(
             raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
         ),
         trace_schema_version=str(trace.get("schema_version", "1")),
+    )
+
+
+async def _enqueue_technical_failure(
+    reviews: ReviewQueueStore,
+    tenant_id: str,
+    session_id: uuid.UUID,
+    record: TurnRecord,
+) -> None:
+    """Automatically enqueue a turn the detector proved technical (`FEAT-008`).
+
+    The acceptance-3 trigger: a turn with a detected or confirmed technical
+    cause enters the review queue without any thumbs-down. The store's
+    idempotency makes re-running this a read of the existing case, so a
+    replayed or re-recorded turn cannot stack queue entries.
+    """
+    await enqueue_automatic(reviews, tenant_id, record)
+
+
+def _reply(
+    signer: VisitorCredentialSigner,
+    clock: Callable[[], datetime],
+    settings: Settings,
+    tenant_id: str,
+    session_id: uuid.UUID,
+    turn: AssistantTurn,
+    *,
+    turn_id: uuid.UUID | None = None,
+) -> ChatTurnResponse:
+    """The turn response, with the record id the widget attaches feedback to."""
+    return ChatTurnResponse.of(
+        session_id,
+        turn,
+        _fresh_credential(
+            signer,
+            clock,
+            settings.visitor_credential_ttl_seconds,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        ),
+        turn_id=turn_id,
     )
 
 
@@ -336,6 +389,7 @@ async def send_message(
     conversations: Conversations,
     runtime: Runtime,
     turn_records: TurnRecords,
+    reviews: Reviews,
     signer: VisitorSigner,
     clock: VisitorClock,
     settings: Configuration,
@@ -365,20 +419,61 @@ async def send_message(
     turn = await runtime.send(tenant_id, str(session_id), payload.message)
     _record_metrics(time.monotonic() - started, turn)
     await _record_answer(conversations, tenant_id, session_id, turn)
-    await _record_turn(turn_records, tenant_id, session_id, turn)
+    record = await _record_turn(turn_records, tenant_id, session_id, turn)
+    await _enqueue_technical_failure(reviews, tenant_id, session_id, record)
     _log_turn(turn)
 
-    return ChatTurnResponse.of(
+    return _reply(
+        signer,
+        clock,
+        settings,
+        tenant_id,
         session_id,
         turn,
-        _fresh_credential(
-            signer,
-            clock,
-            settings.visitor_credential_ttl_seconds,
-            tenant_id=tenant_id,
-            session_id=session_id,
-        ),
+        turn_id=record.turn_id,
     )
+
+
+@router.post("/api/chat/feedback", response_model=FeedbackResponse)
+async def submit_feedback(
+    payload: FeedbackRequest,
+    claims: VisitorIdentity,
+    registry: Registry,
+    turn_records: TurnRecords,
+    feedback: Feedback,
+    reviews: Reviews,
+) -> FeedbackResponse:
+    """Rate one turn record the visitor's own conversation produced.
+
+    The turn must belong to the credential's tenant *and* session: the record
+    is fetched tenant-qualified and then compared against the session the
+    credential names, so a borrowed or guessed turn id cannot attach feedback
+    to someone else's conversation (acceptance 1). The 404 is the same for an
+    absent turn and another session's turn, so the endpoint cannot be used to
+    probe what a session saw. The rating is a bounded enum and the reason is
+    optional, bounded free text stored beside the turn it refers to — never
+    logged, never on a metric label.
+    """
+    tenant_id, session_id = claims.tenant_id, claims.session_id
+    registry.get(tenant_id)
+    record = await turn_records.get(tenant_id, payload.turn_id)
+    if record.session_id != session_id:
+        raise NotFoundError(detail="turn record absent or outside conversation")
+    recorded = await record_feedback_and_enqueue(
+        feedback,
+        reviews,
+        turn_records,
+        tenant_id,
+        payload.turn_id,
+        rating=payload.rating,
+        reason=payload.reason,
+    )
+    METRICS.observe(
+        MetricName.FEEDBACK_SUBMITTED,
+        1,
+        labels={"rating": payload.rating},
+    )
+    return FeedbackResponse.of(recorded)
 
 
 @router.post("/api/chat/consent", response_model=ConsentResponse)
@@ -430,6 +525,7 @@ async def confirm_booking(
     conversations: Conversations,
     runtime: Runtime,
     turn_records: TurnRecords,
+    reviews: Reviews,
     signer: VisitorSigner,
     clock: VisitorClock,
     settings: Configuration,
@@ -458,19 +554,18 @@ async def confirm_booking(
     turn = await runtime.resume(tenant_id, session_key, approved=payload.decision == "approved")
     _record_metrics(time.monotonic() - started, turn)
     await _record_answer(conversations, tenant_id, session_id, turn)
-    await _record_turn(turn_records, tenant_id, session_id, turn)
+    record = await _record_turn(turn_records, tenant_id, session_id, turn)
+    await _enqueue_technical_failure(reviews, tenant_id, session_id, record)
     _log_turn(turn)
 
-    return ChatTurnResponse.of(
+    return _reply(
+        signer,
+        clock,
+        settings,
+        tenant_id,
         session_id,
         turn,
-        _fresh_credential(
-            signer,
-            clock,
-            settings.visitor_credential_ttl_seconds,
-            tenant_id=tenant_id,
-            session_id=session_id,
-        ),
+        turn_id=record.turn_id,
     )
 
 

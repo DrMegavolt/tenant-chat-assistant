@@ -347,7 +347,7 @@ the first outbox did not.
 
 - [ ] `FEAT-001` — Knowledge-base administration workflow — `P1`
 - [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
-- [ ] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
+- [x] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
 - [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
 - [x] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
@@ -2427,7 +2427,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-008 — User feedback and reviewed-answer workflow
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Feature/AI quality`
 - Depends on: `DATA-002`, `RAG-005`, `SEC-001`, `OBS-004`, `FEAT-015`
@@ -2447,7 +2447,19 @@ promotion pipeline — which requires a cluster that runs for real.
   - Dataset promotion applies privacy checks.
 - Verification:
   - E2E test covers feedback, automatic failure enqueueing, diagnosis review and disagreement, correction, safe evaluation promotion, and fix-closure verification.
-- Completion notes: _Pending._
+- Completion notes:
+  - **Feedback**: `POST /api/chat/feedback` (`services/api/src/tenantchat/api/routers/chat.py`) rates one turn record under the visitor credential; the record must belong to the credential's tenant *and* session or the answer is the same 404 an absent turn gets (acceptance 1). One idempotent row per turn (`turn_feedback`); the reason is bounded free text that cascades off its turn record on erasure and never reaches a log or metric label (a `tenantchat_feedback_submitted_total{rating=up|down}` counter is the only new series). The widget renders an accessible thumbs up/down under each assistant answer (`frontend/src/widget/components/FeedbackControl.tsx`), with an optional reason revealed on thumbs-down, a `role="status"` confirmation, and `aria-pressed` toggles; `ChatTurnResponse` now echoes `turn_id` so the widget targets exactly the turn it shows.
+  - **Queue and priority**: `review_queue` holds one case per turn (`source` `user_feedback`|`automatic`, closed status machine `open`→`in_review`→`awaiting_fix`|`rejected`, `resolved` reachable only through an evaluation pass). The priority formula lives in `packages/core/src/tenantchat/core/reviews.py` and is documented there: `10·min(severity,3) + 5·min(recurrence,3) + 3·committed + 2·novel`. Severity is the strongest technical cause (`provider_failure`/`application_error`=3, `ingestion_or_index_error`/`tool_error`=2, other detector-proven causes=1); recurrence and novelty are read from the tenant's existing queue state for the same component-manifest hash; committed is whether the turn's trace shows a committed business action. Ties break by enqueue time.
+  - **Automatic enqueue**: `enqueue_automatic` runs from the chat routes after every recorded turn; a turn whose automatic diagnoses contain a *proven* (`detected`/`confirmed`) technical cause (`provider_failure`, `application_error`, `ingestion_or_index_error`, `tool_error`) enters the queue with no thumbs-down (acceptance 3). Merely `suspected` causes stay reviewer material.
+  - **Diagnosis review**: `review_diagnoses` stores the reviewer's overlay rows with an explicit relationship — `confirms`/`rejects`/`amends` name the automatic diagnosis by its index, `adds` is a diagnosis the detector never emitted. The submission must decide *every* automatic diagnosis (`validate_decisions`), the detector's records inside the turn's opaque content are never mutated, and the detail surface renders both sets side by side with disagreements flagged (acceptance 4).
+  - **Correction immutability**: the reviewer's corrected answer and proposed fix are columns beside the immutable trace; nothing in the review surface writes the turn record (acceptance 2, asserted by the E2E).
+  - **Fix closure**: `review_queue` carries `case_id` (minted `review-<id>` at promotion) and the closing reference `closing_eval_run_id`/`closing_eval_case_id`/`closing_eval_passed_at`. `apply_eval_report` in `services/api/src/tenantchat/api/review.py` is the contract `RAG-008` will call with the runner's report JSON and a server-minted run id: it closes every `awaiting_fix` review whose promoted case passes (`case_passes` reads recall/citation/abstention/leaks per report row), the store's guarded UPDATE makes the first passing run win, and re-applying a report cannot rewrite it. Until a gate exists a reviewed case stays visibly `awaiting_fix`.
+  - **Promotion**: `POST /api/admin/reviews/{id}/promote` builds the `evals.scorer.EvalCase`-shaped payload from the turn's retrieval query and evidence, applies the privacy check (`payload_contains_pii` — a query or scenario carrying a phone or email is refused with `promotion_privacy_refused`, never silently redacted; acceptance 6), and pins the case as a `turn_record_projections` row of kind `eval_dataset` with the payload in the new `payload` column, so erasure of the turn erases the dataset in the same statement.
+  - **Auditing**: every queue read (list and detail) and every mutation (`review.taken`, `review.decided`, `review.promoted`) is audited to principal, tenant, request id, and content-free detail; the whole surface sits under the dedicated trace-read role and the CSRF double-submit token.
+  - **Surface**: admin console gains a "Review queue" tab (`frontend/src/admin/components/ReviewQueue.tsx` + `ReviewDetail.tsx`) — a content-free list (status filter, priority, causes, closure status) with the review detail embedding the linked turn through the existing `TraceDetail` (the FEAT-015 console), the diagnosis-decision form, the corrected answer and fix inputs, promotion, and the eval-closure status.
+  - **Schema**: migration `0016_review_queue` (tables `turn_feedback`, `review_queue`, `review_diagnoses`; `turn_record_projections.payload`). Every review table cascades off its turn record, so `PRIV-002` erasure removes feedback reasons and reviewer overlays with the record (privacy-lifecycle test added).
+  - Files: `packages/core/src/tenantchat/core/{reviews.py, errors.py, metrics.py}`; `services/api/migrations/versions/0016_review_queue.py`; `services/api/src/tenantchat/api/{store.py, schemas.py, review.py, dependencies.py, app.py, persistence/reviews.py, persistence/traces.py, persistence/privacy.py, routers/chat.py, routers/reviews.py, metrics.py}`; `frontend/src/widget/{types.ts, api.ts, useConversation.ts, ChatWidget.tsx, widget.css, components/FeedbackControl.tsx}`; `frontend/src/admin/{AdminPage.tsx, adminApi.ts, reviewTypes.ts, admin.css, components/ReviewQueue.tsx, components/ReviewDetail.tsx}`; `frontend/nginx/site.conf.template`; `scripts/verify_image_contracts.py`; tests in `packages/core/tests/test_reviews.py`, `services/api/tests/test_feedback_review.py`, `tests/repositories/test_review_queue_repository.py`, `tests/privacy/test_privacy_lifecycle.py`, `tests/migrations/test_migrations.py`, `frontend/tests/{feedback,reviewQueue}.test.tsx`.
+  - Follow-ups: `RAG-008` populates the fix-closure linkage by calling `apply_eval_report` with each gate run's report JSON (the contract and the per-case pass predicate are tested against a report-shaped fixture); the promoted payload stores chunk ids, so the eval harness needs the tenant's chunk texts resolved from the knowledge base to score a promoted case.
 
 ### FEAT-009 — Business outcome and conversion analytics
 

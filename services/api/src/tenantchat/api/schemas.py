@@ -28,8 +28,11 @@ from tenantchat.api.store import (
     LeadRecord,
     MessageRecord,
     PrivacyRequestRecord,
+    ReviewCase,
+    ReviewDiagnosis,
     TenantMembership,
     TraceAccessGrant,
+    TurnFeedback,
     TurnRecord,
     TurnRecordProjection,
 )
@@ -343,12 +346,16 @@ class ChatTurnResponse(BaseModel):
     something has no answer yet, and the conversation continues at
     ``POST /api/chat/confirmation``.
 
+    ``turn_id`` is the inference-plane record the turn earned, echoed so the
+    widget can attach feedback to exactly the turn it shows (`FEAT-008`).
+
     ``credential`` is a freshly reissued visitor token: it names the same
     tenant and session the caller presented and replaces it, so an active
     conversation never lets its credential expire (SEC-002).
     """
 
     session_id: uuid.UUID
+    turn_id: uuid.UUID | None
     reply: str
     pending: PendingConfirmation | None
     committed: list[CommittedActionSummary]
@@ -362,9 +369,12 @@ class ChatTurnResponse(BaseModel):
         session_id: uuid.UUID,
         turn: AssistantTurn,
         credential: str,
+        *,
+        turn_id: uuid.UUID | None = None,
     ) -> ChatTurnResponse:
         return cls(
             session_id=session_id,
+            turn_id=turn_id,
             reply=turn.answer,
             pending=None if turn.pending is None else PendingConfirmation.of(turn.pending),
             committed=[
@@ -724,12 +734,18 @@ class TurnRecordExportItem(BaseModel):
 
 
 class TurnRecordProjectionExportItem(BaseModel):
-    """A derived dataset row pinned to an exported turn record."""
+    """A derived dataset row pinned to an exported turn record.
+
+    ``payload`` is the derived artifact itself — for `FEAT-008` the anonymized
+    evaluation case — so an export that carries the projection carries the
+    full projection, not a row that only names it.
+    """
 
     projection_id: uuid.UUID
     turn_record_id: uuid.UUID
     kind: str
     created_at: datetime
+    payload: dict[str, object]
 
     @classmethod
     def of(cls, record: TurnRecordProjection) -> TurnRecordProjectionExportItem:
@@ -738,6 +754,7 @@ class TurnRecordProjectionExportItem(BaseModel):
             turn_record_id=record.turn_record_id,
             kind=record.kind,
             created_at=record.created_at,
+            payload=record.payload,
         )
 
 
@@ -1173,4 +1190,247 @@ class QuarantineReviewResponse(BaseModel):
             document_id=document.document_id,
             state=version.state.value,
             safety_state=version.safety_state.value,
+        )
+
+
+class FeedbackRequest(_Request):
+    """One visitor's rating of one turn record.
+
+    The turn is named by its record id, which the turn response now echoes;
+    the server verifies the record belongs to the credential's tenant *and*
+    session before anything is written, so a forged or borrowed id cannot
+    attach feedback to a conversation the visitor never took part in
+    (acceptance 1). ``reason`` is optional and bounded.
+    """
+
+    turn_id: uuid.UUID
+    rating: Literal["up", "down"]
+    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class FeedbackResponse(BaseModel):
+    """The recorded rating, as the widget's next state reads it."""
+
+    turn_id: uuid.UUID
+    rating: str
+    reason: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: TurnFeedback) -> FeedbackResponse:
+        return cls(
+            turn_id=record.turn_id,
+            rating=record.rating,
+            reason=record.reason,
+            created_at=record.created_at,
+        )
+
+
+class ReviewSummaryResponse(BaseModel):
+    """One content-free queue entry, as the list surface shows it.
+
+    The diagnosis causes and statuses are the turn record's content-free
+    columns, so a reviewer can scan the queue without a single content read;
+    the feedback reason and the turn itself stay behind the audited detail
+    surface.
+    """
+
+    review_id: uuid.UUID
+    turn_id: uuid.UUID
+    session_id: uuid.UUID | None
+    recorded_at: datetime | None
+    outcome: str
+    source: str
+    status: str
+    priority: int
+    recurrence: int
+    manifest_hash: str
+    committed_actions: bool
+    novel_manifest: bool
+    case_id: str | None
+    verdict: str | None
+    diagnosis_causes: list[str]
+    diagnosis_statuses: list[str]
+    closing_eval_run_id: str | None
+    closing_eval_case_id: str | None
+    created_at: datetime
+    turn_index: int = 0
+
+    @classmethod
+    def of(cls, case: ReviewCase, turn: TurnRecord) -> ReviewSummaryResponse:
+        return cls(
+            review_id=case.review_id,
+            turn_id=case.turn_id,
+            session_id=turn.session_id,
+            recorded_at=turn.recorded_at,
+            outcome=turn.outcome,
+            source=case.source,
+            status=case.status,
+            priority=case.priority,
+            recurrence=case.recurrence,
+            manifest_hash=case.manifest_hash,
+            committed_actions=case.committed_actions,
+            novel_manifest=case.novel_manifest,
+            case_id=case.case_id,
+            verdict=case.verdict,
+            diagnosis_causes=list(turn.diagnosis_causes),
+            diagnosis_statuses=list(turn.diagnosis_statuses),
+            closing_eval_run_id=case.closing_eval_run_id,
+            closing_eval_case_id=case.closing_eval_case_id,
+            created_at=case.created_at,
+            turn_index=turn.turn_index,
+        )
+
+
+class ReviewPageResponse(BaseModel):
+    reviews: list[ReviewSummaryResponse]
+
+    @classmethod
+    def of(
+        cls, cases: tuple[ReviewCase, ...], turns: Mapping[uuid.UUID, TurnRecord]
+    ) -> ReviewPageResponse:
+        return cls(reviews=[ReviewSummaryResponse.of(case, turns[case.turn_id]) for case in cases])
+
+
+class ReviewDiagnosisDecisionRequest(_Request):
+    """One reviewer decision about one automatic diagnosis (or a new one).
+
+    ``automatic_index`` is required for ``confirms``/``rejects``/``amends``
+    and forbidden for ``adds``; the amended replacement fields are required
+    for an ``amends`` row, validated by the domain service against the turn's
+    actual automatic diagnosis list.
+    """
+
+    automatic_index: int | None = None
+    relationship: Literal["confirms", "rejects", "amends", "adds"]
+    cause: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    stage: str = Field(default="outcome", min_length=1, max_length=64)
+    role: Literal["primary", "contributing"] = "primary"
+    status: Literal["detected", "suspected", "confirmed", "inconclusive"] = "confirmed"
+    confidence: Literal["low", "medium", "high"] = "medium"
+    evidence: list[str] = Field(default_factory=list, max_length=32)
+    note: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class ReviewSubmitRequest(_Request):
+    """The reviewer's full decision for one queue entry.
+
+    ``status`` is the destination: ``awaiting_fix`` when the reviewer
+    documented a fix and the case stays visibly open until an evaluation run
+    passes it, ``rejected`` when the reviewer dismissed the problem. The
+    corrected answer is stored beside the turn — the original trace is never
+    rewritten (acceptance 2).
+    """
+
+    tenant_id: str = _TENANT_ID
+    verdict: Literal["confirmed", "rejected", "amended"]
+    status: Literal["awaiting_fix", "rejected"]
+    note: str | None = Field(default=None, min_length=1, max_length=2000)
+    corrected_answer: str | None = Field(default=None, min_length=1, max_length=4000)
+    proposed_fix: str | None = Field(default=None, min_length=1, max_length=2000)
+    diagnoses: list[ReviewDiagnosisDecisionRequest] = Field(default_factory=list)
+
+
+class ReviewDiagnosisResponse(BaseModel):
+    """One reviewer-authored diagnosis row, with its relationship to the
+    detector's record made explicit — the disagreement is stored, never
+    silently overwritten (acceptance 4)."""
+
+    diagnosis_id: uuid.UUID
+    review_id: uuid.UUID
+    relationship: str
+    automatic_index: int | None
+    cause: str
+    stage: str
+    role: str
+    status: str
+    confidence: str
+    evidence: list[str]
+    note: str | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: ReviewDiagnosis) -> ReviewDiagnosisResponse:
+        return cls(
+            diagnosis_id=record.diagnosis_id,
+            review_id=record.review_id,
+            relationship=record.relationship,
+            automatic_index=record.automatic_index,
+            cause=record.cause,
+            stage=record.stage,
+            role=record.role,
+            status=record.status,
+            confidence=record.confidence,
+            evidence=list(record.evidence),
+            note=record.note,
+            created_at=record.created_at,
+        )
+
+
+class ReviewDetailResponse(BaseModel):
+    """One queue entry with everything a reviewer needs, content-bearing.
+
+    The feedback reason and the reviewer's own records are visitor and staff
+    content, so this surface sits under the same dedicated trace-read role and
+    audit rules as the turn record itself; the turn's content is fetched
+    through the existing single-read route.
+    """
+
+    review: ReviewSummaryResponse
+    feedback: FeedbackResponse | None
+    reviewer_subject: str | None
+    reviewed_at: datetime | None
+    verdict_note: str | None
+    corrected_answer: str | None
+    proposed_fix: str | None
+    closing_eval_passed_at: datetime | None
+    diagnoses: list[ReviewDiagnosisResponse]
+
+    @classmethod
+    def of(
+        cls,
+        case: ReviewCase,
+        turn: TurnRecord,
+        *,
+        feedback: TurnFeedback | None,
+        diagnoses: tuple[ReviewDiagnosis, ...],
+    ) -> ReviewDetailResponse:
+        return cls(
+            review=ReviewSummaryResponse.of(case, turn),
+            feedback=None if feedback is None else FeedbackResponse.of(feedback),
+            reviewer_subject=case.reviewer_subject,
+            reviewed_at=case.reviewed_at,
+            verdict_note=case.verdict_note,
+            corrected_answer=case.corrected_answer,
+            proposed_fix=case.proposed_fix,
+            closing_eval_passed_at=case.closing_eval_passed_at,
+            diagnoses=[ReviewDiagnosisResponse.of(record) for record in diagnoses],
+        )
+
+
+class ReviewDecisionResponse(BaseModel):
+    """The queue entry after a take, submit, or promote mutation."""
+
+    review_id: uuid.UUID
+    turn_id: uuid.UUID
+    status: str
+    verdict: str | None
+    case_id: str | None
+    closing_eval_run_id: str | None
+    closing_eval_case_id: str | None
+    closing_eval_passed_at: datetime | None
+    corrected_answer: str | None
+
+    @classmethod
+    def of(cls, case: ReviewCase) -> ReviewDecisionResponse:
+        return cls(
+            review_id=case.review_id,
+            turn_id=case.turn_id,
+            status=case.status,
+            verdict=case.verdict,
+            case_id=case.case_id,
+            closing_eval_run_id=case.closing_eval_run_id,
+            closing_eval_case_id=case.closing_eval_case_id,
+            closing_eval_passed_at=case.closing_eval_passed_at,
+            corrected_answer=case.corrected_answer,
         )

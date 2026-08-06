@@ -71,6 +71,8 @@ PUBLIC_PROXY_PATHS = frozenset(
         "/api/chat/session",
         "/api/chat/consent",
         "/api/chat/confirmation",
+        # FEAT-008: the visitor's rating of one turn record.
+        "/api/chat/feedback",
         "/api/book",
         "/api/leads",
     }

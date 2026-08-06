@@ -25,7 +25,12 @@ from tenantchat.core.commands import (
     LeadUrgency,
 )
 from tenantchat.core.contact import Contact, ContactKind
-from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
+from tenantchat.core.errors import (
+    ConflictError,
+    NotFoundError,
+    ReviewTransitionError,
+    SlotUnavailableError,
+)
 from tenantchat.core.knowledge import (
     ContentChecksum,
     DocumentVersion,
@@ -739,10 +744,11 @@ class TurnRecord:
 class TurnRecordProjection:
     """A derived dataset pinned to the turn record it was built from.
 
-    `FEAT-008` promotes reviewed turns into evaluation datasets here. Erasure
-    of the turn record removes every projection of it (the schema cascades),
-    which is what makes "any projection derived from the record" eraseable
-    without a second registry.
+    `FEAT-008` promotes reviewed turns into evaluation datasets here: the
+    anonymized case payload (`evals.scorer.EvalCase` shape) is the projection's
+    ``payload``. Erasure of the turn record removes every projection of it (the
+    schema cascades), which is what makes "any projection derived from the
+    record" eraseable without a second registry.
     """
 
     projection_id: uuid.UUID
@@ -750,6 +756,7 @@ class TurnRecordProjection:
     turn_record_id: uuid.UUID
     kind: str
     created_at: datetime
+    payload: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -766,6 +773,87 @@ class TraceAccessGrant:
     principal_subject: str
     granted_at: datetime
     granted_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class TurnFeedback:
+    """One visitor's rating of one turn record, idempotently upserted.
+
+    ``reason`` is the visitor's own words — content-bearing, so it lives under
+    the same governance as the turn it refers to (it cascades off the turn
+    record on erasure) and never reaches a log, metric, or the content-free
+    queue list.
+    """
+
+    feedback_id: uuid.UUID
+    tenant_id: str
+    turn_id: uuid.UUID
+    rating: str
+    reason: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCase:
+    """One queue entry for one turn record.
+
+    The priority inputs are frozen at enqueue time — the deterministic score,
+    the recurrence count, whether the turn committed a business action, and
+    whether its manifest hash is new to the queue — so re-sorting later is a
+    matter of reading stored integers, never re-deriving from content.
+
+    ``case_id`` names the promoted evaluation case once the reviewer approves
+    promotion; ``closing_eval_*`` is the acceptance-5 linkage, written exactly
+    once by the evaluation gate when the first passing run covers the case.
+    """
+
+    review_id: uuid.UUID
+    tenant_id: str
+    turn_id: uuid.UUID
+    source: str
+    status: str
+    priority: int
+    recurrence: int
+    manifest_hash: str
+    committed_actions: bool
+    novel_manifest: bool
+    case_id: str | None
+    reviewer_subject: str | None
+    reviewed_at: datetime | None
+    verdict: str | None
+    verdict_note: str | None
+    corrected_answer: str | None
+    proposed_fix: str | None
+    closing_eval_run_id: str | None
+    closing_eval_case_id: str | None
+    closing_eval_passed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewDiagnosis:
+    """One reviewer-authored diagnosis record, kept apart from the detector's.
+
+    ``relationship`` and ``automatic_index`` store the disagreement explicitly:
+    the detector's records live in the turn's opaque content and are never
+    mutated, so automatic and reviewer diagnoses can always be shown side by
+    side (acceptance 4).
+    """
+
+    diagnosis_id: uuid.UUID
+    tenant_id: str
+    review_id: uuid.UUID
+    relationship: str
+    automatic_index: int | None
+    cause: str
+    stage: str
+    role: str
+    status: str
+    confidence: str
+    evidence: tuple[str, ...]
+    note: str | None
+    created_at: datetime
 
 
 class ConsentStore(Protocol):
@@ -958,6 +1046,24 @@ class TurnRecordStore(Protocol):
         exists so the trace viewer can see what was derived from what it reads.
         """
 
+    async def create_projection(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        kind: str,
+        payload: Mapping[str, object],
+    ) -> TurnRecordProjection:
+        """Pin a derived dataset to a turn record.
+
+        `FEAT-008` promotion is the only writer today: the anonymized
+        evaluation case becomes the projection's payload, erased with the
+        record it was derived from.
+
+        Raises:
+            NotFoundError: the turn record is absent or belongs to another tenant.
+        """
+
 
 class TraceAccessStore(Protocol):
     """The `PRIV-002` dedicated role for turn-record reads.
@@ -981,11 +1087,176 @@ class TraceAccessStore(Protocol):
         """The tenant's current grants, for the operator console."""
 
 
+class TurnFeedbackStore(Protocol):
+    """Visitor ratings of turn records, idempotent per turn.
+
+    The record is written only after the turn is proven to belong to the
+    credential's tenant and session, which is what keeps feedback from naming
+    a conversation the visitor never took part in (acceptance 1).
+    """
+
+    async def record(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        rating: str,
+        reason: str | None,
+    ) -> TurnFeedback:
+        """Record a rating, replacing any earlier rating of the same turn.
+
+        Raises:
+            NotFoundError: the turn record is absent or belongs to another tenant.
+        """
+
+    async def for_turn(self, tenant_id: str, turn_id: uuid.UUID) -> TurnFeedback | None:
+        """The turn's current rating, or ``None`` when never rated."""
+
+
+class ReviewQueueStore(Protocol):
+    """The `FEAT-008` review queue: one case per turn, with its diagnosis
+    overlay and its fix-closure reference.
+
+    Enqueueing is idempotent per turn: a turn that was already flagged by the
+    detector gains no second case when a visitor also thumbs it down — the
+    first case is returned, and its ``source`` records how it first entered.
+    Every mutation enforces the closed status machine; the store is where the
+    transition lives because it must be atomic with the write.
+    """
+
+    async def enqueue(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        source: str,
+        priority: int,
+        recurrence: int,
+        manifest_hash: str,
+        committed_actions: bool,
+        novel_manifest: bool,
+    ) -> ReviewCase:
+        """Open a case for a turn, or return the one already open.
+
+        Raises:
+            NotFoundError: the turn record is absent or belongs to another tenant.
+        """
+
+    async def get(self, tenant_id: str, review_id: uuid.UUID) -> ReviewCase:
+        """One case, tenant-qualified.
+
+        Raises:
+            NotFoundError: no such case, or it belongs to another tenant.
+        """
+
+    async def for_turn(self, tenant_id: str, turn_id: uuid.UUID) -> ReviewCase | None:
+        """The case for one turn, or ``None`` when never enqueued."""
+
+    async def search(
+        self,
+        tenant_id: str,
+        *,
+        statuses: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> tuple[ReviewCase, ...]:
+        """The tenant's cases, highest priority first, bounded to *limit*.
+
+        Ties break by enqueue time (oldest first), so the ordering is
+        deterministic for a given store state.
+        """
+
+    async def count_for_manifest(self, tenant_id: str, manifest_hash: str) -> int:
+        """How many cases the tenant already has for one manifest hash.
+
+        The recurrence input of the priority formula: zero means the hash is
+        novel to this tenant's queue. Deliberately unbounded — recurrence is
+        capped by the formula, not by this count.
+        """
+
+    async def take(self, tenant_id: str, review_id: uuid.UUID, *, reviewer: str) -> ReviewCase:
+        """Mark an open case as in review by one operator.
+
+        Raises:
+            NotFoundError: no such case, or it belongs to another tenant.
+            ReviewTransitionError: the case is not ``open``.
+        """
+
+    async def submit(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        reviewer: str,
+        verdict: str,
+        note: str | None,
+        corrected_answer: str | None,
+        proposed_fix: str | None,
+        status: str,
+        diagnoses: tuple[ReviewDiagnosis, ...],
+    ) -> ReviewCase:
+        """Record the reviewer's decision and move the case to its destination.
+
+        The diagnosis rows replace any earlier overlay for this review — a
+        review can be corrected only by resubmitting, and the audit trail
+        preserves every submission. The destination is ``awaiting_fix`` or
+        ``rejected``; ``resolved`` is reachable only through
+        :meth:`record_eval_pass`.
+
+            Raises:
+                NotFoundError: no such case, or it belongs to another tenant.
+                ReviewTransitionError: the case is not ``open``, ``in_review``,
+                    or ``awaiting_fix`` (resubmission corrects a pending review;
+                    a closed case is history).
+        """
+
+    async def record_eval_pass(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        run_id: str,
+        case_id: str,
+        passed_at: datetime,
+    ) -> ReviewCase:
+        """Close an ``awaiting_fix`` case with its first passing run.
+
+        Writing the closing reference is a no-op for an already-closed case,
+        so re-applying an evaluation report cannot overwrite the first run
+        that passed (acceptance 5).
+
+        Raises:
+            NotFoundError: no such case, or it belongs to another tenant.
+        """
+
+    async def set_case_id(
+        self, tenant_id: str, review_id: uuid.UUID, *, case_id: str
+    ) -> ReviewCase:
+        """Attach the promoted evaluation case id to a review.
+
+        Raises:
+            NotFoundError: no such case, or it belongs to another tenant.
+        """
+
+    async def diagnoses(self, tenant_id: str, review_id: uuid.UUID) -> tuple[ReviewDiagnosis, ...]:
+        """The reviewer's diagnosis rows for one case, oldest first."""
+
+    async def for_case_ids(
+        self, tenant_id: str, case_ids: Collection[str]
+    ) -> tuple[ReviewCase, ...]:
+        """The tenant's open cases whose promoted case id is in *case_ids*.
+
+        This is the lookup the evaluation gate (`RAG-008`) runs a report
+        against: find the reviews that report covered, then close the ones
+        whose status is still ``awaiting_fix``.
+        """
+
+
 class InMemoryTurnRecordStore:
     """A concurrency-safe fake; production composition never constructs it."""
 
     def __init__(self) -> None:
         self._records: dict[uuid.UUID, TurnRecord] = {}
+        self._projections: dict[uuid.UUID, TurnRecordProjection] = {}
         self._lock = asyncio.Lock()
 
     async def record(
@@ -1088,11 +1359,280 @@ class InMemoryTurnRecordStore:
     async def projections_for_turn(
         self, tenant_id: str, turn_id: uuid.UUID
     ) -> tuple[TurnRecordProjection, ...]:
-        # The in-memory fake has no projection storage: projections are a
-        # `FEAT-008` artifact, and the PostgreSQL adapter is authoritative for
-        # them. An empty tuple keeps the hermetic read surface honest.
-        del tenant_id, turn_id
-        return ()
+        async with self._lock:
+            projections = [
+                replace(projection, payload=dict(projection.payload))
+                for projection in self._projections.values()
+                if projection.tenant_id == tenant_id and projection.turn_record_id == turn_id
+            ]
+        projections.sort(key=lambda projection: (projection.created_at, projection.projection_id))
+        return tuple(projections)
+
+    async def create_projection(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        kind: str,
+        payload: Mapping[str, object],
+    ) -> TurnRecordProjection:
+        """Pin a derived dataset (an `FEAT-008` evaluation case) to a turn."""
+        async with self._lock:
+            record = self._records.get(turn_id)
+            if record is None or record.tenant_id != tenant_id:
+                raise NotFoundError(detail="turn record absent or outside tenant")
+            projection = TurnRecordProjection(
+                projection_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                turn_record_id=turn_id,
+                kind=kind,
+                created_at=datetime.now(UTC),
+                payload=dict(payload),
+            )
+            self._projections[projection.projection_id] = projection
+        return projection
+
+
+class InMemoryTurnFeedbackStore:
+    """A concurrency-safe fake; production composition never constructs it."""
+
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, uuid.UUID], TurnFeedback] = {}
+        self._lock = asyncio.Lock()
+
+    async def record(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        rating: str,
+        reason: str | None,
+    ) -> TurnFeedback:
+        now = datetime.now(UTC)
+        async with self._lock:
+            existing = self._records.get((tenant_id, turn_id))
+            record = TurnFeedback(
+                feedback_id=existing.feedback_id if existing else uuid.uuid4(),
+                tenant_id=tenant_id,
+                turn_id=turn_id,
+                rating=rating,
+                reason=reason,
+                created_at=existing.created_at if existing else now,
+            )
+            self._records[(tenant_id, turn_id)] = record
+        return record
+
+    async def for_turn(self, tenant_id: str, turn_id: uuid.UUID) -> TurnFeedback | None:
+        async with self._lock:
+            return self._records.get((tenant_id, turn_id))
+
+
+class InMemoryReviewQueueStore:
+    """A concurrency-safe fake with the same closed status machine."""
+
+    def __init__(self) -> None:
+        self._cases: dict[uuid.UUID, ReviewCase] = {}
+        self._diagnoses: dict[uuid.UUID, list[ReviewDiagnosis]] = {}
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _touch(case: ReviewCase) -> ReviewCase:
+        return replace(case, updated_at=datetime.now(UTC))
+
+    async def enqueue(
+        self,
+        tenant_id: str,
+        turn_id: uuid.UUID,
+        *,
+        source: str,
+        priority: int,
+        recurrence: int,
+        manifest_hash: str,
+        committed_actions: bool,
+        novel_manifest: bool,
+    ) -> ReviewCase:
+        now = datetime.now(UTC)
+        async with self._lock:
+            existing = next(
+                (case for case in self._cases.values() if case.turn_id == turn_id),
+                None,
+            )
+            if existing is not None:
+                if existing.tenant_id != tenant_id:
+                    raise NotFoundError(detail="turn record absent or outside tenant")
+                return existing
+            case = ReviewCase(
+                review_id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                turn_id=turn_id,
+                source=source,
+                status="open",
+                priority=priority,
+                recurrence=recurrence,
+                manifest_hash=manifest_hash,
+                committed_actions=committed_actions,
+                novel_manifest=novel_manifest,
+                case_id=None,
+                reviewer_subject=None,
+                reviewed_at=None,
+                verdict=None,
+                verdict_note=None,
+                corrected_answer=None,
+                proposed_fix=None,
+                closing_eval_run_id=None,
+                closing_eval_case_id=None,
+                closing_eval_passed_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+            self._cases[case.review_id] = case
+            return case
+
+    async def get(self, tenant_id: str, review_id: uuid.UUID) -> ReviewCase:
+        async with self._lock:
+            case = self._cases.get(review_id)
+        if case is None or case.tenant_id != tenant_id:
+            raise NotFoundError(detail="review case absent or outside tenant")
+        return case
+
+    async def for_turn(self, tenant_id: str, turn_id: uuid.UUID) -> ReviewCase | None:
+        async with self._lock:
+            return next(
+                (case for case in self._cases.values() if case.turn_id == turn_id),
+                None,
+            )
+
+    async def search(
+        self,
+        tenant_id: str,
+        *,
+        statuses: tuple[str, ...] = (),
+        limit: int = 50,
+    ) -> tuple[ReviewCase, ...]:
+        wanted = set(statuses)
+        async with self._lock:
+            cases = [
+                case
+                for case in self._cases.values()
+                if case.tenant_id == tenant_id and (not wanted or case.status in wanted)
+            ]
+        cases.sort(key=lambda case: (-case.priority, case.created_at))
+        return tuple(cases[:limit])
+
+    async def count_for_manifest(self, tenant_id: str, manifest_hash: str) -> int:
+        async with self._lock:
+            return sum(
+                1
+                for case in self._cases.values()
+                if case.tenant_id == tenant_id and case.manifest_hash == manifest_hash
+            )
+
+    async def take(self, tenant_id: str, review_id: uuid.UUID, *, reviewer: str) -> ReviewCase:
+        async with self._lock:
+            case = self._cases.get(review_id)
+            if case is None or case.tenant_id != tenant_id:
+                raise NotFoundError(detail="review case absent or outside tenant")
+            if case.status != "open":
+                raise ReviewTransitionError(current=case.status, permitted=frozenset({"open"}))
+            updated = replace(
+                case, status="in_review", reviewer_subject=reviewer, updated_at=datetime.now(UTC)
+            )
+            self._cases[review_id] = updated
+            return updated
+
+    async def submit(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        reviewer: str,
+        verdict: str,
+        note: str | None,
+        corrected_answer: str | None,
+        proposed_fix: str | None,
+        status: str,
+        diagnoses: tuple[ReviewDiagnosis, ...],
+    ) -> ReviewCase:
+        now = datetime.now(UTC)
+        async with self._lock:
+            case = self._cases.get(review_id)
+            if case is None or case.tenant_id != tenant_id:
+                raise NotFoundError(detail="review case absent or outside tenant")
+            if case.status not in ("open", "in_review", "awaiting_fix"):
+                raise ReviewTransitionError(
+                    current=case.status,
+                    permitted=frozenset({"open", "in_review", "awaiting_fix"}),
+                )
+            updated = replace(
+                case,
+                status=status,
+                reviewer_subject=reviewer,
+                reviewed_at=now,
+                verdict=verdict,
+                verdict_note=note,
+                corrected_answer=corrected_answer,
+                proposed_fix=proposed_fix,
+                updated_at=now,
+            )
+            self._cases[review_id] = updated
+            self._diagnoses[review_id] = list(diagnoses)
+            return updated
+
+    async def record_eval_pass(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        run_id: str,
+        case_id: str,
+        passed_at: datetime,
+    ) -> ReviewCase:
+        async with self._lock:
+            case = self._cases.get(review_id)
+            if case is None or case.tenant_id != tenant_id:
+                raise NotFoundError(detail="review case absent or outside tenant")
+            if case.closing_eval_run_id is not None:
+                return case
+            updated = replace(
+                case,
+                status="resolved",
+                closing_eval_run_id=run_id,
+                closing_eval_case_id=case_id,
+                closing_eval_passed_at=passed_at,
+                updated_at=passed_at,
+            )
+            self._cases[review_id] = updated
+            return updated
+
+    async def set_case_id(
+        self, tenant_id: str, review_id: uuid.UUID, *, case_id: str
+    ) -> ReviewCase:
+        async with self._lock:
+            case = self._cases.get(review_id)
+            if case is None or case.tenant_id != tenant_id:
+                raise NotFoundError(detail="review case absent or outside tenant")
+            updated = replace(case, case_id=case_id)
+            self._cases[review_id] = updated
+            return updated
+
+    async def diagnoses(self, tenant_id: str, review_id: uuid.UUID) -> tuple[ReviewDiagnosis, ...]:
+        async with self._lock:
+            rows = self._diagnoses.get(review_id, ())
+            if rows and any(row.tenant_id != tenant_id for row in rows):
+                raise NotFoundError(detail="review case absent or outside tenant")
+            return tuple(rows)
+
+    async def for_case_ids(
+        self, tenant_id: str, case_ids: Collection[str]
+    ) -> tuple[ReviewCase, ...]:
+        wanted = set(case_ids)
+        async with self._lock:
+            cases = [
+                case
+                for case in self._cases.values()
+                if case.tenant_id == tenant_id and case.case_id in wanted
+            ]
+        return tuple(cases)
 
 
 class InMemoryTraceAccessStore:

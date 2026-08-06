@@ -6,6 +6,8 @@ import type {
   ConfirmationRequest,
   ConsentGrantRequest,
   ConsentGrantResponse,
+  FeedbackRequest,
+  FeedbackResponse,
   OpenSessionRequest,
   PendingBooking,
   ServerMessage,
@@ -60,6 +62,7 @@ export class CredentialRejectedError extends Error {
 /** Wire shapes the FastAPI backend actually returns (snake_case). */
 interface WireTurn {
   session_id: string;
+  turn_id: string | null;
   reply: string;
   pending: {
     awaiting: string;
@@ -102,6 +105,7 @@ function normalizeTurn(wire: WireTurn): ChatTurnResponse {
   };
   return {
     sessionId: wire.session_id,
+    turnId: wire.turn_id ?? null,
     reply: wire.reply,
     pending,
     committed: wire.committed.map((c) => ({
@@ -245,5 +249,32 @@ export class ChatApi {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Rate one turn record (`FEAT-008`). The turn must belong to the credential's
+   * conversation; the server refuses anything else.
+   *
+   * @throws {Error} when the backend rejects the rating.
+   */
+  async feedback(credential: string, body: FeedbackRequest): Promise<FeedbackResponse> {
+    const response = await fetch(this.url("/api/chat/feedback"), {
+      method: "POST",
+      headers: ChatApi.credentialHeaders(credential),
+      body: JSON.stringify({ turn_id: body.turnId, rating: body.rating, reason: body.reason })
+    });
+    if (!response.ok) throw new Error(`Feedback failed with ${response.status}`);
+    const payload = (await response.json()) as {
+      turn_id: string;
+      rating: "up" | "down";
+      reason: string | null;
+      created_at: string;
+    };
+    return {
+      turnId: payload.turn_id,
+      rating: payload.rating,
+      reason: payload.reason,
+      createdAt: payload.created_at
+    };
   }
 }

@@ -16,6 +16,10 @@ from tenantchat.api.persistence.repositories import (
     PostgresLeadStore,
     PostgresMembershipStore,
 )
+from tenantchat.api.persistence.reviews import (
+    PostgresReviewQueueStore,
+    PostgresTurnFeedbackStore,
+)
 from tenantchat.api.persistence.traces import (
     PostgresTraceAccessStore,
     PostgresTurnRecordStore,
@@ -36,7 +40,9 @@ __all__ = [
     "PostgresLeadStore",
     "PostgresMembershipStore",
     "PostgresPrivacyStore",
+    "PostgresReviewQueueStore",
     "PostgresTraceAccessStore",
+    "PostgresTurnFeedbackStore",
     "PostgresTurnRecordStore",
     "PostgresWorkflowStore",
 ]

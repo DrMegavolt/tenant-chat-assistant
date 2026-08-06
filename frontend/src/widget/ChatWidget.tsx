@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import type { ChatApi } from "src/widget/api";
 import { BookingConfirmation } from "src/widget/components/BookingConfirmation";
 import { Composer } from "src/widget/components/Composer";
+import { FeedbackControl } from "src/widget/components/FeedbackControl";
 import { Launcher } from "src/widget/components/Launcher";
 import { MessageBubble } from "src/widget/components/MessageBubble";
 import { PrivacyDisclosure } from "src/widget/components/PrivacyDisclosure";
@@ -104,12 +105,20 @@ export function ChatWidget({ api, tenantId, config, isOpen, onOpen, onClose }: C
           {conversation.entries.map((entry) => {
             if (entry.kind === "message") {
               return (
-                <MessageBubble
-                  key={entry.id}
-                  role={entry.role}
-                  source={entry.source}
-                  text={entry.text}
-                />
+                <div key={entry.id} className="message-block">
+                  <MessageBubble role={entry.role} source={entry.source} text={entry.text} />
+                  {entry.kind === "message" &&
+                    entry.role === "assistant" &&
+                    entry.source === "assistant" &&
+                    entry.turnId && (
+                      <FeedbackControl
+                        rating={conversation.ratingFor(entry.turnId)}
+                        onRate={(rating, reason) =>
+                          conversation.rate(entry.turnId!, rating, reason)
+                        }
+                      />
+                    )}
+                </div>
               );
             }
             if (entry.kind === "tool") {

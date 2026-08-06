@@ -52,7 +52,9 @@ from tenantchat.api.persistence import (
     PostgresLeadStore,
     PostgresMembershipStore,
     PostgresPrivacyStore,
+    PostgresReviewQueueStore,
     PostgresTraceAccessStore,
+    PostgresTurnFeedbackStore,
     PostgresTurnRecordStore,
     PostgresWorkflowStore,
 )
@@ -79,6 +81,7 @@ from tenantchat.api.routers import (
     leads,
     metrics,
     privacy,
+    reviews,
     tenants,
     traces,
 )
@@ -98,14 +101,18 @@ from tenantchat.api.store import (
     IdempotencyStore,
     InMemoryBookingStore,
     InMemoryKnowledgeStore,
+    InMemoryReviewQueueStore,
     InMemoryTraceAccessStore,
+    InMemoryTurnFeedbackStore,
     InMemoryTurnRecordStore,
     InMemoryWorkflowStore,
     KnowledgeStore,
     LeadStore,
     MembershipStore,
     PrivacyStore,
+    ReviewQueueStore,
     TraceAccessStore,
+    TurnFeedbackStore,
     TurnRecordStore,
     WorkflowStore,
 )
@@ -321,6 +328,8 @@ def create_app(
     job_store: JobStore | None = None,
     turn_record_store: TurnRecordStore | None = None,
     trace_access_store: TraceAccessStore | None = None,
+    feedback_store: TurnFeedbackStore | None = None,
+    review_store: ReviewQueueStore | None = None,
     workflow_store: WorkflowStore | None = None,
     chat_model: ChatModel | None = None,
     checkpointer: Checkpointer | None = None,
@@ -359,6 +368,12 @@ def create_app(
         trace_access_store: The PRIV-002 dedicated trace-read grants. Production
             builds the PostgreSQL implementation; explicit-store compositions
             default to an in-memory fake.
+        feedback_store: The FEAT-008 visitor ratings. Production builds the
+            PostgreSQL implementation; explicit-store compositions default to
+            an in-memory fake.
+        review_store: The FEAT-008 review queue. Production builds the
+            PostgreSQL implementation; explicit-store compositions default to
+            an in-memory fake.
         workflow_store: The AGENT-001 routing and workflow records. Production
             builds the PostgreSQL implementation; explicit-store compositions
             default to an in-memory fake.
@@ -517,6 +532,8 @@ def create_app(
         job_store = PostgresJobStore(database.engine)
         turn_record_store = PostgresTurnRecordStore(database.engine)
         trace_access_store = PostgresTraceAccessStore(database.engine)
+        feedback_store = PostgresTurnFeedbackStore(database.engine)
+        review_store = PostgresReviewQueueStore(database.engine)
         workflow_store = PostgresWorkflowStore(database.engine)
         knowledge_store = PostgresKnowledgeStore(database.engine)
         generation_findings = PostgresIndexIntegrityStore(database.engine)
@@ -563,6 +580,10 @@ def create_app(
         turn_record_store = InMemoryTurnRecordStore()
     if trace_access_store is None:
         trace_access_store = InMemoryTraceAccessStore()
+    if feedback_store is None:
+        feedback_store = InMemoryTurnFeedbackStore()
+    if review_store is None:
+        review_store = InMemoryReviewQueueStore()
     if workflow_store is None:
         # Explicit-store compositions are unit-test shapes; a deployed app took
         # the database branch above and can never silently run in-memory.
@@ -706,6 +727,8 @@ def create_app(
     app.state.job_store = job_store
     app.state.turn_record_store = turn_record_store
     app.state.trace_access_store = trace_access_store
+    app.state.feedback_store = feedback_store
+    app.state.review_store = review_store
     app.state.knowledge_store = knowledge_store
     app.state.generation_findings = generation_findings
     app.state.object_store = object_store
@@ -744,6 +767,7 @@ def create_app(
     app.include_router(privacy.router)
     app.include_router(jobs.router)
     app.include_router(traces.router)
+    app.include_router(reviews.router)
     app.include_router(knowledge.router)
     app.include_router(admin.router)
 

@@ -730,6 +730,99 @@ def test_an_erasure_request_removes_turn_records_and_derived_projections(
         assert erased[0]["turn_records_deleted"] == 2
 
 
+def test_erasure_cascades_feedback_reviews_and_reviewer_diagnoses(
+    client: TestClient, privacy_database_url: str
+) -> None:
+    """The visitor's feedback reason and the review overlay are her data.
+
+    The `FEAT-008` tables cascade off their turn record, so the one erasure
+    statement that removes the inference plane also removes the rating, the
+    review case, and the reviewer's diagnosis rows — a completed deletion
+    cannot leave a copy of the visitor's words behind.
+    """
+    dana_session, _ = plant_subject(client, BOOKING_TENANT, DANA_PHONE)
+    dana_turn = plant_turn_records(
+        privacy_database_url, BOOKING_TENANT, dana_session, contact=DANA_PHONE
+    )
+    with psycopg.connect(_libpq(privacy_database_url)) as connection:
+        connection.execute(
+            """
+            INSERT INTO turn_feedback (id, tenant_id, turn_record_id, rating, reason)
+            VALUES (%s, %s, %s, 'down', 'The price was wrong')
+            """,
+            (uuid.uuid4(), BOOKING_TENANT, dana_turn),
+        )
+        review_id = uuid.uuid4()
+        connection.execute(
+            """
+            INSERT INTO review_queue
+                (id, tenant_id, turn_record_id, source, status, priority,
+                 recurrence, manifest_hash, committed_actions, novel_manifest)
+            VALUES (%s, %s, %s, 'user_feedback', 'open', 32, 1,
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    false, true)
+            """,
+            (review_id, BOOKING_TENANT, dana_turn),
+        )
+        connection.execute(
+            """
+            INSERT INTO review_diagnoses
+                (id, tenant_id, review_id, relationship, automatic_index,
+                 cause, stage, role, status, confidence)
+            VALUES (%s, %s, %s, 'confirms', 0, 'provider_failure', 'model',
+                    'primary', 'confirmed', 'high')
+            """,
+            (uuid.uuid4(), BOOKING_TENANT, review_id),
+        )
+
+    filed = client.post(
+        "/api/admin/privacy/deletion-requests",
+        headers=_csrf_headers(client, "platform_admin"),
+        json={"tenant_id": BOOKING_TENANT, "contact": DANA_PHONE},
+    )
+    assert filed.status_code == 201, filed.text
+
+    database = Database.connect(privacy_database_url, TEST_POOL)
+    try:
+
+        async def worker_pass() -> int:
+            privacy = PostgresPrivacyStore(database.engine, database.engine)
+            return await run_once(
+                PostgresJobStore(database.engine),
+                {
+                    JobKind.PRIVACY_DELETION: privacy_deletion_handler(
+                        privacy, PostgresAuditStore(database.engine)
+                    )
+                },
+                WorkerSettings(
+                    worker_id="privacy-worker-test",
+                    batch_size=1,
+                    lease_duration=timedelta(seconds=30),
+                ),
+            )
+
+        completed = asyncio.run(worker_pass())
+    finally:
+        asyncio.run(_dispose(database))
+    assert completed == 1
+
+    with psycopg.connect(_libpq(privacy_database_url)) as connection:
+        counts = _row(
+            connection,
+            """
+            SELECT
+                (SELECT count(*) FROM turn_feedback
+                 WHERE tenant_id = %s AND turn_record_id = %s) AS feedback,
+                (SELECT count(*) FROM review_queue
+                 WHERE tenant_id = %s AND turn_record_id = %s) AS reviews,
+                (SELECT count(*) FROM review_diagnoses
+                 WHERE tenant_id = %s) AS diagnoses
+            """,
+            (BOOKING_TENANT, dana_turn, BOOKING_TENANT, dana_turn, BOOKING_TENANT),
+        )
+        assert counts == (0, 0, 0)
+
+
 def test_expired_turn_records_are_purged_while_the_transcript_survives(
     client: TestClient, privacy_database_url: str
 ) -> None:
