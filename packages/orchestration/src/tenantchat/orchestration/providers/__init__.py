@@ -6,5 +6,6 @@ nowhere in the workflow code (`AI-001`).
 """
 
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
+from tenantchat.orchestration.providers.recording import MetricRecordingChatModel
 
-__all__ = ["OpenAICompatibleChatModel"]
+__all__ = ["MetricRecordingChatModel", "OpenAICompatibleChatModel"]

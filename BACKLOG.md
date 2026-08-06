@@ -293,7 +293,7 @@ runbooks.
 - [ ] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
 - [ ] `OBS-001` — Structured logging and request correlation — `P1`
-- [ ] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
+- [x] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
 - [ ] `OBS-004` — Inference trace, answer provenance, and failure attribution — `P1`
 - [ ] `PRIV-002` — Inference trace data plane, retention, and access control — `P1`
 
@@ -1218,7 +1218,7 @@ guarantees by construction.
 
 ### OBS-002 — LLM, RAG, tool, and business metrics
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Observability`
 - Depends on: `OBS-001`, `AI-001`, `RAG-005`
@@ -1238,7 +1238,46 @@ guarantees by construction.
   - Each critical action has success, failure, and latency metrics.
 - Verification:
   - Metric contract tests, a label-cardinality test, and an exemplar drill-through walkthrough are documented alongside sample Prometheus queries.
-- Completion notes: _Pending._
+- Completion notes: The metrics plane is implemented end to end. The
+  vocabulary lives in `tenantchat.core.metrics` (a closed `MetricName`
+  inventory, the per-metric label-name contract `METRIC_LABELS`, the bounded
+  value enums, the charset gate `label_value_is_safe`, the
+  `METRIC_CARDINALITY_CEILING`, and the `MetricsReporter` port); the
+  Prometheus adapter `tenantchat.api.metrics.PrometheusMetrics` enforces the
+  contract at record time and is served at `GET /metrics` (an operations
+  surface outside the OpenAPI document, like the side services), with the
+  request's trace ID attached as an exemplar from the `OBS-001` correlation
+  context — served as OpenMetrics when the scraper accepts it, since the
+  classic text format carries no exemplars. Instrumentation rides the wiring:
+  `MetricRecordingChatModel` wraps the model port at the composition root
+  (latency, `status=ok/error/timeout`, and prompt/completion/total tokens,
+  all labeled with the assembled prompt's registry ref); the retrieval
+  adapter records runs by `status=ok/unavailable` and verdict, latency, and
+  candidate count; the route node records decisions by intent/outcome/rule
+  and the `clarified` turn class; the tools node records executions by tool
+  and `succeeded/refused/failed` (an unresolvable tool name labels as
+  `unknown`, never as model free text), with the booking commit recorded at
+  its own commit site; finalize records `answered`, the abstention paths
+  record `abstained`, and escalate records `handed_off` — the router records
+  `paused` and turn latency plus citation-validation verdicts. Business
+  outcomes (booking, lead, handoff) are counted by the idempotent action
+  services as `committed`/`replayed`/`refused` with a `declined` status for a
+  declined booking confirmation, so the committed series is exactly-once even
+  though a replayed graph node re-runs; graph-node observations are execution
+  counts by design (a crashed node re-observes the work it re-executes).
+  `prometheus-client==0.21.1` was added to `services/api` (lock updated).
+  Contract tests (`services/api/tests/test_metrics.py`) pin the inventory,
+  the label contract, error-path recording, per-request exemplars, and the
+  PII-free guarantee — a full booking turn carrying names, addresses, phones,
+  and emails in message, tool arguments, and output is asserted to produce
+  only vocabulary label values — plus the cardinality ceiling; the core
+  vocabulary is pinned in `packages/core/tests/test_metrics_port.py`. The
+  inventory, label policy, sample PromQL, and exemplar drill-through are
+  documented in `docs/runbooks/metrics-walkthrough.md`. `make check` passes;
+  no persistence changes, so `make test-database` is unaffected. Follow-ups:
+  `OBS-003` adds the ServiceMonitor/NetworkPolicy and dashboards for the API's
+  `/metrics`; router-confidence buckets, prompt-cost estimates, context
+  truncation, and component-manifest correlation are `OBS-004` work.
 
 ### OBS-003 — Dashboards, SLOs, and alerts as code
 

@@ -38,6 +38,7 @@ from tenantchat.api.limits import (
     credential_visitor_identity,
 )
 from tenantchat.api.logging_setup import SERVICE_NAME, configure_logging, resolve_service
+from tenantchat.api.metrics import METRICS
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -76,6 +77,7 @@ from tenantchat.api.routers import (
     jobs,
     knowledge,
     leads,
+    metrics,
     privacy,
     tenants,
     traces,
@@ -121,6 +123,7 @@ from tenantchat.core.visitor_session import (
 from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpointer
 from tenantchat.orchestration.model import ChatModel
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
+from tenantchat.orchestration.providers.recording import MetricRecordingChatModel
 
 ADMIN_PATH_PREFIX = "/api/admin/"
 
@@ -425,6 +428,11 @@ def create_app(
             timeout_seconds=resolved.llm_timeout_seconds,
         )
     effective_model = chat_model or owned_model
+    # The metrics wrapper is observation only: it delegates every call and
+    # records latency, outcome, and token counts around it (`OBS-002`). A
+    # provider failure still escapes to the graph exactly as before.
+    if effective_model is not None:
+        effective_model = MetricRecordingChatModel(effective_model, METRICS)
 
     supplied = (
         booking_store,
@@ -621,7 +629,9 @@ def create_app(
                 ),
             )
 
-    booking_service = RecordedBookingService(booking_store, availability_provider, consent_store)
+    booking_service = RecordedBookingService(
+        booking_store, availability_provider, consent_store, metrics=METRICS
+    )
 
     bookings_for_agent, leads_for_agent = booking_store, lead_store
     handoffs_for_agent, keys_for_agent = handoff_store, idempotency_store
@@ -640,6 +650,7 @@ def create_app(
             checkpointer=saver,
             availability=availability_provider,
             evidence=evidence_source,
+            metrics=METRICS,
         )
 
     @asynccontextmanager
@@ -706,6 +717,7 @@ def create_app(
     app.state.clock = utc_now
     app.state.booking_service = booking_service
     app.state.availability_provider = availability_provider
+    app.state.metrics = METRICS
     app.state.conversation_runtime = (
         compose_runtime(checkpointer, effective_model)
         if effective_model is not None and checkpointer is not None
@@ -724,6 +736,7 @@ def create_app(
     app.add_exception_handler(Exception, _handle_unexpected_error)
 
     app.include_router(health.router)
+    app.include_router(metrics.router)
     app.include_router(tenants.router)
     app.include_router(bookings.router)
     app.include_router(leads.router)

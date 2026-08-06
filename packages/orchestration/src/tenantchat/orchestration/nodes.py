@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any, Final
@@ -42,6 +43,14 @@ from tenantchat.core.errors import (
     SlotUnavailableError,
     UnknownServiceError,
     ValidationError,
+)
+from tenantchat.core.metrics import (
+    ROUTING_NONE_INTENT,
+    ActionStatus,
+    MetricName,
+    Operation,
+    ToolOutcome,
+    TurnOutcome,
 )
 from tenantchat.core.ports import (
     EvidenceBundle,
@@ -85,6 +94,11 @@ MAX_TOOL_ROUNDS: Final = 4
 # [evidence:<source_id>]. The source id is an index chunk id, so the same
 # charset as an Elasticsearch document id.
 _CITATION_RE = re.compile(r"\[evidence:([A-Za-z0-9][A-Za-z0-9._:-]{0,199})\]")
+
+# The tool label for a call whose name resolved to nothing: the model wrote a
+# tool the graph does not know, and its free-text name must never become a
+# label value.
+UNKNOWN_TOOL_LABEL = "unknown"
 
 
 def citation_ids(text: str) -> tuple[str, ...]:
@@ -323,6 +337,35 @@ class DispatchNodes:
     def __init__(self, dependencies: DispatchDependencies) -> None:
         self._deps = dependencies
 
+    def _observe(self, name: MetricName, value: float, *, labels: dict[str, str]) -> None:
+        """Record one observation when a metrics port is composed.
+
+        A replayed node re-observes the work it re-executes: observation is a
+        count of executions, not a durable effect, so it has no idempotency
+        key and never rides the domain services (`OBS-002`).
+        """
+        if self._deps.metrics is not None:
+            self._deps.metrics.observe(name, value, labels=labels)
+
+    def _observe_booking_commit(self, outcome: ToolOutcome, duration: float) -> None:
+        """The booking commit as a tool execution, with its latency.
+
+        The booking commit runs here rather than through the tools node, so
+        the tool series for ``book_appointment`` is completed here: a
+        committed attempt records ``succeeded`` and a refused one records
+        ``refused``.
+        """
+        self._observe(
+            MetricName.TOOL_CALLS,
+            1,
+            labels={"tool": ToolName.BOOK_APPOINTMENT.value, "outcome": outcome.value},
+        )
+        self._observe(
+            MetricName.TOOL_LATENCY,
+            duration,
+            labels={"tool": ToolName.BOOK_APPOINTMENT.value, "outcome": outcome.value},
+        )
+
     async def route(self, state: DispatchState) -> dict[str, Any]:
         """Decide the turn's intent, record the decision, and open the workflow.
 
@@ -354,6 +397,25 @@ class DispatchNodes:
             previous_intent=previous,
             clarification_pending=clarification_pending,
         )
+        self._observe(
+            MetricName.ROUTING_DECISIONS,
+            1,
+            labels={
+                "intent": (
+                    decision.chosen.value if decision.chosen is not None else ROUTING_NONE_INTENT
+                ),
+                "outcome": decision.outcome.value,
+                "rule": decision.rule.value,
+            },
+        )
+        if decision.outcome is RoutingOutcome.CLARIFY:
+            # A clarification ends the turn here: the question is the answer,
+            # and the router declining to guess is a quality class of its own.
+            self._observe(
+                MetricName.TURN_OUTCOMES,
+                1,
+                labels={"outcome": TurnOutcome.CLARIFIED.value},
+            )
         await self._deps.workflows.record_routing(
             tenant_id=tenant_id,
             session_id=session_id,
@@ -456,6 +518,11 @@ class DispatchNodes:
         agent = _agent_for(self._deps, state)
         bundle = await self._retrieve_evidence(state)
         if self._should_abstain(agent, bundle):
+            self._observe(
+                MetricName.TURN_OUTCOMES,
+                1,
+                labels={"outcome": TurnOutcome.ABSTAINED.value},
+            )
             return self._abstention_update(state, policy)
         evidence = tuple(
             PromptEvidence(source_id=item.source_id, title=item.title, content=item.content)
@@ -466,6 +533,11 @@ class DispatchNodes:
             # The retrieval verdict passed, but the assembled prompt carried no
             # evidence segment — a budget cut, not a retriever failure. The
             # model must still not guess from an empty context.
+            self._observe(
+                MetricName.TURN_OUTCOMES,
+                1,
+                labels={"outcome": TurnOutcome.ABSTAINED.value},
+            )
             return self._abstention_update(state, policy)
         # The model is offered only the tools the routed agent may call; the
         # tools node enforces the same allowlist against whatever it sends.
@@ -627,11 +699,21 @@ class DispatchNodes:
                 continue
             tool = ToolName.resolve(call["name"])
             if tool is None:
+                self._observe(
+                    MetricName.TOOL_CALLS,
+                    1,
+                    labels={"tool": UNKNOWN_TOOL_LABEL, "outcome": ToolOutcome.REFUSED.value},
+                )
                 entries.append(
                     tool_entry(call["call_id"], _payload(error="unknown_tool", name=call["name"]))
                 )
                 continue
             if agent is None or tool not in agent.tools:
+                self._observe(
+                    MetricName.TOOL_CALLS,
+                    1,
+                    labels={"tool": tool.value, "outcome": ToolOutcome.REFUSED.value},
+                )
                 entries.append(
                     tool_entry(
                         call["call_id"],
@@ -643,7 +725,35 @@ class DispatchNodes:
                     )
                 )
                 continue
-            content, action = await self._run_one(state, policy, call)
+            started = time.monotonic()
+            try:
+                content, action, outcome = await self._run_one(state, policy, call)
+            except Exception:
+                # An unexpected tool failure escapes the node: the graph does
+                # not catch it, and the metrics plane still records that it
+                # happened before the turn dies.
+                self._observe(
+                    MetricName.TOOL_CALLS,
+                    1,
+                    labels={"tool": tool.value, "outcome": ToolOutcome.FAILED.value},
+                )
+                self._observe(
+                    MetricName.TOOL_LATENCY,
+                    time.monotonic() - started,
+                    labels={"tool": tool.value, "outcome": ToolOutcome.FAILED.value},
+                )
+                raise
+            duration = time.monotonic() - started
+            self._observe(
+                MetricName.TOOL_CALLS,
+                1,
+                labels={"tool": tool.value, "outcome": outcome.value},
+            )
+            self._observe(
+                MetricName.TOOL_LATENCY,
+                duration,
+                labels={"tool": tool.value, "outcome": outcome.value},
+            )
             entries.append(tool_entry(call["call_id"], content))
             results.append(ToolResult(call_id=call["call_id"], name=call["name"], result=content))
             fields.update(self._collected(agent, _arguments(call)))
@@ -755,6 +865,14 @@ class DispatchNodes:
                     payload={"decision": "declined"},
                     idempotency_key=self._workflow_key(state, "resume", call_id),
                 )
+            self._observe(
+                MetricName.BUSINESS_ACTIONS,
+                1,
+                labels={
+                    "operation": Operation.BOOKING.value,
+                    "status": ActionStatus.DECLINED.value,
+                },
+            )
             return self._with_collected(
                 {
                     "transcript": [tool_entry(call_id, _payload(status="declined_by_customer"))],
@@ -764,11 +882,13 @@ class DispatchNodes:
             )
 
         key = self._key(state, ToolName.BOOK_APPOINTMENT, call_id)
+        started = time.monotonic()
         replay = await self._deps.bookings.find_replay(state["tenant_id"], key)
         if replay is not None:
             # The same attempt already booked this slot while the process was
             # away; re-validating would refuse it as "not offered" now that the
             # slot is taken by this very booking, so return the committed result.
+            self._observe_booking_commit(ToolOutcome.SUCCEEDED, time.monotonic() - started)
             if workflow_id:
                 await self._resume_and_complete(state, call_id, "approved")
             return self._with_collected(
@@ -805,6 +925,7 @@ class DispatchNodes:
             )
         except DomainError as error:
             # Reachable when the slot was taken while the customer was deciding.
+            self._observe_booking_commit(ToolOutcome.REFUSED, time.monotonic() - started)
             if workflow_id:
                 await self._deps.workflows.transition(
                     tenant_id=tenant_id,
@@ -822,6 +943,7 @@ class DispatchNodes:
                 merged,
             )
 
+        self._observe_booking_commit(ToolOutcome.SUCCEEDED, time.monotonic() - started)
         if workflow_id:
             await self._resume_and_complete(state, call_id, "approved")
         return self._with_collected(
@@ -895,6 +1017,11 @@ class DispatchNodes:
         """
         policy = await self._deps.policies.policy(state["tenant_id"])
         reason = HandoffReason.parse(state["failure"] or HandoffReason.UNRESOLVED.value)
+        self._observe(
+            MetricName.TURN_OUTCOMES,
+            1,
+            labels={"outcome": TurnOutcome.HANDED_OFF.value},
+        )
         command = HandoffCommand.parse(
             policy,
             reason=reason.value,
@@ -968,6 +1095,7 @@ class DispatchNodes:
             if entry["role"] == "user":
                 break
             if entry["role"] == "assistant" and entry["content"].strip():
+                policy = await self._deps.policies.policy(state["tenant_id"])
                 found = citation_ids(entry["content"])
                 context = frozenset(state["evidence_ids"])
                 by_id = {str(item["source_id"]): item for item in state["evidence"]}
@@ -976,6 +1104,18 @@ class DispatchNodes:
                     for source_id in found
                     if source_id in context and source_id in by_id
                 ]
+                # A clarification question and the deterministic abstention
+                # reply are answers too, but their outcome classes were
+                # recorded where they were decided: recording `answered` here
+                # as well would double-count the same turn.
+                if not state["clarification_question"] and entry["content"] != _abstention_reply(
+                    policy
+                ):
+                    self._observe(
+                        MetricName.TURN_OUTCOMES,
+                        1,
+                        labels={"outcome": TurnOutcome.ANSWERED.value},
+                    )
                 return {
                     "answer": strip_citation_markers(entry["content"]),
                     "citations": citations,
@@ -991,14 +1131,14 @@ class DispatchNodes:
         state: DispatchState,
         policy: TenantPolicy,
         call: StoredToolCall,
-    ) -> tuple[str, CommittedAction | None]:
+    ) -> tuple[str, CommittedAction | None, ToolOutcome]:
         arguments = _arguments(call)
         tool = ToolName.resolve(call["name"])
         try:
             if tool is ToolName.CHECK_SERVICE_AREA:
-                return self._check_service_area(policy, arguments), None
+                return self._check_service_area(policy, arguments), None, ToolOutcome.SUCCEEDED
             if tool is ToolName.GET_AVAILABILITY:
-                return await self._get_availability(policy, arguments), None
+                return await self._get_availability(policy, arguments), None, ToolOutcome.SUCCEEDED
             if tool is ToolName.CREATE_LEAD:
                 return await self._create_lead(state, policy, call, arguments)
             if tool is ToolName.HANDOFF_TO_HUMAN:
@@ -1007,13 +1147,17 @@ class DispatchNodes:
                 # A second booking in one response. Only one can be confirmed,
                 # and confirming this one after the customer answered about the
                 # other would be a booking nobody agreed to.
-                return _payload(
-                    error="booking_already_proposed",
-                    message="Only one booking can be confirmed at a time.",
-                ), None
+                return (
+                    _payload(
+                        error="booking_already_proposed",
+                        message="Only one booking can be confirmed at a time.",
+                    ),
+                    None,
+                    ToolOutcome.REFUSED,
+                )
         except DomainError as error:
-            return _error_payload(error), None
-        return _payload(error="unknown_tool", name=call["name"]), None
+            return _error_payload(error), None, ToolOutcome.REFUSED
+        return _payload(error="unknown_tool", name=call["name"]), None, ToolOutcome.REFUSED
 
     def _check_service_area(self, policy: TenantPolicy, arguments: Mapping[str, object]) -> str:
         zip_code = text_argument(arguments, "zip")
@@ -1057,7 +1201,7 @@ class DispatchNodes:
         policy: TenantPolicy,
         call: StoredToolCall,
         arguments: Mapping[str, object],
-    ) -> tuple[str, CommittedAction | None]:
+    ) -> tuple[str, CommittedAction | None, ToolOutcome]:
         command = LeadCommand.parse(
             policy,
             customer_name=text_argument(arguments, "customer_name"),
@@ -1079,6 +1223,7 @@ class DispatchNodes:
                 reference=receipt.reference,
                 replayed=receipt.replayed,
             ),
+            ToolOutcome.SUCCEEDED,
         )
 
     async def _handoff(
@@ -1087,7 +1232,7 @@ class DispatchNodes:
         policy: TenantPolicy,
         call: StoredToolCall,
         arguments: Mapping[str, object],
-    ) -> tuple[str, CommittedAction | None]:
+    ) -> tuple[str, CommittedAction | None, ToolOutcome]:
         command = HandoffCommand.parse(
             policy,
             reason=text_argument(arguments, "reason"),
@@ -1105,6 +1250,7 @@ class DispatchNodes:
                 reference=ticket.reference,
                 replayed=ticket.replayed,
             ),
+            ToolOutcome.SUCCEEDED,
         )
 
     async def _parse_booking(
