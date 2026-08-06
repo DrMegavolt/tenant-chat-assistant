@@ -100,6 +100,7 @@ class EvaluationReport:
                     "name": self.retriever.name,
                     "version": self.retriever.version,
                     "k": self.retriever.k,
+                    "parameters": dict(self.retriever.parameters),
                 },
                 "embedding_model": self.embedding_model,
                 "reranker": self.reranker,
@@ -121,6 +122,7 @@ class EvaluationReport:
         """A compact, diffable summary: identical output for identical input."""
         lines = [
             f"retriever: {self.retriever.name}@{self.retriever.version} k={self.retriever.k}",
+            f"retriever_params: {json.dumps(dict(self.retriever.parameters), sort_keys=True)}",
             f"embedding_model: {self.embedding_model}",
             f"reranker: {self.reranker or 'none'}",
             f"abstain_threshold: {self.abstain_threshold}",
@@ -153,6 +155,7 @@ def score_cases(
     min_recall: float,
     min_citation_precision: float,
     min_abstention: float,
+    reranker: str | None = None,
 ) -> EvaluationReport:
     """Score one run and decide whether it meets the configured thresholds."""
     case_results: list[CaseResult] = []
@@ -208,7 +211,7 @@ def score_cases(
     return EvaluationReport(
         retriever=retriever_config,
         embedding_model=corpus.embedding_model,
-        reranker=None,
+        reranker=reranker,
         prompt_template=None,
         abstain_threshold=abstain_threshold,
         min_recall=min_recall,

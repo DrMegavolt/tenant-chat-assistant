@@ -8,6 +8,7 @@ the fields here are the ones the golden harness needs today.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -37,6 +38,7 @@ def component_manifest(
     k: int,
     embedding_model: str,
     reranker: str | None = None,
+    retriever_parameters: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """One deterministic manifest entry for a run's report."""
     return {
@@ -44,6 +46,7 @@ def component_manifest(
             "name": retriever_name,
             "version": retriever_version,
             "k": k,
+            "parameters": dict(retriever_parameters or {}),
         },
         "embedding_model": embedding_model,
         "reranker": reranker,
