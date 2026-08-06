@@ -144,6 +144,7 @@ def _turn(result: TurnResult) -> AssistantTurn:
         citations=result.citations,
         citation_invalid=result.citation_invalid,
         retrieval=result.retrieval,
+        trace=result.trace,
     )
 
 

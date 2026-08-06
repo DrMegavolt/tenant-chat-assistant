@@ -29,6 +29,7 @@ from tenantchat.orchestration.graph import GRAPH_VERSION, CompiledDispatchGraph
 from tenantchat.orchestration.nodes import BookingDecision
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
 from tenantchat.orchestration.state import CommittedAction, DispatchState, initial_state, next_turn
+from tenantchat.orchestration.trace import build_turn_trace
 
 # The visitor controls the session ID today (`SEC-002` replaces it with a
 # server-issued credential). Bounding it here means a hostile value cannot become
@@ -53,6 +54,8 @@ class TurnResult:
     model wrote that were *not* in its context, for the inference plane only.
     ``retrieval`` is the retrieval that ran for this turn (verdict and
     versions), or ``None`` when this deployment composed no retrieval.
+    ``trace`` is the `OBS-004` inference trace of the turn as JSON-safe data,
+    derived from the checkpoint state after the run.
     """
 
     answer: str
@@ -66,6 +69,7 @@ class TurnResult:
     citations: tuple[Citation, ...] = ()
     citation_invalid: tuple[str, ...] = ()
     retrieval: Mapping[str, object] | None = None
+    trace: Mapping[str, object] | None = None
 
     @property
     def is_paused(self) -> bool:
@@ -175,6 +179,7 @@ class DispatchRuntime:
             citations=tuple(_citation(item) for item in citations),
             citation_invalid=tuple(str(item) for item in raw.get("citation_invalid", ())),
             retrieval=dict(retrieval) if retrieval is not None else None,
+            trace=build_turn_trace(raw, pending=dict(pending) if pending is not None else None),
         )
 
 

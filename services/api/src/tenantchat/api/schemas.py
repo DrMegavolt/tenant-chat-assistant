@@ -860,6 +860,48 @@ class TraceReadResponse(BaseModel):
         )
 
 
+class TraceSearchResponse(BaseModel):
+    """The attribution surface (`OBS-004`): records matching content-free filters.
+
+    Only the content-free projection is repeated here — outcome, manifest hash,
+    causes, turn index — so a search result is a queryable index entry, not a
+    second copy of the inference plane. The record itself is fetched through the
+    audited single-read route.
+    """
+
+    turn_id: uuid.UUID
+    session_id: uuid.UUID
+    trace_id: str | None
+    recorded_at: datetime
+    outcome: str
+    component_manifest_hash: str
+    diagnosis_causes: list[str]
+    turn_index: int
+    trace_schema_version: str
+
+    @classmethod
+    def of(cls, record: TurnRecord) -> TraceSearchResponse:
+        return cls(
+            turn_id=record.turn_id,
+            session_id=record.session_id,
+            trace_id=record.trace_id,
+            recorded_at=record.recorded_at,
+            outcome=record.outcome,
+            component_manifest_hash=record.component_manifest_hash,
+            diagnosis_causes=list(record.diagnosis_causes),
+            turn_index=record.turn_index,
+            trace_schema_version=record.trace_schema_version,
+        )
+
+
+class TraceSearchResponsePage(BaseModel):
+    records: list[TraceSearchResponse]
+
+    @classmethod
+    def of(cls, records: tuple[TurnRecord, ...]) -> TraceSearchResponsePage:
+        return cls(records=[TraceSearchResponse.of(record) for record in records])
+
+
 class JobControlRequest(_Request):
     """Tenant binding for an operator mutation; the URL names the job only."""
 

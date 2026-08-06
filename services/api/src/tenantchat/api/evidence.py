@@ -121,12 +121,25 @@ class RetrievalEvidenceSource:
             )
             is EvidenceVerdict.SUFFICIENT
         )
+        filters = RetrievalFilters(tenant_id=tenant_id)
         return EvidenceBundle(
             items=items,
             sufficient=sufficient,
             retriever_version=self._config.version,
             reranker=RERANKER_NAME if self._config.rerank else None,
             min_evidence_score=self._config.min_evidence_score,
+            embedding_model=pool[0].embedding_model if pool else "",
+            generation_id=pool[0].generation_id if pool else None,
+            retriever_parameters=self._config.parameters(),
+            filters={
+                "tenant_id": filters.tenant_id,
+                "domain": filters.domain,
+                "version_ids": sorted(str(version) for version in filters.version_ids or ()),
+            },
+            budget={
+                "max_sources": self._config.max_sources,
+                "max_context_tokens": self._config.max_context_tokens,
+            },
         )
 
     async def _items(
@@ -173,6 +186,8 @@ class RetrievalEvidenceSource:
             content=chunk.text,
             document_id=chunk.document_id,
             version_id=chunk.version_id,
+            generation_id=chunk.generation_id,
+            embedding_model=chunk.embedding_model,
             score=score,
             revision=view.revision,
             effective_at=view.effective_at,

@@ -711,6 +711,11 @@ class TurnRecord:
     envelope, `OBS-004` owns the shape — but export, erasure, and retention
     all treat the whole record as one content-bearing unit.
 
+    The column fields are the content-free projection the attribution query
+    surface filters on: the outcome, the component-manifest hash, the
+    diagnosis causes, the turn index, and the trace schema version. They are
+    derived from the content at write time and never hold content themselves.
+
     ``recorded_at`` is when the turn happened, the timestamp retention purges
     on (independently of, and shorter than, the transcript's).
     """
@@ -721,6 +726,11 @@ class TurnRecord:
     trace_id: str | None
     content: dict[str, object]
     recorded_at: datetime
+    outcome: str = "unknown"
+    component_manifest_hash: str = ""
+    diagnosis_causes: tuple[str, ...] = ()
+    turn_index: int = 0
+    trace_schema_version: str = "1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -879,8 +889,16 @@ class TurnRecordStore(Protocol):
         content: dict[str, object],
         trace_id: str | None = None,
         recorded_at: datetime | None = None,
+        outcome: str = "unknown",
+        component_manifest_hash: str = "",
+        diagnosis_causes: tuple[str, ...] = (),
+        turn_index: int = 0,
+        trace_schema_version: str = "1",
     ) -> TurnRecord:
         """Append one turn record for a session.
+
+        The metadata columns are the content-free projection the attribution
+        query surface filters on; the caller derives them from the content.
 
         Raises:
             NotFoundError: the session is absent or belongs to another tenant.
@@ -897,6 +915,32 @@ class TurnRecordStore(Protocol):
         self, tenant_id: str, session_id: uuid.UUID, *, limit: int
     ) -> tuple[TurnRecord, ...]:
         """The session's turn records, oldest first, bounded to *limit*."""
+
+    async def for_trace_id(self, tenant_id: str, trace_id: str) -> TurnRecord:
+        """The one record the correlation trace id names, tenant-qualified.
+
+        A correlation id is minted per request, so at most one record carries
+        it; the first match is returned when history ever violates that.
+
+        Raises:
+            NotFoundError: no such record, or it belongs to another tenant.
+        """
+
+    async def search(
+        self,
+        tenant_id: str,
+        *,
+        manifest_hash: str | None = None,
+        causes: tuple[str, ...] = (),
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> tuple[TurnRecord, ...]:
+        """The tenant's records matching the content-free filters, newest first.
+
+        This is the `OBS-004` attribution query surface: filter by the
+        component-manifest hash (what build answered), by diagnosis causes
+        (what failed), or by outcome, bounded to *limit*.
+        """
 
     async def projections_for_turn(
         self, tenant_id: str, turn_id: uuid.UUID
@@ -945,6 +989,11 @@ class InMemoryTurnRecordStore:
         content: dict[str, object],
         trace_id: str | None = None,
         recorded_at: datetime | None = None,
+        outcome: str = "unknown",
+        component_manifest_hash: str = "",
+        diagnosis_causes: tuple[str, ...] = (),
+        turn_index: int = 0,
+        trace_schema_version: str = "1",
     ) -> TurnRecord:
         record = TurnRecord(
             turn_id=uuid.uuid4(),
@@ -953,6 +1002,11 @@ class InMemoryTurnRecordStore:
             trace_id=trace_id,
             content=dict(content),
             recorded_at=recorded_at or datetime.now(UTC),
+            outcome=outcome,
+            component_manifest_hash=component_manifest_hash,
+            diagnosis_causes=tuple(diagnosis_causes),
+            turn_index=turn_index,
+            trace_schema_version=trace_schema_version,
         )
         async with self._lock:
             self._records[record.turn_id] = record
@@ -975,6 +1029,42 @@ class InMemoryTurnRecordStore:
                 if record.tenant_id == tenant_id and record.session_id == session_id
             ]
         records.sort(key=lambda record: record.recorded_at)
+        return tuple(records[:limit])
+
+    async def for_trace_id(self, tenant_id: str, trace_id: str) -> TurnRecord:
+        async with self._lock:
+            record = next(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.tenant_id == tenant_id and record.trace_id == trace_id
+                ),
+                None,
+            )
+        if record is None:
+            raise NotFoundError(detail="turn record absent or outside tenant")
+        return replace(record, content=dict(record.content))
+
+    async def search(
+        self,
+        tenant_id: str,
+        *,
+        manifest_hash: str | None = None,
+        causes: tuple[str, ...] = (),
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> tuple[TurnRecord, ...]:
+        wanted_causes = set(causes)
+        async with self._lock:
+            records = [
+                replace(record, content=dict(record.content))
+                for record in self._records.values()
+                if record.tenant_id == tenant_id
+                and (manifest_hash is None or record.component_manifest_hash == manifest_hash)
+                and (not wanted_causes or wanted_causes.issubset(set(record.diagnosis_causes)))
+                and (outcome is None or record.outcome == outcome)
+            ]
+        records.sort(key=lambda record: record.recorded_at, reverse=True)
         return tuple(records[:limit])
 
     async def projections_for_turn(

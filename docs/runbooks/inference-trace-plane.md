@@ -14,7 +14,11 @@ timestamp retention is computed from. `turn_record_projections` rows are
 derived datasets pinned to a turn record (evaluation datasets under
 `FEAT-008`); they cascade off their turn record, so erasing the record erases
 the projection. The tables carry no content-bearing columns beyond `content` —
-the schema never parses it.
+the schema never parses it. The derived columns (`OBS-004`) are the
+content-free projection the attribution surface filters on: `outcome`,
+`component_manifest_hash`, `diagnosis_causes`, `turn_index`, and
+`trace_schema_version`. They are copied from the content at write time and
+hold no prompt, evidence, or output.
 
 The operational plane (logs, metrics, spans) is content-free by construction:
 the application never writes content there, and the collector's redaction
@@ -58,7 +62,22 @@ curl "$ADMIN/api/admin/traces/$TURN_ID?tenant_id=clearview&reason=incident_inves
   -H "$GATEWAY_IDENTITY_HEADERS"
 ```
 
-Every read is audited with the actor, turn, and reason; refusals are audited as
+Attribute failures (`OBS-004`) over the content-free projection — filter by
+the exact component manifest (what build answered), by a diagnosis cause, or
+by outcome; the results carry no content, and the record itself is fetched
+through the single-read route:
+
+```bash
+curl "$ADMIN/api/admin/traces?tenant_id=clearview&reason=incident_investigation&manifest_hash=$HASH" \
+  -H "$GATEWAY_IDENTITY_HEADERS"
+curl "$ADMIN/api/admin/traces?tenant_id=clearview&reason=quality_review&cause=grounding_or_citation_error" \
+  -H "$GATEWAY_IDENTITY_HEADERS"
+curl "$ADMIN/api/admin/traces/by-trace-id/$TRACE_ID?tenant_id=clearview&reason=incident_investigation" \
+  -H "$GATEWAY_IDENTITY_HEADERS"
+```
+
+Every read is audited with the actor, turn, and reason; a search is audited as
+`trace.search` with the filter that ran; refusals are audited as
 `trace.read_refused`. Reasons are closed: `quality_review`,
 `incident_investigation`, `subject_request`, `tenant_support`.
 

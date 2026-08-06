@@ -49,7 +49,12 @@ from tenantchat.core.ports import (
     EvidenceUnavailableError,
     IdempotencyKey,
 )
-from tenantchat.core.routing import IntentName, RoutingOutcome, clarify_question
+from tenantchat.core.routing import (
+    IntentName,
+    RoutingDecision,
+    RoutingOutcome,
+    clarify_question,
+)
 from tenantchat.core.tenant import TenantPolicy
 from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
 from tenantchat.orchestration.agents import AGENTS_VERSION, AgentSpec
@@ -110,7 +115,8 @@ def strip_citation_markers(text: str) -> str:
 
 def _evidence_item_dict(item: EvidenceItem) -> dict[str, object]:
     """One passage as the checkpoint stores it: JSON-safe, with its curated
-    citation metadata resolved by the adapter."""
+    citation metadata resolved by the adapter, and pinned to the index
+    generation and embedding model that produced it (`OBS-004`)."""
     return {
         "source_id": item.source_id,
         "title": item.title,
@@ -119,6 +125,8 @@ def _evidence_item_dict(item: EvidenceItem) -> dict[str, object]:
         "content": item.content,
         "document_id": str(item.document_id),
         "version_id": str(item.version_id),
+        "generation_id": str(item.generation_id),
+        "embedding_model": item.embedding_model,
         "score": item.score,
         "revision": item.revision,
         "effective_at": item.effective_at.isoformat(),
@@ -134,6 +142,93 @@ def _citation_dict(item: dict[str, object]) -> dict[str, object]:
         "location": item["location"],
         "revision": item["revision"],
         "effective_at": item["effective_at"],
+    }
+
+
+def _routing_decision_dict(decision: RoutingDecision) -> dict[str, object]:
+    """One routing decision as the checkpoint stores it: every candidate, not
+    just the winner, because that is what distinguishes a misroute from a
+    retrieval failure in the `OBS-004` taxonomy."""
+    return {
+        "policy_version": decision.policy_version,
+        "outcome": decision.outcome.value,
+        "rule": decision.rule.value,
+        "chosen": decision.chosen.value if decision.chosen is not None else None,
+        "confidence": decision.confidence,
+        "direct_threshold": decision.direct_threshold,
+        "clarify_threshold": decision.clarify_threshold,
+        "conflict_gap": decision.conflict_gap,
+        "candidates": [
+            {
+                "intent": candidate.intent.value,
+                "score": candidate.score,
+                "matched_signals": list(candidate.matched_signals),
+            }
+            for candidate in decision.candidates
+        ],
+    }
+
+
+def _prompt_assembly_dict(outcome: AssemblyOutcome) -> dict[str, object]:
+    """The one assembled prompt as the checkpoint stores it.
+
+    ``messages`` mirrors the canonical form :attr:`AssembledPrompt.content_hash`
+    hashes, so a stored turn record can reproduce the exact prompt the provider
+    received and re-derive the hash from it (`OBS-004`).
+    """
+    return {
+        "template_ref": outcome.prompt.template_ref,
+        "content_hash": outcome.prompt.content_hash,
+        "bindings": dict(outcome.prompt.bindings),
+        "excluded": [
+            {
+                "kind": item.kind.value,
+                "position": item.position,
+                "reference": item.reference,
+                "reason": item.reason.value,
+                "tokens": item.tokens,
+            }
+            for item in outcome.excluded
+        ],
+        "messages": [
+            {
+                "role": message.role.value,
+                "tool_call_id": message.tool_call_id,
+                "tool_calls": [
+                    {
+                        "id": call.call_id,
+                        "name": call.name,
+                        "arguments": dict(call.arguments),
+                    }
+                    for call in message.tool_calls
+                ],
+                "segments": [
+                    [segment.segment_id, segment.region.value, segment.text]
+                    for segment in message.segments
+                ],
+            }
+            for message in outcome.prompt.messages
+        ],
+    }
+
+
+def _evidence_meta_dict(bundle: EvidenceBundle) -> dict[str, object]:
+    """The retrieval manifest one turn was grounded in, as the checkpoint stores it.
+
+    Everything here is safe metadata for the inference plane (`OBS-004`):
+    versions, thresholds, budgets, and the index generation the candidates
+    came from — never passage content.
+    """
+    return {
+        "sufficient": bundle.sufficient,
+        "retriever_version": bundle.retriever_version,
+        "reranker": bundle.reranker,
+        "min_evidence_score": bundle.min_evidence_score,
+        "embedding_model": bundle.embedding_model,
+        "generation_id": str(bundle.generation_id) if bundle.generation_id is not None else None,
+        "filters": dict(bundle.filters),
+        "budget": dict(bundle.budget),
+        "parameters": dict(bundle.retriever_parameters),
     }
 
 
@@ -366,6 +461,7 @@ class DispatchNodes:
         base: dict[str, Any] = {
             "routing_outcome": decision.outcome.value,
             "route_rule": decision.rule.value,
+            "routing_decision": _routing_decision_dict(decision),
         }
         if decision.outcome is RoutingOutcome.CLARIFY:
             question = clarify_question(decision)
@@ -456,7 +552,7 @@ class DispatchNodes:
         agent = _agent_for(self._deps, state)
         bundle = await self._retrieve_evidence(state)
         if self._should_abstain(agent, bundle):
-            return self._abstention_update(state, policy)
+            return self._abstention_update(state, policy, bundle)
         evidence = tuple(
             PromptEvidence(source_id=item.source_id, title=item.title, content=item.content)
             for item in (bundle.items if bundle is not None else ())
@@ -466,7 +562,7 @@ class DispatchNodes:
             # The retrieval verdict passed, but the assembled prompt carried no
             # evidence segment — a budget cut, not a retriever failure. The
             # model must still not guess from an empty context.
-            return self._abstention_update(state, policy)
+            return self._abstention_update(state, policy, bundle)
         # The model is offered only the tools the routed agent may call; the
         # tools node enforces the same allowlist against whatever it sends.
         allowed = tuple(
@@ -495,17 +591,28 @@ class DispatchNodes:
             "rounds": state["rounds"] + 1,
             "model_name": response.model_name,
             "pending_booking": _store(booking) if booking is not None else None,
+            "model_usage": dict(response.usage),
         }
         if response.content.strip():
             update.update(self._evidence_update(bundle, outcome))
+            update["prompt_assembly"] = _prompt_assembly_dict(outcome)
         return update
 
     @staticmethod
-    def _abstention_update(state: DispatchState, policy: TenantPolicy) -> dict[str, Any]:
-        return {
+    def _abstention_update(
+        state: DispatchState, policy: TenantPolicy, bundle: EvidenceBundle | None
+    ) -> dict[str, Any]:
+        update: dict[str, Any] = {
             "transcript": [assistant_entry(_abstention_reply(policy), [])],
             "rounds": state["rounds"] + 1,
         }
+        if bundle is not None:
+            # The verdict that made the turn abstain must reach the trace even
+            # though no model call ran: an `OBS-004` attribution reads "weak
+            # candidates, insufficient" from the record alone.
+            update["evidence"] = [_evidence_item_dict(item) for item in bundle.items]
+            update["evidence_meta"] = _evidence_meta_dict(bundle)
+        return update
 
     async def _retrieve_evidence(self, state: DispatchState) -> EvidenceBundle | None:
         """The passages that may ground this turn, or ``None`` without retrieval.
@@ -592,12 +699,7 @@ class DispatchNodes:
             "evidence": [_evidence_item_dict(item) for item in admitted_items],
             "evidence_ids": admitted,
             "evidence_sufficient": bundle.sufficient,
-            "evidence_meta": {
-                "sufficient": bundle.sufficient,
-                "retriever_version": bundle.retriever_version,
-                "reranker": bundle.reranker,
-                "min_evidence_score": bundle.min_evidence_score,
-            },
+            "evidence_meta": _evidence_meta_dict(bundle),
         }
 
     async def run_tools(self, state: DispatchState) -> dict[str, Any]:
@@ -789,6 +891,7 @@ class DispatchNodes:
                             action=ToolName.BOOK_APPOINTMENT.value,
                             reference=replay.reference,
                             replayed=True,
+                            key=str(key),
                         )
                     ],
                     "pending_booking": None,
@@ -842,6 +945,7 @@ class DispatchNodes:
                         action=ToolName.BOOK_APPOINTMENT.value,
                         reference=confirmation.reference,
                         replayed=confirmation.replayed,
+                        key=str(key),
                     )
                 ],
                 "pending_booking": None,
@@ -903,10 +1007,11 @@ class DispatchNodes:
                 f"({reason.value}) after {state['rounds']} model calls."
             ),
         )
+        key = self._key(state, ToolName.HANDOFF_TO_HUMAN, "escalation")
         ticket = await self._deps.handoffs.request(
             command,
             session_id=state["session_id"],
-            idempotency_key=self._key(state, ToolName.HANDOFF_TO_HUMAN, "escalation"),
+            idempotency_key=key,
         )
         if state["workflow_id"]:
             if reason is not HandoffReason.CUSTOMER_REQUEST:
@@ -945,6 +1050,7 @@ class DispatchNodes:
                     action=ToolName.HANDOFF_TO_HUMAN.value,
                     reference=ticket.reference,
                     replayed=ticket.replayed,
+                    key=str(key),
                 )
             ],
         }
@@ -1067,10 +1173,11 @@ class DispatchNodes:
             address_or_zip=text_argument(arguments, "address_or_zip"),
             urgency=text_argument(arguments, "urgency"),
         )
+        key = self._key(state, ToolName.CREATE_LEAD, call["call_id"])
         receipt = await self._deps.leads.capture(
             command,
             session_id=state["session_id"],
-            idempotency_key=self._key(state, ToolName.CREATE_LEAD, call["call_id"]),
+            idempotency_key=key,
         )
         return (
             _payload(status="created", lead_id=receipt.reference, phone=policy.phone),
@@ -1078,6 +1185,7 @@ class DispatchNodes:
                 action=ToolName.CREATE_LEAD.value,
                 reference=receipt.reference,
                 replayed=receipt.replayed,
+                key=str(key),
             ),
         )
 
@@ -1093,10 +1201,11 @@ class DispatchNodes:
             reason=text_argument(arguments, "reason"),
             summary=text_argument(arguments, "summary"),
         )
+        key = self._key(state, ToolName.HANDOFF_TO_HUMAN, call["call_id"])
         ticket = await self._deps.handoffs.request(
             command,
             session_id=state["session_id"],
-            idempotency_key=self._key(state, ToolName.HANDOFF_TO_HUMAN, call["call_id"]),
+            idempotency_key=key,
         )
         return (
             _payload(status="created", handoff_id=ticket.reference, phone=policy.phone),
@@ -1104,6 +1213,7 @@ class DispatchNodes:
                 action=ToolName.HANDOFF_TO_HUMAN.value,
                 reference=ticket.reference,
                 replayed=ticket.replayed,
+                key=str(key),
             ),
         )
 

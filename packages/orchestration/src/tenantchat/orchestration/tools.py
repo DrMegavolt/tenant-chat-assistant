@@ -22,6 +22,11 @@ from tenantchat.orchestration.model import ToolSpec
 # cap here is that a megabyte of model output never reaches them at all.
 MAX_ARGUMENT_CHARACTERS: Final = 4096
 
+# The conversation's tool vocabulary, as a version for the `OBS-004` component
+# manifest. A schema or name change is a new version, never an edit to a
+# version already referenced by stored turn records.
+TOOLS_VERSION: Final = "tools@1"
+
 
 class ToolName(StrEnum):
     """Every tool the graph knows how to run.

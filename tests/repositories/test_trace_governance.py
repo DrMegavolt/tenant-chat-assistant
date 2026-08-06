@@ -82,6 +82,139 @@ def test_a_turn_record_round_trips_through_the_envelope(
     assert fetched.content == {"prompt": "the question", "output": "the answer"}
 
 
+def test_the_derived_columns_round_trip_with_the_envelope(
+    database: Database, repository_database_url: str
+) -> None:
+    """The `OBS-004` attribution projection: content-free columns ride the row."""
+    _seed_tenants(repository_database_url, "tenant-a")
+    session_id = uuid.uuid4()
+    _seed_session(repository_database_url, "tenant-a", session_id)
+    store = PostgresTurnRecordStore(database.engine)
+
+    recorded = asyncio.run(
+        store.record(
+            "tenant-a",
+            session_id,
+            trace_id="trace-1",
+            content={"outcome": {"status": "answered"}},
+            outcome="answered",
+            component_manifest_hash="a" * 64,
+            diagnosis_causes=("grounding_or_citation_error",),
+            turn_index=3,
+            trace_schema_version="1",
+        )
+    )
+    fetched = asyncio.run(store.get("tenant-a", recorded.turn_id))
+
+    assert fetched.outcome == "answered"
+    assert fetched.component_manifest_hash == "a" * 64
+    assert fetched.diagnosis_causes == ("grounding_or_citation_error",)
+    assert fetched.turn_index == 3
+    assert fetched.trace_schema_version == "1"
+
+
+def test_search_filters_by_manifest_hash_cause_and_outcome(
+    database: Database, repository_database_url: str
+) -> None:
+    """The attribution query surface: newest first, each filter tenant-scoped."""
+    _seed_tenants(repository_database_url, "tenant-a", "tenant-b")
+    session_id = uuid.uuid4()
+    other_session = uuid.uuid4()
+    tenant_b_session = uuid.uuid4()
+    _seed_session(repository_database_url, "tenant-a", session_id)
+    _seed_session(repository_database_url, "tenant-a", other_session)
+    _seed_session(repository_database_url, "tenant-b", tenant_b_session)
+    store = PostgresTurnRecordStore(database.engine)
+    base = datetime(2026, 8, 1, tzinfo=UTC)
+    for index, fields in enumerate(
+        (
+            ("answered", "a" * 64, ()),
+            ("abstained", "b" * 64, ("retrieval_miss",)),
+            ("answered", "a" * 64, ("grounding_or_citation_error",)),
+        )
+    ):
+        outcome, manifest, causes = fields
+        asyncio.run(
+            store.record(
+                "tenant-a",
+                session_id if index < 2 else other_session,
+                content={},
+                outcome=outcome,
+                component_manifest_hash=manifest,
+                diagnosis_causes=causes,
+                recorded_at=base + timedelta(minutes=index),
+            )
+        )
+    asyncio.run(
+        store.record(
+            "tenant-b",
+            tenant_b_session,
+            content={},
+            outcome="answered",
+            component_manifest_hash="a" * 64,
+            diagnosis_causes=("grounding_or_citation_error",),
+            recorded_at=base + timedelta(minutes=5),
+        )
+    )
+
+    by_manifest = asyncio.run(store.search("tenant-a", manifest_hash="a" * 64))
+    assert {record.outcome for record in by_manifest} == {"answered"}
+    assert len(by_manifest) == 2
+
+    by_cause = asyncio.run(store.search("tenant-a", causes=("grounding_or_citation_error",)))
+    assert [record.diagnosis_causes for record in by_cause] == [("grounding_or_citation_error",)]
+
+    by_outcome = asyncio.run(store.search("tenant-a", outcome="abstained"))
+    assert [record.component_manifest_hash for record in by_outcome] == ["b" * 64]
+
+    combined = asyncio.run(
+        store.search(
+            "tenant-a",
+            manifest_hash="a" * 64,
+            causes=("grounding_or_citation_error",),
+        )
+    )
+    assert len(combined) == 1
+    assert combined[0].turn_index == 0
+
+    newest_first = asyncio.run(store.search("tenant-a"))
+    assert [record.outcome for record in newest_first] == [
+        "answered",
+        "abstained",
+        "answered",
+    ]
+
+    bounded = asyncio.run(store.search("tenant-a", limit=2))
+    assert len(bounded) == 2
+
+
+def test_search_and_trace_lookup_never_leak_across_tenants(
+    database: Database, repository_database_url: str
+) -> None:
+    """A filter that matches in one tenant matches nothing in another."""
+    _seed_tenants(repository_database_url, "tenant-a", "tenant-b")
+    session_id = uuid.uuid4()
+    _seed_session(repository_database_url, "tenant-a", session_id)
+    store = PostgresTurnRecordStore(database.engine)
+    recorded = asyncio.run(
+        store.record(
+            "tenant-a",
+            session_id,
+            trace_id="trace-abc",
+            content={},
+            outcome="answered",
+            component_manifest_hash="c" * 64,
+        )
+    )
+
+    assert asyncio.run(store.for_trace_id("tenant-a", "trace-abc")) == recorded
+    assert asyncio.run(store.search("tenant-b", manifest_hash="c" * 64)) == ()
+    with pytest.raises(NotFoundError):
+        asyncio.run(store.for_trace_id("tenant-b", "trace-abc"))
+    with pytest.raises(NotFoundError):
+        asyncio.run(store.for_trace_id("tenant-a", "trace-unknown"))
+
+
 def test_a_turn_record_cannot_be_read_across_tenants(
     database: Database, repository_database_url: str
 ) -> None:

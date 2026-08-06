@@ -617,13 +617,18 @@ def test_an_export_includes_turn_records_and_their_projections(
     assert response.status_code == 200, response.text
     body = response.json()
 
-    assert [item["turn_id"] for item in body["turn_records"]] == [str(dana_turn)]
-    exported = body["turn_records"][0]
+    # The chat turn itself already earned one inference-plane record (the
+    # `OBS-004` finalizer records every completed turn); the planted record is
+    # the second one, and it is the one this test controls.
+    by_id = {item["turn_id"]: item for item in body["turn_records"]}
+    assert str(dana_turn) in by_id
+    assert str(boris_turn) not in by_id
+    assert len(body["turn_records"]) == 2
+    exported = by_id[str(dana_turn)]
     assert exported["trace_id"] == "trace-for-privacy-tests"
     assert DANA_PHONE in exported["content"]["prompt"]
     assert [item["kind"] for item in body["projections"]] == ["eval_dataset"]
     assert body["projections"][0]["turn_record_id"] == str(dana_turn)
-    assert str(boris_turn) not in [item["turn_id"] for item in body["turn_records"]]
 
 
 def test_a_session_is_found_through_turn_record_content_only(
@@ -719,7 +724,10 @@ def test_an_erasure_request_removes_turn_records_and_derived_projections(
             """,
             (BOOKING_TENANT,),
         )
-        assert erased[0]["turn_records_deleted"] == 1
+        # The chat turn's own record is erased alongside the planted one: the
+        # `OBS-004` finalizer records every completed turn, so Dana's subject
+        # data lives in two records.
+        assert erased[0]["turn_records_deleted"] == 2
 
 
 def test_expired_turn_records_are_purged_while_the_transcript_survives(
