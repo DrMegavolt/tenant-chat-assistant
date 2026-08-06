@@ -61,6 +61,8 @@ WEB_EMBED_PATH = "/embed.js"
 # the regex patterns themselves — narrowed to the shapes the API accepts.
 API_PATH_TO_GATEWAY = {
     "/api/tenants/{tenant_id}/availability": r"^/api/tenants/[a-z0-9][a-z0-9-]{0,63}/availability$",
+    # Chunk ids are the citation source ids the widget renders.
+    "/api/chat/sources/{source_id}": r"^/api/chat/sources/[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$",
 }
 PUBLIC_PROXY_PATHS = frozenset(
     {

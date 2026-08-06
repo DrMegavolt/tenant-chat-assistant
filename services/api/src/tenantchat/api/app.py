@@ -109,7 +109,11 @@ from tenantchat.api.store import (
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER, utc_now
 from tenantchat.core.errors import DomainError
-from tenantchat.core.ports import AvailabilityProvider, ConversationRuntime
+from tenantchat.core.ports import (
+    AvailabilityProvider,
+    ConversationRuntime,
+    EvidenceSource,
+)
 from tenantchat.core.visitor_session import (
     HmacVisitorCredentialSigner,
     VisitorCredentialSigner,
@@ -324,6 +328,7 @@ def create_app(
     generation_findings: IndexIntegrityStore | None = None,
     object_store: ObjectStore | None = None,
     search_index: SearchIndex | None = None,
+    evidence_source: EvidenceSource | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -381,6 +386,10 @@ def create_app(
         search_index: The retrieval index (RAG-002). Injected for tests;
             production builds the Elasticsearch adapter when
             ``ELASTICSEARCH_URL`` is configured.
+        evidence_source: The `RAG-005` retrieval port the agent runtime grounds
+            turns in. Injected explicitly, like the chat model: a composition
+            without it runs the pre-`RAG-005` graph, with no abstention and no
+            citations.
 
     Raises:
         ValueError: the stores were injected in part, or production composition
@@ -630,6 +639,7 @@ def create_app(
             workflows=workflow_store,
             checkpointer=saver,
             availability=availability_provider,
+            evidence=evidence_source,
         )
 
     @asynccontextmanager
@@ -689,6 +699,7 @@ def create_app(
     app.state.generation_findings = generation_findings
     app.state.object_store = object_store
     app.state.search_index = search_index
+    app.state.evidence_source = evidence_source
     app.state.visitor_credential_signer = visitor_credentials
     # The one clock every visitor credential is verified against, so a test can
     # move time by reassigning state rather than sleeping.

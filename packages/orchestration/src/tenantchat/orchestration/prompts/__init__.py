@@ -33,6 +33,8 @@ from tenantchat.orchestration.prompts.dispatch import (
     DISPATCH_SYSTEM_V1,
     DISPATCH_SYSTEM_V2,
     DISPATCH_SYSTEM_V2_VERSION,
+    DISPATCH_SYSTEM_V3,
+    DISPATCH_SYSTEM_V3_VERSION,
     DISPATCH_SYSTEM_VERSION,
 )
 from tenantchat.orchestration.prompts.registry import (
@@ -53,6 +55,7 @@ from tenantchat.orchestration.prompts.schema import (
 DEFAULT_REGISTRY = TemplateRegistry()
 DEFAULT_REGISTRY.register(DISPATCH_SYSTEM_V1)
 DEFAULT_REGISTRY.register(DISPATCH_SYSTEM_V2)
+DEFAULT_REGISTRY.register(DISPATCH_SYSTEM_V3)
 
 # The assembly budget the runtime enforces today; `AI-002` tunes the numbers.
 DEFAULT_BUDGET = PromptBudget()
@@ -65,6 +68,8 @@ __all__ = [
     "DISPATCH_SYSTEM_V1",
     "DISPATCH_SYSTEM_V2",
     "DISPATCH_SYSTEM_V2_VERSION",
+    "DISPATCH_SYSTEM_V3",
+    "DISPATCH_SYSTEM_V3_VERSION",
     "DISPATCH_SYSTEM_VERSION",
     "AssemblyOutcome",
     "BindingSchema",

@@ -104,6 +104,7 @@ def test_an_injection_attempt_through_evidence_stays_inside_an_untrusted_segment
         "business_facts",
         "policy",
         "approved_prices",
+        "citation_policy",
     ]
     assert len(untrusted) == 1
     assert hostile in untrusted[0].text
@@ -155,7 +156,7 @@ def test_the_resolved_bindings_and_hash_ride_on_the_assembled_prompt() -> None:
     outcome = assemble()
 
     assert outcome.prompt.template_id == "dispatch-system"
-    assert outcome.prompt.template_version == 2
+    assert outcome.prompt.template_version == 3
     assert outcome.prompt.bindings["phone"] == "(555) 816-4420"
     assert len(outcome.prompt.content_hash) == 64
 
@@ -216,7 +217,7 @@ def test_evidence_beyond_the_token_budget_is_excluded_with_a_record() -> None:
         budget=PromptBudget(max_evidence_tokens=100),
     )
 
-    assert outcome.prompt.messages[0].segments[-1].segment_id == "approved_prices"
+    assert outcome.prompt.messages[0].segments[-1].segment_id == "citation_policy"
     assert outcome.excluded[0].reason is ExcludedReason.EVIDENCE_BUDGET
 
 

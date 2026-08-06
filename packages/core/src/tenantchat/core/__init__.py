@@ -6,6 +6,7 @@ model SDK. See ``packages/core/pyproject.toml`` for why, and
 """
 
 from tenantchat.core.catalog import ServiceCatalog, ServiceDefinition, normalize_term
+from tenantchat.core.citations import Citation
 from tenantchat.core.commands import (
     BookingCommand,
     HandoffCommand,
@@ -62,6 +63,10 @@ from tenantchat.core.ports import (
     BookingService,
     CommittedEffect,
     ConversationRuntime,
+    EvidenceBundle,
+    EvidenceItem,
+    EvidenceSource,
+    EvidenceUnavailableError,
     HandoffService,
     HandoffTicket,
     IdempotencyKey,
@@ -87,6 +92,7 @@ __all__ = [
     "BookingConfirmation",
     "BookingNotPermittedError",
     "BookingService",
+    "Citation",
     "CommittedEffect",
     "ConflictError",
     "Contact",
@@ -95,6 +101,10 @@ __all__ = [
     "ConversationRuntime",
     "DocumentVersion",
     "DomainError",
+    "EvidenceBundle",
+    "EvidenceItem",
+    "EvidenceSource",
+    "EvidenceUnavailableError",
     "ExpiredVisitorCredentialError",
     "ExpiryPlan",
     "GenerationStatus",

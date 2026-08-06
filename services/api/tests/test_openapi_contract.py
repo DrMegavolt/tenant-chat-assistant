@@ -39,6 +39,8 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/chat/session"),
     ("post", "/api/chat/consent"),
     ("post", "/api/chat/confirmation"),
+    # RAG-005: tenant-scoped source view behind the visitor's citation.
+    ("get", "/api/chat/sources/{source_id}"),
     ("get", "/api/admin/csrf-token"),
     ("get", "/api/admin/tenants"),
     ("get", "/api/admin/chats"),
