@@ -105,6 +105,13 @@ PUBLISHED_OPERATIONS = {
     # surface.
     ("get", "/api/admin/knowledge/quarantine"),
     ("post", "/api/admin/knowledge/quarantine/{version_id}/review"),
+    # FEAT-004: the staff handoff queue. The list is the open escalation
+    # tickets; each ownership mutation is a conditional store write, so a race
+    # to accept has exactly one winner regardless of which console fired.
+    ("get", "/api/admin/handoffs"),
+    ("post", "/api/admin/handoffs/{handoff_id}/accept"),
+    ("post", "/api/admin/handoffs/{handoff_id}/release"),
+    ("post", "/api/admin/handoffs/{handoff_id}/resolve"),
 }
 
 

@@ -39,6 +39,7 @@ from tenantchat.api.dependencies import (
     Consent,
     Conversations,
     Feedback,
+    Handoffs,
     Knowledge,
     Registry,
     Reviews,
@@ -61,11 +62,13 @@ from tenantchat.api.schemas import (
     PendingConfirmation,
     SourceViewResponse,
     TranscriptMessage,
+    TurnProvenance,
     VisitorSessionResponse,
 )
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     ConversationStore,
+    HandoffStore,
     MessageRole,
     ReviewQueueStore,
     TurnRecord,
@@ -73,6 +76,7 @@ from tenantchat.api.store import (
 )
 from tenantchat.api.visitor import VisitorClock, VisitorIdentity, VisitorSigner, issue
 from tenantchat.core.errors import ConflictError, NotFoundError
+from tenantchat.core.handoffs import HandoffStatus, visitor_state_notice
 from tenantchat.core.knowledge import RetrievalAudience, RetrievalContext
 from tenantchat.core.metrics import (
     CitationVerdict,
@@ -329,6 +333,61 @@ def _fresh_credential(
     return issue(signer, clock, ttl_seconds, tenant_id=tenant_id, session_id=session_id)
 
 
+def _state_notice_reply(
+    signer: VisitorCredentialSigner,
+    clock: Callable[[], datetime],
+    settings: Settings,
+    tenant_id: str,
+    session_id: uuid.UUID,
+    notice: str,
+) -> ChatTurnResponse:
+    """A turn response that is a handoff state notice, not a model answer.
+
+    The reply is the visitor-facing notification for queue, takeover, and
+    resolution — written here so the caller's own transcript records the same
+    text beside the visitor's message. No turn record is written: no model
+    ran, so there is nothing to reconstruct or attribute. The provenance
+    labels it as the handoff gate for anyone reading the raw payload.
+    """
+    return ChatTurnResponse(
+        session_id=session_id,
+        turn_id=None,
+        reply=notice,
+        pending=None,
+        committed=[],
+        citations=[],
+        provenance=TurnProvenance(
+            model_name="",
+            graph_version="handoff",
+            prompt_version="handoff",
+        ),
+        credential=_fresh_credential(
+            signer,
+            clock,
+            settings.visitor_credential_ttl_seconds,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        ),
+    )
+
+
+async def _paused_notice(
+    handoffs: HandoffStore,
+    tenant_id: str,
+    session_id: uuid.UUID,
+) -> str | None:
+    """The visitor notice for a conversation the agent must not answer, if any.
+
+    ``None`` means the agent is free to run: no handoff, or a released handoff
+    whose assistant has been explicitly invited back. The notice text carries
+    no staff identity and no queue position (acceptance 4).
+    """
+    handoff = await handoffs.for_session(tenant_id, str(session_id))
+    if handoff is None:
+        return None
+    return visitor_state_notice(HandoffStatus(handoff.status))
+
+
 @router.post(
     "/api/chat/session",
     response_model=VisitorSessionResponse,
@@ -420,6 +479,7 @@ async def send_message(
     claims: VisitorIdentity,
     registry: Registry,
     conversations: Conversations,
+    handoffs: Handoffs,
     runtime: Runtime,
     turn_records: TurnRecords,
     reviews: Reviews,
@@ -432,6 +492,14 @@ async def send_message(
     The visitor's message is stored before the runtime is asked anything, so a
     model outage or a lost worker leaves a conversation that is missing a reply
     rather than one that is missing the question.
+
+    A conversation under a handoff the assistant may not answer (`FEAT-004`)
+    gets a state notice instead of a model turn: the message is still stored —
+    history stays server-authoritative — but the graph is not run while a staff
+    member owns the conversation or while the visitor waits in the queue. A
+    released handoff has invited the assistant back, and the next message runs
+    the graph normally; the idempotent services keep that resumed turn from
+    committing a business action twice.
 
     Raises:
         NotFoundError: no such tenant, conversation, or the conversation belongs
@@ -447,6 +515,23 @@ async def send_message(
         role=MessageRole.VISITOR,
         content=payload.message,
     )
+
+    notice = await _paused_notice(handoffs, tenant_id, session_id)
+    if notice is not None:
+        await conversations.append(
+            tenant_id,
+            session_id,
+            role=MessageRole.SYSTEM,
+            content=notice,
+        )
+        return _state_notice_reply(
+            signer,
+            clock,
+            settings,
+            tenant_id,
+            session_id,
+            notice,
+        )
 
     started = time.monotonic()
     turn = await runtime.send(tenant_id, str(session_id), payload.message)
@@ -556,6 +641,7 @@ async def confirm_booking(
     claims: VisitorIdentity,
     registry: Registry,
     conversations: Conversations,
+    handoffs: Handoffs,
     runtime: Runtime,
     turn_records: TurnRecords,
     reviews: Reviews,
@@ -569,6 +655,11 @@ async def confirm_booking(
     conversation that already finished would run the graph forward again and
     append a second answer to a customer who asked one question.
 
+    The same handoff gate as a visitor turn applies: approving a booking runs
+    the graph, and the graph must not run while a staff member owns the
+    conversation — the confirmation is answered with the state notice instead,
+    and the staff member handles the booking.
+
     Raises:
         NotFoundError: no such tenant, conversation, or the conversation belongs
             to another tenant.
@@ -578,6 +669,17 @@ async def confirm_booking(
     tenant_id, session_id = claims.tenant_id, claims.session_id
     registry.get(tenant_id)
     await conversations.get(tenant_id, session_id)
+
+    notice = await _paused_notice(handoffs, tenant_id, session_id)
+    if notice is not None:
+        return _state_notice_reply(
+            signer,
+            clock,
+            settings,
+            tenant_id,
+            session_id,
+            notice,
+        )
 
     session_key = str(session_id)
     if await runtime.pending(tenant_id, session_key) is None:

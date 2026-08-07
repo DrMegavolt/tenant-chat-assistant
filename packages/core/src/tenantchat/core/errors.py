@@ -279,6 +279,31 @@ class PromotionPrivacyError(PolicyViolationError):
     message = "That turn cannot be promoted until its query is anonymized."
 
 
+class HandoffTransitionError(ConflictError):
+    """A handoff is not in a state the requested transition may leave.
+
+    A conflict rather than a validation failure: the queue moved under the
+    caller — another staff member accepted first, or the handoff closed. The
+    race-to-accept rule is enforced here: a refused accept means a different
+    owner already holds the conversation, and the loser reloads the queue
+    rather than overwriting the winner.
+    """
+
+    code = "invalid_handoff_transition"
+    message = "That handoff has moved on. Reload the queue and try again."
+
+    def __init__(
+        self,
+        *,
+        current: str = "",
+        permitted: frozenset[str] = frozenset(),
+        detail: str | None = None,
+    ) -> None:
+        self.current = current
+        self.permitted = frozenset(permitted)
+        super().__init__(detail)
+
+
 class WorkflowTransitionError(ConflictError):
     """A workflow is not in a state the requested transition may leave.
 

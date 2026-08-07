@@ -24,6 +24,7 @@ from tenantchat.api.store import (
     BookingStore,
     ConsentStore,
     ConversationStore,
+    HandoffStore,
     KnowledgeStore,
     LeadStore,
     MembershipStore,
@@ -86,6 +87,11 @@ def get_availability_provider(request: Request) -> AvailabilityProvider:
 
 def get_lead_store(request: Request) -> LeadStore:
     store: LeadStore = request.app.state.lead_store
+    return store
+
+
+def get_handoff_store(request: Request) -> HandoffStore:
+    store: HandoffStore = request.app.state.handoff_store
     return store
 
 
@@ -181,6 +187,7 @@ Bookings = Annotated[BookingStore, Depends(get_booking_store)]
 BookingActions = Annotated[BookingService, Depends(get_booking_service)]
 Availability = Annotated[AvailabilityProvider, Depends(get_availability_provider)]
 Leads = Annotated[LeadStore, Depends(get_lead_store)]
+Handoffs = Annotated[HandoffStore, Depends(get_handoff_store)]
 Conversations = Annotated[ConversationStore, Depends(get_conversation_store)]
 Memberships = Annotated[MembershipStore, Depends(get_membership_store)]
 Consent = Annotated[ConsentStore, Depends(get_consent_store)]

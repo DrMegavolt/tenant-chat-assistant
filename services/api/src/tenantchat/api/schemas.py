@@ -545,6 +545,60 @@ class AdminBookingsResponse(BaseModel):
     bookings: list[AdminBooking]
 
 
+class AdminHandoff(BaseModel):
+    """One handoff row as an authorized operator reads it.
+
+    The queue lists every open handoff with the escalation reason and summary —
+    the ticket's own content, on the authenticated tenant-scoped surface — and
+    the assignment state that decides who may work it. The assigned principal
+    is staff-facing accountability data, never anything the visitor sees.
+    """
+
+    handoff_id: str
+    tenant_id: str
+    session_id: str
+    status: str
+    reason: str
+    summary: str
+    assigned_principal_id: str | None
+    requested_at: datetime
+    assigned_at: datetime | None
+    released_at: datetime | None
+    resolved_at: datetime | None
+    resolved_by_principal_id: str | None
+
+    @classmethod
+    def of(cls, record: HandoffRecord) -> AdminHandoff:
+        return cls(
+            handoff_id=record.handoff_id,
+            tenant_id=record.tenant_id,
+            session_id=record.session_id,
+            status=record.status,
+            reason=record.reason.value,
+            summary=record.summary,
+            assigned_principal_id=record.assigned_principal_id,
+            requested_at=record.created_at,
+            assigned_at=record.assigned_at,
+            released_at=record.released_at,
+            resolved_at=record.resolved_at,
+            resolved_by_principal_id=record.resolved_by_principal_id,
+        )
+
+
+class AdminHandoffsResponse(BaseModel):
+    """The tenant's open handoff queue, oldest first."""
+
+    handoffs: list[AdminHandoff]
+    # Echoed so a caller can tell a full queue from the end of the list.
+    limit: int
+
+
+class HandoffActionResponse(BaseModel):
+    """One handoff after a staff ownership transition."""
+
+    handoff: AdminHandoff
+
+
 class MembershipRequest(_Request):
     """Per-tenant role assignment (SEC-001).
 
