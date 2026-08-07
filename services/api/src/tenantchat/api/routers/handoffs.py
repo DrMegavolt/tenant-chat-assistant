@@ -132,7 +132,9 @@ async def list_handoffs(
     registry.get(tenant_id)
     rows = await handoffs.open_for_tenant(tenant_id, limit=limit)
     return AdminHandoffsResponse(
-        handoffs=[AdminHandoff.of(record) for record in rows], limit=limit
+        handoffs=[AdminHandoff.of(record) for record in rows],
+        operator_subject=identity.subject,
+        limit=limit,
     )
 
 

@@ -24,6 +24,7 @@ import type {
   KnowledgeSource,
   KnowledgeVersion
 } from "src/admin/knowledgeTypes";
+import type { HandoffSummary } from "src/admin/handoffTypes";
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -417,6 +418,51 @@ export class AdminApi {
     if (!response.ok) throw new Error(`The integrity check failed with ${response.status}`);
     const payload = (await response.json()) as { findings?: unknown[] };
     return (payload.findings ?? []).map((wire) => knowledgeFindingFromWire(obj(wire)));
+  }
+
+  /** The FEAT-004 staff queue: open escalation tickets, oldest first. */
+  async handoffs(tenantId: string): Promise<{ rows: HandoffSummary[]; operatorSubject: string }> {
+    const response = await this.request(
+      `/api/admin/handoffs?tenant_id=${encodeURIComponent(tenantId)}&limit=200`
+    );
+    if (!response.ok) throw new Error(`Handoff queue failed with ${response.status}`);
+    const payload = (await response.json()) as {
+      handoffs?: unknown[];
+      operator_subject?: string;
+    };
+    return {
+      rows: (payload.handoffs ?? []).map((wire) => handoffSummaryFromWire(obj(wire))),
+      operatorSubject: payload.operator_subject ?? ""
+    };
+  }
+
+  /** Take ownership of an unowned handoff; the race is decided in the database. */
+  async acceptHandoff(handoffId: string, tenantId: string): Promise<HandoffSummary> {
+    return this.handoffMutation(handoffId, tenantId, "accept");
+  }
+
+  /** Release an assigned handoff back to the queue and resume the assistant. */
+  async releaseHandoff(handoffId: string, tenantId: string): Promise<HandoffSummary> {
+    return this.handoffMutation(handoffId, tenantId, "release");
+  }
+
+  /** Close an open handoff and mark the conversation resolved. */
+  async resolveHandoff(handoffId: string, tenantId: string): Promise<HandoffSummary> {
+    return this.handoffMutation(handoffId, tenantId, "resolve");
+  }
+
+  private async handoffMutation(
+    handoffId: string,
+    tenantId: string,
+    action: "accept" | "release" | "resolve"
+  ): Promise<HandoffSummary> {
+    const response = await this.request(
+      `/api/admin/handoffs/${encodeURIComponent(handoffId)}/${action}?tenant_id=${encodeURIComponent(tenantId)}`,
+      { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
+    );
+    if (!response.ok) throw new Error(`The ${action} failed with ${response.status}`);
+    const payload = (await response.json()) as { handoff?: unknown };
+    return handoffSummaryFromWire(obj(payload.handoff));
   }
 
   private async versionMutation(
@@ -869,6 +915,23 @@ function knowledgeFindingFromWire(wire: Record<string, unknown>): KnowledgeFindi
     sourceName: strOrNull(wire.source_name),
     documentTitle: strOrNull(wire.document_title),
     revision: typeof wire.revision === "number" ? wire.revision : null
+  };
+}
+
+function handoffSummaryFromWire(wire: Record<string, unknown>): HandoffSummary {
+  return {
+    handoffId: str(wire.handoff_id),
+    tenantId: str(wire.tenant_id),
+    sessionId: str(wire.session_id),
+    status: str(wire.status),
+    reason: str(wire.reason),
+    summary: str(wire.summary),
+    assignedPrincipalId: strOrNull(wire.assigned_principal_id),
+    requestedAt: str(wire.requested_at),
+    assignedAt: strOrNull(wire.assigned_at),
+    releasedAt: strOrNull(wire.released_at),
+    resolvedAt: strOrNull(wire.resolved_at),
+    resolvedByPrincipalId: strOrNull(wire.resolved_by_principal_id)
   };
 }
 

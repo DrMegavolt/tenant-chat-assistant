@@ -586,9 +586,15 @@ class AdminHandoff(BaseModel):
 
 
 class AdminHandoffsResponse(BaseModel):
-    """The tenant's open handoff queue, oldest first."""
+    """The tenant's open handoff queue, oldest first.
+
+    ``operator_subject`` is the viewing operator's own pseudonymous id, so the
+    console can tell which rows it holds without any staff member's identity
+    being derivable from the queue alone.
+    """
 
     handoffs: list[AdminHandoff]
+    operator_subject: str
     # Echoed so a caller can tell a full queue from the end of the list.
     limit: int
 
