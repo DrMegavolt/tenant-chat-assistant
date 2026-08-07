@@ -18,6 +18,13 @@ import type {
   TraceSearchRecord
 } from "src/admin/traceTypes";
 import type {
+  AuditEventRow,
+  AuditFilters,
+  MembershipRole,
+  PermissionsView,
+  TraceGrant
+} from "src/admin/accessTypes";
+import type {
   KnowledgeDocument,
   KnowledgeFinding,
   KnowledgePreview,
@@ -417,6 +424,46 @@ export class AdminApi {
     if (!response.ok) throw new Error(`The integrity check failed with ${response.status}`);
     const payload = (await response.json()) as { findings?: unknown[] };
     return (payload.findings ?? []).map((wire) => knowledgeFindingFromWire(obj(wire)));
+  }
+
+  /**
+   * The FEAT-016 audit trail: content-free rows for one tenant, newest first.
+   * Every read is itself audited server-side. Returns null on a 404 — a tenant
+   * this operator cannot administer is the same as one that does not exist.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async audit(tenantId: string, filters: AuditFilters): Promise<AuditEventRow[] | null> {
+    const params = new URLSearchParams({ tenant_id: tenantId, limit: "200" });
+    if (filters.since) params.set("since", filters.since);
+    if (filters.until) params.set("until", filters.until);
+    if (filters.action) params.set("action", filters.action);
+    if (filters.principal) params.set("principal", filters.principal);
+    const response = await this.request(`/api/admin/audit?${params}`);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Audit read failed with ${response.status}`);
+    const payload = (await response.json()) as { events?: unknown[] };
+    return (payload.events ?? []).map((wire) => auditEventFromWire(obj(wire)));
+  }
+
+  /**
+   * The FEAT-016 permissions view: the tenant's live roles and trace-read
+   * grants, as separate controls with grantors resolved. Returns null on a 404
+   * like the audit read.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async permissions(tenantId: string): Promise<PermissionsView | null> {
+    const response = await this.request(
+      `/api/admin/permissions?tenant_id=${encodeURIComponent(tenantId)}`
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Permissions read failed with ${response.status}`);
+    const payload = (await response.json()) as { roles?: unknown[]; grants?: unknown[] };
+    return {
+      roles: (payload.roles ?? []).map((wire) => membershipRoleFromWire(obj(wire))),
+      grants: (payload.grants ?? []).map((wire) => traceGrantFromWire(obj(wire)))
+    };
   }
 
   private async versionMutation(
@@ -880,4 +927,41 @@ function knowledgeFindingFromWire(wire: Record<string, unknown>): KnowledgeFindi
 export function redirectToLogin(): void {
   if (window.location.protocol === "file:") return;
   window.location.href = "/admin/";
+}
+
+/** The FEAT-016 audit projection: bounded fields only, never the details dict. */
+function auditEventFromWire(wire: Record<string, unknown>): AuditEventRow {
+  return {
+    action: str(wire.action),
+    actorType: str(wire.actor_type),
+    principal: strOrNull(wire.principal),
+    tenantId: str(wire.tenant_id),
+    requestId: strOrNull(wire.request_id),
+    traceId: strOrNull(wire.trace_id),
+    resourceType: str(wire.resource_type),
+    resourceId: strOrNull(wire.resource_id),
+    occurredAt: str(wire.occurred_at),
+    permission: str(wire.permission)
+  };
+}
+
+function membershipRoleFromWire(wire: Record<string, unknown>): MembershipRole {
+  return {
+    tenantId: str(wire.tenant_id),
+    subject: str(wire.subject),
+    role: str(wire.role),
+    grantedBy: strOrNull(wire.granted_by),
+    grantedAt: str(wire.granted_at),
+    updatedAt: str(wire.updated_at)
+  };
+}
+
+function traceGrantFromWire(wire: Record<string, unknown>): TraceGrant {
+  return {
+    tenantId: str(wire.tenant_id),
+    subject: str(wire.subject),
+    grantedBy: str(wire.granted_by),
+    grantedAt: str(wire.granted_at),
+    expiresAt: strOrNull(wire.expires_at)
+  };
 }

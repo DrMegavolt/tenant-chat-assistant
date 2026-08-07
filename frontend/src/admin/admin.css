@@ -1274,3 +1274,136 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* FEAT-016: access and audit console. */
+.access-console {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.access-controls-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted, inherit);
+  font-size: 0.88rem;
+}
+
+.access-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-3);
+}
+
+.access-table {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.access-table h3 {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.95rem;
+}
+
+.access-table p {
+  padding: var(--space-3);
+  margin: 0;
+}
+
+.access-table table,
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.access-table th,
+.access-table td,
+.audit-table th,
+.audit-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.access-table th,
+.audit-table th {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, inherit);
+}
+
+.audit-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+.audit-filter {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.audit-filter-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, inherit);
+}
+
+.audit-filter input,
+.audit-filter select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+.audit-filter input:focus-visible,
+.audit-filter select:focus-visible,
+.audit-table-wrap:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.audit-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.audit-table th:first-child,
+.audit-table td:first-child {
+  white-space: nowrap;
+}
+
+.audit-permission {
+  min-width: 14rem;
+}
+
+.audit-holders {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-muted, inherit);
+  font-size: 0.78rem;
+}
+
+.audit-trace {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-muted, inherit);
+  font-size: 0.78rem;
+}
