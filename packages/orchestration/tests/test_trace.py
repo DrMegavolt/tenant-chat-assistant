@@ -22,7 +22,7 @@ from tenantchat.orchestration.model import (
 from tenantchat.orchestration.nodes import _prompt_assembly_dict
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
 from tenantchat.orchestration.prompts.assembly import AssemblyOutcome
-from tenantchat.orchestration.state import initial_state
+from tenantchat.orchestration.state import TurnOutcome, initial_state
 from tenantchat.orchestration.tools import TOOLS_VERSION
 from tenantchat.orchestration.trace import (
     TRACE_SCHEMA_VERSION,
@@ -348,6 +348,120 @@ def test_an_abstention_records_the_outcome_and_a_retrieval_miss() -> None:
             ("retrieval.sufficient:false",),
         )
     ]
+
+
+def test_a_claim_refusal_is_recorded_as_refused_and_detected() -> None:
+    """A refused answer is not an answered turn.
+
+    The `RAG-007` validator refuses whole answers, and the refusal leaves
+    ``model_name`` set and no ``failure`` behind. A status derived from those
+    two reads it as ``answered``, which hides the turn from the explorer's
+    outcome filter, leaves it undiagnosed, and keeps it out of the `FEAT-008`
+    queue — the model fabricated a price and the record said the turn was fine.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.REFUSED.value,
+            answer="I cannot confirm that. Please call the team.",
+            citations=[],
+            citation_invalid=[],
+            claims_invalid=[
+                {"kind": "price", "value": "$89"},
+                {"kind": "coverage", "value": "It is $89 and fully covered."},
+            ],
+        ),
+        pending=None,
+    )
+
+    assert _section(trace, "outcome")["status"] == "refused"
+    assert _diagnoses(trace) == [
+        _diagnosis(
+            DiagnosisCause.GROUNDING_OR_CITATION_ERROR,
+            DiagnosisStage.VALIDATION,
+            DiagnosisRole.PRIMARY,
+            DiagnosisStatus.DETECTED,
+            DiagnosisConfidence.HIGH,
+            ("claims_invalid:price", "claims_invalid:coverage"),
+        )
+    ]
+
+
+def test_a_diagnosis_for_a_refused_claim_names_the_kind_and_not_the_sentence() -> None:
+    """The claim's value is the model's own sentence about a customer's job.
+
+    A diagnosis is read where the passage text is not — the explorer's cause
+    column, a review case summary — so the evidence reference carries the
+    bounded kind and stops there.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.REFUSED.value,
+            claims_invalid=[{"kind": "price", "value": "$89 for the Kowalski job"}],
+        ),
+        pending=None,
+    )
+
+    references = _diagnoses(trace)[0]["evidence"]
+    assert references == ["claims_invalid:price"]
+    assert "Kowalski" not in json.dumps(references)
+
+
+def test_a_spent_round_budget_is_recorded_as_escalated_not_answered() -> None:
+    """The round-budget route into `escalate` leaves no failure behind.
+
+    `route_after_model` escalates on ``rounds >= MAX_TOOL_ROUNDS`` without
+    setting ``failure``, so a derived status saw a handed-off turn — one that
+    committed a `handoff_to_human` — as an answered one. The terminal node
+    records what it did instead.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.ESCALATED.value,
+            failure="unresolved",
+            rounds=4,
+            answer="I am not able to finish this myself, so I have passed it to the team.",
+            committed=[
+                {
+                    "action": "handoff_to_human",
+                    "reference": "H-1",
+                    "replayed": False,
+                    "key": "key-1",
+                }
+            ],
+        ),
+        pending=None,
+    )
+
+    assert _section(trace, "outcome")["status"] == "escalated"
+    committed = _section(trace, "tools")["committed"]
+    assert isinstance(committed, list)
+    assert [effect["action"] for effect in committed] == ["handoff_to_human"]
+
+
+def test_a_pending_confirmation_outranks_a_recorded_outcome() -> None:
+    """A paused turn never reached a terminal node, so the interrupt decides.
+
+    Guards the ordering inside the status rule: a turn that stops at a booking
+    confirmation still carries whatever the previous round recorded, and that
+    stale value must not relabel the pause.
+    """
+    trace = build_turn_trace(
+        _answered(turn_outcome=TurnOutcome.ANSWERED.value),
+        pending={"call_id": "call-1", "name": "book_appointment"},
+    )
+
+    assert _section(trace, "outcome")["status"] == "paused"
+
+
+def test_an_unrecognized_recorded_outcome_does_not_read_as_answered() -> None:
+    """A record from a build with a wider vocabulary is a schema mismatch.
+
+    Falling back to the derived status here would resurrect the original bug
+    for exactly the records most likely to carry a new terminal state.
+    """
+    trace = build_turn_trace(_answered(turn_outcome="taken_over_by_staff"), pending=None)
+
+    assert _section(trace, "outcome")["status"] == "escalated"
 
 
 def test_an_unavailable_retriever_is_detected_as_an_index_error() -> None:

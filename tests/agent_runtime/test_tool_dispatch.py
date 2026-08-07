@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 
 from tenantchat.orchestration.model import ModelResponse, ToolCall
 from tenantchat.orchestration.nodes import MAX_TOOL_ROUNDS, unanswered_tool_calls
@@ -226,6 +227,18 @@ def test_a_looping_model_is_stopped_and_escalated() -> None:
         tickets = await harness.handoffs.for_tenant(BOOKING_TENANT)
         assert len(tickets) == 1
         assert tickets[0].reason == "unresolved"
+
+        # This route into `escalate` leaves no failure behind, so a trace that
+        # derived its status from residual state recorded a handed-off turn as
+        # answered — while its own tools section listed the handoff it opened.
+        assert result.trace is not None
+        outcome = result.trace["outcome"]
+        assert isinstance(outcome, Mapping)
+        assert outcome["status"] == "escalated"
+        assert outcome["failure"] == "unresolved"
+        # And it stays reconstructible: every round was tool calls, so the
+        # prompt used to go unrecorded and the turn had no prompt section.
+        assert result.trace["prompt"]
 
     asyncio.run(scenario())
 

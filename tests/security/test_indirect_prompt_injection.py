@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -519,6 +520,20 @@ def test_an_answer_fabricating_a_price_is_refused_whole_and_never_published() ->
             "coverage",
             "Our diagnostic visit is $89 and repairs are always covered.",
         ) in turn.claims_invalid
+
+        # The refusal must also be attributable. A turn the server would not
+        # publish that records itself as `answered` with no diagnosis is
+        # invisible to the explorer's cause filter and never reaches the
+        # `FEAT-008` review queue, so the refusal is enforced and unaccounted.
+        trace = turn.trace
+        assert trace is not None
+        outcome = trace["outcome"]
+        assert isinstance(outcome, Mapping)
+        assert outcome["status"] == "refused"
+        diagnoses = trace["diagnoses"]
+        assert isinstance(diagnoses, list)
+        assert [record["cause"] for record in diagnoses] == ["grounding_or_citation_error"]
+        assert diagnoses[0]["status"] == "detected"
 
     asyncio.run(scenario())
 

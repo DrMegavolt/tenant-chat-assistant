@@ -314,7 +314,7 @@ breaks a stated security invariant. None of these is optional for Gate B: three
 of them are the difference between a claim being tested and a claim being true.
 
 - [x] `RAG-010` — Evidence boundary escaping and fence-aware content safety — `P0` — _defect in `RAG-007`_
-- [ ] `OBS-005` — Turn outcome fidelity and diagnosis completeness — `P1` — _defect in `OBS-004`/`OBS-002`_
+- [x] `OBS-005` — Turn outcome fidelity and diagnosis completeness — `Done`
 - [x] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
 - [ ] `QA-006` — Gate-claim and backlog accuracy — `P1`
 - [ ] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
@@ -1430,7 +1430,7 @@ guarantees by construction.
 
 ### OBS-005 — Turn outcome fidelity and diagnosis completeness
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI observability`
 - Depends on: `OBS-004`, `OBS-002`, `RAG-007`
@@ -1484,15 +1484,27 @@ guarantees by construction.
     one that returned content. If the state can hold only one, record the last
     call's assembly and say so in the trace docstring; if it can hold a list,
     prefer that, because `OBS-006` will want the per-round record anyway.
-  - Extend the seeded Gate B case set in
-    `services/api/tests/test_trace_explorer.py` with a claim-refusal case, and
-    give case 10 (injection quarantine) the diagnosis it currently lacks.
+  - ~~Extend the seeded Gate B case set with a claim-refusal case, and give
+    case 10 (injection quarantine) the diagnosis it currently lacks.~~
+    Withdrawn on implementation, and recorded rather than deleted because it was
+    written into this entry and then not built. Case 10 gained its
+    `injection_quarantine` diagnosis in `5962fc1`. The claim-refusal case was
+    over-specified here: the Gate B acceptance script is defined above as
+    exactly ten cases, an eleventh planted fixture would contradict it, and the
+    behavior is covered more strongly by an end-to-end test through the real
+    graph than by a hand-built trace dict.
 - Acceptance criteria:
   - No turn that committed a `handoff_to_human` is recorded with
     `outcome.status = answered`.
   - A turn refused by the claim validator is recorded with a refusal outcome,
     carries at least one diagnosis, increments exactly one `TURN_OUTCOMES`
-    series, and appears in the review queue without any thumbs-down.
+    series. It does **not** enter the review queue: `grounding_or_citation_error`
+    is deliberately outside `TECHNICAL_CAUSES`, which scopes automatic
+    enqueueing to infrastructure failures rather than quality disagreements.
+    This criterion originally claimed the queue entry; the claim was wrong when
+    written and is corrected here rather than by widening `FEAT-008`'s trigger.
+    Whether a mechanically *proven* fabrication belongs in that set is a real
+    question and is recorded as a follow-up below.
   - Summing `tenantchat_turn_outcomes_total` across every outcome label equals
     the number of turns the API completed, asserted by a test that runs several
     turns down different terminal paths and compares the total.
@@ -1501,7 +1513,63 @@ guarantees by construction.
 - Verification:
   - `uv run --frozen pytest packages/orchestration/tests/test_trace.py services/api/tests/test_metrics.py services/api/tests/test_trace_explorer.py services/api/tests/test_feedback_review.py tests/security/test_indirect_prompt_injection.py`,
     then `make check`.
-- Completion notes: _Pending._
+- Completion notes:
+  - Terminal nodes now record their own outcome. `DispatchState` gains
+    `turn_outcome`, written by `finalize` (answered, refused, and the
+    server-written fallback), `escalate`, `_abstention_update`, and the route
+    node's clarify branch; `trace._terminal_status` reads it and keeps the old
+    derivation only as a fallback for records written before this change. An
+    unrecognized recorded value resolves to `escalated` rather than `answered`,
+    so a record from a build with a wider vocabulary cannot resurrect the bug.
+  - `escalate` also writes `failure` back into state. The round-budget route
+    (`rounds >= MAX_TOOL_ROUNDS`) reaches it with `failure` empty, which is why
+    a handed-off turn recorded `outcome.status = answered` while its own tools
+    section listed the `handoff_to_human` it had just committed.
+  - The status vocabulary moved to `orchestration/state.py` as `TurnOutcome`
+    and is re-exported from `trace.py`. `trace` already imports `nodes`, so the
+    nodes could not import the enum from `trace` without a cycle; `state` is a
+    leaf module both can import. `trace.TurnOutcome` still resolves for callers.
+  - `diagnose` gains a `verdicts.claims_invalid` detector emitting
+    `grounding_or_citation_error` / `validation` / `primary` / `detected` /
+    `high`. Evidence references carry the claim *kind* only — the value is the
+    model's sentence about a customer's job, and a diagnosis is read where the
+    passage text is not.
+  - `core.metrics.TurnOutcome` gains `ANSWER_REFUSED = "answer_refused"`, and
+    the refusal and fallback paths in `finalize` now observe it and `ANSWERED`
+    respectively. The value is qualified rather than a bare `refused` because
+    `outcome` is a shared label name that `ToolOutcome.REFUSED` already spends;
+    `test_metrics_port` enforces that disjointness and caught the collision.
+    The reachable vocabulary is unchanged at 48 against a ceiling of 64,
+    because `answer_refused` is a new string and `refused` was already present.
+  - Every model call now records `prompt_assembly`, not only calls that
+    returned content, so a turn that spends its whole budget on tool calls stays
+    reconstructible. Evidence deliberately stays tied to the content-producing
+    call: `finalize` validates the published answer against the exact context it
+    was written from, so a later tool-only round must not replace it.
+  - Regressions, each verified to fail against the pre-fix code:
+    `packages/orchestration/tests/test_trace.py` (refusal recorded and detected,
+    diagnosis names the kind not the sentence, spent budget escalates, pending
+    outranks a recorded outcome, unknown status does not read as answered);
+    `services/api/tests/test_metrics.py::TestTheOutcomePartition` (the
+    distribution sums to the turns completed, and the refused class is disjoint
+    from a refused tool call); and the two end-to-end paths through the real
+    graph — `tests/security/test_indirect_prompt_injection.py` (refusal) and
+    `tests/agent_runtime/test_tool_dispatch.py` (round budget).
+  - Files: `packages/core/src/tenantchat/core/metrics.py`;
+    `packages/orchestration/src/tenantchat/orchestration/{state.py, trace.py, nodes.py}`;
+    tests in `packages/orchestration/tests/test_trace.py`,
+    `services/api/tests/test_metrics.py`,
+    `tests/agent_runtime/test_tool_dispatch.py`,
+    `tests/security/test_indirect_prompt_injection.py`.
+  - Verified: `make check` passes — 1414 Python tests, 118 frontend tests,
+    coverage 81.65% against the 80% floor `26e86a0` introduced.
+  - Follow-up, needs a decision rather than an implementation: whether
+    `grounding_or_citation_error` belongs in `TECHNICAL_CAUSES`. A fabricated
+    citation and an unsupported price are proven mechanically by a
+    deterministic validator, not disputed by a reader, which is the argument
+    for auto-enqueueing them; against it, `FEAT-008` scoped the automatic queue
+    to infrastructure failures on purpose and this would change its volume.
+    Gate B case 8 currently produces a diagnosis and no queue entry either way.
 
 ### OBS-006 — Executed-graph event capture
 
@@ -2213,7 +2281,7 @@ guarantees by construction.
 
 ### RAG-010 — Evidence boundary escaping and fence-aware content safety
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P0`
 - Type: `AI security`
 - Depends on: `RAG-007`
@@ -2281,7 +2349,7 @@ guarantees by construction.
 
 ### RAG-011 — Deterministic claim extraction and cross-process evaluation determinism
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI quality`
 - Depends on: `RAG-007`, `RAG-008`
@@ -2583,27 +2651,21 @@ promotion pipeline — which requires a cluster that runs for real.
   - Add a test asserting that every task whose index checkbox is `[x]` has
     `Status: Done` in its detail entry, and vice versa. The two representations
     of the same fact must not be allowed to drift again.
-  - Correct the docstrings on
-    `services/api/tests/test_trace_explorer.py::TestTheTenCaseWalkthrough` and
-    `_seeded_cases`. They say the ten Gate B cases run "end to end"; the test
-    plants hand-built trace dicts through `_plant` and exercises the explorer's
-    locate, drill, and replay surface. That is exactly `FEAT-015`'s contract and
-    it is well covered — but the wording invites a later reader to conclude the
-    pipeline produced those traces, which it did not. Say what the test proves.
-  - Repair `tests/security/test_trace_plane.py`, which is red on `main` as of
-    `b0e82d2`. That commit correctly renamed the collector's redaction allowlist
-    from `allow_attributes` — a key no released contrib image accepts — to
-    `allowed_keys`, but did not update the test, so `_redaction_allowlist`
-    raises `KeyError` and two `PRIV-002` regressions no longer run. The boundary
-    itself is intact: the allowlist has 45 entries and carries none of the eight
-    content attributes. Only its proof is missing, which is the more dangerous
-    of the two states to leave in place. Point the helper at `allowed_keys` and
-    add an assertion that the processor exposes exactly the allowlist key the
-    pinned image accepts, so the next rename fails the test rather than
-    silencing it.
-  - Set an explicit `fail_under` in `[tool.coverage.report]`. Coverage is
-    measured and uploaded but not enforced, so a change that drops it fails
-    nothing. Choose the current hermetic figure rounded down, not an aspiration.
+  - ~~Repair `tests/security/test_trace_plane.py`, red on `main` as of
+    `b0e82d2`: the collector's redaction allowlist was renamed to
+    `allowed_keys` without updating the test.~~ Done in `26e86a0`.
+  - ~~Correct the `TestTheTenCaseWalkthrough` and `_seeded_cases` docstrings,
+    which claimed the ten Gate B cases run end to end.~~ Done in `26e86a0`;
+    the docstring now says the records are planted by hand and the test proves
+    the explorer surface rather than the graph.
+  - ~~Set an explicit `fail_under` in `[tool.coverage.report]`.~~ Done in
+    `26e86a0`: the floor is 80% against a current 81.65%.
+
+  Remaining scope is the second bullet alone — the drift check. It is still
+  open and it is still needed: on `2026-08-07`, `RAG-010` and `RAG-011` were
+  found checked `[x]` in the index while their detail entries still read
+  `Status: Todo`, which is the exact inconsistency this task exists to make
+  impossible. Those two were corrected by hand; the next pair will not be.
 - Acceptance criteria:
   - `make check` fails when an index checkbox and its detail `Status` disagree.
   - `make check` fails when coverage falls below the recorded floor.
@@ -3181,14 +3243,12 @@ implementation at all, so these waves precede the stop rather than following it.
 Read this section with the Wave 5 checklist: the ten-case script and the
 `FEAT-004` journey still gate the release, they simply cannot be run yet.
 
-**Dispatch blocker.** `main` is red at `b0e82d2`: two `PRIV-002` regressions in
-`tests/security/test_trace_plane.py` fail because the collector's redaction
-allowlist was renamed to `allowed_keys` without updating the test. Fix that
-first — it is one helper — or every parallel agent inherits a failing gate and
-some will try to fix it independently. It is recorded as the first scope bullet
-of `QA-006`.
+**Wave 6 is complete as of `2026-08-07`.** `RAG-010`, `RAG-011`, and `OBS-005`
+are `Done`; `QA-006` is down to its last bullet, the index/`Status` drift check.
+`main` is green: `make check` passes at 1414 Python tests, 118 frontend tests,
+and 81.65% coverage against the 80% floor. Wave 7 is the live dispatch queue.
 
-Every task in Waves 6 and 7 is **unblocked today**. The constraint on
+Every task in Wave 7 is **unblocked today**. The constraint on
 parallelism is not dependency order — it is file collision. Two contention
 points matter, and both have already cost a merge fixup in this repository
 (`1c39c5d`, "Post-merge fixes: migration chain"):
@@ -3198,18 +3258,16 @@ points matter, and both have already cost a merge fixup in this repository
 - **The migration chain** — the head is `0016_review_queue`. Revision numbers
   are assigned below rather than chosen by whoever finishes first.
 
-### Wave 6 — Review remediation (four independent lanes)
+### Wave 6 — Review remediation — `Done` except one bullet
 
-| Lane | Task | Complexity | Model routing | Files it owns |
-|---|---|---:|---|---|
-| 6A | `RAG-010` | `M` | Strong — `P0` security, strong review mandatory | `prompts/assembly.py`, `parsing/injection.py`, adversarial corpus |
-| 6B | `OBS-005` | `M` | Strong | `trace.py`, `nodes.py`, `core/metrics.py` |
-| 6C | `RAG-011` | `S` | Economical | `core/claims.py`, `evals/gate.py` |
-| 6D | `QA-006` | `S` | Economical | `BACKLOG.md`, `pyproject.toml`, test docstrings |
+| Lane | Task | Status | What landed |
+|---|---|---|---|
+| 6A | `RAG-010` | `Done` | Fence tokens neutralized at assembly; the scanner folded them into `active_content` rather than adding a signal member, which keeps the enum stable and quarantines the document the same way |
+| 6B | `OBS-005` | `Done` | Terminal nodes record their own outcome; `claims_invalid` detector; `answer_refused` class; every model call records its prompt |
+| 6C | `RAG-011` | `Done` | Deterministic claim ordering; `--verify-determinism` re-runs in two fresh interpreters under pinned hash seeds |
+| 6D | `QA-006` | `Todo` | Collector test repaired, walkthrough docstrings corrected, coverage floor set. The index/`Status` drift check remains |
 
-These four do not share a file. Dispatch all four at once. `FEAT-011` from
-Wave 7 can run as a fifth lane in the same batch — it is frontend-only against a
-finished API and collides with nothing here.
+`QA-006`'s remaining bullet is a lane of its own and collides with nothing.
 
 ### Wave 7 — Gate B completion
 
@@ -3234,10 +3292,12 @@ finished API and collides with nothing here.
 
 ### Parallel dispatch batches
 
-Three batches, each safe to run concurrently as written:
+Batch A is spent. Two batches remain, each safe to run concurrently as written:
 
-- **Batch A** — `RAG-010` ‖ `OBS-005` ‖ `RAG-011` + `QA-006` ‖ `FEAT-011`.
-- **Batch B** — `FEAT-001` (migration `0017`) ‖ `REL-001` ‖ `RAG-006`.
+- **Batch B** — `FEAT-011` ‖ `FEAT-001` (migration `0017`) ‖ `REL-001` ‖
+  `RAG-006` ‖ `QA-006`. Five lanes, no shared file: `FEAT-011` is
+  `frontend/src/widget/**`, `FEAT-001` owns the admin shell, `REL-001` is
+  clients only, `RAG-006` is retrieval, `QA-006` is one test.
 - **Batch C** — `FEAT-004` (migration `0018`) ‖ `OBS-006` ‖ `AI-002`, with
   `FEAT-016` following `FEAT-001`'s merge.
 

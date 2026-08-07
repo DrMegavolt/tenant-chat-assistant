@@ -87,6 +87,7 @@ from tenantchat.orchestration.state import (
     assistant_entry,
     tool_entry,
 )
+from tenantchat.orchestration.state import TurnOutcome as TurnStatus
 from tenantchat.orchestration.tools import TOOL_SPECS, ToolName, text_argument
 
 logger = logging.getLogger(__name__)
@@ -545,6 +546,7 @@ class DispatchNodes:
             return base | {
                 "transcript": [assistant_entry(question, [])],
                 "clarification_question": question,
+                "turn_outcome": TurnStatus.CLARIFIED.value,
             }
         if decision.outcome is RoutingOutcome.HANDOFF:
             # The escalation node closes out an active workflow, so it must be
@@ -680,9 +682,18 @@ class DispatchNodes:
             "pending_booking": _store(booking) if booking is not None else None,
             "model_usage": dict(response.usage),
         }
+        # The prompt of every model call is recorded, not only of the call that
+        # produced content: a turn that spends its whole round budget on tool
+        # calls and then escalates must still be reconstructible, and it had no
+        # content-producing call to record. The last call's prompt wins, which
+        # is the answering call whenever there was one.
+        #
+        # Evidence stays tied to the content-producing call on purpose: finalize
+        # validates the published answer against the exact context it was
+        # written from, so a later tool-only round must not replace it.
+        update["prompt_assembly"] = _prompt_assembly_dict(outcome)
         if response.content.strip():
             update.update(self._evidence_update(bundle, outcome))
-            update["prompt_assembly"] = _prompt_assembly_dict(outcome)
         return update
 
     @staticmethod
@@ -692,6 +703,7 @@ class DispatchNodes:
         update: dict[str, Any] = {
             "transcript": [assistant_entry(_abstention_reply(policy), [])],
             "rounds": state["rounds"] + 1,
+            "turn_outcome": TurnStatus.ABSTAINED.value,
         }
         if bundle is not None:
             # The verdict that made the turn abstain must reach the trace even
@@ -1202,6 +1214,11 @@ class DispatchNodes:
                 "I am not able to finish this myself, so I have passed it to the team. "
                 f"You can also reach them on {policy.phone}."
             ),
+            # Recorded here rather than left to the trace: the round-budget
+            # route into this node leaves `failure` empty, so a status derived
+            # from residual state reads a handed-off turn as answered.
+            "turn_outcome": TurnStatus.ESCALATED.value,
+            "failure": reason.value,
             # The turn stops here, but the conversation may not: a customer can
             # keep typing while they wait for someone. Closing out the calls this
             # node walked away from is what keeps the next turn's transcript
@@ -1257,8 +1274,18 @@ class DispatchNodes:
                     ],
                 )
                 if validation.verdict is ClaimVerdict.UNSUPPORTED:
+                    # A refusal is its own quality class. Recording it here is
+                    # what keeps the outcome metric a partition of every turn,
+                    # and what lets `diagnose` attribute the turn at all: the
+                    # model produced prose and the server would not publish it.
+                    self._observe(
+                        MetricName.TURN_OUTCOMES,
+                        1,
+                        labels={"outcome": TurnOutcome.ANSWER_REFUSED.value},
+                    )
                     return {
                         "answer": _claim_refusal_reply(policy),
+                        "turn_outcome": TurnStatus.REFUSED.value,
                         "citations": [],
                         "citation_invalid": [],
                         "claims_invalid": [
@@ -1274,10 +1301,18 @@ class DispatchNodes:
                     for source_id in found
                     if source_id in context and source_id in by_id
                 ]
+                published: dict[str, Any] = {
+                    "answer": strip_citation_markers(entry["content"]),
+                    "citations": citations,
+                    "citation_invalid": [
+                        source_id for source_id in found if source_id not in context
+                    ],
+                }
                 # A clarification question and the deterministic abstention
                 # reply are answers too, but their outcome classes were
                 # recorded where they were decided: recording `answered` here
-                # as well would double-count the same turn.
+                # as well would double-count the same turn, and overwriting
+                # `turn_outcome` would relabel it.
                 if not state["clarification_question"] and entry["content"] != _abstention_reply(
                     policy
                 ):
@@ -1286,15 +1321,22 @@ class DispatchNodes:
                         1,
                         labels={"outcome": TurnOutcome.ANSWERED.value},
                     )
-                return {
-                    "answer": strip_citation_markers(entry["content"]),
-                    "citations": citations,
-                    "citation_invalid": [
-                        source_id for source_id in found if source_id not in context
-                    ],
-                }
+                    published["turn_outcome"] = TurnStatus.ANSWERED.value
+                return published
+        # No assistant content anywhere in this turn. The customer still gets a
+        # reply, so the turn is answered — by the server rather than the model.
+        # It is counted for the same reason every other terminal path is: an
+        # outcome distribution with a hole in it is not a distribution.
         policy = await self._deps.policies.policy(state["tenant_id"])
-        return {"answer": f"I can help with that — the team is on {policy.phone}."}
+        self._observe(
+            MetricName.TURN_OUTCOMES,
+            1,
+            labels={"outcome": TurnOutcome.ANSWERED.value},
+        )
+        return {
+            "answer": f"I can help with that — the team is on {policy.phone}.",
+            "turn_outcome": TurnStatus.ANSWERED.value,
+        }
 
     async def _run_one(
         self,

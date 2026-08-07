@@ -120,17 +120,27 @@ class Status(StrEnum):
 
 
 class TurnOutcome(StrEnum):
-    """How a turn ended, by class: the quality distribution `OBS-002` asks for.
+    """How a turn ended, by class
 
     ``CLARIFIED`` and ``ABSTAINED`` are the quality classes of the routing and
     retrieval contracts (AGENT-001, RAG-005): a clarification is the router
     declining to guess, an abstention is the retrieval verdict declining to
     answer. ``PAUSED`` is a turn that stopped at a confirmation.
+    ``ANSWER_REFUSED`` is the `RAG-007` claim validator rejecting an answer
+    whole, which is a quality class of its own: the model produced prose and the
+    server would not publish it. Its value is qualified rather than a bare
+    ``refused`` because ``outcome`` is a shared label name and ``ToolOutcome``
+    already spends that value — a query for one must never match the other.
+
+    The classes partition every terminal path, so the sum across this label
+    equals the number of turns the API completed. A path that ends a turn
+    without recording one of these is a bug, not an unclassified turn.
     """
 
     ANSWERED = "answered"
     CLARIFIED = "clarified"
     ABSTAINED = "abstained"
+    ANSWER_REFUSED = "answer_refused"
     HANDED_OFF = "handed_off"
     PAUSED = "paused"
 

@@ -55,6 +55,11 @@ from tenantchat.orchestration.model import (
 )
 from tenantchat.orchestration.nodes import citation_ids
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
+
+# The status vocabulary is the graph's, not the trace's: the terminal nodes
+# write it into state and this module reads it back. `state` is the one module
+# both can import without a cycle, so it owns the enum and this is a re-export.
+from tenantchat.orchestration.state import TurnOutcome
 from tenantchat.orchestration.tools import TOOLS_VERSION
 
 # The shape version of the trace's ``content`` object. Bumping it is a reviewable
@@ -63,16 +68,6 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 TRACE_SCHEMA_VERSION: Final = "1"
 
 DETECTOR_VERSION: Final = "diagnosis@1"
-
-
-class TurnOutcome(StrEnum):
-    """How the turn ended, as the trace's closed status vocabulary."""
-
-    ANSWERED = "answered"
-    PAUSED = "paused"
-    ESCALATED = "escalated"
-    ABSTAINED = "abstained"
-    CLARIFIED = "clarified"
 
 
 class DiagnosisCause(StrEnum):
@@ -371,6 +366,24 @@ def diagnose(trace: Mapping[str, object]) -> tuple[DiagnosisRecord, ...]:
             )
         )
 
+    # A refused claim is as decidable from the record as a fabricated citation:
+    # the validator ran deterministically over the admitted evidence and named
+    # what failed. Evidence references carry the claim kind only — the value is
+    # the model's own sentence, and the diagnosis is read in places the passage
+    # text is not.
+    unsupported = _list_of_dicts(verdicts.get("claims_invalid"))
+    if unsupported:
+        records.append(
+            DiagnosisRecord(
+                cause=DiagnosisCause.GROUNDING_OR_CITATION_ERROR,
+                stage=DiagnosisStage.VALIDATION,
+                role=DiagnosisRole.PRIMARY,
+                status=DiagnosisStatus.DETECTED,
+                confidence=DiagnosisConfidence.HIGH,
+                evidence=tuple(f"claims_invalid:{claim.get('kind', '')}" for claim in unsupported),
+            )
+        )
+
     failure = str(outcome.get("failure", "")) if outcome.get("failure") else ""
     if failure == HandoffReason.TOOL_FAILURE.value:
         records.append(
@@ -510,19 +523,44 @@ def _tools_section(
     return {"tool_calls": tool_calls, "tool_results": tool_results, "committed": committed}
 
 
+def _terminal_status(
+    state: Mapping[str, object], pending: Mapping[str, object] | None
+) -> TurnOutcome:
+    """How the turn ended, from the terminal node's own account of it.
+
+    A paused turn never reaches a terminal node — it stops at the confirmation
+    interrupt — so the pending check comes first and is the one status this
+    function decides rather than reads.
+
+    The fallback covers records written before the graph recorded its own
+    outcome. It is deliberately narrow, and it is why the field exists: derived
+    from residual state alone, a claim refusal and a spent round budget both
+    look answered, because a refusal leaves ``model_name`` set and neither
+    leaves a ``failure`` behind.
+    """
+    if pending is not None:
+        return TurnOutcome.PAUSED
+    recorded = str(state.get("turn_outcome", ""))
+    if recorded:
+        try:
+            return TurnOutcome(recorded)
+        except ValueError:
+            # A status this build does not know is a schema mismatch, not a
+            # reason to mislabel the turn as answered.
+            return TurnOutcome.ESCALATED
+    if str(state.get("failure", "")):
+        return TurnOutcome.ESCALATED
+    if str(state.get("routing_outcome", "")) == RoutingOutcome.CLARIFY.value:
+        return TurnOutcome.CLARIFIED
+    if not str(state.get("model_name", "")):
+        return TurnOutcome.ABSTAINED
+    return TurnOutcome.ANSWERED
+
+
 def _outcome_section(
     state: Mapping[str, object], pending: Mapping[str, object] | None
 ) -> dict[str, object]:
-    if pending is not None:
-        status = TurnOutcome.PAUSED
-    elif str(state.get("failure", "")):
-        status = TurnOutcome.ESCALATED
-    elif str(state.get("routing_outcome", "")) == RoutingOutcome.CLARIFY.value:
-        status = TurnOutcome.CLARIFIED
-    elif not str(state.get("model_name", "")):
-        status = TurnOutcome.ABSTAINED
-    else:
-        status = TurnOutcome.ANSWERED
+    status = _terminal_status(state, pending)
     failure = str(state.get("failure", ""))
     return {
         "status": status.value,
