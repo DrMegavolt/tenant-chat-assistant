@@ -76,7 +76,7 @@ from tenantchat.api.store import (
 )
 from tenantchat.api.visitor import VisitorClock, VisitorIdentity, VisitorSigner, issue
 from tenantchat.core.errors import ConflictError, NotFoundError
-from tenantchat.core.handoffs import HandoffStatus, visitor_state_notice
+from tenantchat.core.handoffs import HandoffStatus, is_agent_paused, visitor_state_notice
 from tenantchat.core.knowledge import RetrievalAudience, RetrievalContext
 from tenantchat.core.metrics import (
     CitationVerdict,
@@ -385,7 +385,10 @@ async def _paused_notice(
     handoff = await handoffs.for_session(tenant_id, str(session_id))
     if handoff is None:
         return None
-    return visitor_state_notice(HandoffStatus(handoff.status))
+    status = HandoffStatus(handoff.status)
+    if not is_agent_paused(status):
+        return None
+    return visitor_state_notice(status)
 
 
 @router.post(
@@ -672,6 +675,12 @@ async def confirm_booking(
 
     notice = await _paused_notice(handoffs, tenant_id, session_id)
     if notice is not None:
+        await conversations.append(
+            tenant_id,
+            session_id,
+            role=MessageRole.SYSTEM,
+            content=notice,
+        )
         return _state_notice_reply(
             signer,
             clock,

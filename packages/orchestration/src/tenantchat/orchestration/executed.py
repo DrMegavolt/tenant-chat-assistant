@@ -33,6 +33,7 @@ checkpoint resume is visibly distinct from a first run.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -181,7 +182,11 @@ class ExecutedGraphListener:
         attempt = self._attempts.get(name, 0) + 1
         self._attempts[name] = attempt
         triggers = payload.get("triggers")
-        edge = str(next(iter(triggers), "")) if isinstance(triggers, tuple) else ""
+        edge = (
+            str(next(iter(triggers), ""))
+            if isinstance(triggers, Sequence) and not isinstance(triggers, str | bytes)
+            else ""
+        )
         run = _NodeRun(
             name=name,
             attempt=attempt,

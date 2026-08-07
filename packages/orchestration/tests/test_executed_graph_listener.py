@@ -112,6 +112,55 @@ def test_a_resumed_run_is_marked_and_its_replayed_node_identified() -> None:
     assert _nodes(section)[1]["replayed"] is False
 
 
+def test_a_real_router_edge_label_is_captured_not_synthesized() -> None:
+    """The captured edge must be the trigger that actually fired.
+
+    The fallback labels an unknown edge ``branch:to:<node>``, so a test that
+    feeds exactly that string cannot tell capture from fallback. A real router
+    edge (e.g. the ``route`` node's conditional branch) is a different label,
+    and only capture can produce it — this pins the edge to the trigger rather
+    than to a synthesized stand-in.
+    """
+    listener = ExecutedGraphListener()
+    listener.on_event(_task("1", "route", ("route:escalate",)))
+    listener.on_event(_result("1", "route"))
+    listener.on_event(_task("2", "escalate", ("route:escalate",)))
+    listener.on_event(_result("2", "escalate"))
+
+    section = listener.to_section()
+    assert section is not None
+    assert _edges(section) == [
+        {"source": "__start__", "target": "route", "label": "route:escalate"},
+        {"source": "route", "target": "escalate", "label": "route:escalate"},
+    ]
+    assert _nodes(section)[0]["edge"] == "route:escalate"
+
+
+def test_list_triggers_are_read_the_same_as_tuple_triggers() -> None:
+    """LangGraph annotates ``triggers`` as a sequence; a list must capture too.
+
+    Before the fix the guard was ``isinstance(triggers, tuple)`` — a list fell
+    through to the fallback label, and because the fallback can synthesize the
+    very strings the tests asserted, the broken capture passed silently.
+    """
+    listener = ExecutedGraphListener()
+    listener.on_event(_task_list_triggers("1", "route", ["route:model"]))
+    listener.on_event(_result("1", "route"))
+
+    section = listener.to_section()
+    assert section is not None
+    assert _nodes(section)[0]["edge"] == "route:model"
+    assert _edges(section)[0]["label"] == "route:model"
+
+
+def _task_list_triggers(task_id: str, name: str, triggers: list[str]) -> dict[str, object]:
+    return {
+        "type": "task",
+        "timestamp": "2026-08-07T00:00:00+00:00",
+        "payload": {"id": task_id, "name": name, "triggers": triggers, "input": {}},
+    }
+
+
 def test_a_tool_loop_records_attempt_numbers() -> None:
     listener = ExecutedGraphListener()
     for task_id in ("a", "b"):

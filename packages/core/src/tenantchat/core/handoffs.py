@@ -50,30 +50,44 @@ ACCEPTABLE_STATUSES: frozenset[HandoffStatus] = frozenset(
     {HandoffStatus.REQUESTED, HandoffStatus.QUEUED}
 )
 
+# Statuses a release may leave: the single state with a staff owner.
+RELEASABLE_STATUSES: frozenset[HandoffStatus] = frozenset({HandoffStatus.ASSIGNED})
+
 # Statuses a resolve may leave: any open handoff can be closed.
 RESOLVABLE_STATUSES: frozenset[HandoffStatus] = frozenset(
     {HandoffStatus.REQUESTED, HandoffStatus.QUEUED, HandoffStatus.ASSIGNED}
+)
+
+# Statuses where the automated agent must stay quiet. ``queued`` is the one
+# state a release leaves — the explicit invitation that resumes the graph —
+# and ``cancelled`` is an operator artifact; both let the agent answer.
+PAUSED_STATUSES: frozenset[HandoffStatus] = frozenset(
+    {HandoffStatus.REQUESTED, HandoffStatus.ASSIGNED, HandoffStatus.RESOLVED}
 )
 
 
 def is_agent_paused(status: HandoffStatus) -> bool:
     """Whether the automated agent must stay quiet for this handoff.
 
-    ``requested`` and ``assigned`` are the states where the conversation is in
-    a person's hands or awaiting one; ``queued`` is the state a release leaves,
-    and it is the one place the assistant is explicitly invited back.
+    The single source of truth for the chat pause gate: ``requested`` and
+    ``assigned`` are the states where the conversation is in a person's hands
+    or awaiting one, and ``resolved`` is a conversation staff closed, which the
+    assistant must not reopen. ``queued`` is the state a release leaves, and it
+    is the one place the assistant is explicitly invited back.
     """
-    return status in (HandoffStatus.REQUESTED, HandoffStatus.ASSIGNED)
+    return status in PAUSED_STATUSES
 
 
 def visitor_state_notice(status: HandoffStatus) -> str | None:
     """The identity-free notice a visitor sees for a paused or closed handoff.
 
-    Returns ``None`` when the handoff does not hold the conversation: a
+    Returns ``None`` exactly when :func:`is_agent_paused` returns ``False``: a
     ``queued`` handoff has been released and the assistant answers again, and a
     cancelled handoff is an operator artifact the visitor should not learn
     about. Never names a staff member and never a queue position.
     """
+    if not is_agent_paused(status):
+        return None
     if status is HandoffStatus.REQUESTED:
         return (
             "You're in the queue for a member of the team to join this "

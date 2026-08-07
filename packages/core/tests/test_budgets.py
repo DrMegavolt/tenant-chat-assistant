@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 import pytest
 
 from tenantchat.core.budgets import (
+    _WINDOW_SECONDS,
     DEFAULT_TENANT_BUDGET,
     BudgetEnforcer,
     TenantBudget,
@@ -27,6 +28,16 @@ from tenantchat.core.tenant import TenantPolicy
 
 TENANT = "clearview"
 _TenantBuilder = Callable[..., TenantPolicy]
+
+
+class _FakeClock:
+    """Deterministic monotonic clock so a rolling window can be advanced."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 def _budget(**overrides: object) -> TenantBudget:
@@ -146,6 +157,67 @@ class TestActionBudget:
         refused = asyncio.run(ledger.check_action(TENANT, budget, turn_index=2))
         assert not refused.allowed
         assert refused.block_reason is BlockReason.ACTION_LIMIT
+
+
+class TestRollingWindow:
+    def test_token_spend_decays_after_the_window_elapses(self) -> None:
+        """A ``daily`` budget is a window, not a per-process lifetime cap.
+
+        Before the fix, ``_tokens`` only accumulated: a tenant that tripped the
+        budget was refused until the process restarted, and a replayed node's
+        inflated count never decayed. The window makes both recover a day after
+        the spend — this pins that recovery.
+        """
+        clock = _FakeClock()
+        ledger = BudgetEnforcer(clock=clock)
+        budget = _budget(daily_token_budget=100)
+        asyncio.run(ledger.record_usage(TENANT, budget, prompt_tokens=60, completion_tokens=50))
+
+        assert not asyncio.run(ledger.check_token_budget(TENANT, budget)).allowed
+        assert ledger.snapshot(TENANT).tokens_used == 110
+
+        clock.now += _WINDOW_SECONDS
+
+        assert asyncio.run(ledger.check_token_budget(TENANT, budget)).allowed
+        assert ledger.snapshot(TENANT).tokens_used == 0
+
+    def test_spend_within_the_window_still_counts(self) -> None:
+        """Half a day later the spend still counts; only old spend decays."""
+        clock = _FakeClock()
+        ledger = BudgetEnforcer(clock=clock)
+        budget = _budget(daily_token_budget=100)
+        asyncio.run(ledger.record_usage(TENANT, budget, prompt_tokens=60, completion_tokens=50))
+        clock.now += _WINDOW_SECONDS / 2
+
+        assert not asyncio.run(ledger.check_token_budget(TENANT, budget)).allowed
+        assert ledger.snapshot(TENANT).tokens_used == 110
+
+    def test_partial_decay_prunes_only_the_old_spend(self) -> None:
+        """A mixed history totals only the entries inside the window."""
+        clock = _FakeClock()
+        ledger = BudgetEnforcer(clock=clock)
+        budget = _budget(daily_token_budget=100)
+        asyncio.run(ledger.record_usage(TENANT, budget, prompt_tokens=60, completion_tokens=0))
+        clock.now += _WINDOW_SECONDS - 1
+        asyncio.run(ledger.record_usage(TENANT, budget, prompt_tokens=30, completion_tokens=0))
+        clock.now += 1
+
+        # The 60-token entry is now exactly at the window edge and pruned; the
+        # 30-token entry inside the window still counts.
+        assert ledger.snapshot(TENANT).tokens_used == 30
+        assert asyncio.run(ledger.check_token_budget(TENANT, budget)).allowed
+
+    def test_action_spend_decays_after_the_window_elapses(self) -> None:
+        clock = _FakeClock()
+        ledger = BudgetEnforcer(clock=clock)
+        budget = _budget(max_actions_per_day=1, max_actions_per_turn=100)
+        asyncio.run(ledger.record_action(TENANT, turn_index=1))
+        assert not asyncio.run(ledger.check_action(TENANT, budget, turn_index=2)).allowed
+
+        clock.now += _WINDOW_SECONDS
+
+        assert asyncio.run(ledger.check_action(TENANT, budget, turn_index=2)).allowed
+        assert ledger.snapshot(TENANT).actions_committed == 0
 
 
 class TestSpendAlerts:

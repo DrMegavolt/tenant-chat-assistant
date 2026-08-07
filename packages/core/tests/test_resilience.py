@@ -177,6 +177,50 @@ class TestCircuitBreaker:
         assert breaker.state.value == "half_open"
         assert breaker.allow() is True
 
+    def test_a_cancelled_probe_releases_its_slot_so_the_breaker_recovers(self) -> None:
+        """A probe that is cancelled mid-flight must not wedge the breaker.
+
+        ``allow()`` reserves a slot when it admits a HALF_OPEN probe, and only
+        the outcome methods return it. A cancelled probe calls none of them, so
+        without an explicit release the breaker sits HALF_OPEN with a held slot
+        for the process lifetime and refuses every later call — a transient
+        outage becomes permanent. This pins the reproduction: probe cancelled,
+        then the very next probe is admitted and a success closes the breaker.
+        """
+        clock = _FakeClock()
+        breaker = CircuitBreaker(
+            CircuitPolicy(failure_threshold=1, cooldown_seconds=10, half_open_attempts=1),
+            clock=clock,
+        )
+        breaker.on_failure()
+        clock.now += 10
+
+        # The probe is admitted and cancelled before any outcome method runs.
+        assert breaker.allow() is True
+        assert breaker.state.value == "half_open"
+        breaker.release_probe()
+
+        # The recovery probe is admitted and a success closes the breaker.
+        assert breaker.allow() is True
+        breaker.on_success()
+        assert breaker.state.value == "closed"
+        assert breaker.allow() is True
+
+    def test_release_probe_is_a_no_op_outside_a_held_half_open_probe(self) -> None:
+        """Releasing when nothing is held must not corrupt the probe count."""
+        clock = _FakeClock()
+        breaker = CircuitBreaker(
+            CircuitPolicy(failure_threshold=1, cooldown_seconds=10, half_open_attempts=1),
+            clock=clock,
+        )
+        breaker.on_failure()
+        clock.now += 10
+
+        breaker.release_probe()
+        assert breaker.allow() is True
+        breaker.release_probe()
+        assert breaker.allow() is True
+
 
 class TestPolicyValidation:
     @pytest.mark.parametrize(
@@ -267,6 +311,56 @@ class TestAsyncResilientCaller:
 
         asyncio.run(scenario())
         assert attempts == 1
+        assert caller.breaker.state.value == "closed"
+
+    def test_a_cancelled_half_open_probe_does_not_wedge_the_breaker(self) -> None:
+        """A probe cancelled mid-flight releases its slot (review finding 1).
+
+        The trigger is routine: FastAPI cancels a request task on client
+        disconnect, and disconnects are most likely during recovery when calls
+        are slow. Before the fix the breaker was left HALF_OPEN with the probe
+        slot held, so every later call to the dependency raised
+        DependencyUnavailableError until a restart.
+        """
+        attempts: list[str] = []
+
+        async def failing() -> str:
+            raise _BoomError(FailureKind.CONNECT)
+
+        async def hanging() -> str:
+            attempts.append("probe")
+            await asyncio.sleep(10)
+            return "late"
+
+        async def healthy() -> str:
+            attempts.append("recovery")
+            return "ok"
+
+        caller = AsyncResilientCaller(
+            dependency=Dependency.LLM,
+            policy=_policy(max_attempts=1, threshold=1, cooldown=0.05),
+            classify=_classify,
+        )
+        # Trip the breaker.
+        with pytest.raises(_BoomError):
+            asyncio.run(caller.run(failing))
+        assert caller.breaker.state.value == "open"
+
+        async def scenario() -> None:
+            # Let the cooldown elapse, then admit a probe and cancel it.
+            await asyncio.sleep(0.06)
+            task = asyncio.create_task(caller.run(hanging))
+            await asyncio.sleep(0.01)
+            assert caller.breaker.state.value == "half_open"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+
+        # The dependency is healthy and the next call must reach it and recover.
+        assert asyncio.run(caller.run(healthy)) == "ok"
+        assert attempts == ["probe", "recovery"]
         assert caller.breaker.state.value == "closed"
 
     def test_an_open_breaker_fails_fast_without_calling(self) -> None:

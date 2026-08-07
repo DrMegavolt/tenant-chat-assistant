@@ -338,6 +338,38 @@ class TestTheVisitorTurnGate:
         assert response.status_code == 200
         assert CLOSED_NOTICE in response.json()["reply"]
 
+    def test_a_confirmation_while_queued_returns_the_notice_and_keeps_no_visible_turn(
+        self,
+        staff_console: tuple[TestClient, InMemoryHandoffStore, InMemoryAuditStore, ScriptedModel],
+    ) -> None:
+        """Approving a booking during a handoff answers with the notice only.
+
+        The confirmation is a graph run like any other, so the pause gate stops
+        it too — and the notice must land in the transcript, exactly as a
+        paused visitor message does, so a staff member reading the conversation
+        later can see what the visitor was told.
+        """
+        client, handoffs, _audit, model = staff_console
+        session_id, credential = open_visitor_session(client)
+        record_handoff(handoffs, "clearview", session_id)
+
+        response = client.post(
+            "/api/chat/confirmation",
+            json={"decision": "approved"},
+            headers={VISITOR_CREDENTIAL_HEADER: credential},
+        )
+
+        assert response.status_code == 200
+        assert QUEUE_NOTICE in response.json()["reply"]
+        assert model.calls == []
+        transcript = client.get(
+            "/api/chat/session", headers={VISITOR_CREDENTIAL_HEADER: credential}
+        ).json()["messages"]
+        assert any(
+            message["role"] == "system" and QUEUE_NOTICE in message["content"]
+            for message in transcript
+        )
+
     def test_the_notices_never_name_a_staff_member(
         self,
         staff_console: tuple[TestClient, InMemoryHandoffStore, InMemoryAuditStore, ScriptedModel],
@@ -417,11 +449,38 @@ class TestTheStaffQueueSurface:
         other = operator_headers(subject=SECOND_OPERATOR)
         refused = release(client, other, handoff_id, "clearview")
         assert refused.status_code == 409
-        assert refused.json()["code"] == "invalid_handoff_transition"
+        # An ownership refusal is its own code, not a queue race: the status
+        # admits the transition, so the client must not advise "reload the
+        # queue" — the caller simply does not own the conversation.
+        assert refused.json()["code"] == "handoff_ownership_refused"
+        assert refused.json()["ownershipRefused"] is True
 
         supervisor = operator_headers(subject=SUPERVISOR, role="tenant_admin")
         resolved = resolve(client, supervisor, handoff_id, "clearview")
         assert resolved.status_code == 201
+
+    def test_a_non_owner_cannot_resolve_without_the_administrative_flag(
+        self,
+        staff_console: tuple[TestClient, InMemoryHandoffStore, InMemoryAuditStore, ScriptedModel],
+    ) -> None:
+        """Resolution of an assigned handoff is an ownership action too.
+
+        The status admits resolve (an assigned handoff is resolvable), so the
+        refusal must be the ownership code, not a contradictory "permitted from
+        assigned" — the queue did not move, this principal holds no ownership.
+        """
+        client, handoffs, _audit, _model = staff_console
+        session_id, _credential = open_visitor_session(client)
+        handoff_id = record_handoff(handoffs, "clearview", session_id)
+        accept(client, operator_headers(), handoff_id, "clearview")
+
+        other = operator_headers(subject=SECOND_OPERATOR)
+        refused = resolve(client, other, handoff_id, "clearview")
+        assert refused.status_code == 409
+        body = refused.json()
+        assert body["code"] == "handoff_ownership_refused"
+        assert body["ownershipRefused"] is True
+        assert body["currentState"] == "assigned"
 
     def test_releasing_someone_elses_assignment_is_the_disconnect_recovery(
         self,

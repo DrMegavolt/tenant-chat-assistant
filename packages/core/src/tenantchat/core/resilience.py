@@ -258,6 +258,20 @@ class CircuitBreaker:
         if self._state is CircuitState.HALF_OPEN:
             self._probes_in_flight = 0
 
+    def release_probe(self) -> None:
+        """Give back a half-open probe slot that never resolved.
+
+        ``allow`` reserves a slot for every admitted probe, and the outcome
+        methods return it. The one exit path that calls none of them is
+        cancellation — the caller aborts before any result exists — and a slot
+        left reserved wedges the breaker HALF_OPEN for the process lifetime,
+        because the cooldown recovery only runs from the OPEN branch. A cancelled
+        probe must never count against the breaker, but the slot still has to be
+        released; the caller invokes this from a ``finally``.
+        """
+        if self._state is CircuitState.HALF_OPEN and self._probes_in_flight > 0:
+            self._probes_in_flight -= 1
+
 
 class DependencyUnavailableError(Exception):
     """The dependency was not reached: the breaker refused the call.
@@ -330,30 +344,38 @@ class AsyncResilientCaller:
             raise DependencyUnavailableError(dependency=self._dependency)
         deadline = time.monotonic() + self._policy.total_deadline_seconds
         attempt = 0
-        while True:
-            attempt += 1
-            try:
-                result = await asyncio.wait_for(call(), timeout=deadline - time.monotonic())
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                kind = self._classify(exc)
-                if not is_retryable(kind):
-                    self._breaker.on_non_retryable()
+        try:
+            while True:
+                attempt += 1
+                try:
+                    result = await asyncio.wait_for(call(), timeout=deadline - time.monotonic())
+                except asyncio.CancelledError:
                     raise
-                self._breaker.on_failure()
-                self._observe_state()
-                if attempt >= self._policy.retries.max_attempts:
-                    raise
-                delay = self._delay_for(attempt)
-                if deadline - time.monotonic() <= delay:
-                    raise
-                self._observe_retry(kind)
-                await asyncio.sleep(delay)
-            else:
-                self._breaker.on_success()
-                self._observe_state()
-                return result
+                except Exception as exc:
+                    kind = self._classify(exc)
+                    if not is_retryable(kind):
+                        self._breaker.on_non_retryable()
+                        raise
+                    self._breaker.on_failure()
+                    self._observe_state()
+                    if attempt >= self._policy.retries.max_attempts:
+                        raise
+                    delay = self._delay_for(attempt)
+                    if deadline - time.monotonic() <= delay:
+                        raise
+                    self._observe_retry(kind)
+                    await asyncio.sleep(delay)
+                else:
+                    self._breaker.on_success()
+                    self._observe_state()
+                    return result
+        finally:
+            # The outcome methods already returned a half-open probe slot; this
+            # releases the one reserved by allow() on the cancellation path,
+            # where no outcome method runs. A cancelled probe must never count
+            # against the breaker, but the slot it held has to come back or the
+            # breaker wedges HALF_OPEN for the process lifetime.
+            self._breaker.release_probe()
 
     def _delay_for(self, attempt: int) -> float:
         backoff: float = min(

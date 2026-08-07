@@ -12,13 +12,26 @@ from tenantchat.core.handoffs import (
 
 
 def test_the_agent_pauses_only_while_the_conversation_is_being_handled() -> None:
-    """Requested and assigned hold the conversation; released invites the agent back."""
+    """Requested and assigned hold the conversation; released invites the agent
+    back; resolved is a closed conversation the assistant must not reopen."""
     assert is_agent_paused(HandoffStatus.REQUESTED) is True
     assert is_agent_paused(HandoffStatus.ASSIGNED) is True
     # A release is the explicit invitation that resumes the graph.
     assert is_agent_paused(HandoffStatus.QUEUED) is False
-    assert is_agent_paused(HandoffStatus.RESOLVED) is False
+    # A closed conversation stays closed: the gate must not silently start
+    # answering it again if the domain predicate is wired into the chat path.
+    assert is_agent_paused(HandoffStatus.RESOLVED) is True
     assert is_agent_paused(HandoffStatus.CANCELLED) is False
+
+
+def test_the_pause_predicate_and_the_visitor_notice_agree() -> None:
+    """A visitor sees a notice exactly when the agent is paused.
+
+    The chat gate derives the notice from the pause predicate, so the two must
+    never disagree; this pins the agreement so a drift fails the build.
+    """
+    for status in HandoffStatus:
+        assert (visitor_state_notice(status) is not None) is is_agent_paused(status)
 
 
 def test_the_queue_takeover_and_resolution_each_have_a_visitor_notice() -> None:

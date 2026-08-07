@@ -507,7 +507,15 @@ export class AdminApi {
       `/api/admin/handoffs/${encodeURIComponent(handoffId)}/${action}?tenant_id=${encodeURIComponent(tenantId)}`,
       { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
     );
-    if (!response.ok) throw new Error(`The ${action} failed with ${response.status}`);
+    if (!response.ok) {
+      const problem = (await response.json().catch(() => null)) as { code?: unknown } | null;
+      if (problem && problem.code === "handoff_ownership_refused") {
+        const error = new Error("Only the staff member who owns this conversation can do that.");
+        error.name = "HandoffOwnershipError";
+        throw error;
+      }
+      throw new Error(`The ${action} failed with ${response.status}`);
+    }
     const payload = (await response.json()) as { handoff?: unknown };
     return handoffSummaryFromWire(obj(payload.handoff));
   }

@@ -37,11 +37,18 @@ from tenantchat.core.commands import (
 from tenantchat.core.contact import Contact
 from tenantchat.core.errors import (
     ConflictError,
+    HandoffOwnershipError,
     HandoffTransitionError,
     NotFoundError,
     SlotUnavailableError,
 )
-from tenantchat.core.handoffs import HandoffStatus, state_notice
+from tenantchat.core.handoffs import (
+    ACCEPTABLE_STATUSES,
+    RELEASABLE_STATUSES,
+    RESOLVABLE_STATUSES,
+    HandoffStatus,
+    state_notice,
+)
 from tenantchat.core.slots import OfferedSlot
 
 
@@ -296,19 +303,21 @@ _HANDOFF_RETURNING = "RETURNING " + ", ".join(_HANDOFF_COLUMNS)
 # The ownership transitions (`FEAT-004`) are conditional updates: each admits
 # only the statuses its state machine may leave, so a race has exactly one
 # winner and the losers read the committed row state rather than their own
-# snapshot.
+# snapshot. The admitted sets are bound as parameters from the domain constants
+# — the store must never hardcode a status the state machine in
+# ``tenantchat.core.handoffs`` also names, or the two definitions can drift.
 _ACCEPT_SQL = (
     "UPDATE handoffs "
     "SET status = 'assigned', assigned_principal_id = :principal, "
     "    assigned_at = now(), released_at = NULL, updated_at = now() "
     "WHERE tenant_id = :tenant_id AND id = :handoff_id "
-    "  AND status IN ('requested', 'queued') " + _HANDOFF_RETURNING
+    "  AND status IN :statuses " + _HANDOFF_RETURNING
 )
 _RELEASE_SQL = (
     "UPDATE handoffs "
     "SET status = 'queued', assigned_principal_id = NULL, assigned_at = NULL, "
     "    released_at = now(), updated_at = now() "
-    "WHERE tenant_id = :tenant_id AND id = :handoff_id AND status = 'assigned' "
+    "WHERE tenant_id = :tenant_id AND id = :handoff_id AND status IN :statuses "
     "  AND (assigned_principal_id = :principal OR :administrative) " + _HANDOFF_RETURNING
 )
 _RESOLVE_SQL = (
@@ -316,7 +325,7 @@ _RESOLVE_SQL = (
     "SET status = 'resolved', resolved_by_principal_id = :principal, "
     "    resolved_at = now(), updated_at = now() "
     "WHERE tenant_id = :tenant_id AND id = :handoff_id "
-    "  AND status IN ('requested', 'queued', 'assigned') "
+    "  AND status IN :statuses "
     "  AND (status <> 'assigned' OR assigned_principal_id = :principal OR :administrative) "
     + _HANDOFF_RETURNING
 )
@@ -732,10 +741,14 @@ class PostgresHandoffStore:
             result = await connection.execute(
                 text(
                     _HANDOFF_SELECT + " FROM handoffs WHERE tenant_id = :tenant_id "
-                    "   AND status IN ('requested', 'queued', 'assigned') "
+                    "   AND status IN :statuses "
                     " ORDER BY requested_at, id LIMIT :limit"
-                ),
-                {"tenant_id": tenant_id, "limit": limit},
+                ).bindparams(bindparam("statuses", expanding=True)),
+                {
+                    "tenant_id": tenant_id,
+                    "statuses": [status.value for status in sorted(RESOLVABLE_STATUSES)],
+                    "limit": limit,
+                },
             )
             rows = result.all()
         return tuple(_handoff(row) for row in rows)
@@ -757,17 +770,22 @@ class PostgresHandoffStore:
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
-                    text(_ACCEPT_SQL),
+                    text(_ACCEPT_SQL).bindparams(bindparam("statuses", expanding=True)),
                     {
                         "tenant_id": tenant_id,
                         "handoff_id": _handoff_id_uuid(handoff_id),
                         "principal": principal_id,
+                        "statuses": [status.value for status in sorted(ACCEPTABLE_STATUSES)],
                     },
                 )
             ).first()
             if row is None:
                 await self._raise_transition(
-                    connection, tenant_id, handoff_id, allowed=frozenset({"requested", "queued"})
+                    connection,
+                    tenant_id,
+                    handoff_id,
+                    allowed=ACCEPTABLE_STATUSES,
+                    principal_id=principal_id,
                 )
             await self._state_change(connection, row, HandoffStatus.ASSIGNED)
             await connection.execute(
@@ -792,18 +810,24 @@ class PostgresHandoffStore:
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
-                    text(_RELEASE_SQL),
+                    text(_RELEASE_SQL).bindparams(bindparam("statuses", expanding=True)),
                     {
                         "tenant_id": tenant_id,
                         "handoff_id": _handoff_id_uuid(handoff_id),
                         "principal": principal_id,
                         "administrative": administrative,
+                        "statuses": [status.value for status in sorted(RELEASABLE_STATUSES)],
                     },
                 )
             ).first()
             if row is None:
                 await self._raise_transition(
-                    connection, tenant_id, handoff_id, allowed=frozenset({"assigned"})
+                    connection,
+                    tenant_id,
+                    handoff_id,
+                    allowed=RELEASABLE_STATUSES,
+                    principal_id=principal_id,
+                    administrative=administrative,
                 )
             await self._state_change(connection, row, HandoffStatus.QUEUED)
             await connection.execute(
@@ -827,12 +851,13 @@ class PostgresHandoffStore:
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
-                    text(_RESOLVE_SQL),
+                    text(_RESOLVE_SQL).bindparams(bindparam("statuses", expanding=True)),
                     {
                         "tenant_id": tenant_id,
                         "handoff_id": _handoff_id_uuid(handoff_id),
                         "principal": principal_id,
                         "administrative": administrative,
+                        "statuses": [status.value for status in sorted(RESOLVABLE_STATUSES)],
                     },
                 )
             ).first()
@@ -841,7 +866,9 @@ class PostgresHandoffStore:
                     connection,
                     tenant_id,
                     handoff_id,
-                    allowed=frozenset({"requested", "queued", "assigned"}),
+                    allowed=RESOLVABLE_STATUSES,
+                    principal_id=principal_id,
+                    administrative=administrative,
                 )
             await self._state_change(connection, row, HandoffStatus.RESOLVED)
             await connection.execute(
@@ -879,19 +906,41 @@ class PostgresHandoffStore:
         tenant_id: str,
         handoff_id: str,
         *,
-        allowed: frozenset[str],
+        allowed: frozenset[HandoffStatus],
+        principal_id: str,
+        administrative: bool = False,
     ) -> NoReturn:
         result = await connection.execute(
-            text("SELECT status FROM handoffs WHERE tenant_id = :tenant_id AND id = :handoff_id"),
+            text(
+                "SELECT status, assigned_principal_id FROM handoffs "
+                "WHERE tenant_id = :tenant_id AND id = :handoff_id"
+            ),
             {"tenant_id": tenant_id, "handoff_id": _handoff_id_uuid(handoff_id)},
         )
-        status = result.scalar_one_or_none()
-        if status is None:
+        row = result.first()
+        if row is None:
             raise NotFoundError(detail="handoff absent or outside tenant")
+        status = HandoffStatus(row.status)
+        if (
+            status in allowed
+            and status is HandoffStatus.ASSIGNED
+            and row.assigned_principal_id is not None
+            and row.assigned_principal_id != principal_id
+            and not administrative
+        ):
+            # The status admits the transition; the caller simply does not own
+            # this conversation. Reporting "permitted from assigned" would be
+            # self-contradictory — the queue did not move, ownership did not
+            # pass to this principal.
+            raise HandoffOwnershipError(
+                current=status.value,
+                permitted=frozenset(state.value for state in allowed),
+                detail=f"handoff {handoff_id} is held by another staff member",
+            )
         raise HandoffTransitionError(
-            current=status,
-            permitted=allowed,
-            detail=f"handoff {handoff_id} is {status}",
+            current=status.value,
+            permitted=frozenset(state.value for state in allowed),
+            detail=f"handoff {handoff_id} is {status.value}",
         )
 
 

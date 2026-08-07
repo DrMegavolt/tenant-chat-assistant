@@ -257,8 +257,8 @@ class ReviewTransitionError(ConflictError):
     def __init__(
         self,
         *,
-        current: str,
-        permitted: frozenset[str],
+        current: str = "",
+        permitted: frozenset[str] = frozenset(),
         detail: str | None = None,
     ) -> None:
         self.current = current
@@ -302,6 +302,32 @@ class HandoffTransitionError(ConflictError):
         self.current = current
         self.permitted = frozenset(permitted)
         super().__init__(detail)
+
+
+class HandoffOwnershipError(HandoffTransitionError):
+    """A staff transition was refused because the caller is not the owner.
+
+    Distinct from :class:`HandoffTransitionError`: the current status *admits*
+    the transition, so "reload the queue" is wrong advice — the queue did not
+    move, the caller simply holds no ownership of this conversation. A
+    non-owner, non-supervisor resolving an assigned handoff lands here, and the
+    client should tell them they cannot take that action rather than implying
+    the handoff changed under them.
+    """
+
+    code = "handoff_ownership_refused"
+    message = "Only the staff member who owns this conversation can take that action."
+
+    def __init__(
+        self,
+        *,
+        current: str = "",
+        permitted: frozenset[str] = frozenset(),
+        detail: str | None = None,
+    ) -> None:
+        self.current = current
+        self.permitted = frozenset(permitted)
+        super().__init__(current=current, permitted=permitted, detail=detail)
 
 
 class WorkflowTransitionError(ConflictError):

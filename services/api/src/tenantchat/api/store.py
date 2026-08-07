@@ -27,10 +27,17 @@ from tenantchat.core.commands import (
 from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.errors import (
     ConflictError,
+    HandoffOwnershipError,
     HandoffTransitionError,
     NotFoundError,
     ReviewTransitionError,
     SlotUnavailableError,
+)
+from tenantchat.core.handoffs import (
+    ACCEPTABLE_STATUSES,
+    RELEASABLE_STATUSES,
+    RESOLVABLE_STATUSES,
+    HandoffStatus,
 )
 from tenantchat.core.knowledge import (
     ContentChecksum,
@@ -687,12 +694,25 @@ def _handoff_not_found() -> NotFoundError:
 
 
 def _transition_error(
-    record: HandoffRecord, *, permitted: frozenset[str]
+    record: HandoffRecord, *, permitted: frozenset[HandoffStatus]
 ) -> HandoffTransitionError:
     return HandoffTransitionError(
         current=record.status,
-        permitted=permitted,
+        permitted=frozenset(state.value for state in permitted),
         detail=f"handoff {record.handoff_id} is {record.status}",
+    )
+
+
+def _ownership_error(record: HandoffRecord) -> HandoffOwnershipError:
+    """The status admits the transition; the caller simply is not the owner.
+
+    A distinct error so the client stops advising "reload the queue" — the
+    queue did not move, this principal holds no ownership of the conversation.
+    """
+    return HandoffOwnershipError(
+        current=record.status,
+        permitted=frozenset({HandoffStatus.ASSIGNED.value}),
+        detail=f"handoff {record.handoff_id} is held by another staff member",
     )
 
 
@@ -729,7 +749,7 @@ class InMemoryHandoffStore:
         open_rows = [
             record
             for record in self._records
-            if record.tenant_id == tenant_id and record.status not in ("resolved", "cancelled")
+            if record.tenant_id == tenant_id and HandoffStatus(record.status) in RESOLVABLE_STATUSES
         ]
         return tuple(open_rows[:limit])
 
@@ -746,11 +766,8 @@ class InMemoryHandoffStore:
             for index, record in enumerate(self._records):
                 if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
                     continue
-                if record.status not in ("requested", "queued"):
-                    raise _transition_error(
-                        record,
-                        permitted=frozenset({"requested", "queued"}),
-                    )
+                if HandoffStatus(record.status) not in ACCEPTABLE_STATUSES:
+                    raise _transition_error(record, permitted=ACCEPTABLE_STATUSES)
                 accepted = replace(
                     record,
                     status="assigned",
@@ -774,10 +791,10 @@ class InMemoryHandoffStore:
             for index, record in enumerate(self._records):
                 if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
                     continue
-                if record.status != "assigned" or (
-                    record.assigned_principal_id != principal_id and not administrative
-                ):
-                    raise _transition_error(record, permitted=frozenset({"assigned"}))
+                if HandoffStatus(record.status) not in RELEASABLE_STATUSES:
+                    raise _transition_error(record, permitted=RELEASABLE_STATUSES)
+                if record.assigned_principal_id != principal_id and not administrative:
+                    raise _ownership_error(record)
                 released = replace(
                     record,
                     status="queued",
@@ -801,15 +818,14 @@ class InMemoryHandoffStore:
             for index, record in enumerate(self._records):
                 if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
                     continue
-                if record.status not in ("requested", "queued", "assigned") or (
+                if HandoffStatus(record.status) not in RESOLVABLE_STATUSES:
+                    raise _transition_error(record, permitted=RESOLVABLE_STATUSES)
+                if (
                     record.status == "assigned"
                     and record.assigned_principal_id != principal_id
                     and not administrative
                 ):
-                    raise _transition_error(
-                        record,
-                        permitted=frozenset({"requested", "queued", "assigned"}),
-                    )
+                    raise _ownership_error(record)
                 resolved = replace(
                     record,
                     status="resolved",

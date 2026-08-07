@@ -95,7 +95,9 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
       setActionError(
         action === "accept"
           ? "Another staff member took this conversation first. Reloading the queue."
-          : "That action could not be completed. The handoff may have changed."
+          : reason instanceof Error && reason.name === "HandoffOwnershipError"
+            ? "Only the staff member who owns this conversation can take that action."
+            : "That action could not be completed. The handoff may have changed."
       );
     } finally {
       setBusy(false);
