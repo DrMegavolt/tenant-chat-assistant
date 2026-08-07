@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from tenantchat.core.budgets import TenantBudget
 from tenantchat.core.catalog import ServiceCatalog
 from tenantchat.core.privacy import ConsentPurpose, consent_statement
 
@@ -101,6 +102,10 @@ class TenantPolicy:
     assistant_tone: str | None = None
     escalation_rules: tuple[str, ...] = ()
     disclaimers: tuple[str, ...] = ()
+    # AI-002: the tenant's model-safety, quota, and cost limits. ``None`` is
+    # "the platform default", never unlimited. Private by design: publishing a
+    # tenant's budget would hand an attacker their cost ceiling for free.
+    budgets: TenantBudget | None = None
 
     def public_view(self) -> PublicTenantView:
         """Project to the world-readable subset."""

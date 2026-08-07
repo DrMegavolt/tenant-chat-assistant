@@ -117,6 +117,22 @@ METRIC_DEFINITIONS: Final[Mapping[MetricName, tuple[MetricKind, str]]] = {
         MetricKind.GAUGE,
         "Circuit state per dependency, 1 on the active state and 0 elsewhere.",
     ),
+    MetricName.POLICY_BLOCKS: (
+        MetricKind.COUNTER,
+        "Requests or actions refused by budget or content policy, by reason.",
+    ),
+    MetricName.MODEL_FALLBACKS: (
+        MetricKind.COUNTER,
+        "Model calls handed to a fallback provider, by failure reason.",
+    ),
+    MetricName.RESPONSE_CACHE: (
+        MetricKind.COUNTER,
+        "Safe-response cache lookups by result: hit or miss.",
+    ),
+    MetricName.BUDGET_ALERTS: (
+        MetricKind.COUNTER,
+        "Per-tenant spend alerts fired by level: warn or critical.",
+    ),
 }
 
 

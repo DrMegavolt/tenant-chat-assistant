@@ -101,6 +101,15 @@ _RETRYABLE_KINDS: Final[frozenset[FailureKind]] = frozenset(
 )
 
 
+def is_retryable(kind: FailureKind) -> bool:
+    """Whether a failure kind describes an outage a retry or fallback can fix.
+
+    The one predicate the retry loop and the `AI-002` model-fallback chain both
+    consult, so a new failure kind is either retryable everywhere or nowhere.
+    """
+    return kind in _RETRYABLE_KINDS
+
+
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     """Bounded retries with exponential backoff and per-attempt jitter."""
@@ -329,7 +338,7 @@ class AsyncResilientCaller:
                 raise
             except Exception as exc:
                 kind = self._classify(exc)
-                if kind not in _RETRYABLE_KINDS:
+                if not is_retryable(kind):
                     self._breaker.on_non_retryable()
                     raise
                 self._breaker.on_failure()

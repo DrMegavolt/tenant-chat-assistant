@@ -117,6 +117,7 @@ from tenantchat.api.store import (
     WorkflowStore,
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER, utc_now
+from tenantchat.core.budgets import BudgetEnforcer, BudgetLedger
 from tenantchat.core.errors import DomainError
 from tenantchat.core.ports import (
     AvailabilityProvider,
@@ -129,6 +130,8 @@ from tenantchat.core.visitor_session import (
 )
 from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpointer
 from tenantchat.orchestration.model import ChatModel
+from tenantchat.orchestration.providers.cache import CachingChatModel
+from tenantchat.orchestration.providers.fallback import FallbackChatModel
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
 from tenantchat.orchestration.providers.recording import MetricRecordingChatModel
 
@@ -316,6 +319,7 @@ def _install_middleware(
 def create_app(
     settings: Settings | None = None,
     *,
+    registry: TenantRegistry | None = None,
     booking_store: BookingStore | None = None,
     lead_store: LeadStore | None = None,
     conversation_store: ConversationStore | None = None,
@@ -341,6 +345,7 @@ def create_app(
     object_store: ObjectStore | None = None,
     search_index: SearchIndex | None = None,
     evidence_source: EvidenceSource | None = None,
+    budgets: BudgetLedger | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -350,6 +355,9 @@ def create_app(
 
     Args:
         settings: Overrides environment-derived configuration.
+        registry: The tenants this deployment serves. Injected for tests that
+            need a tenant with a specific plan (e.g. a tiny budget to exhaust);
+            production uses the seeded registry.
         booking_store: Explicit test adapter. Production builds PostgreSQL stores.
         lead_store: Explicit test adapter. Production builds PostgreSQL stores.
         conversation_store: Explicit test adapter. Production builds PostgreSQL stores.
@@ -408,6 +416,10 @@ def create_app(
             turns in. Injected explicitly, like the chat model: a composition
             without it runs the pre-`RAG-005` graph, with no abstention and no
             citations.
+        budgets: The `AI-002` per-tenant spend and action ledger. Injected for
+            tests that need to observe or preload usage; production composes one
+            and holds it on ``app.state``. A deployment can never run without
+            one — the composition builds it when omitted.
 
     Raises:
         ValueError: the stores were injected in part, or production composition
@@ -427,23 +439,51 @@ def create_app(
     # export. Refuses any external endpoint regardless of environment, so
     # "production startup fails" is structural rather than a convention.
     validate_trace_content_export(resolved)
-    registry = TenantRegistry.seeded()
+    resolved_registry = registry or TenantRegistry.seeded()
     database: Database | None = None
     privacy_database: Database | None = None
-    # AI-001: a provider adapter built from settings for the production
-    # composition. Tests inject `chat_model` explicitly and leave this None; a
-    # production deployment without a model configured also leaves it None so
-    # chat fails closed rather than starting against a guessed endpoint.
-    owned_model: OpenAICompatibleChatModel | None = None
+    # The one per-tenant budget ledger the whole app enforces against, shared
+    # across every conversation so usage accumulates per tenant. A caller that
+    # injected one (a test observing or preloading usage) owns it; otherwise
+    # one is built here, so a deployment can never silently run without it.
+    resolved_budgets = budgets if budgets is not None else BudgetEnforcer(metrics=METRICS)
+    # AI-001/AI-002: the provider chain built from settings. Tests inject
+    # `chat_model` explicitly and leave this empty; a production deployment
+    # without a model configured also leaves it empty so chat fails closed
+    # rather than starting against a guessed endpoint. When both a primary and
+    # a fallback are configured, the two are wrapped in a fallback chain; when
+    # the response cache is enabled, the chain is cached.
+    owned_models: list[OpenAICompatibleChatModel] = []
     if chat_model is None and resolved.llm_base_url and resolved.llm_model:
-        owned_model = OpenAICompatibleChatModel(
+        primary = OpenAICompatibleChatModel(
             base_url=resolved.llm_base_url,
             model=resolved.llm_model,
             api_key=resolved.llm_api_key,
             policy=resolved.llm_resilience,
             metrics=METRICS,
         )
-    effective_model = chat_model or owned_model
+        owned_models.append(primary)
+        if resolved.llm_fallback_base_url and resolved.llm_fallback_model:
+            owned_models.append(
+                OpenAICompatibleChatModel(
+                    base_url=resolved.llm_fallback_base_url,
+                    model=resolved.llm_fallback_model,
+                    api_key=resolved.llm_fallback_api_key,
+                    policy=resolved.llm_fallback_resilience,
+                    metrics=METRICS,
+                )
+            )
+    effective_model = chat_model
+    if owned_models:
+        effective_model = owned_models[0]
+        if len(owned_models) > 1:
+            effective_model = FallbackChatModel(owned_models, metrics=METRICS)
+        if resolved.llm_response_cache:
+            effective_model = CachingChatModel(
+                effective_model,
+                metrics=METRICS,
+                ttl_seconds=float(resolved.llm_response_cache_ttl_seconds),
+            )
     # The metrics wrapper is observation only: it delegates every call and
     # records latency, outcome, and token counts around it (`OBS-002`). A
     # provider failure still escapes to the graph exactly as before.
@@ -642,7 +682,7 @@ def create_app(
             availability_provider = PostgresAvailabilityProvider(database.engine)
         else:
             availability_provider = DemoAvailabilityProvider(
-                registry,
+                resolved_registry,
                 # The in-memory provider has no SQL, so the booking store tells
                 # it which slots are no longer bookable — the same exclusion the
                 # Postgres provider expresses with ``NOT EXISTS``.
@@ -663,7 +703,7 @@ def create_app(
 
     def compose_runtime(saver: Checkpointer, model: ChatModel) -> ConversationRuntime:
         return build_conversation_runtime(
-            registry=registry,
+            registry=resolved_registry,
             model=model,
             bookings=bookings_for_agent,
             leads=leads_for_agent,
@@ -675,6 +715,7 @@ def create_app(
             availability=availability_provider,
             evidence=evidence_source,
             metrics=METRICS,
+            budgets=resolved_budgets,
         )
 
     @asynccontextmanager
@@ -684,17 +725,17 @@ def create_app(
                 closing.push_async_callback(database.dispose)
                 await database.synchronize_tenants(
                     (record.policy.tenant_id, record.policy.name)
-                    for record in registry.all().values()
+                    for record in resolved_registry.all().values()
                 )
                 # Seed the database-backed fake provider now that tenant rows
                 # exist; idempotent, so a restart does not duplicate slots.
-                await seed_demo_availability(database.engine, registry)
+                await seed_demo_availability(database.engine, resolved_registry)
             if privacy_database is not None:
                 closing.push_async_callback(privacy_database.dispose)
             # Owned provider clients are closed with the app. An injected test
             # model is the caller's to clean up, not the app's.
-            if owned_model is not None:
-                closing.push_async_callback(owned_model.close)
+            for owned in owned_models:
+                closing.push_async_callback(owned.close)
             if isinstance(search_index, ElasticsearchSearchIndex):
                 closing.push_async_callback(search_index.close)
             # Opened here rather than in the builder because the checkpointer
@@ -719,7 +760,8 @@ def create_app(
     )
 
     app.state.settings = resolved
-    app.state.registry = registry
+    app.state.registry = resolved_registry
+    app.state.budgets = resolved_budgets
     app.state.booking_store = booking_store
     app.state.lead_store = lead_store
     app.state.conversation_store = conversation_store

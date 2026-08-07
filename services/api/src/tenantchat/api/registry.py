@@ -21,6 +21,7 @@ from collections.abc import Callable, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from tenantchat.core.budgets import TenantBudget
 from tenantchat.core.catalog import ServiceCatalog, ServiceDefinition
 from tenantchat.core.errors import NotFoundError
 from tenantchat.core.slots import OfferedSlot
@@ -97,6 +98,13 @@ _APEX = TenantRecord(
             "Have someone call me",
         ),
         served_zips=frozenset({"98101", "98102", "98103", "98104", "98105"}),
+        budgets=TenantBudget(
+            # A phone-first tenant that captures leads: generous, but the
+            # spend thresholds make an operator notice a run-away demo.
+            daily_token_budget=200_000,
+            spend_warn_threshold_tokens=150_000,
+            spend_critical_threshold_tokens=200_000,
+        ),
     ),
 )
 
@@ -137,6 +145,12 @@ _CLEARVIEW = TenantRecord(
             ("electrical", "$140 diagnostic visit, panel work quoted after inspection"),
         ),
         served_zips=frozenset({"97035", "97201", "97202", "97203", "97204", "97205"}),
+        budgets=TenantBudget(
+            # The paying booking tenant runs the platform default.
+            daily_token_budget=200_000,
+            spend_warn_threshold_tokens=150_000,
+            spend_critical_threshold_tokens=200_000,
+        ),
     ),
 )
 

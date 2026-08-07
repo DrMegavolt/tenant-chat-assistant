@@ -35,6 +35,11 @@ from typing import Any, Final
 
 from langgraph.types import interrupt
 
+from tenantchat.core.budgets import (
+    DEFAULT_TENANT_BUDGET,
+    check_input,
+    check_output,
+)
 from tenantchat.core.claims import ClaimVerdict, validate_sensitive_claims
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import (
@@ -49,6 +54,7 @@ from tenantchat.core.guards import tool_permission
 from tenantchat.core.metrics import (
     ROUTING_NONE_INTENT,
     ActionStatus,
+    BlockReason,
     MetricName,
     Operation,
     ToolOutcome,
@@ -529,6 +535,54 @@ class DispatchNodes:
             labels={"tool": ToolName.BOOK_APPOINTMENT.value, "outcome": outcome.value},
         )
 
+    @staticmethod
+    def _blocked_reply(reason: BlockReason, policy: TenantPolicy) -> str:
+        """The deterministic reply for a request the policy refused.
+
+        Server-written, never the model's: a policy block means the model must
+        not see the input or its output must not be published, so quoting
+        either would defeat the block. The phone number is the honest next
+        step for every reason.
+        """
+        if reason is BlockReason.INPUT_TOO_LONG or reason is BlockReason.INPUT_BINARY:
+            return (
+                "I could not read that message. Please send a shorter text "
+                f"message, or call {policy.phone}."
+            )
+        if reason is BlockReason.OUTPUT_TOO_LONG:
+            return (
+                "I could not finish that answer. Please ask again, or call "
+                f"{policy.phone}."
+            )
+        return (
+            "I have reached my usage limit for now, so I cannot keep answering. "
+            f"The team can help — call {policy.phone}."
+        )
+
+    def _observe_policy_block(self, reason: BlockReason) -> None:
+        self._observe(MetricName.POLICY_BLOCKS, 1, labels={"reason": reason.value})
+
+    def _policy_blocked_update(
+        self, state: DispatchState, policy: TenantPolicy, reason: BlockReason
+    ) -> dict[str, Any]:
+        """The turn update for a budget or content-policy refusal.
+
+        Records the block as a measurable event and answers with the
+        deterministic server reply. ``ANSWERED`` is the honest outcome class:
+        the visitor did get an answer — the refusal — and the ``POLICY_BLOCKS``
+        metric is what distinguishes it from a model-produced answer.
+        """
+        self._observe_policy_block(reason)
+        logger.info(
+            "assistant request blocked by policy",
+            extra={"tenant_id": state["tenant_id"], "reason": reason.value},
+        )
+        return {
+            "transcript": [assistant_entry(self._blocked_reply(reason, policy), [])],
+            "rounds": state["rounds"] + 1,
+            "turn_outcome": TurnStatus.ANSWERED.value,
+        }
+
     async def route(self, state: DispatchState) -> dict[str, Any]:
         """Decide the turn's intent, record the decision, and open the workflow.
 
@@ -680,6 +734,21 @@ class DispatchNodes:
     async def call_model(self, state: DispatchState) -> dict[str, Any]:
         """Ask the model what to do next, grounded in this turn's evidence."""
         policy = await self._deps.policies.policy(state["tenant_id"])
+        budget = policy.budgets or DEFAULT_TENANT_BUDGET
+        ledger = self._deps.budgets
+        tenant_id = state["tenant_id"]
+        # `AI-002` input policy, checked before any retrieval or model spend: a
+        # message outside the tenant's content limits must not reach a provider.
+        input_verdict = check_input(latest_visitor_message(state), budget)
+        if not input_verdict.allowed:
+            return self._policy_blocked_update(state, policy, input_verdict.block_reason)
+        # Pre-flight the token budget before spending retrieval work on a
+        # tenant that is already out of money; the binding check happens again
+        # at the model call, where concurrency is reserved.
+        if ledger is not None:
+            preflight = await ledger.check_token_budget(tenant_id, budget)
+            if not preflight.allowed:
+                return self._policy_blocked_update(state, policy, preflight.block_reason)
         agent = _agent_for(self._deps, state)
         bundle, plan = await self._retrieve_evidence(state, policy)
         if self._should_abstain(agent, bundle):
@@ -709,18 +778,49 @@ class DispatchNodes:
         allowed = tuple(
             spec for spec in TOOL_SPECS if spec.name in (agent.tool_names if agent else ())
         )
+        # `AI-002`: the model call is the spend that matters, so it is the one
+        # thing that holds a concurrency slot, re-checking the budget at the
+        # moment of spend and releasing the slot on every path out.
+        if ledger is not None:
+            entered = await ledger.enter_call(tenant_id, budget)
+            if not entered.allowed:
+                return self._policy_blocked_update(state, policy, entered.block_reason)
+        else:
+            entered = None
         try:
-            response = await self._deps.model.complete(outcome.prompt, tools=allowed)
-        except Exception:
-            # Deliberately broad, and deliberately not retried. Whatever the
-            # provider did, the customer is waiting; `REL-001` owns retry and
-            # circuit breaking inside the client, and the honest thing left for
-            # the graph to do is fetch a person.
-            logger.exception(
-                "model call failed",
-                extra={"tenant_id": state["tenant_id"], "turn_index": state["turn_index"]},
+            try:
+                response = await self._deps.model.complete(outcome.prompt, tools=allowed)
+            except Exception:
+                # Deliberately broad, and deliberately not retried. Whatever the
+                # provider did, the customer is waiting; `REL-001` owns retry and
+                # circuit breaking inside the client, and the honest thing left for
+                # the graph to do is fetch a person.
+                logger.exception(
+                    "model call failed",
+                    extra={"tenant_id": state["tenant_id"], "turn_index": state["turn_index"]},
+                )
+                return {"failure": HandoffReason.TOOL_FAILURE.value, "rounds": state["rounds"] + 1}
+        finally:
+            if ledger is not None and entered is not None:
+                await ledger.exit_call(tenant_id)
+        if ledger is not None:
+            fired = await ledger.record_usage(
+                tenant_id,
+                budget,
+                prompt_tokens=int(response.usage.get("prompt_tokens", 0)),
+                completion_tokens=int(response.usage.get("completion_tokens", 0)),
             )
-            return {"failure": HandoffReason.TOOL_FAILURE.value, "rounds": state["rounds"] + 1}
+            for level in fired:
+                logger.warning(
+                    "tenant model-spend alert crossed",
+                    extra={"tenant_id": tenant_id, "level": level.value},
+                )
+        # `AI-002` output policy: over-length model prose is refused whole,
+        # never silently truncated — the visitor gets a server-written reply.
+        if response.content.strip():
+            output_verdict = check_output(response.content, budget)
+            if not output_verdict.allowed:
+                return self._policy_blocked_update(state, policy, output_verdict.block_reason)
 
         calls = tuple(response.tool_calls)
         if not calls and not response.content.strip():
@@ -886,6 +986,7 @@ class DispatchNodes:
         refusal code is recorded on the turn so enforcement is attributable.
         """
         policy = await self._deps.policies.policy(state["tenant_id"])
+        budget = policy.budgets or DEFAULT_TENANT_BUDGET
         pending = state["pending_booking"]
         awaiting = pending["call_id"] if pending is not None else None
         agent = _agent_for(self._deps, state)
@@ -933,6 +1034,29 @@ class DispatchNodes:
                     )
                 )
                 continue
+            # `AI-002`: the tenant's action budget is another guard beside the
+            # permission allowlist. A refused action is a tool result — the
+            # model can tell the visitor to call — never a silent commit.
+            if (
+                tool is ToolName.CREATE_LEAD
+                and self._deps.budgets is not None
+            ):
+                action_verdict = await self._deps.budgets.check_action(
+                    state["tenant_id"], budget, turn_index=state["turn_index"]
+                )
+                if not action_verdict.allowed:
+                    refused.append("action_quota_exceeded")
+                    self._observe_policy_block(action_verdict.block_reason)
+                    entries.append(
+                        tool_entry(
+                            call["call_id"],
+                            _payload(
+                                error="action_quota_exceeded",
+                                message="The tenant has reached its action limit.",
+                            ),
+                        )
+                    )
+                    continue
             if agent is None:
                 # An agent-less composition gets an empty allowlist, so the
                 # guard refused every tool above; nothing can reach here.
@@ -971,6 +1095,10 @@ class DispatchNodes:
             fields.update(self._collected(agent, _arguments(call)))
             if action is not None:
                 committed.append(action)
+                if self._deps.budgets is not None:
+                    await self._deps.budgets.record_action(
+                        state["tenant_id"], turn_index=state["turn_index"]
+                    )
                 if action["action"] == ToolName.CREATE_LEAD.value:
                     completed_lead = True
 
@@ -1140,6 +1268,45 @@ class DispatchNodes:
 
         try:
             command = await self._parse_booking(state, arguments=_arguments(pending))
+            if self._deps.budgets is not None:
+                # `AI-002`: a confirmed booking must not commit once the
+                # tenant's action budget is spent. The refusal resumes the
+                # workflow exactly like a slot that was taken while deciding.
+                policy = await self._deps.policies.policy(tenant_id)
+                action_verdict = await self._deps.budgets.check_action(
+                    tenant_id,
+                    policy.budgets or DEFAULT_TENANT_BUDGET,
+                    turn_index=state["turn_index"],
+                )
+                if not action_verdict.allowed:
+                    self._observe_booking_commit(
+                        ToolOutcome.REFUSED, time.monotonic() - started
+                    )
+                    self._observe_policy_block(action_verdict.block_reason)
+                    if workflow_id:
+                        await self._deps.workflows.transition(
+                            tenant_id=tenant_id,
+                            session_id=session_id,
+                            workflow_id=workflow_id,
+                            transition=WorkflowTransition.RESUME,
+                            payload={"error": "action_quota_exceeded"},
+                            idempotency_key=self._workflow_key(state, "resume", call_id),
+                        )
+                    return self._with_collected(
+                        {
+                            "transcript": [
+                                tool_entry(
+                                    call_id,
+                                    _payload(
+                                        error="action_quota_exceeded",
+                                        message="The tenant has reached its action limit.",
+                                    ),
+                                )
+                            ],
+                            "pending_booking": None,
+                        },
+                        merged,
+                    )
             confirmation = await self._deps.bookings.confirm(
                 command,
                 session_id=state["session_id"],
@@ -1166,6 +1333,8 @@ class DispatchNodes:
             )
 
         self._observe_booking_commit(ToolOutcome.SUCCEEDED, time.monotonic() - started)
+        if self._deps.budgets is not None:
+            await self._deps.budgets.record_action(tenant_id, turn_index=state["turn_index"])
         if workflow_id:
             await self._resume_and_complete(state, call_id, "approved")
         return self._with_collected(
@@ -1259,6 +1428,13 @@ class DispatchNodes:
             session_id=state["session_id"],
             idempotency_key=key,
         )
+        # `AI-002`: a handoff is a business action and counts toward the
+        # tenant's attribution, but it is deliberately never budget-gated — an
+        # exhausted tenant must still reach a person.
+        if self._deps.budgets is not None:
+            await self._deps.budgets.record_action(
+                state["tenant_id"], turn_index=state["turn_index"]
+            )
         if state["workflow_id"]:
             if reason is not HandoffReason.CUSTOMER_REQUEST:
                 await self._deps.workflows.transition(

@@ -42,6 +42,7 @@ from tenantchat.api.store import (
     LeadStore,
     WorkflowStore,
 )
+from tenantchat.core.budgets import BudgetEnforcer, BudgetLedger
 from tenantchat.core.metrics import MetricsReporter
 from tenantchat.core.ports import (
     AssistantTurn,
@@ -71,6 +72,7 @@ def build_dispatch_dependencies(
     availability: AvailabilityProvider | None = None,
     evidence: EvidenceSource | None = None,
     metrics: MetricsReporter | None = None,
+    budgets: BudgetLedger | None = None,
 ) -> DispatchDependencies:
     """Wrap this service's adapters in the ports the graph runs against.
 
@@ -86,7 +88,14 @@ def build_dispatch_dependencies(
     ``metrics`` is the `OBS-002` metrics port. ``None`` is a harness that
     observes nothing; the production composition passes the Prometheus
     adapter.
+
+    ``budgets`` is the `AI-002` per-tenant spend and action ledger. It is never
+    ``None`` in a composed deployment: when a caller omits it, one is built
+    here so a missing ledger cannot silently disable a cost control — a harness
+    that wants no enforcement is impossible by construction.
     """
+    if budgets is None:
+        budgets = BudgetEnforcer(metrics=metrics)
     source = availability or DemoAvailabilityProvider(registry)
     return DispatchDependencies(
         model=model,
@@ -100,6 +109,7 @@ def build_dispatch_dependencies(
         agents=DEFAULT_AGENT_REGISTRY,
         evidence=evidence,
         metrics=metrics,
+        budgets=budgets,
     )
 
 
@@ -117,6 +127,7 @@ def build_dispatch_runtime(
     availability: AvailabilityProvider | None = None,
     evidence: EvidenceSource | None = None,
     metrics: MetricsReporter | None = None,
+    budgets: BudgetLedger | None = None,
 ) -> DispatchRuntime:
     """Build the runtime one deployment will serve conversations from."""
     dependencies = build_dispatch_dependencies(
@@ -131,6 +142,7 @@ def build_dispatch_runtime(
         workflows=workflows,
         evidence=evidence,
         metrics=metrics,
+        budgets=budgets,
     )
     return DispatchRuntime(
         compile_dispatch_graph(dependencies, checkpointer),
@@ -207,6 +219,7 @@ def build_conversation_runtime(
     availability: AvailabilityProvider | None = None,
     evidence: EvidenceSource | None = None,
     metrics: MetricsReporter | None = None,
+    budgets: BudgetLedger | None = None,
 ) -> GraphConversationRuntime:
     """Build the runtime the HTTP layer serves conversations from."""
     return GraphConversationRuntime(
@@ -223,5 +236,6 @@ def build_conversation_runtime(
             availability=availability,
             evidence=evidence,
             metrics=metrics,
+            budgets=budgets,
         )
     )

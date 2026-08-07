@@ -168,6 +168,21 @@ class Settings:
     # generation, Elasticsearch a short one for queries, embedding a very long
     # one for batch requests — and every knob is overridable by environment.
     llm_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
+    # AI-002: an optional second provider. When both the fallback base URL and
+    # model are configured, the composition root wraps the primary and the
+    # fallback in a `FallbackChatModel` chain, so an outage-shaped failure on
+    # the primary is answered by the fallback instead of handing the visitor
+    # off. Absent either, chat runs with no fallback.
+    llm_fallback_base_url: str | None = None
+    llm_fallback_model: str | None = None
+    llm_fallback_api_key: str = ""
+    llm_fallback_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
+    # AI-002: the safe-response cache, off by default because it is an operator
+    # freshness-vs-cost decision, not a correctness one. When enabled, the
+    # composition root caches byte-identical non-personalized prose responses
+    # for `llm_response_cache_ttl_seconds`.
+    llm_response_cache: bool = False
+    llm_response_cache_ttl_seconds: int = 300
     # SEC-002: the key that signs visitor credentials, and their lifetime. The
     # key is required by the production composition — a deployment without it
     # cannot open sessions (fail closed), exactly like the admin credentials.
@@ -287,6 +302,21 @@ class Settings:
                 pool_timeout_default=10.0,
                 total_deadline_default=360.0,
             ),
+            llm_fallback_base_url=os.environ.get("LLM_FALLBACK_BASE_URL", "").strip() or None,
+            llm_fallback_model=os.environ.get("LLM_FALLBACK_MODEL", "").strip() or None,
+            llm_fallback_api_key=os.environ.get("LLM_FALLBACK_API_KEY", "").strip(),
+            llm_fallback_resilience=_dependency_resilience(
+                env_prefix="LLM_FALLBACK",
+                read_timeout_default=120.0,
+                connect_timeout_default=10.0,
+                write_timeout_default=60.0,
+                pool_timeout_default=10.0,
+                total_deadline_default=360.0,
+            ),
+            llm_response_cache=os.environ.get("CHAT_API_LLM_RESPONSE_CACHE", "").strip()
+            .lower()
+            == "true",
+            llm_response_cache_ttl_seconds=_int_env("CHAT_API_RESPONSE_CACHE_TTL_SECONDS", 300),
             visitor_credential_signing_key=os.environ.get(
                 "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY", ""
             ).strip()

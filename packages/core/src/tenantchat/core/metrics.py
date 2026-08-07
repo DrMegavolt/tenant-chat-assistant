@@ -40,8 +40,9 @@ LABEL_VALUE_PATTERN: Final = re.compile(r"\A[a-z0-9_.@-]{1,64}\Z")
 # reachable vocabulary is the union of the closed enums below plus the routing,
 # tool, intent, resilience, and executed-graph enums and the one ``none``
 # sentinel; a new label dimension is a deliberate widening that must raise this
-# number with a test.
-METRIC_CARDINALITY_CEILING: Final = 80
+# number with a test. `AI-002` raised it from 80 to 96 for its safety/quotas
+# surface: the block-reason, cache-result, and alert-level vocabularies.
+METRIC_CARDINALITY_CEILING: Final = 96
 
 # The value the routing metric records for the intent label when the router
 # chose no intent (a clarification): the clarify outcome has no chosen intent,
@@ -76,6 +77,10 @@ class MetricName(StrEnum):
     FEEDBACK_SUBMITTED = "tenantchat_feedback_submitted_total"
     DEPENDENCY_RETRIES = "tenantchat_dependency_retries_total"
     CIRCUIT_STATE = "tenantchat_circuit_state"
+    POLICY_BLOCKS = "tenantchat_policy_blocks_total"
+    MODEL_FALLBACKS = "tenantchat_model_fallbacks_total"
+    RESPONSE_CACHE = "tenantchat_response_cache_total"
+    BUDGET_ALERTS = "tenantchat_budget_alerts_total"
 
 
 class MetricKind(StrEnum):
@@ -108,6 +113,8 @@ class MetricLabelName(StrEnum):
     DEPENDENCY = "dependency"
     REASON = "reason"
     STATE = "state"
+    RESULT = "result"
+    LEVEL = "level"
 
 
 class Operation(StrEnum):
@@ -217,6 +224,40 @@ class FeedbackRatingValue(StrEnum):
     DOWN = "down"
 
 
+class BlockReason(StrEnum):
+    """Why a request or action was refused, as the ``POLICY_BLOCKS`` label.
+
+    The budget and content refusals of `AI-002` share one metric so the whole
+    block surface is one series; the reason separates a tenant that ran out of
+    money from a message a provider must not see.
+    """
+
+    INPUT_TOO_LONG = "input_too_long"
+    INPUT_BINARY = "input_binary"
+    OUTPUT_TOO_LONG = "output_too_long"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    ACTION_LIMIT = "action_limit"
+    CONCURRENCY_LIMIT = "concurrency_limit"
+
+
+class CacheResult(StrEnum):
+    """Whether one prompt found a cached safe response, as the label."""
+    HIT = "hit"
+    MISS = "miss"
+
+
+class AlertLevel(StrEnum):
+    """How far a tenant's spend crossed a threshold, as the label.
+
+    ``WARN`` is the first threshold — an operator should look soon; ``CRITICAL``
+    is the hard limit — the tenant is effectively out of budget. The alert is a
+    one-shot per level per window, so a tenant that stays over the threshold
+    does not emit a series.
+    """
+    WARN = "warn"
+    CRITICAL = "critical"
+
+
 # The label names each metric may carry, as the adapter's hard contract. A label
 # name that is not listed here is rejected at record time, so a metric can never
 # grow a dimension by omission.
@@ -243,6 +284,10 @@ METRIC_LABELS: Final[Mapping[MetricName, tuple[MetricLabelName, ...]]] = {
     MetricName.FEEDBACK_SUBMITTED: (MetricLabelName.RATING,),
     MetricName.DEPENDENCY_RETRIES: (MetricLabelName.DEPENDENCY, MetricLabelName.REASON),
     MetricName.CIRCUIT_STATE: (MetricLabelName.DEPENDENCY, MetricLabelName.STATE),
+    MetricName.POLICY_BLOCKS: (MetricLabelName.REASON,),
+    MetricName.MODEL_FALLBACKS: (MetricLabelName.REASON,),
+    MetricName.RESPONSE_CACHE: (MetricLabelName.RESULT,),
+    MetricName.BUDGET_ALERTS: (MetricLabelName.LEVEL,),
 }
 
 # The value enums this package owns. The routing, tool, and intent vocabularies
@@ -258,6 +303,9 @@ BOUNDED_LABEL_VALUE_ENUMS: Final[tuple[type[StrEnum], ...]] = (
     CitationVerdict,
     ActionStatus,
     FeedbackRatingValue,
+    BlockReason,
+    CacheResult,
+    AlertLevel,
 )
 
 

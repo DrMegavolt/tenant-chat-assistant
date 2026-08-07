@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tenantchat.core.budgets import BudgetLedger
 from tenantchat.core.metrics import MetricsReporter
 from tenantchat.core.ports import (
     AvailabilityProvider,
@@ -52,3 +53,7 @@ class DispatchDependencies:
     # the work it re-executed — which is why the exactly-once business counts
     # are recorded by the idempotent services instead (`OBS-002`).
     metrics: MetricsReporter | None = None
+    # `AI-002`: the per-tenant spend, concurrency, and action ledger. `None` is
+    # a harness that runs without budgets; every composed deployment passes one,
+    # so a missing ledger cannot silently disable a cost control.
+    budgets: BudgetLedger | None = None
