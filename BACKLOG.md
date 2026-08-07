@@ -285,7 +285,7 @@ runbooks.
 - [x] `ARCH-001` — Agent runtime boundary and LangGraph adoption — `Done`
 - [x] `AI-001` — Provider and model abstraction — `Done`
 - [x] `AI-003` — Versioned prompt assembly and template registry — `Done`
-- [ ] `REL-001` — Resilient dependency clients — `P1`
+- [x] `REL-001` — Resilient dependency clients — `Done`
 - [x] `REL-003` — Durable background jobs and retry handling — `Done`
 - [x] `RAG-001` — Versioned knowledge content model — `Done`
 - [x] `RAG-002` — Secure asynchronous ingestion lifecycle — `Done`
@@ -317,7 +317,7 @@ of them are the difference between a claim being tested and a claim being true.
 - [x] `OBS-005` — Turn outcome fidelity and diagnosis completeness — `Done`
 - [x] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
 - [x] `QA-006` — Gate-claim and backlog accuracy — `P1`
-- [ ] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
+- [x] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
 - [ ] `FEAT-016` — Authorization and audit console — `P1`
 
 ### P2 product maturity — after Gate B
@@ -364,10 +364,10 @@ the demo is meant to prove*: a feature that supplies evidence for a claim is
 proven by a domain task is `P2`, because the second CRM adapter teaches nothing
 the first outbox did not.
 
-- [ ] `FEAT-001` — Knowledge-base administration workflow — `P1`
+- [x] `FEAT-001` — Knowledge-base administration workflow — `Done`
 - [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 - [x] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
-- [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
+- [x] `FEAT-011` — Customer-facing citations and source viewer — `Done`
 - [x] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
 - [ ] `FEAT-016` — Authorization and audit console — `P1`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`

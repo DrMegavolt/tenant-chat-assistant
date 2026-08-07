@@ -38,9 +38,10 @@ LABEL_VALUE_PATTERN: Final = re.compile(r"\A[a-z0-9_.@-]{1,64}\Z")
 
 # The ceiling the cardinality test asserts every metric stays under. The
 # reachable vocabulary is the union of the closed enums below plus the routing,
-# tool, and intent enums and the one ``none`` sentinel; a new label dimension
-# is a deliberate widening that must raise this number with a test.
-METRIC_CARDINALITY_CEILING: Final = 64
+# tool, intent, resilience, and executed-graph enums and the one ``none``
+# sentinel; a new label dimension is a deliberate widening that must raise this
+# number with a test.
+METRIC_CARDINALITY_CEILING: Final = 80
 
 # The value the routing metric records for the intent label when the router
 # chose no intent (a clarification): the clarify outcome has no chosen intent,

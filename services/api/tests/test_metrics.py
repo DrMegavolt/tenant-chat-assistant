@@ -94,7 +94,6 @@ def _reachable_vocabulary() -> frozenset[str]:
         RoutingOutcome,
         RoutingRule,
         ToolName,
-<<<<<<< HEAD
         Dependency,
         FailureKind,
         CircuitState,
