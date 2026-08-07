@@ -14,7 +14,6 @@ export interface TenantConfig {
   address: string;
   phone: string;
   hours: string;
-  pricingPolicy: "never" | "fixed";
   bookingEnabled: boolean;
   leadCaptureEnabled: boolean;
   proactiveLeadCapture: boolean;

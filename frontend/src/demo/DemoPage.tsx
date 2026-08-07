@@ -18,14 +18,6 @@ interface PolicyRow {
 function policyRows(config: TenantConfig): PolicyRow[] {
   return [
     {
-      term: "Pricing",
-      detail:
-        config.pricingPolicy === "never"
-          ? "Never reveal pricing; route to phone."
-          : "Allowed to quote fixed approved prices.",
-      state: config.pricingPolicy === "never" ? "off" : "on"
-    },
-    {
       term: "Booking",
       detail: config.bookingEnabled
         ? "Allowed after service and slot confirmation."

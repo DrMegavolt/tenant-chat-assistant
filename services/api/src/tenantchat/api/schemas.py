@@ -176,6 +176,9 @@ class TenantSummary(BaseModel):
     quick_actions: list[str]
     booking_enabled: bool
     lead_capture_enabled: bool
+    proactive_lead_capture: bool
+    site_headline: str
+    site_description: str
 
     @classmethod
     def of(cls, view: PublicTenantView) -> TenantSummary:
@@ -191,6 +194,9 @@ class TenantSummary(BaseModel):
             quick_actions=list(view.quick_actions),
             booking_enabled=view.booking_enabled,
             lead_capture_enabled=view.lead_capture_enabled,
+            proactive_lead_capture=view.proactive_lead_capture,
+            site_headline=view.site_headline,
+            site_description=view.site_description,
         )
 
 

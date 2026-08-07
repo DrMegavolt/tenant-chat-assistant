@@ -76,6 +76,11 @@ _APEX = TenantRecord(
         name="Apex Home Services",
         assistant_name="Apex assistant",
         tagline="Phone-first service desk",
+        site_headline="Heating, cooling, and electrical help when you need it",
+        site_description=(
+            "Apex keeps Seattle homes running. Ask the assistant about hours or "
+            "coverage, and we will have a technician call you back."
+        ),
         phone="(555) 214-0800",
         address="2100 Harbor Street, Seattle, WA 98101",
         hours="Mon-Fri 8:00 AM-6:00 PM, Sat 9:00 AM-2:00 PM",
@@ -114,6 +119,11 @@ _CLEARVIEW = TenantRecord(
         name="Clearview Property Care",
         assistant_name="Clearview assistant",
         tagline="Pricing and booking enabled",
+        site_headline="Book property care in Portland, with prices up front",
+        site_description=(
+            "Clearview quotes from a published price list and books the visit in "
+            "the same conversation. Ask the assistant what a job costs."
+        ),
         phone="(555) 816-4420",
         address="480 Lakeview Avenue, Portland, OR 97205",
         hours="Daily 7:00 AM-7:00 PM",

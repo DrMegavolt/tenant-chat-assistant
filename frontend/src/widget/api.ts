@@ -14,6 +14,7 @@ import type {
   ServerSession,
   SessionSnapshot,
   SourceView,
+  TenantConfig,
   TenantDirectory,
   TurnProvenance,
   WireMessageRole
@@ -106,6 +107,22 @@ interface WireSourceView {
   effective_at: string;
 }
 
+export interface WireTenant {
+  name: string;
+  assistant_name: string;
+  tagline: string;
+  address: string;
+  phone: string;
+  hours: string;
+  booking_enabled: boolean;
+  lead_capture_enabled: boolean;
+  proactive_lead_capture: boolean;
+  services: string[];
+  quick_actions: string[];
+  site_headline: string;
+  site_description: string;
+}
+
 interface WireSession {
   session: { session_id: string };
   credential: string;
@@ -158,6 +175,23 @@ function normalizeTurn(wire: WireTurn): ChatTurnResponse {
   };
 }
 
+function normalizeTenant(wire: WireTenant): TenantConfig {
+  return {
+    name: wire.name,
+    assistantName: wire.assistant_name,
+    tagline: wire.tagline,
+    site: { headline: wire.site_headline, description: wire.site_description },
+    address: wire.address,
+    phone: wire.phone,
+    hours: wire.hours,
+    bookingEnabled: wire.booking_enabled,
+    leadCaptureEnabled: wire.lead_capture_enabled,
+    proactiveLeadCapture: wire.proactive_lead_capture,
+    services: wire.services,
+    quickActions: wire.quick_actions
+  };
+}
+
 function normalizeMessages(wire: WireSession): ServerMessage[] {
   return (wire.messages ?? []).map((m) => ({
     messageId: m.message_id,
@@ -184,8 +218,10 @@ export class ChatApi {
     if (!response.ok) {
       throw new Error("Unable to load tenant configuration from backend.");
     }
-    const payload = (await response.json()) as { tenants: TenantDirectory };
-    return payload.tenants;
+    const payload = (await response.json()) as { tenants: Record<string, WireTenant> };
+    return Object.fromEntries(
+      Object.entries(payload.tenants).map(([id, tenant]) => [id, normalizeTenant(tenant)])
+    );
   }
 
   /**

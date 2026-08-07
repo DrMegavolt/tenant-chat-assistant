@@ -1,37 +1,45 @@
 import { vi } from "vitest";
 
-import type { TenantDirectory } from "src/widget/types";
+import type { WireTenant } from "src/widget/api";
 
-export const TENANTS: TenantDirectory = {
+/**
+ * The tenant directory exactly as `GET /api/tenants` serves it.
+ *
+ * Deliberately the snake_case *wire* shape, not the widget's domain type: a
+ * fixture in the domain shape would bypass `normalizeTenant` and let the suite
+ * pass against a response the backend never sends, which is how a blank page
+ * once shipped green.
+ */
+export const TENANTS: Record<string, WireTenant> = {
   apex: {
     name: "Apex Home Services",
-    assistantName: "Apex Assistant",
+    assistant_name: "Apex Assistant",
     tagline: "Home-service help",
-    site: { headline: "Apex headline", description: "Apex description" },
+    site_headline: "Apex headline",
+    site_description: "Apex description",
     address: "10 Main Street",
     phone: "555-111-2222",
     hours: "Always open",
-    pricingPolicy: "never",
-    bookingEnabled: false,
-    leadCaptureEnabled: true,
-    proactiveLeadCapture: false,
+    booking_enabled: false,
+    lead_capture_enabled: true,
+    proactive_lead_capture: false,
     services: ["HVAC", "Electrical"],
-    quickActions: ["What do you repair?", "Talk to a person"]
+    quick_actions: ["What do you repair?", "Talk to a person"]
   },
   clearview: {
     name: "Clearview Heating",
-    assistantName: "Clearview Assistant",
+    assistant_name: "Clearview Assistant",
     tagline: "Appointments and answers",
-    site: { headline: "Clearview headline", description: "Clearview description" },
+    site_headline: "Clearview headline",
+    site_description: "Clearview description",
     address: "20 Broad Street",
     phone: "555-333-4444",
     hours: "Weekdays",
-    pricingPolicy: "fixed",
-    bookingEnabled: true,
-    leadCaptureEnabled: true,
-    proactiveLeadCapture: true,
+    booking_enabled: true,
+    lead_capture_enabled: true,
+    proactive_lead_capture: true,
     services: ["HVAC"],
-    quickActions: ["Find an appointment"]
+    quick_actions: ["Find an appointment"]
   }
 };
 

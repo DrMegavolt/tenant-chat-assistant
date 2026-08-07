@@ -52,6 +52,16 @@ class PublicTenantView:
     # Published so the widget can show the sentence the visitor will be held to.
     # World-readable by design: it is the text a consent dialog displays.
     contact_consent_statement: str
+    # The host page's own marketing copy. Published because the demo site
+    # renders the tenant's branding rather than shipping it in the bundle, and
+    # because a headline is the least private thing a business owns.
+    site_headline: str
+    site_description: str
+    # Whether the assistant opens with a lead-capture offer. Already observable
+    # from one conversation, so publishing it reveals nothing the widget's own
+    # behaviour does not. `pricing_policy` stays private on purpose — see the
+    # projection test that pins it.
+    proactive_lead_capture: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +112,11 @@ class TenantPolicy:
     assistant_tone: str | None = None
     escalation_rules: tuple[str, ...] = ()
     disclaimers: tuple[str, ...] = ()
+    # Host-page copy for the demo site. Empty falls back to the tagline rather
+    # than rendering a blank hero, so a tenant added without copy still shows
+    # something a reviewer can read.
+    site_headline: str = ""
+    site_description: str = ""
     # AI-002: the tenant's model-safety, quota, and cost limits. ``None`` is
     # "the platform default", never unlimited. Private by design: publishing a
     # tenant's budget would hand an attacker their cost ceiling for free.
@@ -122,6 +137,9 @@ class TenantPolicy:
             booking_enabled=self.booking_enabled,
             lead_capture_enabled=self.lead_capture_enabled,
             contact_consent_statement=self.consent_statement(),
+            site_headline=self.site_headline or self.tagline,
+            site_description=self.site_description or self.tagline,
+            proactive_lead_capture=self.proactive_lead_capture,
         )
 
     def consent_statement(self) -> str:

@@ -11,6 +11,37 @@ class TestPublicTenantSurface:
 
         assert set(tenants) == {"apex", "clearview"}
 
+    def test_every_field_the_widget_renders_is_present(self, client: TestClient) -> None:
+        """The widget's `normalizeTenant` reads exactly these keys.
+
+        A missing one is not a degraded render: `config.site.headline` on an
+        absent `site` throws during render and React unmounts the whole tree,
+        so the demo page goes blank. That shipped once, because the frontend
+        fixture was written in the widget's own camelCase domain shape and
+        never exercised this response.
+        """
+        tenants = client.get("/api/tenants").json()["tenants"]
+
+        required = {
+            "name",
+            "assistant_name",
+            "tagline",
+            "address",
+            "phone",
+            "hours",
+            "services",
+            "quick_actions",
+            "booking_enabled",
+            "lead_capture_enabled",
+            "proactive_lead_capture",
+            "site_headline",
+            "site_description",
+        }
+        for tenant_id, tenant in tenants.items():
+            assert required <= set(tenant), f"{tenant_id} is missing {required - set(tenant)}"
+            assert tenant["site_headline"], f"{tenant_id} has an empty headline"
+            assert tenant["site_description"], f"{tenant_id} has an empty description"
+
     def test_approved_prices_are_not_served_to_the_widget(self, client: TestClient) -> None:
         """Pricing is policy-gated; publishing the list would route around it."""
         body = client.get("/api/tenants").text
