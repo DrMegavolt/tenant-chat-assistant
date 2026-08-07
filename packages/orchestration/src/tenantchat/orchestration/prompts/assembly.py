@@ -9,8 +9,11 @@ admitted until the budgets are spent. Evidence is additionally delimited
 (``<evidence source_id=...>...</evidence>``) and the template's trailing
 reminder is rendered after it, as the final content of the system message, so
 the instruction about untrusted content always follows the content it governs.
-Everything left out is returned in :attr:`AssemblyOutcome.excluded` with its
-reason; nothing is dropped without a record.
+The fence is unforgeable: assembly strips the fence tokens from passage title
+and content before interpolation, so a document cannot close or open the
+delimiter and land its own instructions in the trusted region. Everything left
+out is returned in :attr:`AssemblyOutcome.excluded` with its reason; nothing is
+dropped without a record.
 """
 
 from __future__ import annotations
@@ -39,6 +42,26 @@ from tenantchat.orchestration.prompts.schema import PromptBindingError
 CHARS_PER_TOKEN = 4
 
 _PLACEHOLDER_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+# The evidence fence is the only wire-level boundary `RAG-007` has between
+# untrusted document text and the trusted trailing reminder. A passage that
+# carries either delimiter token could close the fence early — putting its own
+# instructions where the server's instructions live — so both tokens are
+# stripped from untrusted text before interpolation.
+_FENCE_TOKEN_RE = re.compile(r"</evidence|<evidence", re.IGNORECASE)
+
+
+def _fence_safe(text: str) -> str:
+    """Neutralize the evidence-fence tokens in untrusted text.
+
+    ``<evidence`` and ``</evidence`` (case-insensitive) are the wire-level
+    delimiters of the untrusted evidence region, so a passage containing either
+    can end the region early and speak directly to the model. Stripping beats
+    escaping: the tokens are never legitimate passage content, and anything
+    left behind that still reads as a fence would be a second boundary the
+    model is not told about.
+    """
+    return _FENCE_TOKEN_RE.sub("", text)
 
 
 def estimate_tokens(text: str) -> int:
@@ -194,13 +217,18 @@ def assemble_prompt(
 
     positions = sorted(mandatory_indexes | {index for index, _ in selected_history})
     history_messages = [_history_message(history[index], index) for index in positions]
+    # source_id is not neutralized: it is the citation handle, and every
+    # producer is the index chunk id — generation and version UUIDs plus a
+    # position — which cannot carry the fence tokens, a quote, or whitespace.
+    # Escaping it would silently break the evidence:<source_id> round-trip the
+    # citation validator relies on.
     evidence_segments = tuple(
         PromptSegment(
             segment_id=f"evidence:{item.source_id}",
             region=PromptRegion.UNTRUSTED,
             text=(
                 f'<evidence source_id="{item.source_id}">\n'
-                f"{item.title}\n{item.content}\n</evidence>"
+                f"{_fence_safe(item.title)}\n{_fence_safe(item.content)}\n</evidence>"
             ),
         )
         for item in selected_evidence

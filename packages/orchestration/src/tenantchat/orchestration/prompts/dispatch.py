@@ -28,7 +28,9 @@ passages are delimited as untrusted evidence, the model is told it will be
 checked, the boundary and citation rules are restated in the trailing system
 reminder that closes the system message, and the boundary rules themselves are
 the same text the deterministic guards enforce — the prompt is the least
-authoritative part of the defense.
+authoritative part of the defense. Assembly strips the fence tokens from
+passage text, so no document can close or open the evidence delimiters and the
+trailing reminder always closes the system message.
 """
 
 from __future__ import annotations
@@ -324,8 +326,10 @@ DISPATCH_SYSTEM_V3 = TemplateVersion(
 # contract. The boundary and citation rules are restated in the trailing
 # system reminder, which assembly places last in the system message, after the
 # evidence — so the instruction about untrusted content follows the content it
-# governs. The rules are declarative text for the model; the deterministic
-# guards (tool permission, claim validation) are what actually enforce them.
+# governs. Assembly strips the fence tokens from passage text, so the
+# delimiters cannot be closed or opened by a document. The rules are
+# declarative text for the model; the deterministic guards (tool permission,
+# claim validation) are what actually enforce them.
 DISPATCH_SYSTEM_V4 = TemplateVersion(
     template_id=DISPATCH_SYSTEM_TEMPLATE_ID,
     version=DISPATCH_SYSTEM_V4_VERSION,
