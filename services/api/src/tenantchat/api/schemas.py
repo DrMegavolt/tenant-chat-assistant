@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tenantchat.api.jobs import JobEvent, JobRecord
 from tenantchat.api.store import (
+    AuditEvent,
     BookingRecord,
     ConsentRecord,
     ConversationRecord,
@@ -846,6 +847,85 @@ class TraceAccessResponse(BaseModel):
 
 class TraceAccessesResponse(BaseModel):
     grants: list[TraceAccessResponse]
+
+
+class AdminAuditEvent(BaseModel):
+    """One content-free accountability row as the console renders it.
+
+    The bounded projection only: identifiers, enums, and the server-stamped
+    timestamp. The raw ``details`` dict never crosses this surface, so a
+    content field that ever reaches the audit store cannot leak through the
+    console (`ADR-0010`).
+    """
+
+    action: str
+    actor_type: str
+    principal: str | None
+    tenant_id: str
+    request_id: str | None
+    trace_id: str | None
+    resource_type: str
+    resource_id: str | None
+    occurred_at: datetime
+    permission: str
+
+    @classmethod
+    def of(cls, event: AuditEvent, *, permission: str) -> AdminAuditEvent:
+        trace_id = event.details.get("trace_id")
+        return cls(
+            action=event.action,
+            actor_type=event.actor_type.value,
+            principal=event.principal_id,
+            tenant_id=event.tenant_id,
+            request_id=event.request_id,
+            trace_id=trace_id if isinstance(trace_id, str) and trace_id else None,
+            resource_type=event.resource_type,
+            resource_id=str(event.resource_id) if event.resource_id is not None else None,
+            occurred_at=event.occurred_at,
+            permission=permission,
+        )
+
+
+class AdminAuditResponse(BaseModel):
+    events: list[AdminAuditEvent]
+    limit: int
+
+
+class AdminMembershipRole(BaseModel):
+    """One live role assignment, with the assignment that produced it.
+
+    ``granted_by`` comes from the ``membership_assigned`` audit row, never
+    invented by the console; a membership that predates the audit trail shows
+    its created timestamp and no issuer.
+    """
+
+    tenant_id: str
+    subject: str
+    role: str
+    granted_by: str | None
+    granted_at: datetime
+    updated_at: datetime
+
+
+class AdminTraceGrant(BaseModel):
+    """One live PRIV-002 trace-read grant, deliberately a separate control.
+
+    A grant and a role authorize different surfaces, so the console renders
+    them as distinct tables and a viewer cannot read one as the other.
+    ``expires_at`` is null today: the grant store has no expiry, which
+    `FEAT-016` records as a schema gap rather than inventing one.
+    """
+
+    tenant_id: str
+    subject: str
+    granted_by: str
+    granted_at: datetime
+    expires_at: datetime | None = None
+
+
+class AdminPermissionsResponse(BaseModel):
+    roles: list[AdminMembershipRole]
+    grants: list[AdminTraceGrant]
 
 
 class TraceReadResponse(BaseModel):

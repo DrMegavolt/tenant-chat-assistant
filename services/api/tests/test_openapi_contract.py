@@ -105,6 +105,12 @@ PUBLISHED_OPERATIONS = {
     # surface.
     ("get", "/api/admin/knowledge/quarantine"),
     ("post", "/api/admin/knowledge/quarantine/{version_id}/review"),
+    # FEAT-016: the audit read surface and the permissions view. The trail is
+    # content-free, its reads are themselves audited, and the permissions view
+    # lists the tenant's current roles and trace-read grants as distinct
+    # controls, grantors resolved from the trail.
+    ("get", "/api/admin/audit"),
+    ("get", "/api/admin/permissions"),
 }
 
 

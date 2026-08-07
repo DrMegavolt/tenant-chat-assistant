@@ -304,6 +304,10 @@ class MembershipStore(Protocol):
 
     async def for_principal(self, subject: str) -> tuple[TenantMembership, ...]: ...
 
+    async def for_tenant(self, tenant_id: str) -> tuple[TenantMembership, ...]:
+        """Everyone with a role inside one tenant, for the permissions console."""
+        ...
+
 
 class AuditStore(Protocol):
     """Append-only accountability records, one per administrative mutation.
@@ -316,7 +320,24 @@ class AuditStore(Protocol):
 
     async def record(self, event: AuditEvent) -> AuditEvent: ...
 
-    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[AuditEvent, ...]: ...
+    async def for_tenant(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 200,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        actions: tuple[str, ...] = (),
+        principal: str | None = None,
+    ) -> tuple[AuditEvent, ...]:
+        """The tenant's events, newest first, bounded to *limit*.
+
+        The filters are the `FEAT-016` trail query surface: a time window, a
+        closed set of action names, and one principal — never free text, so a
+        tenant ID cannot become a search token. Each filter narrows the tenant
+        rows before the bound is applied.
+        """
+        ...
 
 
 class IdempotencyStore(Protocol):
@@ -623,6 +644,14 @@ class InMemoryMembershipStore:
         async with self._lock:
             return tuple(row for key, row in sorted(self._rows.items()) if key[1] == subject)
 
+    async def for_tenant(self, tenant_id: str) -> tuple[TenantMembership, ...]:
+        async with self._lock:
+            return tuple(
+                row
+                for key, row in sorted(self._rows.items(), key=lambda item: item[0])
+                if key[0] == tenant_id
+            )
+
 
 class InMemoryAuditStore:
     """A concurrency-safe fake; production writes append-only rows."""
@@ -636,9 +665,27 @@ class InMemoryAuditStore:
             self._events.append(event)
         return event
 
-    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[AuditEvent, ...]:
+    async def for_tenant(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 200,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        actions: tuple[str, ...] = (),
+        principal: str | None = None,
+    ) -> tuple[AuditEvent, ...]:
+        wanted_actions = set(actions)
         async with self._lock:
-            events = [event for event in self._events if event.tenant_id == tenant_id]
+            events = [
+                event
+                for event in self._events
+                if event.tenant_id == tenant_id
+                and (not wanted_actions or event.action in wanted_actions)
+                and (principal is None or event.principal_id == principal)
+                and (since is None or event.occurred_at >= since)
+                and (until is None or event.occurred_at <= until)
+            ]
         events.sort(key=lambda event: event.occurred_at, reverse=True)
         return tuple(events[:limit])
 

@@ -928,6 +928,21 @@ class PostgresMembershipStore:
             )
             return tuple(_membership(row) for row in result.all())
 
+    async def for_tenant(self, tenant_id: str) -> tuple[TenantMembership, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT tenant_id, principal_subject, role, created_at, updated_at
+                    FROM tenant_memberships
+                    WHERE tenant_id = :tenant_id
+                    ORDER BY principal_subject
+                    """
+                ),
+                {"tenant_id": tenant_id},
+            )
+            return tuple(_membership(row) for row in result.all())
+
 
 class PostgresAuditStore:
     """Append-only accountability records; UPDATE and DELETE are revoked from
@@ -964,19 +979,42 @@ class PostgresAuditStore:
             occurred_at = result.scalar_one()
         return replace(event, occurred_at=occurred_at)
 
-    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[AuditEvent, ...]:
+    async def for_tenant(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 200,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        actions: tuple[str, ...] = (),
+        principal: str | None = None,
+    ) -> tuple[AuditEvent, ...]:
+        clauses = ["tenant_id = :tenant_id"]
+        params: dict[str, object] = {"tenant_id": tenant_id, "limit": limit}
+        if since is not None:
+            clauses.append("occurred_at >= :since")
+            params["since"] = since
+        if until is not None:
+            clauses.append("occurred_at <= :until")
+            params["until"] = until
+        if actions:
+            clauses.append("action = ANY(:actions)")
+            params["actions"] = list(actions)
+        if principal is not None:
+            clauses.append("principal_id = :principal")
+            params["principal"] = principal
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
-                    """
+                    f"""
                     SELECT tenant_id, actor_type, principal_id, action,
                            resource_type, resource_id, request_id, details, occurred_at
                     FROM audit_events
-                    WHERE tenant_id = :tenant_id
+                    WHERE {' AND '.join(clauses)}
                     ORDER BY occurred_at DESC, id DESC
                     LIMIT :limit
                     """
                 ),
-                {"tenant_id": tenant_id, "limit": limit},
+                params,
             )
             return tuple(_audit_event(row) for row in result.all())
