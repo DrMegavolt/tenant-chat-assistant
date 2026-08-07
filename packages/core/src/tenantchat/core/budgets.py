@@ -304,13 +304,15 @@ class BudgetEnforcer:
         )
 
     def snapshot(self, tenant_id: str) -> UsageSnapshot:
-        fired = self._fired.get(tenant_id, ())
+        fired = self._fired.get(tenant_id, set())
         return UsageSnapshot(
             tenant_id=tenant_id,
             tokens_used=self._tokens.get(tenant_id, 0),
             actions_committed=self._actions.get(tenant_id, 0),
             concurrent_calls=self._concurrent.get(tenant_id, 0),
-            alerts_fired=tuple(sorted(fired, key=lambda level: level.value)),
+            alerts_fired=tuple(
+                level for level in (AlertLevel.WARN, AlertLevel.CRITICAL) if level in fired
+            ),
         )
 
     def _fire_alerts(

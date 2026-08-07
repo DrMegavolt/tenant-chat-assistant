@@ -68,13 +68,17 @@ class CachingChatModel:
         *,
         metrics: MetricsReporter | None = None,
         ttl_seconds: float = 300.0,
+        max_entries: int = _MAX_ENTRIES,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if ttl_seconds < 0:
             raise ValueError("ttl_seconds must be non-negative")
+        if max_entries < 1:
+            raise ValueError("max_entries must be at least 1")
         self._inner = inner
         self._metrics = metrics
         self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
         self._clock = clock
         # key -> (stored_at, response); insertion order doubles as eviction order.
         self._entries: dict[str, tuple[float, ModelResponse]] = {}
@@ -112,7 +116,7 @@ class CachingChatModel:
         return not response.tool_calls and bool(response.content.strip())
 
     def _store(self, key: str, response: ModelResponse) -> None:
-        if len(self._entries) >= _MAX_ENTRIES:
+        if len(self._entries) >= self._max_entries:
             self._entries.pop(next(iter(self._entries)))
         self._entries[key] = (self._clock(), response)
 

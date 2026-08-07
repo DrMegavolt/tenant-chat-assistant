@@ -478,17 +478,20 @@ def create_app(
         effective_model = owned_models[0]
         if len(owned_models) > 1:
             effective_model = FallbackChatModel(owned_models, metrics=METRICS)
-        if resolved.llm_response_cache:
-            effective_model = CachingChatModel(
-                effective_model,
-                metrics=METRICS,
-                ttl_seconds=float(resolved.llm_response_cache_ttl_seconds),
-            )
     # The metrics wrapper is observation only: it delegates every call and
     # records latency, outcome, and token counts around it (`OBS-002`). A
     # provider failure still escapes to the graph exactly as before.
     if effective_model is not None:
         effective_model = MetricRecordingChatModel(effective_model, METRICS)
+    # The cache sits outside the recorder so a hit never records a model call:
+    # the recording wrapper stands for an actual provider completion, and a
+    # cached answer is not one.
+    if effective_model is not None and resolved.llm_response_cache:
+        effective_model = CachingChatModel(
+            effective_model,
+            metrics=METRICS,
+            ttl_seconds=float(resolved.llm_response_cache_ttl_seconds),
+        )
 
     supplied = (
         booking_store,
