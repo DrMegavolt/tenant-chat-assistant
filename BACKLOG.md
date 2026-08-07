@@ -1573,7 +1573,7 @@ guarantees by construction.
 
 ### OBS-006 — Executed-graph event capture
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `AI observability`
 - Depends on: `OBS-005`, `OBS-004`, `FEAT-015`
@@ -1626,7 +1626,64 @@ guarantees by construction.
   - `uv run --frozen pytest packages/orchestration/tests/test_trace.py services/api/tests/test_trace_explorer.py tests/agent_runtime`
     and the frontend suite; then `make check` and `make test-database`. Include a
     test that forces the listener to raise and asserts the turn still answers.
-- Completion notes: _Pending._
+- Completion notes:
+  - Capture is a debug-stream listener in
+    `packages/orchestration/src/tenantchat/orchestration/executed.py` fed by
+    the runtime's `astream(..., stream_mode=["debug", "values"])`: node entries
+    and exits, the edge that scheduled each node (LangGraph's trigger name,
+    which for a conditional edge is the branch the router returned), per-node
+    duration and attempt number, and each node's terminal status. The listener
+    reads only `name`, `triggers`, timestamps, and error/interrupt presence —
+    never `task.input` or `task_result.result`, which carry the full state — so
+    no event can contain prompt text, evidence, an answer, an argument value,
+    or a contact detail. A name outside the closed `DispatchNode` vocabulary is
+    dropped.
+  - `TRACE_SCHEMA_VERSION` is `2` and the content-free `executed_graph` section
+    (nodes, edges, run kind, per-run and per-node durations) sits under it.
+    `build_turn_trace` remains a pure function over checkpointed state: the
+    runtime merges the captured section into the state before the trace is
+    derived, and `trace._executed_graph_section` re-serializes it through its
+    closed fields at the trace boundary, dropping the whole section if the
+    stored shape does not conform. A record at version `1`, or a `2` record
+    whose listener degraded, has no section and renders in the derived form.
+  - The runtime degrades, it does not fail: `_invoke` catches any listener
+    exception and continues with a fresh listener, so a listener bug leaves a
+    successful turn with the derived view. The module docstring and
+    `trace.py`'s docstring state that contract explicitly.
+  - A mid-graph crash is now a recorded failed turn instead of a silent 500:
+    the runtime catches the stream exception, marks the crashed node `error` in
+    the section (which ends there — no idealized completion), and records the
+    trace with outcome `failed` (new `TurnOutcome.FAILED` in both vocabularies,
+    metric value `turn_failed` to stay disjoint from `ToolOutcome.FAILED`) and
+    a detected `application_error` diagnosis, so the crash reaches the review
+    queue. The visitor gets a server-written content-free reply; `committed`
+    reflects only what the graph actually committed. The `FAILED` outcome is
+    observed exactly once per crash, keeping the `OBS-002` outcome partition.
+  - Per-node duration joined the metric vocabulary as
+    `tenantchat_node_latency_seconds` (`node` + `status` labels); the
+    cardinality test proves it stays under the ceiling because `DispatchNode`
+    is a closed enum.
+  - The console's "Executed structure" panel is replaced: a post-upgrade turn
+    renders the captured waterfall with per-node duration, attempt count,
+    status (ok/failed/paused), the edge taken, and a `resumed`/`replayed`
+    marker; a pre-upgrade or degraded turn keeps the FEAT-015 derived waterfall
+    labelled `derived from stored trace fields`, so a viewer is never shown a
+    derived view as a captured one. `failed` joined the outcome filter.
+  - Tests: listener unit tests (`packages/orchestration/tests/test_executed_graph_listener.py`),
+    trace-level tests in `test_trace.py`, runtime end-to-end in
+    `tests/agent_runtime/test_executed_graph.py` (including the forced
+    listener-failure test and the crashed-turn tests), metric label/cardinality
+    tests, `test_trace_record.py` (schema version 2 + captured section) and
+    `test_trace_explorer.py` (v2 round-trips, v1 records still open, recorded
+    crashed graphs end at the error node), and frontend tests for the captured
+    waterfall, resumed marker, crash stop, and derived label.
+  - Verified: the task's test command, the DB-backed agent-runtime suite
+    (Postgres 16 containers, so `make test-database` passed), and `make check`
+    (full hermetic gate, coverage above the 80% floor).
+  - Files: `packages/orchestration/src/tenantchat/orchestration/{executed.py (new), trace.py, runtime.py, state.py}`;
+    `packages/core/src/tenantchat/core/metrics.py`; `services/api/src/tenantchat/api/{metrics.py, agent.py}`;
+    `frontend/src/admin/{traceTypes.ts, adminApi.ts, components/TraceDetail.tsx}`;
+    tests across `packages/orchestration/tests`, `tests/agent_runtime`, `services/api/tests`, and `frontend/tests`.
 
 ### ARCH-001 — LangGraph agent runtime over a framework-free domain
 
