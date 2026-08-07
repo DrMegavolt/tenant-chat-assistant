@@ -16,8 +16,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ChatApi } from "src/widget/api";
-import { CredentialRejectedError } from "src/widget/api";
-import type { ChatTurnResponse, TenantConfig, TranscriptEntry } from "src/widget/types";
+import { CredentialRejectedError, SourceUnavailableError } from "src/widget/api";
+import type { ChatTurnResponse, SourceView, TenantConfig, TranscriptEntry } from "src/widget/types";
 import type { VisitorData } from "src/widget/visitorData";
 
 const POLL_INTERVAL_MS = 2500;
@@ -74,6 +74,13 @@ export interface Conversation {
   ratingFor: (turnId: string) => "up" | "down" | null;
   /** Rate one turn the assistant answered; a thumbs-down enqueues a review. */
   rate: (turnId: string, rating: "up" | "down", reason?: string) => Promise<void>;
+  /**
+   * Fetch the authorized view of a cited source for this conversation.
+   *
+   * @throws {SourceUnavailableError} when the credential is unusable or the
+   * backend cannot answer the source for this tenant.
+   */
+  viewSource: (sourceId: string) => Promise<SourceView>;
   send: (text: string) => Promise<void>;
   /** Approve or decline a booking the assistant proposed and is waiting on. */
   decide: (decision: "approved" | "declined") => Promise<void>;
@@ -219,7 +226,9 @@ export function useConversation({
           role: "assistant",
           source: "assistant",
           text: payload.reply,
-          ...(payload.turnId ? { turnId: payload.turnId } : {})
+          ...(payload.turnId ? { turnId: payload.turnId } : {}),
+          ...(payload.citations.length ? { citations: payload.citations } : {}),
+          ...(payload.committed.length ? { actions: payload.committed } : {})
         });
       }
       setEntries((previous) =>
@@ -352,6 +361,22 @@ export function useConversation({
   const ratingFor = useCallback((turnId: string) => ratings[turnId] ?? null, [ratings]);
 
   /**
+   * Fetch one cited source through the conversation's own credential.
+   *
+   * The source route rechecks tenant and audience authorization server-side, so
+   * the widget's only job is to present whatever the server authorizes — and to
+   * degrade without a trace of detail when it refuses.
+   */
+  const viewSource = useCallback(
+    async (sourceId: string): Promise<SourceView> => {
+      const credential = credentialRef.current;
+      if (!isValidCredential(credential)) throw new SourceUnavailableError();
+      return api.source(credential, sourceId);
+    },
+    [api]
+  );
+
+  /**
    * Rate one turn the assistant answered (`FEAT-008`). Only turns the visitor's
    * own conversation produced can be rated; the server enforces that. The
    * rating is best-effort: a network failure leaves the control available.
@@ -428,6 +453,7 @@ export function useConversation({
     unreadStaffCount,
     ratingFor,
     rate,
+    viewSource,
     send,
     decide,
     forget,

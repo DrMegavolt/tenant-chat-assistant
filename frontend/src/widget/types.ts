@@ -58,10 +58,32 @@ export interface ServerMessage {
   createdAt: string;
 }
 
-export interface ToolEvent {
-  name: string;
-  arguments: Record<string, unknown>;
-  result: Record<string, unknown>;
+/**
+ * One source a claim in an answer was grounded in, as the API curates it
+ * (`CitationSummary`). `source_id` addresses the authorized source view; the
+ * widget never guesses a URL or expects the source to still exist.
+ */
+export interface Citation {
+  sourceId: string;
+  title: string;
+  sourceName: string;
+  location: string;
+  revision: number;
+  effectiveAt: string;
+}
+
+/**
+ * The authorized view a citation resolves to (`SourceViewResponse`), served
+ * only while the chunk still belongs to the conversation's tenant.
+ */
+export interface SourceView {
+  sourceId: string;
+  title: string;
+  sourceName: string;
+  location: string;
+  text: string;
+  revision: number;
+  effectiveAt: string;
 }
 
 /** One entry in the visible transcript, in the order the visitor saw it. */
@@ -73,8 +95,9 @@ export type TranscriptEntry =
       text: string;
       source: MessageSource;
       turnId?: string;
+      citations?: Citation[];
+      actions?: CommittedAction[];
     }
-  | { kind: "tool"; id: string; event: ToolEvent }
   | { kind: "booking"; id: string; pending: PendingBooking };
 
 /**
@@ -146,6 +169,8 @@ export interface ChatTurnResponse {
   reply: string;
   pending: PendingBooking | null;
   committed: CommittedAction[];
+  /** The sources the answer was grounded in; empty for an abstention. */
+  citations: Citation[];
   provenance: TurnProvenance;
   /** A freshly reissued token that names the same conversation (SEC-002). */
   credential: string;

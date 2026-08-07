@@ -45,3 +45,11 @@ export function ArrowDownIcon() {
     </svg>
   );
 }
+
+export function CheckIcon() {
+  return (
+    <svg {...base}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}

@@ -2946,7 +2946,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-011 — Customer-facing citations and source viewer
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Feature/RAG UX`
 - Depends on: `RAG-005`, `SEC-002`
@@ -2961,7 +2961,28 @@ promotion pipeline — which requires a cluster that runs for real.
   - Missing or revoked sources degrade without leaking metadata.
 - Verification:
   - Browser tests cover multiple citations, abstention, revoked sources, and keyboard navigation.
-- Completion notes: _Pending._
+- Completion notes: Widget now parses `ChatTurnResponse.citations`
+  (`CitationSummary` — source id, title, publication, section, revision,
+  effective window) and renders a numbered, keyboard-reachable citation list
+  beneath each grounded answer; abstaining turns show nothing. Each citation
+  resolves through `GET /api/chat/sources/{source_id}` carrying the
+  `X-Visitor-Credential`, so the server's tenant, audience, and quarantine
+  recheck decides access and the widget never assumes a source still exists.
+  The source viewer is an `aria-modal` dialog with a Tab focus trap, Escape to
+  close, and focus returned to the triggering citation; it shows the authorized
+  title, publication, section/page, revision + effective date, and excerpt, and
+  degrades revoked, absent, or unreachable sources to a single bounded line with
+  no status, detail, or identifier. The dead prototype tool-call trace was
+  replaced by user-appropriate action notes for committed bookings, follow-ups,
+  and handoffs (a replayed booking reads as already confirmed, an unknown action
+  as a plain statement). Backend read-only; only `frontend/src/widget/**` and
+  widget tests changed. New `tests/citations.test.tsx` (15 tests) plus an
+  open-viewer axe case cover multiple citations, abstention, a missing
+  `citations` field, revoked and network-failed sources, credential reuse, focus
+  trap, Escape/close focus return, and action notes; contrast pairs added for
+  the new surfaces. Verified: `make check` — Python 1414 passed / 81.65%
+  coverage, frontend 146 passed / 92.71% lines (widget 94.23% stmts / 97.74%
+  lines), eval gates, deployment security, and image contracts all green.
 
 ### FEAT-012 — Booking cancellation and rescheduling
 

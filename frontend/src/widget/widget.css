@@ -176,6 +176,15 @@ textarea {
   }
 }
 
+/* Everything a modal source viewer covers while it is open; making it `inert`
+   then hides the transcript and controls from keyboard and screen reader. */
+.panel-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -318,17 +327,192 @@ textarea {
   text-transform: uppercase;
 }
 
-.tool-call {
+/* A committed action told the way a customer would understand it: a booked
+   appointment, a follow-up, a handoff — never the tool that caused it. */
+.action-note {
   align-self: flex-start;
+  display: grid;
+  gap: var(--space-1);
   max-width: 92%;
+  margin: 0;
   padding: var(--space-2) var(--space-3);
   border-left: 3px solid var(--notice-ink);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   background: var(--notice-surface);
   color: var(--notice-ink);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  font-size: 0.76rem;
+  font-size: 0.82rem;
+  list-style: none;
+}
+
+.action-note li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.action-note svg {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 14px;
+  height: 14px;
+}
+
+.action-reference {
+  margin-left: var(--space-1);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+/* --- Citations ------------------------------------------------------------ */
+
+/* The numbered, compact list of sources one answer draws on. Every entry is a
+   button, so the source viewer is reachable by keyboard. */
+.citation-list {
+  align-self: flex-start;
+  max-width: 92%;
+}
+
+.citation-list ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.citation-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition:
+    background var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
+}
+
+.citation-button:hover {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+}
+
+.citation-badge {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.citation-title {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Source viewer -------------------------------------------------------- */
+
+/* A modal over the panel: the rest of the widget is made `inert` while it is
+   open, so keyboard and screen-reader focus cannot escape the dialog. */
+.source-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.source-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.source-viewer-header h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.source-viewer-close {
+  flex: 0 0 auto;
+}
+
+.source-viewer-body {
+  display: grid;
+  gap: var(--space-3);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.source-viewer-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.source-viewer-meta div {
+  display: contents;
+}
+
+.source-viewer-meta dt {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.source-viewer-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-viewer-excerpt {
+  margin: 0;
+  padding: var(--space-3);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.source-viewer-status {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.source-viewer-status.error {
+  padding: var(--space-3);
+  border: 1px solid var(--danger-ink);
+  border-radius: var(--radius-sm);
+  background: var(--danger-surface);
+  color: var(--danger-ink);
 }
 
 .typing {
@@ -733,7 +917,10 @@ textarea {
   .launcher,
   .booking-form-card,
   .message,
-  .typing {
+  .typing,
+  .source-viewer,
+  .citation-button,
+  .action-note {
     border: 1px solid CanvasText;
   }
 }
