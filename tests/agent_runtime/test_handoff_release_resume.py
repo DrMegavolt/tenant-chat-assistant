@@ -14,21 +14,24 @@ import asyncio
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.core.commands import HandoffCommand
 from tenantchat.orchestration.model import ModelResponse
-from tenantchat.orchestration.nodes import DispatchNodes
-from tenantchat.orchestration.state import CommittedAction, DispatchState, StoredToolCall
 from tests.agent_runtime.conftest import (
     BOOKING_TENANT,
     RuntimeHarness,
     build_harness,
 )
-from tests.agent_runtime.test_durable_workflow import booking_script, _booking_call, _replay_commit_node
+from tests.agent_runtime.test_durable_workflow import (
+    _replay_commit_node,
+    booking_script,
+)
 
 
 async def _handoff(
     harness: RuntimeHarness, session_id: str, *, reason: str = "customer_request"
 ) -> str:
     policy = TenantRegistry.seeded().get(BOOKING_TENANT).policy
-    command = HandoffCommand.parse(policy, reason=reason, summary="Customer asked to speak to staff.")
+    command = HandoffCommand.parse(
+        policy, reason=reason, summary="Customer asked to speak to staff."
+    )
     return (await harness.handoffs.record(command, session_id=session_id)).handoff_id
 
 

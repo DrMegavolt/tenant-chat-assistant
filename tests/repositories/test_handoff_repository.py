@@ -116,9 +116,7 @@ def test_accept_moves_the_conversation_into_staff_hands_and_writes_the_notice(
         try:
             store = PostgresHandoffStore(database.engine)
             recorded = await store.record(command(), session_id="visitor-correlation")
-            assigned = await store.accept(
-                "apex", recorded.handoff_id, principal_id="operator-7"
-            )
+            assigned = await store.accept("apex", recorded.handoff_id, principal_id="operator-7")
         finally:
             await database.dispose()
 
@@ -209,9 +207,7 @@ def test_release_returns_the_conversation_to_the_queue_and_resumes_the_session(
             store = PostgresHandoffStore(database.engine)
             recorded = await store.record(command(), session_id="visitor-correlation")
             await store.accept("apex", recorded.handoff_id, principal_id="operator-7")
-            released = await store.release(
-                "apex", recorded.handoff_id, principal_id="operator-7"
-            )
+            released = await store.release("apex", recorded.handoff_id, principal_id="operator-7")
         finally:
             await database.dispose()
 
@@ -262,9 +258,7 @@ def test_resolution_closes_the_session_and_audits_who_closed_it(
             store = PostgresHandoffStore(database.engine)
             recorded = await store.record(command(), session_id="visitor-correlation")
             await store.accept("apex", recorded.handoff_id, principal_id="operator-7")
-            resolved = await store.resolve(
-                "apex", recorded.handoff_id, principal_id="operator-7"
-            )
+            resolved = await store.resolve("apex", recorded.handoff_id, principal_id="operator-7")
         finally:
             await database.dispose()
 

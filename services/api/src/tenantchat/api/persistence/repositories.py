@@ -731,8 +731,7 @@ class PostgresHandoffStore:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
-                    _HANDOFF_SELECT
-                    + " FROM handoffs WHERE tenant_id = :tenant_id "
+                    _HANDOFF_SELECT + " FROM handoffs WHERE tenant_id = :tenant_id "
                     "   AND status IN ('requested', 'queued', 'assigned') "
                     " ORDER BY requested_at, id LIMIT :limit"
                 ),
@@ -745,8 +744,7 @@ class PostgresHandoffStore:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
-                    _HANDOFF_SELECT
-                    + " FROM handoffs WHERE tenant_id = :tenant_id "
+                    _HANDOFF_SELECT + " FROM handoffs WHERE tenant_id = :tenant_id "
                     "   AND chat_session_id = :session_id "
                     " ORDER BY requested_at DESC, id DESC LIMIT 1"
                 ),
@@ -755,9 +753,7 @@ class PostgresHandoffStore:
             row = result.first()
         return None if row is None else _handoff(row)
 
-    async def accept(
-        self, tenant_id: str, handoff_id: str, *, principal_id: str
-    ) -> HandoffRecord:
+    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
@@ -875,9 +871,7 @@ class PostgresHandoffStore:
         if notice is None:
             return
         mapping = row._mapping  # type: ignore[attr-defined]
-        await _append_message(
-            connection, mapping["tenant_id"], mapping["chat_session_id"], notice
-        )
+        await _append_message(connection, mapping["tenant_id"], mapping["chat_session_id"], notice)
 
     async def _raise_transition(
         self,

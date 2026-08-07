@@ -333,9 +333,7 @@ class HandoffStore(Protocol):
         ``status``.
         """
 
-    async def accept(
-        self, tenant_id: str, handoff_id: str, *, principal_id: str
-    ) -> HandoffRecord:
+    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
         """Assign an unowned handoff to one staff member, atomically.
 
         Raises:
@@ -689,6 +687,7 @@ class InMemoryHandoffStore:
     def __init__(self) -> None:
         self._records: list[HandoffRecord] = []
         self._lock = asyncio.Lock()
+
     async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord:
         handoff = HandoffRecord(
             handoff_id=_reference("HO"),
@@ -721,9 +720,7 @@ class InMemoryHandoffStore:
         ]
         return matches[-1] if matches else None
 
-    async def accept(
-        self, tenant_id: str, handoff_id: str, *, principal_id: str
-    ) -> HandoffRecord:
+    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
         async with self._lock:
             for index, record in enumerate(self._records):
                 if record.tenant_id != tenant_id or record.handoff_id != handoff_id:

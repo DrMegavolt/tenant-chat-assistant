@@ -82,10 +82,7 @@ def visitor_state_notice(status: HandoffStatus) -> str | None:
     if status is HandoffStatus.ASSIGNED:
         return "A member of the team is now with you in this conversation."
     if status is HandoffStatus.RESOLVED:
-        return (
-            "This conversation is now closed. If you need anything else, "
-            "start a new chat."
-        )
+        return "This conversation is now closed. If you need anything else, " "start a new chat."
     return None
 
 

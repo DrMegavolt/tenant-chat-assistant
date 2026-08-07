@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from services.api.tests.conftest import ScriptedModel
@@ -71,7 +71,9 @@ def operator_headers(subject: str = OPERATOR, role: str = "support_agent") -> di
 
 
 @pytest.fixture
-def staff_console() -> Iterator[tuple[TestClient, InMemoryHandoffStore, InMemoryAuditStore, ScriptedModel]]:
+def staff_console() -> (
+    Iterator[tuple[TestClient, InMemoryHandoffStore, InMemoryAuditStore, ScriptedModel]]
+):
     """An app with a shared handoff store, audit log, and model to inspect.
 
     The shared store is the point: the HTTP surface and the assertions read
@@ -142,7 +144,7 @@ def record_handoff(
     return asyncio.run(run())
 
 
-def accept(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_id: str):
+def accept(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_id: str) -> Any:
     return client.post(
         f"/api/admin/handoffs/{handoff_id}/accept",
         params={"tenant_id": tenant_id},
@@ -150,7 +152,7 @@ def accept(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_
     )
 
 
-def release(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_id: str):
+def release(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_id: str) -> Any:
     return client.post(
         f"/api/admin/handoffs/{handoff_id}/release",
         params={"tenant_id": tenant_id},
@@ -158,7 +160,7 @@ def release(client: TestClient, headers: dict[str, str], handoff_id: str, tenant
     )
 
 
-def resolve(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_id: str):
+def resolve(client: TestClient, headers: dict[str, str], handoff_id: str, tenant_id: str) -> Any:
     return client.post(
         f"/api/admin/handoffs/{handoff_id}/resolve",
         params={"tenant_id": tenant_id},
@@ -166,7 +168,7 @@ def resolve(client: TestClient, headers: dict[str, str], handoff_id: str, tenant
     )
 
 
-def visitor_message(client: TestClient, credential: str, text: str):
+def visitor_message(client: TestClient, credential: str, text: str) -> Any:
     return client.post(
         "/api/chat",
         json={"message": text},
@@ -200,7 +202,7 @@ class TestSingleOwnershipUnderRace:
         handoffs = InMemoryHandoffStore()
         handoff_id = record_handoff(handoffs, "clearview", "session-race")
 
-        async def race() -> list[str | Exception]:
+        async def race() -> Any:
             return await asyncio.gather(
                 handoffs.accept("clearview", handoff_id, principal_id=OPERATOR),
                 handoffs.accept("clearview", handoff_id, principal_id=SECOND_OPERATOR),
@@ -208,7 +210,9 @@ class TestSingleOwnershipUnderRace:
             )
 
         outcomes = asyncio.run(race())
-        winners = [result.assigned_principal_id for result in outcomes if not isinstance(result, Exception)]
+        winners = [
+            result.assigned_principal_id for result in outcomes if not isinstance(result, Exception)
+        ]
         refused = sum(1 for result in outcomes if isinstance(result, HandoffTransitionError))
 
         assert refused == 1
@@ -238,7 +242,7 @@ class TestSingleOwnershipUnderRace:
         asyncio.run(handoffs.accept("clearview", handoff_id, principal_id=OPERATOR))
         asyncio.run(handoffs.release("clearview", handoff_id, principal_id=OPERATOR))
 
-        async def race() -> list[object]:
+        async def race() -> Any:
             return await asyncio.gather(
                 handoffs.accept("clearview", handoff_id, principal_id=OPERATOR),
                 handoffs.accept("clearview", handoff_id, principal_id=SECOND_OPERATOR),
@@ -271,7 +275,8 @@ class TestTheVisitorTurnGate:
             "/api/chat/session", headers={VISITOR_CREDENTIAL_HEADER: credential}
         ).json()["messages"]
         assert any(
-            message["role"] == "visitor" and message["content"] == "hello?" for message in transcript
+            message["role"] == "visitor" and message["content"] == "hello?"
+            for message in transcript
         )
         assert any(
             message["role"] == "system" and QUEUE_NOTICE in message["content"]
@@ -362,7 +367,9 @@ class TestTheStaffQueueSurface:
         handoff_id = record_handoff(handoffs, "clearview", session_id)
         headers = operator_headers()
 
-        listed = client.get("/api/admin/handoffs", params={"tenant_id": "clearview"}, headers=headers)
+        listed = client.get(
+            "/api/admin/handoffs", params={"tenant_id": "clearview"}, headers=headers
+        )
         assert listed.status_code == 200
         rows = listed.json()["handoffs"]
         assert [row["handoff_id"] for row in rows] == [handoff_id]
@@ -432,7 +439,9 @@ class TestTheStaffQueueSurface:
         assert released.json()["handoff"]["assigned_principal_id"] is None
 
         # The conversation is takeable again.
-        accepted = accept(client, operator_headers(subject=SECOND_OPERATOR), handoff_id, "clearview")
+        accepted = accept(
+            client, operator_headers(subject=SECOND_OPERATOR), handoff_id, "clearview"
+        )
         assert accepted.status_code == 201
         assert accepted.json()["handoff"]["assigned_principal_id"] == SECOND_OPERATOR
 
@@ -461,8 +470,9 @@ class TestTheStaffQueueSurface:
 
         viewer = operator_headers(subject=SECOND_OPERATOR, role="viewer")
         assert (
-            client.get("/api/admin/handoffs", params={"tenant_id": "clearview"}, headers=viewer)
-            .status_code
+            client.get(
+                "/api/admin/handoffs", params={"tenant_id": "clearview"}, headers=viewer
+            ).status_code
             == 403
         )
         assert accept(client, viewer, handoff_id, "clearview").status_code == 403
