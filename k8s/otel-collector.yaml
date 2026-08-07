@@ -6,7 +6,7 @@ metadata:
 spec:
   mode: deployment
   managementState: managed
-  image: otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd
+  image: otel/opentelemetry-collector-contrib:0.127.0@sha256:e94cfd92357aa21f4101dda3c0c01f90e6f24115ba91b263c4d09fed7911ae68
   replicas: 1
   ports:
     - name: otlp-grpc
@@ -41,13 +41,17 @@ spec:
       # home on it. Content export to a trusted in-cluster viewer is a
       # separate, gated decision (TRACE_CONTENT_EXPORT) made by an operator
       # adding a dedicated pipeline for it — never by widening this allowlist.
+      #
+      # The operator (0.116.0) pins the collector's own telemetry to the
+      # removed `address` schema, so the collector image is the last one that
+      # accepts it (0.127.0), and `allowed_keys` is exact-match only — the
+      # k8s.* and gen_ai.usage.* families are enumerated, not globbed.
       redaction:
-        allow_attributes:
+        allowed_keys:
           - service.name
           - service.namespace
           - service.instance.id
           - deployment.environment
-          - k8s.*
           - server.address
           - server.port
           - network.protocol.name
@@ -69,7 +73,26 @@ spec:
           - gen_ai.request.seed
           - gen_ai.response.model
           - gen_ai.response.finish_reason
-          - gen_ai.usage.*
+          - gen_ai.usage.input_tokens
+          - gen_ai.usage.output_tokens
+          - gen_ai.usage.total_tokens
+          - k8s.cluster.name
+          - k8s.cluster.uid
+          - k8s.namespace.name
+          - k8s.node.name
+          - k8s.node.uid
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.pod.ip
+          - k8s.container.name
+          - k8s.container.restart_count
+          - k8s.deployment.name
+          - k8s.replicaset.name
+          - k8s.statefulset.name
+          - k8s.daemonset.name
+          - k8s.cronjob.name
+          - k8s.job.name
+          - k8s.workload.name
       batch: {}
       memory_limiter:
         check_interval: 1s
