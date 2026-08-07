@@ -128,6 +128,42 @@ make deployment-security image-contracts
 ./k8s/deploy.sh /absolute/path/to/rendered-app.yaml
 ```
 
+For repeat releases to an already-provisioned local MicroK8s cluster, build and
+publish all five `linux/amd64` application images, render their registry digests,
+take and verify a pre-migration database backup, run Alembic and the LangGraph
+checkpoint setup, refresh grants for separately provisioned runtime roles, and
+wait for the complete rollout with one command:
+
+```bash
+make deploy-local
+```
+
+The generated manifests and Buildx metadata stay below the gitignored
+`.local/k8s/` directory. The target attempts a binary-safe, verified custom-
+format database backup under `.local/k8s/backups/`, but a backup failure warns
+and does not block a local migration by default. Set
+`LOCAL_K8S_REQUIRE_BACKUP=true` to make it mandatory, or
+`LOCAL_K8S_SKIP_BACKUP=true` to omit the attempt. Retention and deletion remain
+an explicit operator decision because these files can contain PII. The defaults publish through
+`192.168.1.89:32000/tenantchat` and render the pull references as
+`localhost:32000/tenantchat`, matching the MicroK8s registry's host and node
+views. Override those with `LOCAL_K8S_PUSH_REPOSITORY`,
+`LOCAL_K8S_PULL_REPOSITORY`, or `LOCAL_K8S_RELEASE_DIR`. Set
+`LOCAL_K8S_SKIP_ROLE_GRANTS=true` only when role grants are managed separately.
+
+If publishing and rendering succeeded but a later release step failed, resume
+from the immutable manifests without rebuilding the images:
+
+```bash
+LOCAL_K8S_SKIP_BUILD=true make deploy-local
+```
+
+`make deploy-local` intentionally requires the `llm-chat/postgres` StatefulSet
+to exist and be ready before it builds anything. Use the provisioning steps
+above for a first installation; applying an application manifest that contains
+new API pods before its database exists would violate the migration-before-
+rollout release order.
+
 `k8s/deploy.sh` applies the OTel collector, observability exposure, the
 web/Keycloak MetalLB Services, network policies, the application manifest,
 Kibana setup, and the seed job, then waits for the rollouts. The public Service
@@ -177,9 +213,10 @@ deletes only those namespaces. It never reads or changes `llm-chat` Secrets.
 `postgres-migration-credentials` contains the schema-owner URL used only by the
 one-shot `k8s/api-migration-job.yaml` release step. That Job runs both Alembic
 and the idempotent LangGraph checkpoint schema setup. `deploy.sh` verifies that
-the resource exists but does not run the migration Job; the release pipeline
-must replace its image placeholder with the release digest and apply it before
-API rollout, following `docs/runbooks/database-migrations.md`.
+the resource exists but does not run the migration Job; callers must replace
+its image placeholder with the release digest and apply it before API rollout.
+`make deploy-local` performs that orchestration for the local cluster. Other
+release pipelines must follow `docs/runbooks/database-migrations.md` directly.
 
 The endpoint and placeholder credentials that existed in repository history must
 be treated as exposed examples.  They were not verified as live values here.

@@ -77,3 +77,21 @@ Do not commit rendered manifests if their environment configuration belongs
 outside the repository. The deployment script refuses unresolved digest tokens,
 and application pods never receive source-code ConfigMaps or startup package
 installation commands.
+
+For a repeat release to the already-provisioned local MicroK8s cluster, the
+repository automates the publish, digest rendering, migration, grant refresh,
+verified pre-migration backup, and rollout sequence:
+
+```bash
+make deploy-local
+```
+
+This is not a first-install command: it fails before building when the
+`llm-chat/postgres` StatefulSet is absent or unavailable.
+
+If the images and immutable manifests were already produced, resume a failed
+release after that point without rebuilding:
+
+```bash
+LOCAL_K8S_SKIP_BUILD=true make deploy-local
+```
