@@ -313,8 +313,7 @@ class Settings:
                 pool_timeout_default=10.0,
                 total_deadline_default=360.0,
             ),
-            llm_response_cache=os.environ.get("CHAT_API_LLM_RESPONSE_CACHE", "").strip()
-            .lower()
+            llm_response_cache=os.environ.get("CHAT_API_LLM_RESPONSE_CACHE", "").strip().lower()
             == "true",
             llm_response_cache_ttl_seconds=_int_env("CHAT_API_RESPONSE_CACHE_TTL_SECONDS", 300),
             visitor_credential_signing_key=os.environ.get(

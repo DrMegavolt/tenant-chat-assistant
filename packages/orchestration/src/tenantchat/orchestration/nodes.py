@@ -550,10 +550,7 @@ class DispatchNodes:
                 f"message, or call {policy.phone}."
             )
         if reason is BlockReason.OUTPUT_TOO_LONG:
-            return (
-                "I could not finish that answer. Please ask again, or call "
-                f"{policy.phone}."
-            )
+            return "I could not finish that answer. Please ask again, or call " f"{policy.phone}."
         return (
             "I have reached my usage limit for now, so I cannot keep answering. "
             f"The team can help — call {policy.phone}."
@@ -1037,10 +1034,7 @@ class DispatchNodes:
             # `AI-002`: the tenant's action budget is another guard beside the
             # permission allowlist. A refused action is a tool result — the
             # model can tell the visitor to call — never a silent commit.
-            if (
-                tool is ToolName.CREATE_LEAD
-                and self._deps.budgets is not None
-            ):
+            if tool is ToolName.CREATE_LEAD and self._deps.budgets is not None:
                 action_verdict = await self._deps.budgets.check_action(
                     state["tenant_id"], budget, turn_index=state["turn_index"]
                 )
@@ -1279,9 +1273,7 @@ class DispatchNodes:
                     turn_index=state["turn_index"],
                 )
                 if not action_verdict.allowed:
-                    self._observe_booking_commit(
-                        ToolOutcome.REFUSED, time.monotonic() - started
-                    )
+                    self._observe_booking_commit(ToolOutcome.REFUSED, time.monotonic() - started)
                     self._observe_policy_block(action_verdict.block_reason)
                     if workflow_id:
                         await self._deps.workflows.transition(

@@ -242,6 +242,7 @@ class BlockReason(StrEnum):
 
 class CacheResult(StrEnum):
     """Whether one prompt found a cached safe response, as the label."""
+
     HIT = "hit"
     MISS = "miss"
 
@@ -254,6 +255,7 @@ class AlertLevel(StrEnum):
     one-shot per level per window, so a tenant that stays over the threshold
     does not emit a series.
     """
+
     WARN = "warn"
     CRITICAL = "critical"
 
