@@ -292,7 +292,7 @@ runbooks.
 - [x] `RAG-003` — Production document parsing and chunking — `Done`
 - [x] `RAG-004` — Hybrid retrieval, reranking, and abstention — `Done`
 - [x] `RAG-005` — Evidence and citation contract — `P1`
-- [ ] `RAG-006` — Conversation-aware retrieval — `P1`
+- [x] `RAG-006` — Conversation-aware retrieval — `P1`
 - [x] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
 - [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
 - [x] `RAG-008` — RAG evaluation and regression suite — `P1`
@@ -2130,7 +2130,7 @@ guarantees by construction.
 
 ### RAG-006 — Conversation-aware retrieval
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `RAG`
 - Depends on: `DATA-002`, `RAG-004`, `AGENT-001`
@@ -2145,7 +2145,57 @@ guarantees by construction.
   - Only bounded, relevant history is used.
 - Verification:
   - Multi-turn evaluation cases cover pronouns, corrections, topic shifts, and malicious prior turns.
-- Completion notes: _Pending._
+- Completion notes: Built as a **deterministic query planner**
+  (`packages/core/src/tenantchat/core/planning.py`, `query-planning@1`) rather
+  than a model rewrite, which settles the RAG-010 boundary by construction: the
+  planner never executes prior text and never asks a model to rewrite it, and
+  the only words that travel out of history into the resolved query are
+  **known terms** — a caller-supplied, server-approved vocabulary (the tenant's
+  service slug/display-name/aliases in the graph; the dataset's per-tenant
+  `vocabulary` in the harness). A deictic follow-up with no known term of its
+  own carries the most recent known terms from a bounded window (8 turns, ≤2
+  carried terms); corrections (`I meant …`, `instead of`, `not the X`) and
+  topic switches drop the carried context and reset; self-anchored questions
+  are never diluted by carryover. The plan records `tenant_id`, `workflow`
+  (routed intent), `entities`, `topic`, `mode`, `history_used`, and `reset`,
+  so referenced entities, service, tenant, and active workflow are tracked on
+  the record. The graph node (`call_model`) plans before retrieving and rides
+  the plan + resolved query on `evidence_meta` in the checkpoint. The eval
+  runner resolves every case with `prior_turns` through the same planner before
+  scoring (and calibrates the hybrid abstention boundary on resolved queries),
+  and report rows carry the resolved query and plan mode.
+  `evals/datasets/multi-turn-v2.json` replaces v1 (which documented
+  "RAG-006 is not built") with 13 raw-follow-up cases across the four required
+  kinds — pronouns (`What about the other plan?` → Care Plan context), a
+  correction, topic shifts (incl. an abstain case), and malicious prior turns —
+  all scoring recall@5 1.0, citation precision 1.0, abstention correctness 1.0,
+  zero cross-tenant leaks on both baseline and hybrid, gated with exact
+  cross-interpreter determinism. The `query_planner` version joined the
+  component manifest (golden-v1's two reviewed waivers had their manifest
+  hashes refreshed to match). Boundary proof: a prompt-assembly test pins that
+  the resolved query is consumed only by the retriever — the prompt carries the
+  original visitor turns untrusted and never the resolved query — so the
+  rewrite is not a path by which prior untrusted text reaches a trusted region.
+  Changed: `packages/core/src/tenantchat/core/planning.py`,
+  `packages/core/tests/test_planning.py` (21 tests),
+  `packages/orchestration/src/tenantchat/orchestration/nodes.py`,
+  `packages/orchestration/tests/test_prompt_assembly.py`,
+  `services/api/tests/test_rag006.py` (3 end-to-end), `evals/{dataset,runner,
+  scorer,versions}.py`, `evals/datasets/multi-turn-v2.json` (v1 removed),
+  `evals/exceptions.json`, `evals/tests/{test_datasets,test_multiturn}.py`,
+  `Makefile`. Verified: `uv run --frozen pytest -m "not integration"` (1447
+  passed) and `make check` green end to end (lint/format/typecheck, all three
+  eval gates with determinism, Python + frontend coverage above the floors,
+  deployment security, image contracts). Coordination notes: (1) the trace's
+  retrieval section still reports the *original* visitor message as `query`
+  (`trace.py` `_retrieval_section`), while the resolved query and plan live on
+  the checkpointed `evidence_meta`; surfacing them in the trace record is an
+  `OBS-006` follow-up. (2) Production known terms come from the tenant catalog
+  (service-level follow-ups); product-name vocabulary such as "Care Plan" is
+  supplied by the eval dataset — a knowledge-derived vocabulary index at
+  ingestion is the natural follow-up, and `plan_query(known_terms=…)` is the
+  seam. (3) The financing side-agent still retrieves single-turn; wiring the
+  planner into its request contract is a `FEAT-014`-era follow-up.
 
 ### RAG-007 — RAG prompt-injection and content safety defenses
 
