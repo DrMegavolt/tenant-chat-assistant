@@ -425,9 +425,7 @@ def known_service_terms(policy: TenantPolicy) -> tuple[str, ...]:
     carries only approved terms out of history, never arbitrary visitor text.
     """
     return tuple(
-        term
-        for definition in policy.catalog.definitions
-        for term in definition.match_keys()
+        term for definition in policy.catalog.definitions for term in definition.match_keys()
     )
 
 

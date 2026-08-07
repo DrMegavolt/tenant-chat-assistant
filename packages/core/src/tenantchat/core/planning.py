@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import functools
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -142,7 +142,7 @@ def plan_query(
     *,
     tenant_id: str,
     history: Sequence[ConversationTurn] = (),
-    known_terms: Sequence[str] = (),
+    known_terms: Iterable[str] = (),
     workflow: str = "",
     max_history_turns: int = MAX_HISTORY_TURNS,
 ) -> RetrievalPlan:
@@ -277,7 +277,7 @@ def _context(turns: Sequence[ConversationTurn], terms: tuple[str, ...]) -> _Rece
     )
 
 
-def _normalize(raw: Sequence[str]) -> tuple[str, ...]:
+def _normalize(raw: Iterable[str]) -> tuple[str, ...]:
     """Fold and validate the known terms.
 
     A term must survive tokenization with at least one content word, which

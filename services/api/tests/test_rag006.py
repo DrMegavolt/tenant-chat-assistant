@@ -240,9 +240,7 @@ def test_a_deictic_follow_up_resolves_against_the_prior_turn() -> None:
     )
     headers = _open_session(client)
 
-    first = client.post(
-        "/api/chat", json={"message": "What is the Care Plan?"}, headers=headers
-    )
+    first = client.post("/api/chat", json={"message": "What is the Care Plan?"}, headers=headers)
     assert first.status_code == 200
     assert first.json()["reply"] == "Clearview's Care Plan covers HVAC."
 
@@ -284,9 +282,7 @@ def test_a_topic_switch_drops_the_carried_context() -> None:
     )
     headers = _open_session(client)
 
-    first = client.post(
-        "/api/chat", json={"message": "What is the Care Plan?"}, headers=headers
-    )
+    first = client.post("/api/chat", json={"message": "What is the Care Plan?"}, headers=headers)
     assert first.status_code == 200
 
     second = client.post("/api/chat", json={"message": "What are your hours?"}, headers=headers)
@@ -299,7 +295,7 @@ def test_a_topic_switch_drops_the_carried_context() -> None:
 
 
 def test_a_correction_resets_the_retrieval_context() -> None:
-    """"I meant the hours." corrects the topic: retrieval starts over
+    """ "I meant the hours." corrects the topic: retrieval starts over
     instead of continuing the Care Plan exchange."""
     knowledge, chunks = _knowledge([("cv-care-plan", CARE_PLAN), ("cv-hours", HOURS)])
     client, _ = _client(
@@ -315,13 +311,9 @@ def test_a_correction_resets_the_retrieval_context() -> None:
     )
     headers = _open_session(client)
 
-    first = client.post(
-        "/api/chat", json={"message": "What is the Care Plan?"}, headers=headers
-    )
+    first = client.post("/api/chat", json={"message": "What is the Care Plan?"}, headers=headers)
     assert first.status_code == 200
 
-    second = client.post(
-        "/api/chat", json={"message": "I meant the hours."}, headers=headers
-    )
+    second = client.post("/api/chat", json={"message": "I meant the hours."}, headers=headers)
     assert second.status_code == 200
     assert [citation["source_id"] for citation in second.json()["citations"]] == ["cv-hours"]

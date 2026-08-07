@@ -14,6 +14,7 @@ from tenantchat.core.planning import (
     MAX_HISTORY_TURNS,
     ConversationTurn,
     PlanMode,
+    RetrievalPlan,
     plan_query,
 )
 
@@ -41,7 +42,7 @@ def _plan(
     *,
     history: list[ConversationTurn] | tuple[ConversationTurn, ...] = (),
     terms: set[str] = CLEARVIEW,
-) -> object:
+) -> RetrievalPlan:
     return plan_query(message, tenant_id="clearview", history=history, known_terms=terms)
 
 
