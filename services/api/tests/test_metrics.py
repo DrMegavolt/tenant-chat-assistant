@@ -840,6 +840,68 @@ class TestBusinessFunnel:
         )
 
 
+class TestTheOutcomePartition:
+    def test_every_completed_turn_lands_in_exactly_one_outcome_class(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The outcome distribution sums to the turns the API completed.
+
+        `OBS-002` calls this metric a quality distribution, which is only true
+        if it partitions. Two terminal paths used to record nothing at all — a
+        claim refusal and the server-written fallback reply — so the series
+        under-counted turns and the gap looked like traffic that never arrived.
+        Asserting the total rather than each class is what catches the next
+        terminal path added without one.
+        """
+        model.script = [
+            # A plain answer.
+            ModelResponse(content="We are open until 7pm.", model_name="scripted"),
+            # A fabricated price: refused whole by the `RAG-007` validator.
+            ModelResponse(content="It is $4,999 and fully covered.", model_name="scripted"),
+        ]
+        visitor = _open_session(client)
+
+        answered = client.post(
+            "/api/chat", json={"message": "What are your hours?"}, headers=visitor.headers
+        )
+        refused = client.post(
+            "/api/chat",
+            json={"message": "how much for a repair?"},
+            headers=visitor.headers,
+        )
+        clarified = client.post(
+            "/api/chat",
+            json={"message": "callback on tuesday for a repair"},
+            headers=visitor.headers,
+        )
+
+        assert [answered.status_code, refused.status_code, clarified.status_code] == [200] * 3
+        assert "$4,999" not in refused.json()["reply"]
+
+        values = sample_values()
+        outcomes = {
+            next(iter(labels))[1]: value
+            for (name, labels), value in values.items()
+            if name == "tenantchat_turn_outcomes_total"
+        }
+        assert outcomes.get("answer_refused") == 1
+        assert sum(outcomes.values()) == 3, outcomes
+
+    def test_the_refused_class_is_distinct_from_a_refused_tool_call(self) -> None:
+        """``outcome`` is a shared label name, so its values must not collide.
+
+        ``ToolOutcome.REFUSED`` already spends ``refused`` on the same label,
+        and a query for refused turns that also matched refused tool calls
+        would silently over-report the validator's work.
+        """
+        from tenantchat.core.metrics import ToolOutcome, TurnOutcome
+
+        turn_values = {member.value for member in TurnOutcome}
+        tool_values = {member.value for member in ToolOutcome}
+        assert turn_values.isdisjoint(tool_values)
+        assert TurnOutcome.ANSWER_REFUSED.value == "answer_refused"
+
+
 class TestLabelSafety:
     def test_no_label_of_a_real_turn_carries_pii_or_free_text(
         self, client: TestClient, model: ScriptedModel

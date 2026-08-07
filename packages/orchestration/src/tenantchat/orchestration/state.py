@@ -25,7 +25,29 @@ discard one another's entries.
 from __future__ import annotations
 
 import operator
+from enum import StrEnum
 from typing import Annotated, TypedDict
+
+
+class TurnOutcome(StrEnum):
+    """How the turn ended, as the closed status vocabulary the graph records.
+
+    Lives here rather than beside the trace because it is the vocabulary of a
+    :class:`DispatchState` field: the terminal nodes write it and the trace
+    reads it, and this module is the one both can import without a cycle.
+
+    ``REFUSED`` is the `RAG-007` claim validator rejecting an answer whole. It
+    is distinct from ``ABSTAINED``: an abstention means there was no evidence to
+    answer from, a refusal means the model answered and the server would not
+    publish what it said.
+    """
+
+    ANSWERED = "answered"
+    PAUSED = "paused"
+    ESCALATED = "escalated"
+    ABSTAINED = "abstained"
+    CLARIFIED = "clarified"
+    REFUSED = "refused"
 
 
 class StoredToolCall(TypedDict):
@@ -98,6 +120,12 @@ class DispatchState(TypedDict):
     # retrying, because `REL-001` owns retry policy for dependency clients and a
     # graph that retries as well would multiply it.
     failure: str
+    # How the turn ended, in the `OBS-004` trace vocabulary, written by whichever
+    # terminal node ended it. The trace records this rather than re-deriving a
+    # status from residual state: a status inferred from the absence of a field
+    # reads a claim refusal and a spent round budget as answered turns, because
+    # neither leaves a failure behind.
+    turn_outcome: str
     model_name: str
     # The AGENT-001 routing outcome, mirrored from the durable routing record
     # so the model-facing prompt can bind the agent context. The durable record
@@ -176,6 +204,7 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "pending_booking": None,
         "booking_approved": False,
         "failure": "",
+        "turn_outcome": "",
         "model_name": "",
         "routing_outcome": "",
         "routed_intent": "",
@@ -211,6 +240,7 @@ def next_turn(message: str) -> dict[str, object]:
         "pending_booking": None,
         "booking_approved": False,
         "failure": "",
+        "turn_outcome": "",
         # The route node re-decides every turn; the previous turn's decision
         # must not leak into the next one.
         "routing_outcome": "",
