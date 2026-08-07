@@ -60,8 +60,8 @@ from tenantchat.core.metrics import (
     MetricName,
     label_value_is_safe,
 )
-from tenantchat.core.routing import IntentName, RoutingOutcome, RoutingRule
 from tenantchat.core.resilience import CircuitState, Dependency, FailureKind
+from tenantchat.core.routing import IntentName, RoutingOutcome, RoutingRule
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolCall, ToolSpec
 from tenantchat.orchestration.prompts import DEFAULT_REGISTRY, DISPATCH_SYSTEM_TEMPLATE_ID

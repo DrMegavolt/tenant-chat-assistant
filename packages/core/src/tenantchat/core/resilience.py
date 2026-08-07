@@ -44,7 +44,7 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, TypeVar
 
@@ -148,8 +148,8 @@ class ResiliencePolicy:
     client gives up on a dead dependency.
     """
 
-    retries: RetryPolicy = RetryPolicy()
-    circuit: CircuitPolicy = CircuitPolicy()
+    retries: RetryPolicy = field(default_factory=RetryPolicy)
+    circuit: CircuitPolicy = field(default_factory=CircuitPolicy)
     connect_timeout_seconds: float = 10.0
     read_timeout_seconds: float = 120.0
     write_timeout_seconds: float = 30.0
@@ -351,7 +351,10 @@ class AsyncResilientCaller:
             self._policy.retries.max_delay_seconds,
             self._policy.retries.base_delay_seconds * (2 ** (attempt - 1)),
         )
-        jitter: float = random.uniform(0.0, self._policy.retries.jitter_seconds)
+        # Jitter is deliberately non-cryptographic: it exists to desynchronise
+        # a herd of retries, and a secret-graded generator would make the delay
+        # unobservable and the tests flaky.
+        jitter: float = random.uniform(0.0, self._policy.retries.jitter_seconds)  # noqa: S311
         return backoff + jitter
 
     def _observe_retry(self, kind: FailureKind) -> None:

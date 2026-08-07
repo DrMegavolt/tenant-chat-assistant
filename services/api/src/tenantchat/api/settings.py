@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from tenantchat.api.limits import RateLimitPolicy
+from tenantchat.core.resilience import CircuitPolicy, ResiliencePolicy, RetryPolicy
 
 # Large enough for a booking form with a long address, small enough that an
 # unauthenticated caller cannot make the process buffer megabytes (SEC-003).
@@ -91,6 +92,48 @@ def _int_env(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 
 
+def _dependency_resilience(
+    *,
+    env_prefix: str,
+    read_timeout_default: float,
+    connect_timeout_default: float,
+    write_timeout_default: float,
+    pool_timeout_default: float,
+    total_deadline_default: float,
+) -> ResiliencePolicy:
+    """The REL-001 envelope for one dependency, tuned by ``{PREFIX}_*`` env.
+
+    The retry budget, circuit policy, and total deadline are overridable per
+    dependency; the connect/write/pool phases stay at bounded defaults because
+    nothing but an operator with a measuring stick should change them.
+    """
+    timeout_env = os.environ.get(f"{env_prefix}_TIMEOUT_SECONDS")
+    read = float(timeout_env) if timeout_env else read_timeout_default
+    return ResiliencePolicy(
+        retries=RetryPolicy(
+            max_attempts=_int_env(f"{env_prefix}_RETRY_MAX_ATTEMPTS", 3),
+            base_delay_seconds=float(
+                os.environ.get(f"{env_prefix}_RETRY_BASE_DELAY_SECONDS", "0.25")
+            ),
+            max_delay_seconds=float(os.environ.get(f"{env_prefix}_RETRY_MAX_DELAY_SECONDS", "2.0")),
+            jitter_seconds=float(os.environ.get(f"{env_prefix}_RETRY_JITTER_SECONDS", "0.25")),
+        ),
+        circuit=CircuitPolicy(
+            failure_threshold=_int_env(f"{env_prefix}_CIRCUIT_FAILURE_THRESHOLD", 5),
+            cooldown_seconds=float(
+                os.environ.get(f"{env_prefix}_CIRCUIT_COOLDOWN_SECONDS", "30.0")
+            ),
+        ),
+        connect_timeout_seconds=connect_timeout_default,
+        read_timeout_seconds=read,
+        write_timeout_seconds=write_timeout_default,
+        pool_timeout_seconds=pool_timeout_default,
+        total_deadline_seconds=float(
+            os.environ.get(f"{env_prefix}_TOTAL_DEADLINE_SECONDS", str(total_deadline_default))
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     allowed_origins: tuple[str, ...]
@@ -120,6 +163,11 @@ class Settings:
     llm_model: str | None = None
     llm_api_key: str = ""
     llm_timeout_seconds: int = 120
+    # REL-001: the resilience envelope each owned client runs under. The
+    # defaults are tuned per dependency — the LLM gets a long read deadline for
+    # generation, Elasticsearch a short one for queries, embedding a very long
+    # one for batch requests — and every knob is overridable by environment.
+    llm_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
     # SEC-002: the key that signs visitor credentials, and their lifetime. The
     # key is required by the production composition — a deployment without it
     # cannot open sessions (fail closed), exactly like the admin credentials.
@@ -181,6 +229,8 @@ class Settings:
     embedding_url: str | None = None
     embedding_token: str | None = None
     ingestion_storage_root: str | None = None
+    elasticsearch_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
+    embedding_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -191,6 +241,7 @@ class Settings:
         """
         raw_origins = os.environ.get("CHAT_API_ALLOWED_ORIGINS", "")
         origins = tuple(item.strip() for item in raw_origins.split(",") if item.strip())
+        llm_timeout = _int_env("LLM_TIMEOUT_SECONDS", 120)
 
         return cls(
             allowed_origins=origins or _DEFAULT_ALLOWED_ORIGINS,
@@ -227,7 +278,15 @@ class Settings:
             llm_base_url=os.environ.get("LLM_BASE_URL", "").strip() or None,
             llm_model=os.environ.get("LLM_MODEL", "").strip() or None,
             llm_api_key=os.environ.get("LLM_API_KEY", "").strip(),
-            llm_timeout_seconds=_int_env("LLM_TIMEOUT_SECONDS", 120),
+            llm_timeout_seconds=llm_timeout,
+            llm_resilience=_dependency_resilience(
+                env_prefix="LLM",
+                read_timeout_default=float(llm_timeout),
+                connect_timeout_default=10.0,
+                write_timeout_default=60.0,
+                pool_timeout_default=10.0,
+                total_deadline_default=360.0,
+            ),
             visitor_credential_signing_key=os.environ.get(
                 "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY", ""
             ).strip()
@@ -273,4 +332,20 @@ class Settings:
             embedding_url=os.environ.get("EMBEDDING_URL", "").strip() or None,
             embedding_token=os.environ.get("INGESTION_TO_EMBEDDING_TOKEN", "").strip() or None,
             ingestion_storage_root=os.environ.get("INGESTION_STORAGE_ROOT", "").strip() or None,
+            elasticsearch_resilience=_dependency_resilience(
+                env_prefix="ES",
+                read_timeout_default=30.0,
+                connect_timeout_default=5.0,
+                write_timeout_default=10.0,
+                pool_timeout_default=5.0,
+                total_deadline_default=120.0,
+            ),
+            embedding_resilience=_dependency_resilience(
+                env_prefix="EMBEDDING",
+                read_timeout_default=300.0,
+                connect_timeout_default=10.0,
+                write_timeout_default=60.0,
+                pool_timeout_default=10.0,
+                total_deadline_default=900.0,
+            ),
         )

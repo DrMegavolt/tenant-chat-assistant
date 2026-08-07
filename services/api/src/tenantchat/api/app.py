@@ -440,7 +440,8 @@ def create_app(
             base_url=resolved.llm_base_url,
             model=resolved.llm_model,
             api_key=resolved.llm_api_key,
-            timeout_seconds=resolved.llm_timeout_seconds,
+            policy=resolved.llm_resilience,
+            metrics=METRICS,
         )
     effective_model = chat_model or owned_model
     # The metrics wrapper is observation only: it delegates every call and
@@ -556,6 +557,8 @@ def create_app(
                 username=resolved.elasticsearch_username,
                 password=resolved.elasticsearch_password,
                 index_name=resolved.elasticsearch_index,
+                policy=resolved.elasticsearch_resilience,
+                metrics=METRICS,
             )
 
     if (
@@ -692,6 +695,8 @@ def create_app(
             # model is the caller's to clean up, not the app's.
             if owned_model is not None:
                 closing.push_async_callback(owned_model.close)
+            if isinstance(search_index, ElasticsearchSearchIndex):
+                closing.push_async_callback(search_index.close)
             # Opened here rather than in the builder because the checkpointer
             # owns a connection pool, and a pool created at import time outlives
             # nothing and belongs to no event loop.

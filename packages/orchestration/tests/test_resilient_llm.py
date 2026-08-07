@@ -13,16 +13,14 @@ keys in the domain services that own them).
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 import httpx
 import pytest
 
-from tenantchat.core.metrics import MetricName, MetricsReporter
+from tenantchat.core.metrics import MetricName
 from tenantchat.core.resilience import (
     CircuitPolicy,
-    Dependency,
     DependencyUnavailableError,
     ResiliencePolicy,
     RetryPolicy,
@@ -132,7 +130,7 @@ def _raise(handler: httpx.MockTransport, *, applied_policy: ResiliencePolicy) ->
 
     try:
         asyncio.run(invoke())
-    except Exception as exc:  # noqa: BLE001 - the caller asserts the type
+    except Exception as exc:
         return exc
     raise AssertionError("expected the model call to raise")
 
@@ -373,10 +371,7 @@ class TestObservability:
             if observation[0] == MetricName.DEPENDENCY_RETRIES.value
         ]
         assert len(retries) == 2
-        assert all(
-            labels == {"dependency": "llm", "reason": "timeout"}
-            for _, _, labels in retries
-        )
+        assert all(labels == {"dependency": "llm", "reason": "timeout"} for _, _, labels in retries)
 
     def test_a_breaker_refusal_records_the_unavailable_status(self) -> None:
         metrics = _RecordingMetrics()
@@ -402,8 +397,6 @@ class TestObservability:
         asyncio.run(scenario())
 
         calls = [
-            labels
-            for name, _, labels in metrics.observations
-            if name == MetricName.LLM_CALLS.value
+            labels for name, _, labels in metrics.observations if name == MetricName.LLM_CALLS.value
         ]
         assert {"status": "unavailable", "template": "resilience-test@1"} in calls

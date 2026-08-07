@@ -15,12 +15,11 @@ from collections.abc import Callable, Mapping
 
 import pytest
 
-from tenantchat.core.metrics import MetricName, MetricsReporter
+from tenantchat.core.metrics import MetricName
 from tenantchat.core.resilience import (
     AsyncResilientCaller,
     CircuitBreaker,
     CircuitPolicy,
-    CircuitState,
     Dependency,
     DependencyUnavailableError,
     FailureKind,
@@ -29,7 +28,7 @@ from tenantchat.core.resilience import (
 )
 
 
-class _Boom(Exception):
+class _BoomError(Exception):
     """One classified failure kind, so tests control the retry decision."""
 
     def __init__(self, kind: FailureKind) -> None:
@@ -38,7 +37,7 @@ class _Boom(Exception):
 
 
 def _classify(exc: Exception) -> FailureKind:
-    if isinstance(exc, _Boom):
+    if isinstance(exc, _BoomError):
         return exc.kind
     return FailureKind.REFUSED
 
@@ -205,12 +204,12 @@ class TestAsyncResilientCaller:
 
         async def call() -> str:
             attempts.append(1)
-            raise _Boom(FailureKind.TIMEOUT)
+            raise _BoomError(FailureKind.TIMEOUT)
 
         caller = AsyncResilientCaller(
             dependency=Dependency.LLM, policy=_policy(max_attempts=3), classify=_classify
         )
-        with pytest.raises(_Boom):
+        with pytest.raises(_BoomError):
             asyncio.run(caller.run(call))
         assert len(attempts) == 3
 
@@ -221,7 +220,7 @@ class TestAsyncResilientCaller:
             nonlocal attempts
             attempts += 1
             if attempts < 3:
-                raise _Boom(FailureKind.SERVER_ERROR)
+                raise _BoomError(FailureKind.SERVER_ERROR)
             return "ok"
 
         caller = AsyncResilientCaller(
@@ -236,12 +235,12 @@ class TestAsyncResilientCaller:
         async def call() -> str:
             nonlocal attempts
             attempts += 1
-            raise _Boom(FailureKind.MALFORMED)
+            raise _BoomError(FailureKind.MALFORMED)
 
         caller = AsyncResilientCaller(
             dependency=Dependency.LLM, policy=_policy(max_attempts=3), classify=_classify
         )
-        with pytest.raises(_Boom):
+        with pytest.raises(_BoomError):
             asyncio.run(caller.run(call))
         assert attempts == 1
         assert caller.breaker.state.value == "closed"
@@ -276,7 +275,7 @@ class TestAsyncResilientCaller:
         async def call() -> str:
             nonlocal attempts
             attempts += 1
-            raise _Boom(FailureKind.CONNECT)
+            raise _BoomError(FailureKind.CONNECT)
 
         caller = AsyncResilientCaller(
             dependency=Dependency.SEARCH,
@@ -284,7 +283,7 @@ class TestAsyncResilientCaller:
             classify=_classify,
         )
         for _ in range(2):
-            with pytest.raises(_Boom):
+            with pytest.raises(_BoomError):
                 asyncio.run(caller.run(call))
         assert caller.breaker.state.value == "open"
 
@@ -300,7 +299,7 @@ class TestAsyncResilientCaller:
             nonlocal attempts
             attempts += 1
             if attempts < 3:
-                raise _Boom(FailureKind.TIMEOUT)
+                raise _BoomError(FailureKind.TIMEOUT)
             return "ok"
 
         caller = AsyncResilientCaller(
@@ -317,10 +316,7 @@ class TestAsyncResilientCaller:
             if observation[0] == MetricName.DEPENDENCY_RETRIES.value
         ]
         assert len(retries) == 2
-        assert all(
-            labels == {"dependency": "llm", "reason": "timeout"}
-            for _, _, labels in retries
-        )
+        assert all(labels == {"dependency": "llm", "reason": "timeout"} for _, _, labels in retries)
         states = {
             labels["state"]: value
             for name, value, labels in metrics.observations
