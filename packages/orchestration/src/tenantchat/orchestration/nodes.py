@@ -54,6 +54,7 @@ from tenantchat.core.metrics import (
     ToolOutcome,
     TurnOutcome,
 )
+from tenantchat.core.planning import ConversationTurn, RetrievalPlan, plan_query
 from tenantchat.core.ports import (
     EvidenceBundle,
     EvidenceItem,
@@ -249,6 +250,20 @@ def _evidence_meta_dict(bundle: EvidenceBundle) -> dict[str, object]:
     }
 
 
+def _with_plan(meta: dict[str, object], plan: RetrievalPlan | None) -> dict[str, object]:
+    """The evidence manifest plus the query that was actually issued (`RAG-006`).
+
+    The plan carries the resolved standalone query, the mode, the carried
+    entities, and how much history was consulted — content, so it rides the
+    inference plane like the rest of the manifest. ``query`` duplicates
+    ``plan.query`` so a reader that only wants the resolved query does not
+    need to know the plan shape.
+    """
+    if plan is None:
+        return meta
+    return {**meta, "query": plan.query, "plan": plan.to_dict()}
+
+
 def _abstention_reply(policy: TenantPolicy) -> str:
     """The deterministic refusal for a question no approved material answers.
 
@@ -375,6 +390,43 @@ def latest_visitor_message(state: DispatchState) -> str:
         if entry["role"] == "user":
             return entry["content"]
     return ""
+
+
+def conversation_history(state: DispatchState) -> list[ConversationTurn]:
+    """The prior conversational turns, current message excluded (`RAG-006`).
+
+    Everything before the current turn's message is history; the current turn
+    is the last ``user`` entry, and any assistant/tool entries this turn has
+    already produced come after it. Tool results are machine payloads, not
+    conversational text, so only user and assistant turns are passed to the
+    planner.
+    """
+    last_user = next(
+        (
+            len(state["transcript"]) - 1 - offset
+            for offset, entry in enumerate(reversed(state["transcript"]))
+            if entry["role"] == "user"
+        ),
+        None,
+    )
+    history: list[ConversationTurn] = []
+    if last_user is None:
+        return history
+    for entry in state["transcript"][:last_user]:
+        if entry["role"] in ("user", "assistant") and entry["content"].strip():
+            history.append(ConversationTurn(role=entry["role"], content=entry["content"]))
+    return history
+
+
+def known_service_terms(policy: TenantPolicy) -> tuple[str, ...]:
+    """The tenant's service vocabulary for query planning (`RAG-006`).
+
+    Server-owned strings — slug, display name, and aliases — so the planner
+    carries only approved terms out of history, never arbitrary visitor text.
+    """
+    return tuple(
+        term for definition in policy.catalog.definitions for term in definition.match_keys()
+    )
 
 
 def _agent_for(deps: DispatchDependencies, state: DispatchState) -> AgentSpec | None:
@@ -629,14 +681,14 @@ class DispatchNodes:
         """Ask the model what to do next, grounded in this turn's evidence."""
         policy = await self._deps.policies.policy(state["tenant_id"])
         agent = _agent_for(self._deps, state)
-        bundle = await self._retrieve_evidence(state)
+        bundle, plan = await self._retrieve_evidence(state, policy)
         if self._should_abstain(agent, bundle):
             self._observe(
                 MetricName.TURN_OUTCOMES,
                 1,
                 labels={"outcome": TurnOutcome.ABSTAINED.value},
             )
-            return self._abstention_update(state, policy, bundle)
+            return self._abstention_update(state, policy, bundle, plan)
         evidence = tuple(
             PromptEvidence(source_id=item.source_id, title=item.title, content=item.content)
             for item in (bundle.items if bundle is not None else ())
@@ -651,7 +703,7 @@ class DispatchNodes:
                 1,
                 labels={"outcome": TurnOutcome.ABSTAINED.value},
             )
-            return self._abstention_update(state, policy, bundle)
+            return self._abstention_update(state, policy, bundle, plan)
         # The model is offered only the tools the routed agent may call; the
         # tools node enforces the same allowlist against whatever it sends.
         allowed = tuple(
@@ -693,12 +745,15 @@ class DispatchNodes:
         # written from, so a later tool-only round must not replace it.
         update["prompt_assembly"] = _prompt_assembly_dict(outcome)
         if response.content.strip():
-            update.update(self._evidence_update(bundle, outcome))
+            update.update(self._evidence_update(bundle, outcome, plan))
         return update
 
     @staticmethod
     def _abstention_update(
-        state: DispatchState, policy: TenantPolicy, bundle: EvidenceBundle | None
+        state: DispatchState,
+        policy: TenantPolicy,
+        bundle: EvidenceBundle | None,
+        plan: RetrievalPlan | None,
     ) -> dict[str, Any]:
         update: dict[str, Any] = {
             "transcript": [assistant_entry(_abstention_reply(policy), [])],
@@ -710,36 +765,48 @@ class DispatchNodes:
             # though no model call ran: an `OBS-004` attribution reads "weak
             # candidates, insufficient" from the record alone.
             update["evidence"] = [_evidence_item_dict(item) for item in bundle.items]
-            update["evidence_meta"] = _evidence_meta_dict(bundle)
+            update["evidence_meta"] = _with_plan(_evidence_meta_dict(bundle), plan)
         return update
 
-    async def _retrieve_evidence(self, state: DispatchState) -> EvidenceBundle | None:
-        """The passages that may ground this turn, or ``None`` without retrieval.
+    async def _retrieve_evidence(
+        self, state: DispatchState, policy: TenantPolicy
+    ) -> tuple[EvidenceBundle | None, RetrievalPlan | None]:
+        """The passages that may ground this turn, and the plan that found them.
 
         A retrieval failure is treated as "no evidence": an index that is down
         must make the assistant abstain for knowledge questions, never answer
-        from nothing.
+        from nothing. The standalone query is the planner's resolution of the
+        latest message against the authorized conversation state (`RAG-006`);
+        the plan rides the evidence manifest so the turn is reconstructible.
         """
         source = self._deps.evidence
         if source is None:
-            return None
+            return None, None
+        plan = plan_query(
+            latest_visitor_message(state),
+            tenant_id=state["tenant_id"],
+            history=conversation_history(state),
+            known_terms=known_service_terms(policy),
+            workflow=state.get("routed_intent", ""),
+        )
         try:
-            return await source.retrieve(
-                tenant_id=state["tenant_id"],
-                query=latest_visitor_message(state),
-            )
+            bundle = await source.retrieve(tenant_id=state["tenant_id"], query=plan.query)
         except EvidenceUnavailableError:
             logger.warning(
                 "retrieval unavailable for turn",
                 extra={"tenant_id": state["tenant_id"], "turn_index": state["turn_index"]},
             )
-            return EvidenceBundle(
-                items=(),
-                sufficient=False,
-                retriever_version="unavailable",
-                reranker=None,
-                min_evidence_score=0.0,
+            return (
+                EvidenceBundle(
+                    items=(),
+                    sufficient=False,
+                    retriever_version="unavailable",
+                    reranker=None,
+                    min_evidence_score=0.0,
+                ),
+                plan,
             )
+        return bundle, plan
 
     @staticmethod
     def _should_abstain(agent: AgentSpec | None, bundle: EvidenceBundle | None) -> bool:
@@ -776,14 +843,16 @@ class DispatchNodes:
 
     @staticmethod
     def _evidence_update(
-        bundle: EvidenceBundle | None, outcome: AssemblyOutcome
+        bundle: EvidenceBundle | None,
+        outcome: AssemblyOutcome,
+        plan: RetrievalPlan | None,
     ) -> dict[str, object]:
         """The evidence the answer this call produced was grounded in.
 
         Recorded only when the model produced content, so finalize validates
         the published answer against the context of the call that wrote it.
-        ``evidence_ids`` is the *exact* context: the ids assembly admitted to
-        the prompt, not the wider retrieved pool.
+        ``evidence`` and ``evidence_ids`` name the *exact* context: the ids
+        assembly admitted to the prompt, not the wider retrieved pool.
         """
         admitted = [
             segment.segment_id.removeprefix("evidence:")
@@ -798,7 +867,7 @@ class DispatchNodes:
             "evidence": [_evidence_item_dict(item) for item in admitted_items],
             "evidence_ids": admitted,
             "evidence_sufficient": bundle.sufficient,
-            "evidence_meta": _evidence_meta_dict(bundle),
+            "evidence_meta": _with_plan(_evidence_meta_dict(bundle), plan),
         }
 
     async def run_tools(self, state: DispatchState) -> dict[str, Any]:

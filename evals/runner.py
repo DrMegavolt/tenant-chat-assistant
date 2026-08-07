@@ -27,7 +27,7 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -50,6 +50,7 @@ from tenantchat.api.retrieval import (
     calibrate_min_evidence,
 )
 from tenantchat.api.search import ScriptedEmbedder
+from tenantchat.core.planning import ConversationTurn, RetrievalPlan, plan_query
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -92,19 +93,27 @@ async def _hybrid_entry(
     *,
     cases: Sequence[EvalCase],
     abstain_threshold_value: float,
+    vocabulary: Mapping[str, Sequence[str]] | None = None,
 ) -> RetrieverEntry:
     """Build the hybrid with its threshold calibrated from the dataset's cases.
 
     Calibration reads only the dataset's known-relevant pairs (never the
     ``expect_abstain`` labels), so abstention correctness stays an independent
-    measurement of the derived boundary. ``cases`` travels from the selected
-    dataset — calibrating against the golden fixtures while scoring another
-    dataset would measure the wrong boundary.
+    measurement of the derived boundary. Multi-turn cases calibrate on the
+    *resolved* queries (`RAG-006`): a raw pronoun scores nothing against its
+    gold chunk, and calibrating on it would set the boundary to zero. ``cases``
+    travels from the selected dataset — calibrating against the golden fixtures
+    while scoring another dataset would measure the wrong boundary.
     """
     config = HybridRetrieverConfig(k=k)
     embedder = ScriptedEmbedder(model=corpus.embedding_model)
+    resolved = resolve_multiturn(cases, vocabulary)
     relevant_sets = tuple(
-        (case.query, RetrievalFilters(tenant_id=case.tenant_id), case.gold_chunk_ids)
+        (
+            resolved[case.id].query if case.id in resolved else case.query,
+            RetrievalFilters(tenant_id=case.tenant_id),
+            case.gold_chunk_ids,
+        )
         for case in cases
         if case.gold_chunk_ids
     )
@@ -120,6 +129,49 @@ async def _hybrid_entry(
     )
 
 
+def resolve_multiturn(
+    cases: Sequence[EvalCase],
+    vocabulary: Mapping[str, Sequence[str]] | None,
+) -> dict[str, RetrievalPlan]:
+    """Plan a standalone query for every multi-turn case (`RAG-006`).
+
+    A case with prior turns is resolved against them with the deterministic
+    planner; a single-turn case has no plan and is scored as written. The
+    resolved queries feed both retrieval and hybrid calibration, so the
+    abstention boundary is calibrated on what actually gets retrieved.
+    """
+    plans: dict[str, RetrievalPlan] = {}
+    for case in cases:
+        if not case.prior_turns:
+            continue
+        plans[case.id] = plan_query(
+            case.query,
+            tenant_id=case.tenant_id,
+            history=_prior_turns(case.prior_turns),
+            known_terms=tuple(vocabulary.get(case.tenant_id, ()) if vocabulary else ()),
+        )
+    return plans
+
+
+def _prior_turns(prior_turns: Sequence[str]) -> tuple[ConversationTurn, ...]:
+    """Parse ``Customer:``/``Assistant:``-prefixed prior turns for the planner."""
+    turns: list[ConversationTurn] = []
+    for raw in prior_turns:
+        role, content = _split_turn(raw)
+        turns.append(ConversationTurn(role=role, content=content))
+    return tuple(turns)
+
+
+def _split_turn(raw: str) -> tuple[str, str]:
+    """The role prefix of one prior turn, if it carries one; user otherwise."""
+    text = raw.strip()
+    lowered = text.casefold()
+    for prefix, role in (("customer:", "user"), ("user:", "user"), ("assistant:", "assistant")):
+        if lowered.startswith(prefix):
+            return role, text[len(prefix) :].strip()
+    return "user", text
+
+
 async def build_retriever_entry_async(
     name: str,
     corpus: FixtureCorpus,
@@ -127,18 +179,23 @@ async def build_retriever_entry_async(
     *,
     cases: Sequence[EvalCase] | None = None,
     abstain_threshold_value: float = 0.5,
+    vocabulary: Mapping[str, Sequence[str]] | None = None,
 ) -> RetrieverEntry:
     """The async entry builder, for callers already inside an event loop.
 
-    ``cases`` and ``abstain_threshold_value`` feed the hybrid calibration and
-    the lexical boundary respectively. ``None`` keeps the RAG-009 contract:
-    the hybrid calibrates against the golden fixtures, which is what the
-    original harness tests assert.
+    ``cases``, ``abstain_threshold_value``, and ``vocabulary`` feed the hybrid
+    calibration and the lexical boundary respectively. ``None`` keeps the
+    RAG-009 contract: the hybrid calibrates against the golden fixtures, which
+    is what the original harness tests assert.
     """
     resolved = load_cases() if cases is None else cases
     if name == "hybrid":
         return await _hybrid_entry(
-            corpus, k, cases=resolved, abstain_threshold_value=abstain_threshold_value
+            corpus,
+            k,
+            cases=resolved,
+            abstain_threshold_value=abstain_threshold_value,
+            vocabulary=vocabulary,
         )
     if name == "lexical-overlap":
         return _baseline_entry(
@@ -154,6 +211,7 @@ def build_retriever_entry(
     *,
     cases: Sequence[EvalCase] | None = None,
     abstain_threshold_value: float = 0.5,
+    vocabulary: Mapping[str, Sequence[str]] | None = None,
 ) -> RetrieverEntry:
     """The synchronous entry builder for the CLI and sync tests."""
     return asyncio.run(
@@ -163,6 +221,7 @@ def build_retriever_entry(
             k,
             cases=cases,
             abstain_threshold_value=abstain_threshold_value,
+            vocabulary=vocabulary,
         )
     )
 
@@ -181,12 +240,21 @@ async def run_evaluation(
     min_grounding: float = 0.9,
     parser_chunker: str | None = None,
     tenant_policy: str | None = None,
+    vocabulary: Mapping[str, Sequence[str]] | None = None,
 ) -> EvaluationReport:
-    """Retrieve every case and score the run against the thresholds."""
+    """Retrieve every case and score the run against the thresholds.
+
+    Multi-turn cases are resolved into standalone queries before retrieval, and
+    the report rows carry the resolved query and plan mode so a reviewer can
+    see what was actually scored (`RAG-006`).
+    """
+    plans = resolve_multiturn(cases, vocabulary)
     retrieved_by_case: dict[str, Sequence[RetrievalResult]] = {}
     for case in cases:
+        plan = plans.get(case.id)
+        query = plan.query if plan is not None else case.query
         retrieved_by_case[case.id] = await retriever.retrieve(
-            case.query, tenant_id=case.tenant_id, k=retriever_config.k
+            query, tenant_id=case.tenant_id, k=retriever_config.k
         )
     return score_cases(
         corpus=corpus,
@@ -201,6 +269,8 @@ async def run_evaluation(
         min_grounding=min_grounding,
         parser_chunker=parser_chunker,
         tenant_policy=tenant_policy,
+        resolved_queries={case_id: plan.query for case_id, plan in plans.items()},
+        plan_modes={case_id: plan.mode.value for case_id, plan in plans.items()},
     )
 
 
@@ -279,6 +349,7 @@ def main() -> int:
         args.k,
         cases=spec.cases,
         abstain_threshold_value=spec.abstain_threshold,
+        vocabulary=spec.vocabulary,
     )
     min_recall, min_citation, min_abstention, min_grounding = dataset_thresholds(spec)
     report = asyncio.run(
@@ -295,6 +366,7 @@ def main() -> int:
             min_grounding=min_grounding,
             parser_chunker=spec.parser_chunker,
             tenant_policy=spec.tenant_policy,
+            vocabulary=spec.vocabulary,
         )
     )
     sys.stdout.write(report.to_text() + "\n\n")

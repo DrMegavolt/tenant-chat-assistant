@@ -53,7 +53,7 @@ eval: ## Run the golden offline evaluation harness (baseline + hybrid, hermetic)
 
 eval-gate: ## Baseline-vs-candidate regression gate over every versioned dataset (RAG-008)
 	$(UV_RUN) python -m evals.gate --dataset golden-v1 --verify-determinism
-	$(UV_RUN) python -m evals.gate --dataset multi-turn-v1 --verify-determinism
+	$(UV_RUN) python -m evals.gate --dataset multi-turn-v2 --verify-determinism
 	$(UV_RUN) python -m evals.gate --dataset adversarial-v1 --verify-determinism
 
 test-cov: ## Run tests with a coverage report
