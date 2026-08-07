@@ -13,6 +13,8 @@ export interface TraceSearchFilters {
   cause?: string;
   diagnosisStatus?: string;
   manifestHash?: string | undefined;
+  /** Only turns whose retrieval cited this ingestion index generation. */
+  generationId?: string;
 }
 
 /** One content-free search result: a queryable index entry, not a record. */
@@ -27,6 +29,8 @@ export interface TraceSearchRecord {
   diagnosisStatuses: string[];
   turnIndex: number;
   traceSchemaVersion: string;
+  /** The ingestion index generations the turn's retrieval cited. */
+  sourceGenerationIds: string[];
 }
 
 export interface RoutingCandidate {

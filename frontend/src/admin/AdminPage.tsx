@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { AdminApi } from "src/admin/adminApi";
+import { KnowledgeBase } from "src/admin/components/KnowledgeBase";
 import { ReviewQueue } from "src/admin/components/ReviewQueue";
 import { SessionDetail } from "src/admin/components/SessionDetail";
 import { SessionList } from "src/admin/components/SessionList";
@@ -9,18 +10,19 @@ import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { relativeTime } from "src/admin/time";
 import { useAdminConsole } from "src/admin/useAdminConsole";
 
-type AdminView = "queue" | "reviews" | "traces";
+type AdminView = "queue" | "reviews" | "traces" | "knowledge";
 
 const VIEW_LABELS: Record<AdminView, string> = {
   queue: "Chat queue",
   reviews: "Review queue",
-  traces: "AI turn explorer"
+  traces: "AI turn explorer",
+  knowledge: "Knowledge base"
 };
 
 /**
  * The operator console: every conversation, the ability to answer one, the
- * FEAT-008 review queue, and the FEAT-015 AI turn explorer over the inference
- * plane.
+ * FEAT-008 review queue, the FEAT-015 AI turn explorer over the inference
+ * plane, and the FEAT-001 knowledge base.
  *
  * The queue and the explorer are diagnosis surfaces, not live queues — the
  * console keeps polling only while the chat queue tab is open.
@@ -34,7 +36,15 @@ export function AdminPage() {
     <>
       <a
         className="skip-link"
-        href={view === "queue" ? "#queue" : view === "reviews" ? "#reviewTitle" : "#traceTitle"}
+        href={
+          view === "queue"
+            ? "#queue"
+            : view === "reviews"
+              ? "#reviewTitle"
+              : view === "knowledge"
+                ? "#knowledgeTitle"
+                : "#traceTitle"
+        }
       >
         Skip to main content
       </a>
@@ -130,6 +140,17 @@ export function AdminPage() {
 
           {view === "reviews" && (
             <ReviewQueue
+              api={api}
+              tenants={console_.tenants.map((tenant) => ({
+                tenantId: tenant.tenantId,
+                name: tenant.name
+              }))}
+              initialTenantId={console_.tenantId}
+            />
+          )}
+
+          {view === "knowledge" && (
+            <KnowledgeBase
               api={api}
               tenants={console_.tenants.map((tenant) => ({
                 tenantId: tenant.tenantId,
