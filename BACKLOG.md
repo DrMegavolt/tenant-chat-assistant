@@ -189,7 +189,12 @@ Required: every `P0` task in this document. Until Gate A passes, expose the proj
 Required: Gate A plus `ARCH-001`, `AI-001`, `AI-003`, `AGENT-001`, `REL-001`,
 `REL-003`, `RAG-001` through `RAG-009`, `FEAT-001`, `FEAT-004` (Gate B slice),
 `FEAT-008`, `FEAT-011`, `FEAT-015`, `OBS-001`, `OBS-002`, `OBS-004`, and
-`PRIV-002`. The target
+`PRIV-002`, plus the `2026-08-06` review remediation — `RAG-010`, `OBS-005`,
+`RAG-011`, and `QA-006`. Those four are not additions to the gate; they are the
+already-required tasks being made true, and they are listed because a task
+marked `Done` with a defect against its own acceptance criteria is the one thing
+this gate exists to catch. `OBS-006` and `FEAT-016` are demonstration
+amplifiers, not gate items. The target
 demonstration is a visible, tenant-safe document lifecycle: upload, parse,
 chunk, embed, index, retrieve, rerank, answer with authorized citations, abstain
 on weak evidence, and publish comparable evaluation results — with any single
@@ -301,6 +306,20 @@ runbooks.
 
 - [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 
+### Gate B remediation — found by the `2026-08-06` repository review
+
+Four defects in tasks already marked `Done`, and two capabilities the review
+found missing from the demonstration's own claims. `RAG-010` is `P0` because it
+breaks a stated security invariant. None of these is optional for Gate B: three
+of them are the difference between a claim being tested and a claim being true.
+
+- [ ] `RAG-010` — Evidence boundary escaping and fence-aware content safety — `P0` — _defect in `RAG-007`_
+- [ ] `OBS-005` — Turn outcome fidelity and diagnosis completeness — `P1` — _defect in `OBS-004`/`OBS-002`_
+- [ ] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
+- [ ] `QA-006` — Gate-claim and backlog accuracy — `P1`
+- [ ] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
+- [ ] `FEAT-016` — Authorization and audit console — `P1`
+
 ### P2 product maturity — after Gate B
 
 - [ ] `AI-002` — Model safety, quotas, and cost controls — `P2`
@@ -350,6 +369,7 @@ the first outbox did not.
 - [x] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
 - [ ] `FEAT-011` — Customer-facing citations and source viewer — `P1`
 - [x] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
+- [ ] `FEAT-016` — Authorization and audit console — `P1`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
 - [ ] `FEAT-002` — Real availability and calendar integration — `P2`
 - [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P2`
@@ -1408,6 +1428,138 @@ guarantees by construction.
   - Not built (documented follow-ups): executed-graph node/edge capture (needs a LangGraph callback listener), immutable-index replay, and the full replay service; `FEAT-015` ships the minimal safe prompt replay (stored prompt through the current model, no tools) and documents the rest.
   - Files: `packages/orchestration/src/tenantchat/orchestration/trace.py` (new), `state.py`, `nodes.py`, `runtime.py`, `tools.py`; `packages/core/src/tenantchat/core/ports.py`; `services/api/migrations/versions/0014_inference_trace.py`; `services/api/src/tenantchat/api/{store.py, persistence/traces.py, routers/chat.py, routers/traces.py, schemas.py, evidence.py, agent.py}`; tests in `packages/orchestration/tests/test_trace.py`, `services/api/tests/test_trace_record.py`, `test_traces.py`, `test_citations.py`, `tests/repositories/test_trace_governance.py`, `tests/privacy/test_privacy_lifecycle.py` (chat-generated turn records now count toward export/erasure), `tests/migrations/test_migrations.py`; `docs/runbooks/inference-trace-plane.md`.
 
+### OBS-005 — Turn outcome fidelity and diagnosis completeness
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `AI observability`
+- Depends on: `OBS-004`, `OBS-002`, `RAG-007`
+- Origin: repository review, `2026-08-06`. Two terminal paths are recorded as
+  `answered` when they did not answer, and the `RAG-007` refusal produces no
+  diagnosis, no metric, and no review case. This defeats the invariant *every
+  answer is reconstructible* for those turns and makes
+  `tenantchat_turn_outcomes_total` a distribution that does not sum to turns.
+- Likely areas: trace outcome derivation, diagnosis detectors, finalize and escalate nodes, turn-outcome metric
+- Reproduction (verified):
+  - `_outcome_section` in
+    `packages/orchestration/src/tenantchat/orchestration/trace.py` infers status
+    from `failure` and `model_name` rather than from what the terminal node did.
+  - **A `RAG-007` claim refusal.** When `finalize` refuses an answer for a
+    fabricated price, the trace records `outcome.status = answered` and
+    `diagnoses = []`. No detector reads `verdicts.claims_invalid`, even though
+    it is decidable from the record alone. The early return also skips the
+    `TURN_OUTCOMES` observation, so the turn is counted in no outcome class; and
+    because `enqueue_automatic` triggers on detected technical diagnoses, no
+    review case opens either.
+    `test_an_answer_fabricating_a_price_is_refused_whole_and_never_published`
+    asserts the refusal but never checks the diagnosis, so nothing catches this.
+  - **A round-budget escalation.** `route_after_model` routes to `escalate` when
+    `rounds >= MAX_TOOL_ROUNDS` with `state["failure"]` still empty, and
+    `escalate` never writes `failure` back into state. The record then reads
+    `outcome.status = answered`, `outcome.failure = None`, `diagnoses = []`,
+    `prompt = None` — while `tools.committed` contains `handoff_to_human`. The
+    record contradicts itself. The metric is correct here (`escalate` emits
+    `HANDED_OFF`); it is the trace that is wrong.
+  - Related: `nodes.py` records `prompt_assembly` only when the model returned
+    content, so a turn that spent every round on tool calls stores no prompt and
+    is not reconstructible.
+- Scope:
+  - Have each terminal node state its own outcome rather than having the trace
+    re-derive it from residual state. `_outcome_section` should read a recorded
+    outcome and fall back only when a node predates the change; a status
+    inferred from the absence of a field is how both defects happened.
+  - Add `TurnOutcome.REFUSED` to `packages/core/src/tenantchat/core/metrics.py`
+    and observe it on the claim-refusal path, so the outcome metric sums to
+    turns. Add the matching status to the trace's own `TurnOutcome` vocabulary.
+    Raise `METRIC_CARDINALITY_CEILING` in the same change if the new member
+    pushes a metric over it, and let the cardinality test prove it.
+  - Record a `TURN_OUTCOMES` observation on the `finalize` fallback path (the
+    "no assistant answer found" reply), which is currently also uncounted.
+  - Add a `diagnose` detector for `verdicts.claims_invalid`, emitting
+    `GROUNDING_OR_CITATION_ERROR` at stage `validation` with status `detected`
+    and high confidence, with evidence references naming the claim kind and
+    value — the same shape the citation detector already uses. This is what
+    makes a refused answer reach the review queue through `enqueue_automatic`.
+  - Record `prompt_assembly` for every model call the turn made, not only the
+    one that returned content. If the state can hold only one, record the last
+    call's assembly and say so in the trace docstring; if it can hold a list,
+    prefer that, because `OBS-006` will want the per-round record anyway.
+  - Extend the seeded Gate B case set in
+    `services/api/tests/test_trace_explorer.py` with a claim-refusal case, and
+    give case 10 (injection quarantine) the diagnosis it currently lacks.
+- Acceptance criteria:
+  - No turn that committed a `handoff_to_human` is recorded with
+    `outcome.status = answered`.
+  - A turn refused by the claim validator is recorded with a refusal outcome,
+    carries at least one diagnosis, increments exactly one `TURN_OUTCOMES`
+    series, and appears in the review queue without any thumbs-down.
+  - Summing `tenantchat_turn_outcomes_total` across every outcome label equals
+    the number of turns the API completed, asserted by a test that runs several
+    turns down different terminal paths and compares the total.
+  - Every turn that made at least one model call stores a reconstructible
+    prompt section.
+- Verification:
+  - `uv run --frozen pytest packages/orchestration/tests/test_trace.py services/api/tests/test_metrics.py services/api/tests/test_trace_explorer.py services/api/tests/test_feedback_review.py tests/security/test_indirect_prompt_injection.py`,
+    then `make check`.
+- Completion notes: _Pending._
+
+### OBS-006 — Executed-graph event capture
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `AI observability`
+- Depends on: `OBS-005`, `OBS-004`, `FEAT-015`
+- Origin: repository review, `2026-08-06`. `OBS-004` documents this as the
+  instrumentation follow-up and `FEAT-015` ships the honest interim: the
+  console's "Executed structure" panel reconstructs stages from stored trace
+  fields and tells the reader so — *"Per-node durations are not recorded by the
+  trace; full LangGraph node/edge events are a documented follow-up."* That
+  honesty is correct and should be preserved until this task replaces it. But
+  claim 3 is the project's differentiator, and `FEAT-015`'s first acceptance
+  criterion — every displayed node and edge maps to a stored execution event —
+  is currently satisfied against stored *fields* rather than execution events.
+  This is the largest single upgrade available to the demonstration.
+- Likely areas: LangGraph callback listener, trace schema, trace store projection, executed-graph panel
+- Scope:
+  - Capture the real execution: node entries and exits, the edge taken at each
+    conditional branch, attempt number on resume, per-node duration, and the
+    terminal status of each node. Use a LangGraph callback listener rather than
+    inferring from state, which is the whole point of the task.
+  - Keep the capture off the hot path's critical section. `trace.py`'s existing
+    contract — pure function over checkpointed state, no I/O, no raise — must
+    survive: a listener that fails must degrade to today's derived view rather
+    than fail the turn. State that explicitly in the module docstring.
+  - Bump `TRACE_SCHEMA_VERSION` and add the executed-graph section under it.
+    Readers branch on that version by contract, so a record written before this
+    task must still render — in the derived form, labelled as derived.
+  - Record events content-free: node names are a closed vocabulary from
+    `graph.py`, edge labels come from the router functions, and no argument,
+    message, or evidence text enters an event. The events are execution
+    metadata and belong beside the trace, not in the operational plane.
+  - Replace the `FEAT-015` "Executed structure" panel with the real graph as an
+    accessible DAG or waterfall, with per-node duration and attempt count. Keep
+    a visible marker distinguishing a turn recorded before this task from one
+    recorded after, so a viewer is never shown a derived view as a captured one.
+  - Add per-node duration to the retained metric vocabulary only if it can stay
+    bounded; a node-name label is closed, so this is likely safe, but it must
+    pass the cardinality test rather than be assumed.
+- Acceptance criteria:
+  - Every node and edge the console displays for a post-upgrade turn corresponds
+    to a captured execution event, and a turn that crashed mid-graph shows the
+    nodes that ran and stops — it does not display an idealized completion.
+  - A resumed turn shows the replayed nodes with their attempt numbers, so a
+    checkpoint resume is visibly distinguishable from a first run.
+  - A listener failure produces a turn with a derived executed-graph section and
+    a successful answer, never a failed turn.
+  - No execution event carries prompt text, evidence, an answer, an argument
+    value, or a contact detail.
+  - Records at the previous `TRACE_SCHEMA_VERSION` still open in the console.
+- Verification:
+  - `uv run --frozen pytest packages/orchestration/tests/test_trace.py services/api/tests/test_trace_explorer.py tests/agent_runtime`
+    and the frontend suite; then `make check` and `make test-database`. Include a
+    test that forces the listener to raise and asserts the turn still answers.
+- Completion notes: _Pending._
+
 ### ARCH-001 — LangGraph agent runtime over a framework-free domain
 
 - Status: `Done`
@@ -2059,6 +2211,127 @@ guarantees by construction.
   composition root, add the first real judge scorer with its held-out agreement, and grow
   promoted datasets from the live flywheel once the queue is populated.
 
+### RAG-010 — Evidence boundary escaping and fence-aware content safety
+
+- Status: `Todo`
+- Priority: `P0`
+- Type: `AI security`
+- Depends on: `RAG-007`
+- Origin: repository review, `2026-08-06`. `RAG-007` is `Done` and its defenses
+  are real, but the boundary it calls "the single boundary `RAG-007` enforces"
+  has no escaping, so a hostile document can close the fence and continue as
+  trusted text. This breaks the invariant *retrieved documents are untrusted
+  data, never instructions*, which is why it is `P0` rather than a follow-up.
+- Likely areas: prompt assembly evidence segments, ingestion content scanner, injection regression corpus
+- Reproduction (verified):
+  - `packages/orchestration/src/tenantchat/orchestration/prompts/assembly.py`
+    builds each evidence segment as
+    `f'<evidence source_id="{item.source_id}">\n{item.title}\n{item.content}\n</evidence>'`
+    with no escaping of `item.content` or `item.title`.
+  - A chunk whose text contains `</evidence>` closes the fence early. Everything
+    after it lands in the system message outside any untrusted region,
+    immediately before the template's trailing reminder — the position the
+    template reserves for the instruction that governs untrusted content.
+  - `scan_for_injection` in
+    `services/api/src/tenantchat/api/parsing/injection.py` does not flag it. Its
+    `_ACTIVE` pattern covers `<script`, `<iframe`, `onclick=` and similar; the
+    fence token is not a signal, so the document is neither flagged nor
+    quarantined and an attacker only has to avoid the five existing patterns.
+  - `validate_sensitive_claims` does not catch the payload either. It verifies a
+    price against `evidence_texts`, and the injected line *is* part of the
+    passage content, so a fabricated price injected this way returns
+    `supported`. Confirmed: an injected `HVAC diagnostic is $49` validates.
+  - `PromptRegion.UNTRUSTED` is metadata only —
+    `AssembledMessage.content` is `"".join(segment.text for segment in self.segments)` —
+    so at the wire level the delimiter is the only boundary that exists.
+- Scope:
+  - Neutralize the fence token in evidence segment construction. Escape or strip
+    any occurrence of the closing delimiter in `content` and `title` before
+    interpolation, and treat the transformation as part of the assembled bytes
+    so `AssembledPrompt.content_hash` covers it and `OBS-004` reconstruction
+    still reproduces exactly what the provider received.
+  - Do the same for `source_id` in the attribute position. The current index-id
+    charset happens to exclude quotes, which makes this latent rather than live;
+    an assembly boundary must not depend on a charset decided in another module.
+  - Add the fence token and its common encodings to the ingestion scanner as a
+    new bounded `InjectionSignal`, so a document attempting the escape is
+    quarantined at the door rather than only neutralized at assembly. Keep the
+    signal name content-free and add it to the enum, never to a free-text field.
+  - Extend `tests/security/fixtures/adversarial_corpus.json` with fence-escape
+    documents, including one that carries no other injection signal, so the
+    corpus proves the scanner catches the escape on its own merits.
+  - Re-verify the `RAG-007` claim that "hostile documents stay delimited,
+    untrusted, and outside trusted regions" against the new fixtures.
+- Acceptance criteria:
+  - No assembled prompt contains an evidence segment whose rendered text closes
+    its own delimiter, for any chunk content, including content that already
+    contains the escaped form.
+  - A document attempting the fence escape is quarantined at ingestion and is
+    not retrievable until reviewed, with only bounded signal kinds and the
+    content fingerprint recorded — never the matched text.
+  - A price or coverage claim grounded only in text that appeared after an
+    attempted fence escape is refused, not `supported`.
+  - `AssembledPrompt.content_hash` still equals the hash recomputed by
+    `reconstruct_prompt` over the stored trace section for every escaped
+    segment, so `OBS-004` reconstructibility is unchanged.
+- Verification:
+  - `uv run --frozen pytest tests/security/test_indirect_prompt_injection.py packages/orchestration/tests/test_prompt_assembly.py services/api/tests/test_injection.py`,
+    then `make check`.
+- Completion notes: _Pending._
+
+### RAG-011 — Deterministic claim extraction and cross-process evaluation determinism
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `AI quality`
+- Depends on: `RAG-007`, `RAG-008`
+- Origin: repository review, `2026-08-06`.
+- Likely areas: claim validator, evaluation gate determinism check
+- Reproduction (verified):
+  - `sensitive_claims` in `packages/core/src/tenantchat/core/claims.py` iterates
+    `tokens & _SENSITIVE_KEYWORDS`, a frozenset intersection, so claim order
+    follows string hashes. Across processes the same answer yields different
+    orderings — `PYTHONHASHSEED=1` gives
+    `['price', 'insurance', 'coverage', 'coverage', 'permit', 'permit']` where
+    `PYTHONHASHSEED=42` gives
+    `['price', 'permit', 'insurance', 'coverage', 'permit', 'coverage']`.
+  - That ordering is persisted: `finalize` writes it to `claims_invalid`, which
+    `build_turn_trace` stores in `verdicts` and `FEAT-015` renders. Two identical
+    turns therefore store different bytes for the same verdict.
+  - The same output shows a second defect: one sentence produces one claim per
+    matched keyword, so `It is licensed, insured, permitted and fully covered
+    under warranty` yields five keyword claims for one sentence, each validated
+    and each reported separately.
+  - `evals/gate.py --verify-determinism` runs `_run_pair` twice inside one
+    process, so it cannot observe this class of nondeterminism at all. The
+    current datasets *are* cross-process stable — `golden-v1` produces identical
+    JSON under `PYTHONHASHSEED=1` and `42`, verified — so nothing is broken
+    today; the check simply does not prove what its docstring claims.
+- Scope:
+  - Make `sensitive_claims` deterministic. Iterate the keyword vocabulary in a
+    fixed order rather than a set intersection, and return claims in a defined
+    order — prices in the order written, then keyword claims by sentence
+    position. Determinism here is a property of the record, so state it in the
+    docstring as a contract rather than leaving it implicit.
+  - Emit one claim per sentence rather than one per matched keyword. Keep the
+    family classification — a sentence matching both an insurance and a permit
+    keyword should resolve to a single claim with a defined precedence — so the
+    trace names each unsupported sentence once.
+  - Change `--verify-determinism` to re-run the pair in a fresh subprocess with
+    a different `PYTHONHASHSEED`, so the check exercises the ordering it claims
+    to verify. Keep the existing in-process comparison as well; they catch
+    different faults.
+- Acceptance criteria:
+  - `sensitive_claims` returns byte-identical output for identical input under
+    at least three different `PYTHONHASHSEED` values, asserted by a test that
+    sets the seed rather than by inspection.
+  - A sentence matching several sensitive keywords produces exactly one claim.
+  - `make eval-gate` fails if a candidate report differs across hash seeds.
+- Verification:
+  - `uv run --frozen pytest packages/core/tests/test_claims.py evals/tests`,
+    then `make eval-gate` and `make check`.
+- Completion notes: _Pending._
+
 ### AGENT-001 — Persisted intent router and workflow state machine
 
 - Status: `Done`
@@ -2288,6 +2561,57 @@ promotion pipeline — which requires a cluster that runs for real.
   - Recovery produces no duplicate business actions or lost committed messages.
 - Verification:
   - Publish a versioned test report linked to the release candidate.
+- Completion notes: _Pending._
+
+### QA-006 — Gate-claim and backlog accuracy
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `Quality/process`
+- Depends on: none
+- Origin: repository review, `2026-08-06`. This entry exists because the
+  document an implementation agent reads to decide what is true was wrong in
+  three places at once. That is a correctness defect in the dispatch contract
+  itself, not hygiene: an agent that trusts a stale checkbox builds on a
+  dependency that was never verified.
+- Likely areas: `BACKLOG.md`, `services/api/tests/test_trace_explorer.py`, `pyproject.toml`
+- Scope:
+  - Reconcile every backlog index checkbox against the repository. The
+    `2026-08-06` review found `AGENT-001`, `OBS-001`, and `PRIV-002` merged but
+    unchecked; those three are corrected in the same change that adds this
+    entry, and the remaining scope is to add a check that keeps them honest.
+  - Add a test asserting that every task whose index checkbox is `[x]` has
+    `Status: Done` in its detail entry, and vice versa. The two representations
+    of the same fact must not be allowed to drift again.
+  - Correct the docstrings on
+    `services/api/tests/test_trace_explorer.py::TestTheTenCaseWalkthrough` and
+    `_seeded_cases`. They say the ten Gate B cases run "end to end"; the test
+    plants hand-built trace dicts through `_plant` and exercises the explorer's
+    locate, drill, and replay surface. That is exactly `FEAT-015`'s contract and
+    it is well covered — but the wording invites a later reader to conclude the
+    pipeline produced those traces, which it did not. Say what the test proves.
+  - Repair `tests/security/test_trace_plane.py`, which is red on `main` as of
+    `b0e82d2`. That commit correctly renamed the collector's redaction allowlist
+    from `allow_attributes` — a key no released contrib image accepts — to
+    `allowed_keys`, but did not update the test, so `_redaction_allowlist`
+    raises `KeyError` and two `PRIV-002` regressions no longer run. The boundary
+    itself is intact: the allowlist has 45 entries and carries none of the eight
+    content attributes. Only its proof is missing, which is the more dangerous
+    of the two states to leave in place. Point the helper at `allowed_keys` and
+    add an assertion that the processor exposes exactly the allowlist key the
+    pinned image accepts, so the next rename fails the test rather than
+    silencing it.
+  - Set an explicit `fail_under` in `[tool.coverage.report]`. Coverage is
+    measured and uploaded but not enforced, so a change that drops it fails
+    nothing. Choose the current hermetic figure rounded down, not an aspiration.
+- Acceptance criteria:
+  - `make check` fails when an index checkbox and its detail `Status` disagree.
+  - `make check` fails when coverage falls below the recorded floor.
+  - No test docstring in the repository claims end-to-end pipeline coverage for
+    a test that seeds its own records.
+- Verification:
+  - `make check`. Add a deliberate checkbox mismatch and a deliberate coverage
+    drop locally and confirm each fails, then revert.
 - Completion notes: _Pending._
 
 ## Feature and workflow task details
@@ -2699,6 +3023,57 @@ promotion pipeline — which requires a cluster that runs for real.
   - Files: `services/api/migrations/versions/0015_diagnosis_status.py`; `services/api/src/tenantchat/api/{store.py, persistence/traces.py, schemas.py, replay.py, gold.py, gold_cases.json, routers/traces.py, routers/chat.py, evidence.py}` (`replay.py` joins the composition root, which is where the stored record meets the current model); tests in `services/api/tests/test_trace_explorer.py` (including the ten-case Gate B walkthrough), `test_traces.py`, `test_openapi_contract.py`, `tests/repositories/test_trace_governance.py`, `tests/migrations/test_migrations.py`, `tests/test_architecture_invariants.py`; frontend `frontend/src/admin/{AdminPage.tsx, adminApi.ts, traceTypes.ts, admin.css, components/TraceExplorer.tsx, components/TraceDetail.tsx}` and `frontend/tests/traceExplorer.test.tsx` plus `tests/support/traceFixtures.ts`.
   - Follow-ups: full LangGraph node/edge event capture (a callback listener; `OBS-004` documents it), immutable-index and gold-substitution replay (`FEAT-008`/`RAG-008`), and a per-stage duration column once the trace records one.
 
+### FEAT-016 — Authorization and audit console
+
+- Status: `Todo`
+- Priority: `P1`
+- Type: `Feature/security operations`
+- Depends on: `SEC-001`, `PRIV-002`, `FEAT-001`
+- Origin: repository review, `2026-08-06`. `services/api/src/tenantchat/api/routers/admin.py`
+  already writes an audit row for every privileged action — membership
+  assignment, trace read, trace replay, tenant reply — carrying principal,
+  tenant, request ID, and timestamp. Nothing reads them back. There is no audit
+  route and no console view, so the platform's authorization story is provable
+  only by reading the database. For a demonstration whose second claim is
+  tenant-safe operator access, the control surface has to be visible.
+- Likely areas: audit read API, admin console permissions view, RBAC and grant display
+- Scope:
+  - Add a tenant-scoped, RBAC-gated `GET /api/admin/audit` returning the
+    content-free audit rows already written: action, principal, tenant, request
+    ID, trace ID, timestamp, and the bounded resource reference. Filters are
+    time range, action, and principal — no free-text search, because a search
+    box over an audit trail is the place a tenant ID becomes a query parameter.
+  - Reading the audit trail is itself an audited action, recorded with the same
+    envelope, so the console cannot be used to inspect a tenant's operator
+    activity without leaving a record.
+  - Add a console view showing, for the selected tenant: the roles that exist,
+    which subjects hold them, who granted each and when, and the separate
+    `PRIV-002` trace-read grants with their expiry. Show the distinction between
+    an admin role and a trace-read grant explicitly — they are different
+    controls and a viewer must not read them as one.
+  - Show each audited action beside the permission that authorized it, so a
+    reviewer can answer "who could have done this, and who did" on one screen.
+  - Never render a principal from another tenant's rows, and never expose the
+    existence of another tenant's queue, grants, or audit entries.
+- Acceptance criteria:
+  - An operator with a tenant's admin role sees only that tenant's audit rows,
+    roles, and grants; a request naming another tenant is the same `404` as a
+    tenant that does not exist.
+  - Every audit read is itself audited, and the audit read of an audit read
+    terminates rather than recursing.
+  - No audit row rendered by the console carries prompt text, evidence,
+    an answer, or a contact detail — the trail is identifiers, enums, and
+    versions, per `ADR-0010`.
+  - Revoking a role or an expired trace-read grant is visible in the console
+    without a redeploy, and the revoked principal's later attempt appears in the
+    trail as a refusal rather than being absent.
+- Verification:
+  - API tests for tenant scoping, RBAC refusal, audit-of-audit, and filter
+    bounds; browser tests for the permissions view, the grant/role distinction,
+    keyboard navigation, and the cross-tenant `404`; a privacy test asserting no
+    content field is reachable from any audit projection.
+- Completion notes: _Pending._
+
 ## Recommended dispatch sequence
 
 This sequence reduces merge conflicts and prevents agents from building features on insecure foundations.
@@ -2797,6 +3172,79 @@ may run in parallel only when their likely files do not overlap.
 Then stop. `FEAT-010` is the first task to pick up if the project continues:
 live delivery is what a viewer notices before any of the three claims, and it
 carries the shutdown-drain guarantee absorbed from the cancelled `REL-002`.
+
+## Waves 6–8 — corrections found by the `2026-08-06` review
+
+Wave 5's verification did not pass. The review found four defects in tasks
+already marked `Done` and confirmed that five Gate B tasks have no
+implementation at all, so these waves precede the stop rather than following it.
+Read this section with the Wave 5 checklist: the ten-case script and the
+`FEAT-004` journey still gate the release, they simply cannot be run yet.
+
+**Dispatch blocker.** `main` is red at `b0e82d2`: two `PRIV-002` regressions in
+`tests/security/test_trace_plane.py` fail because the collector's redaction
+allowlist was renamed to `allowed_keys` without updating the test. Fix that
+first — it is one helper — or every parallel agent inherits a failing gate and
+some will try to fix it independently. It is recorded as the first scope bullet
+of `QA-006`.
+
+Every task in Waves 6 and 7 is **unblocked today**. The constraint on
+parallelism is not dependency order — it is file collision. Two contention
+points matter, and both have already cost a merge fixup in this repository
+(`1c39c5d`, "Post-merge fixes: migration chain"):
+
+- **The admin console shell** — `frontend/src/admin/{AdminPage.tsx, adminApi.ts, admin.css}`.
+  `FEAT-001`, `FEAT-004`, and `FEAT-016` all add a view to it.
+- **The migration chain** — the head is `0016_review_queue`. Revision numbers
+  are assigned below rather than chosen by whoever finishes first.
+
+### Wave 6 — Review remediation (four independent lanes)
+
+| Lane | Task | Complexity | Model routing | Files it owns |
+|---|---|---:|---|---|
+| 6A | `RAG-010` | `M` | Strong — `P0` security, strong review mandatory | `prompts/assembly.py`, `parsing/injection.py`, adversarial corpus |
+| 6B | `OBS-005` | `M` | Strong | `trace.py`, `nodes.py`, `core/metrics.py` |
+| 6C | `RAG-011` | `S` | Economical | `core/claims.py`, `evals/gate.py` |
+| 6D | `QA-006` | `S` | Economical | `BACKLOG.md`, `pyproject.toml`, test docstrings |
+
+These four do not share a file. Dispatch all four at once. `FEAT-011` from
+Wave 7 can run as a fifth lane in the same batch — it is frontend-only against a
+finished API and collides with nothing here.
+
+### Wave 7 — Gate B completion
+
+| Order | Task | Complexity | Model routing | Dependency note |
+|---|---|---:|---|---|
+| 7A | `FEAT-011` | `S` | Economical | No blocker. The backend already curates `Citation`, validates it by construction, serves `GET /api/chat/sources/{source_id}` with the full tenant, audience, and quarantine recheck, and returns `ChatTurnResponse.citations` on every turn. The widget renders none of it. Frontend-only; the cheapest demo win in the repository. |
+| 7B | `REL-001` | `M` | Economical | No frontend, no migration, no collision with any other lane. Safe to run beside anything. |
+| 7C | `RAG-006` | `L` | Strong | After `RAG-010`. The standalone-query rewrite must not become the path by which prior untrusted text reaches a trusted region, and it should inherit a boundary that is already sound rather than one being fixed underneath it. |
+| 7D | `FEAT-001` | `M` | Economical | Claims migration **`0017`**. Owns the admin console shell; `FEAT-004` and `FEAT-016` rebase onto it. |
+| 7E | `FEAT-004` Gate B slice | `M` | Economical implementation, strong review of the ownership transaction | Claims migration **`0018`**. After `OBS-005` — staff takeover introduces a terminal state the outcome vocabulary must already model correctly — and after `FEAT-001` for the console shell. |
+
+### Wave 8 — Demonstration amplifiers
+
+| Order | Task | Complexity | Model routing | Dependency note |
+|---|---|---:|---|---|
+| 8A | `OBS-006` | `L` | Strong | After `OBS-005`. The largest available upgrade to claim 3: replaces a derived stage list with the graph that actually ran. |
+| 8B | `FEAT-016` | `M` | Economical implementation, strong review of the tenant-scoping | After `FEAT-001`. Audit rows are already written; only the read surface and the permissions view are missing. |
+| 8C | `AI-002` | `M` | Economical | After `REL-001` — both own the model-client boundary, and per-tenant budget enforcement belongs beside the timeout and circuit-breaker policy rather than in a second wrapper. |
+| 8D | `OBS-003` | `M` | Economical | After `OBS-005`. A dashboard built on a turn-outcome metric that does not sum to turns teaches the wrong thing. Still Gate C: build it only if the demonstration needs a dashboard. |
+
+`FEAT-010` remains the first task after these if the project continues.
+
+### Parallel dispatch batches
+
+Three batches, each safe to run concurrently as written:
+
+- **Batch A** — `RAG-010` ‖ `OBS-005` ‖ `RAG-011` + `QA-006` ‖ `FEAT-011`.
+- **Batch B** — `FEAT-001` (migration `0017`) ‖ `REL-001` ‖ `RAG-006`.
+- **Batch C** — `FEAT-004` (migration `0018`) ‖ `OBS-006` ‖ `AI-002`, with
+  `FEAT-016` following `FEAT-001`'s merge.
+
+An agent assigned a lane owns the files listed for it. Rule 3 of the agent
+dispatch contract applies with force here: an agent that needs a file another
+lane owns must coordinate rather than edit, and an agent that needs a migration
+revision must take the number assigned above rather than the next one free.
 
 ## Decision log required before implementation
 
