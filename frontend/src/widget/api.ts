@@ -237,7 +237,7 @@ export class ChatApi {
     const response = await fetch(this.url("/api/chat/session"), {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify(body)
+      body: JSON.stringify({ tenant_id: body.tenantId })
     });
     if (!response.ok) {
       throw new Error(`Unable to open a conversation (${response.status}).`);

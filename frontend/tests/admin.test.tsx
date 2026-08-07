@@ -3,50 +3,49 @@ import axe from "axe-core";
 import { describe, expect, test, vi } from "vitest";
 
 import { AdminPage } from "src/admin/AdminPage";
-import type { SessionDetail, SessionSummary } from "src/admin/types";
 import { jsonResponse, requestBody } from "tests/support/backend";
 import { tick } from "tests/support/timers";
 
-const SUMMARY: SessionSummary = {
-  sessionId: "web-apex-1",
-  tenantName: "Apex Home Services",
-  active: true,
-  status: "live",
+// These fixtures are the admin API's own wire shape — snake_case fields, the
+// store's `visitor` role, and the transcript as a sibling of `session` rather
+// than a property of it. They previously mirrored the console's camelCase
+// types instead, so the suite passed against a backend that does not exist and
+// every field the console read came back undefined in production.
+const APEX_SESSION_ID = "3f1d5f0e-8a2b-4c7d-9e11-6b0c2a4d5e88";
+const CLEARVIEW_SESSION_ID = "9c4a71b2-0d3e-4f56-8a90-1b2c3d4e5f67";
+
+const WIRE_SUMMARY = {
+  session_id: APEX_SESSION_ID,
+  tenant_id: "apex",
+  status: "active",
   outcome: "lead",
-  messageCount: 4,
-  leadCount: 1,
-  lastMessage: { content: "My boiler is out." },
-  updatedAt: 1_760_000_000
+  started_at: "2025-10-09T07:33:20.000Z",
+  last_activity_at: "2025-10-09T07:33:20.000Z"
 };
 
-const ARCHIVED: SessionSummary = {
-  ...SUMMARY,
-  sessionId: "web-clearview-9",
-  tenantName: "Clearview Heating",
-  active: false,
-  status: "archived",
+const WIRE_ARCHIVED = {
+  ...WIRE_SUMMARY,
+  session_id: CLEARVIEW_SESSION_ID,
+  tenant_id: "clearview",
+  status: "closed",
   outcome: "booked",
-  lastMessage: { content: "Thanks, see you Tuesday." }
+  last_activity_at: "2025-10-09T07:20:00.000Z"
 };
 
-const DETAIL: SessionDetail = {
-  ...SUMMARY,
-  messages: [
-    { id: "m1", role: "user", content: "My boiler is out.", createdAt: 1_760_000_000 },
-    { id: "m2", role: "assistant", content: "I can help.", createdAt: 1_760_000_060 }
-  ],
-  leads: [
-    {
-      customerName: "Sam Lee",
-      contact: "sam@example.test",
-      service: "HVAC",
-      urgency: "today",
-      summary: "No heat."
-    }
-  ],
-  bookings: [],
-  toolEvents: [{ name: "create_lead", result: { leadId: "lead-1" } }]
-};
+const WIRE_MESSAGES = [
+  {
+    message_id: "c56d169b-bfa8-43ad-a624-d122797c4f7e",
+    role: "visitor",
+    content: "My boiler is out.",
+    created_at: "2025-10-09T07:33:20.000Z"
+  },
+  {
+    message_id: "2b7e1a90-5c34-4d81-9f22-8e0a1c3b4d55",
+    role: "assistant",
+    content: "I can help.",
+    created_at: "2025-10-09T07:34:20.000Z"
+  }
+];
 
 /** A console backed by two tenants and two sessions, with the newest selected. */
 function stubAdminBackend() {
@@ -54,17 +53,20 @@ function stubAdminBackend() {
     if (url.endsWith("/api/admin/tenants")) {
       return jsonResponse({
         tenants: [
-          { tenantId: "apex", name: "Apex Home Services", role: "support_agent" },
-          { tenantId: "clearview", name: "Clearview Heating", role: "support_agent" }
+          { tenant_id: "apex", name: "Apex Home Services", role: "support_agent" },
+          { tenant_id: "clearview", name: "Clearview Heating", role: "support_agent" }
         ]
       });
     }
     if (url.includes("/api/admin/chats?")) {
-      return jsonResponse({ sessions: [SUMMARY, ARCHIVED] });
+      return jsonResponse({ sessions: [WIRE_SUMMARY, WIRE_ARCHIVED] });
     }
     if (url.includes("/api/admin/chats/")) {
-      const session = url.includes(ARCHIVED.sessionId) ? { ...ARCHIVED, messages: [] } : DETAIL;
-      return jsonResponse({ session });
+      const archived = url.includes(CLEARVIEW_SESSION_ID);
+      return jsonResponse({
+        session: archived ? WIRE_ARCHIVED : WIRE_SUMMARY,
+        messages: archived ? [] : WIRE_MESSAGES
+      });
     }
     if (url.endsWith("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "token-1" });
     throw new Error(`unexpected request: ${url}`);
@@ -79,18 +81,22 @@ async function renderConsole() {
   document.documentElement.lang = "en";
   document.title = "Chat Admin";
   render(<AdminPage />);
-  await screen.findByText("My boiler is out.", { selector: ".session-preview" });
+  // The list endpoint carries summaries only, so a row is identified by its
+  // tenant rather than by a message preview it was never sent.
+  await screen.findByText("Apex Home Services", { selector: ".session-row strong" });
 }
 
 describe("the chat queue", () => {
-  test("selects the newest chat and shows its transcript, leads, and tool calls", async () => {
+  test("selects the newest chat and shows its transcript", async () => {
     stubAdminBackend();
     await renderConsole();
 
-    expect(await screen.findByRole("heading", { name: SUMMARY.sessionId })).toBeTruthy();
-    expect(screen.getByRole("log", { name: "Transcript" }).textContent).toContain("I can help.");
-    expect(screen.getByText("Sam Lee")).toBeTruthy();
-    expect(screen.getByText(/leadId/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: APEX_SESSION_ID })).toBeTruthy();
+    const transcript = screen.getByRole("log", { name: "Transcript" });
+    expect(transcript.textContent).toContain("My boiler is out.");
+    expect(transcript.textContent).toContain("I can help.");
+    // `visitor` on the wire is the customer side of the conversation.
+    expect(transcript.textContent).toContain("Visitor");
   });
 
   test("filtering by text narrows the queue without touching the polled data", async () => {
@@ -103,7 +109,7 @@ describe("the chat queue", () => {
     expect(queue.queryByText("Apex Home Services")).toBeNull();
     expect(queue.getByText("Clearview Heating")).toBeTruthy();
     // The open conversation is unaffected: filtering is a view of the queue.
-    expect(screen.getByRole("heading", { name: SUMMARY.sessionId })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: APEX_SESSION_ID })).toBeTruthy();
   });
 
   test("a poll that lands mid-reply does not take the half-typed message away", async () => {
@@ -164,7 +170,7 @@ describe("the chat queue", () => {
     });
     await waitFor(() => {
       const detail = fetchMock.mock.calls.find(([url]) =>
-        url.includes("/api/admin/chats/web-apex-1")
+        url.includes(`/api/admin/chats/${APEX_SESSION_ID}`)
       );
       expect(detail?.[0]).toContain("tenant_id=apex");
     });

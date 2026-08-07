@@ -6,7 +6,19 @@ whole auth path runs locally: browser → nginx → oauth2-proxy → Keycloak.
 The chart installs Keycloak, an embedded Postgres, the `tenantchat` realm with
 the four role groups the gateway understands, NetworkPolicies matching the
 default-deny shape of `llm-chat`, and a post-install Job that applies the two
-credential-bearing parts of the realm from Secrets.
+credential-bearing parts of the realm from Secrets plus the `groups` client
+scope.
+
+## Why the Job creates the `groups` scope
+
+A realm representation that carries a `clientScopes` array is authoritative:
+Keycloak assigns exactly that list and skips the built-in scopes it would
+otherwise create. Declaring `groups` there therefore deleted `profile`, `email`,
+`roles`, `web-origins`, and `basic` from the realm, and the gateway's
+`openid profile email groups` request came back `invalid_scope` — the console
+was unreachable for every user. Realm import has no additive mode for that key,
+so the realm JSON omits it and the Job, which already holds admin credentials
+for the client secret, creates the scope and attaches it to the client.
 
 It is deliberately a first-party chart rather than a wrapper around an upstream
 one: the digest pinning, default-deny policies, and out-of-band Secret contract
@@ -129,6 +141,22 @@ denies them everything.
 
 A user in no recognized group is authenticated but has no role, and every admin
 route fails closed. That is the intended behavior, not a misconfiguration.
+
+## What is checked, and where
+
+```bash
+make keycloak-check
+```
+
+Lints the chart and runs `tests/test_keycloak_realm_chart.py`, which renders
+against `values.local.example.yaml` and asserts what the section above is about:
+the realm declares no `clientScopes`, its client names no scope that import
+cannot resolve, the bootstrap Job creates `groups` with its group-membership
+mapper and attaches it, and every scope in the gateway's `OAUTH2_PROXY_SCOPE`
+is reachable one of those two ways.
+
+Rendering needs helm, which `make check` deliberately does without, so those
+tests carry pytest's `chart` marker and run in CI's `Helm charts` job.
 
 ## Not covered by the static gates
 

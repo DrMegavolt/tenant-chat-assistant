@@ -92,6 +92,7 @@ addopts = [
 markers = [
     "integration: requires Postgres, Elasticsearch, or the embedding service",
     "security: tenant-isolation and abuse regression tests",
+    "chart: renders a Helm chart; requires the helm CLI",
 ]
 filterwarnings = ["error"]
 

@@ -170,6 +170,34 @@ jobs:
       - name: Validate model
         run: npm --prefix architecture/likec4 run validate
 
+  charts:
+    name: Helm charts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python
+        run: uv python install
+
+      # Pinned to the version local development uses: the chart specifications
+      # assert on rendered output, which a template engine change can move.
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.2.3
+
+      # Separate from the quality job because that gate stays hermetic, and
+      # helm is a toolchain it deliberately does not have.
+      - name: Lint and verify the Keycloak chart
+        run: make keycloak-check
+
   migrations:
     name: Postgres migrations
     runs-on: ubuntu-latest

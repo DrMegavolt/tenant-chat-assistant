@@ -79,11 +79,20 @@ server {
         proxy_set_header X-Original-URL $gateway_scheme://$gateway_host$request_uri;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $gateway_scheme;
+        # A refreshed session comes back as the same oversized Set-Cookie that
+        # the callback sends; $auth_cookie below reads it off this response.
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
     }
 
     # --- Login redirect for browser requests (HTML clients) -----------------
+    # `rd` stays relative. oauth2-proxy validates an absolute `rd` against
+    # --whitelist-domain and discards it when the host is not listed, which
+    # silently sent every post-login browser to `/` instead of the console.
+    # A path keeps the deep link without opening a redirect to another host.
     location @auth_login {
-        return 302 $gateway_scheme://$gateway_host/oauth2/start?rd=$gateway_scheme://$gateway_host$request_uri;
+        return 302 $gateway_scheme://$gateway_host/oauth2/start?rd=$request_uri;
     }
 
     # --- API 401 handler (no redirect for API clients) -----------------------
@@ -265,6 +274,12 @@ server {
     # enforces role-based authorization.  Identity headers from the auth
     # subrequest are forwarded; client-supplied copies are overwritten.
     location /api/admin/ {
+        # The 64k server default sizes the visitor chat body. Knowledge uploads
+        # share this listener and the parser accepts documents up to 10 MB, so
+        # the visitor limit would refuse any real handbook or price list at the
+        # edge. Kept equal to MAX_DOCUMENT_BYTES so the parser's error is what
+        # an operator sees, not an opaque 413.
+        client_max_body_size 10m;
         auth_request /_auth;
         auth_request_set $auth_email $upstream_http_x_auth_request_email;
         auth_request_set $auth_user $upstream_http_x_auth_request_user;
@@ -291,6 +306,13 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $gateway_scheme;
         proxy_set_header X-Forwarded-Host $gateway_host;
+        # The callback response carries the session cookie, which holds the
+        # access, ID, and refresh tokens across several Set-Cookie headers and
+        # overruns the 4k default. nginx answers a successful login with 502
+        # when it cannot buffer the response head.
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
     }
 
     # --- Catch-all: unknown API paths fail closed ---------------------------

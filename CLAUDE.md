@@ -16,9 +16,10 @@ make help      # everything else
 
 `make check` is the hermetic local quality gate and is what CI's quality job
 runs. It uses fake browser API responses and a scripted chat model, so it needs
-no LLM, database, search service, embedding model, or Kubernetes cluster. Migration, architecture,
-container/security, and secret-history checks are separate CI jobs; run the
-relevant local equivalents before proposing a change is complete.
+no LLM, database, search service, embedding model, or Kubernetes cluster. It
+also has no helm, so Helm chart checks (`make keycloak-check`) join migration,
+architecture, container/security, and secret-history checks as separate CI jobs;
+run the relevant local equivalents before proposing a change is complete.
 
 Never invoke `pip` or a bare `python`. Everything goes through
 `uv run --frozen`, so a hand-modified environment cannot change what is verified.

@@ -7,7 +7,14 @@
  * through the gateway rather than render an empty console.
  */
 
-import type { SessionDetail, SessionSummary, TenantSummary } from "src/admin/types";
+import { OUTCOMES } from "src/admin/types";
+import type {
+  AdminMessage,
+  Outcome,
+  SessionDetail,
+  SessionSummary,
+  TenantSummary
+} from "src/admin/types";
 import type { ReviewDetail, ReviewDiagnosis, ReviewSummary } from "src/admin/reviewTypes";
 import type {
   GoldCase,
@@ -55,6 +62,7 @@ function resolveAdminApiBaseUrl(): string {
 export class AdminApi {
   readonly baseUrl: string;
   private csrfToken: string | null = null;
+  private tenantNames: Map<string, string> = new Map();
 
   constructor(baseUrl: string = resolveAdminApiBaseUrl()) {
     this.baseUrl = baseUrl;
@@ -70,8 +78,14 @@ export class AdminApi {
   async tenants(): Promise<TenantSummary[]> {
     const response = await this.request("/api/admin/tenants");
     if (!response.ok) throw new Error(`Tenant list failed with ${response.status}`);
-    const payload = (await response.json()) as { tenants?: TenantSummary[] };
-    return payload.tenants ?? [];
+    const payload = (await response.json()) as { tenants?: unknown[] };
+    const rows = (payload.tenants ?? []).map((wire) =>
+      tenantSummaryFromWire(wire as Record<string, unknown>)
+    );
+    // Conversation rows name their tenant by id; the console shows the display
+    // name. This is the only response that carries both.
+    this.tenantNames = new Map(rows.map((row) => [row.tenantId, row.name]));
+    return rows;
   }
 
   /** @throws {UnauthorizedError} when the admin session has expired. */
@@ -80,8 +94,10 @@ export class AdminApi {
       `/api/admin/chats?tenant_id=${encodeURIComponent(tenantId)}`
     );
     if (!response.ok) throw new Error(`Chat list failed with ${response.status}`);
-    const payload = (await response.json()) as { sessions?: SessionSummary[] };
-    return payload.sessions ?? [];
+    const payload = (await response.json()) as { sessions?: unknown[] };
+    return (payload.sessions ?? []).map((wire) =>
+      sessionSummaryFromWire(wire as Record<string, unknown>, this.tenantNames)
+    );
   }
 
   /** Returns null when the session has since been removed. */
@@ -90,8 +106,22 @@ export class AdminApi {
       `/api/admin/chats/${encodeURIComponent(sessionId)}?tenant_id=${encodeURIComponent(tenantId)}`
     );
     if (!response.ok) return null;
-    const payload = (await response.json()) as { session?: SessionDetail };
-    return payload.session ?? null;
+    const payload = (await response.json()) as {
+      session?: Record<string, unknown>;
+      messages?: unknown[];
+    };
+    if (!payload.session) return null;
+    const summary = sessionSummaryFromWire(payload.session, this.tenantNames);
+    const messages = (payload.messages ?? []).map((wire) =>
+      adminMessageFromWire(wire as Record<string, unknown>)
+    );
+    const last = messages[messages.length - 1];
+    return {
+      ...summary,
+      messageCount: messages.length,
+      ...(last ? { lastMessage: { content: last.content } } : {}),
+      messages
+    };
   }
 
   async sendStaffMessage(sessionId: string, tenantId: string, content: string): Promise<void> {
@@ -569,6 +599,57 @@ function str(value: unknown): string {
 
 function strOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/** Unix seconds from an ISO-8601 instant, which is what the time helpers take. */
+function epochSeconds(value: unknown): number {
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed / 1000 : 0;
+}
+
+function tenantSummaryFromWire(wire: Record<string, unknown>): TenantSummary {
+  return {
+    tenantId: str(wire.tenant_id),
+    name: str(wire.name),
+    role: str(wire.role)
+  };
+}
+
+/**
+ * The store's role vocabulary is wider than the transcript's: `visitor` and
+ * `staff` are both rendered as the customer-facing side of the conversation,
+ * and `source` is what tells a staff reply apart from a visitor's own words.
+ */
+function adminMessageFromWire(wire: Record<string, unknown>): AdminMessage {
+  const role = str(wire.role);
+  return {
+    id: str(wire.message_id),
+    role: role === "assistant" ? "assistant" : "user",
+    ...(role === "staff" ? { source: "admin" as const } : {}),
+    content: str(wire.content),
+    createdAt: epochSeconds(wire.created_at)
+  };
+}
+
+function sessionSummaryFromWire(
+  wire: Record<string, unknown>,
+  tenantNames: Map<string, string>
+): SessionSummary {
+  const tenantId = str(wire.tenant_id);
+  const status = str(wire.status);
+  const outcome = str(wire.outcome);
+  return {
+    sessionId: str(wire.session_id),
+    // Falls back to the id so a tenant added since the console loaded its
+    // membership list still names a row rather than rendering blank.
+    tenantName: tenantNames.get(tenantId) ?? tenantId,
+    active: status === "active",
+    status,
+    // `none` is the store's resting value and is not one of the console's
+    // outcomes; leaving the key off lets `outcomeOf` apply its own default.
+    ...(OUTCOMES.includes(outcome as Outcome) ? { outcome: outcome as Outcome } : {}),
+    updatedAt: epochSeconds(wire.last_activity_at)
+  };
 }
 
 function searchRecordFromWire(wire: Record<string, unknown>): TraceSearchRecord {

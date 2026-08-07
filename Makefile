@@ -45,7 +45,7 @@ typecheck: ## Run mypy in strict mode
 	$(UV_RUN) mypy
 
 test: ## Run the hermetic unit suite (no external services)
-	$(UV_RUN) pytest -m "not integration"
+	$(UV_RUN) pytest -m "not integration and not chart"
 
 eval: ## Run the golden offline evaluation harness (baseline + hybrid, hermetic)
 	$(UV_RUN) python -m evals.runner
@@ -57,7 +57,7 @@ eval-gate: ## Baseline-vs-candidate regression gate over every versioned dataset
 	$(UV_RUN) python -m evals.gate --dataset adversarial-v1 --verify-determinism
 
 test-cov: ## Run tests with a coverage report
-	$(UV_RUN) pytest -m "not integration" --cov --cov-report=term-missing \
+	$(UV_RUN) pytest -m "not integration and not chart" --cov --cov-report=term-missing \
 		--cov-report=xml:coverage/python/coverage.xml \
 		--cov-report=html:coverage/python/html \
 		--junitxml=artifacts/test-results/python.xml
@@ -129,6 +129,11 @@ keycloak-render: ## Render the Keycloak chart for review (KEYCLOAK_VALUES=path)
 
 keycloak-lint: ## Lint the Keycloak chart against the example values
 	helm lint k8s/helm/keycloak -f k8s/helm/keycloak/values.local.example.yaml
+
+keycloak-test: ## Run the chart specifications that render the realm (requires helm)
+	$(UV_RUN) pytest -m chart
+
+keycloak-check: keycloak-lint keycloak-test ## Lint and verify the Keycloak chart (CI's charts job)
 
 image-contracts: ## Verify immutable image and Kubernetes artifact contracts
 	$(UV_RUN) python scripts/verify_image_contracts.py

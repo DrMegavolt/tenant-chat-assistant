@@ -137,11 +137,22 @@ def test_oauth_redirect_preserves_the_ingress_origin() -> None:
 
     assert "map $http_x_forwarded_proto $gateway_scheme" in template
     assert "map $http_x_forwarded_host $gateway_host" in template
-    assert (
-        "return 302 $gateway_scheme://$gateway_host/oauth2/start?rd="
-        "$gateway_scheme://$gateway_host$request_uri;" in template
-    )
+    assert "return 302 $gateway_scheme://$gateway_host/oauth2/start?rd=" in template
     assert "proxy_set_header X-Forwarded-Proto $gateway_scheme;" in template
+
+
+def test_oauth_return_target_is_a_relative_path() -> None:
+    """An absolute `rd` is dropped, sending every login to `/` instead of /admin/.
+
+    oauth2-proxy validates an absolute `rd` against --whitelist-domain, which
+    this deployment does not set, so it discarded the deep link and fell back
+    to the site root. A path needs no whitelist and opens no redirect to
+    another host.
+    """
+    template = (ROOT / "frontend/nginx/site.conf.template").read_text(encoding="utf-8")
+
+    assert "?rd=$request_uri;" in template
+    assert "?rd=$gateway_scheme://$gateway_host$request_uri;" not in template
 
 
 def test_spoofable_identity_headers_are_handled() -> None:

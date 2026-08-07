@@ -244,3 +244,57 @@ def test_prometheus_is_the_only_cross_namespace_metrics_caller() -> None:
         and policy["metadata"]["name"].startswith("allow-prometheus-")
     }
     assert frozenset({"app": "chat-backend"}.items()) not in metrics_targets
+
+
+def test_every_intra_namespace_egress_allowance_has_a_matching_ingress_rule() -> None:
+    """A one-sided allowance is a silent outage, not a tighter boundary.
+
+    Kubernetes needs both halves: the caller's egress policy *and* the callee's
+    ingress policy must admit the flow. `job-worker` held egress to
+    Elasticsearch and the embedding service while neither listed it as an
+    allowed caller, so the ingestion handler could not index a chunk or embed
+    one — and every egress policy still read as though it could.
+    """
+    policies = [
+        document
+        for document in load_documents("k8s/network-policies.yaml")
+        if document["kind"] == "NetworkPolicy"
+    ]
+
+    admitted: dict[tuple[str, int], set[str]] = {}
+    for policy in policies:
+        if "Ingress" not in policy["spec"].get("policyTypes", []):
+            continue
+        target = policy["spec"]["podSelector"].get("matchLabels", {}).get("app")
+        if target is None:
+            continue
+        for rule in policy["spec"].get("ingress", []):
+            callers = {
+                app
+                for peer in rule.get("from", [])
+                # Cross-namespace peers are keyed by namespace, not by app.
+                if "podSelector" in peer and "namespaceSelector" not in peer
+                if (app := peer["podSelector"].get("matchLabels", {}).get("app")) is not None
+            }
+            for port in rule.get("ports", []):
+                admitted.setdefault((target, port["port"]), set()).update(callers)
+
+    unmatched: list[str] = []
+    for policy in policies:
+        if "Egress" not in policy["spec"].get("policyTypes", []):
+            continue
+        caller = policy["spec"]["podSelector"].get("matchLabels", {}).get("app")
+        if caller is None:
+            continue
+        for rule in policy["spec"].get("egress", []):
+            for peer in rule.get("to", []):
+                if "podSelector" not in peer or "namespaceSelector" in peer:
+                    continue
+                callee = peer["podSelector"]["matchLabels"].get("app")
+                if callee is None:
+                    continue
+                for port in rule.get("ports", []):
+                    if caller not in admitted.get((callee, port["port"]), set()):
+                        unmatched.append(f"{caller} -> {callee}:{port['port']}")
+
+    assert not unmatched, f"egress allowed with no matching ingress rule: {sorted(unmatched)}"

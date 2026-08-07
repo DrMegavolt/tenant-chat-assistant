@@ -84,6 +84,9 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
         if (cancelled) return;
         setSources(tree);
         setHasLoaded(true);
+        // A load that succeeds retires the previous failure's banner; without
+        // this, switching tenants after one bad fetch leaves it on screen.
+        setError(null);
       })
       .catch(() => {
         if (!cancelled) setError("Could not reach the knowledge base. Retrying…");
@@ -112,15 +115,18 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
     void run();
   };
 
-  const act = async (label: string, fn: () => Promise<unknown>) => {
+  /** Reports whether the action succeeded, so a caller can keep its form open. */
+  const act = async (label: string, fn: () => Promise<unknown>): Promise<boolean> => {
     setError(null);
     setNotice(null);
     try {
       await fn();
       await run();
       setNotice(`${label} complete.`);
+      return true;
     } catch {
       setError(`${label} failed.`);
+      return false;
     }
   };
 
@@ -274,7 +280,7 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
           onExpire={expire}
           onDelete={remove}
           onPreview={openPreview}
-          onChanged={() => void run()}
+          onUpload={(fn) => act("Uploading the document", fn)}
         />
       ))}
 
@@ -365,7 +371,7 @@ function SourcePanel({
   onExpire,
   onDelete,
   onPreview,
-  onChanged
+  onUpload
 }: {
   api: AdminApi;
   tenantId: string;
@@ -377,7 +383,7 @@ function SourcePanel({
   onExpire: (version: KnowledgeVersion) => void;
   onDelete: (document: KnowledgeDocument) => void;
   onPreview: (version: KnowledgeVersion) => void;
-  onChanged: () => void;
+  onUpload: (fn: () => Promise<unknown>) => Promise<boolean>;
 }) {
   return (
     <article className="kb-source" aria-label={source.displayName}>
@@ -391,7 +397,7 @@ function SourcePanel({
           <button type="button" className="ghost-button" onClick={() => onToggle(source)}>
             {source.enabled ? "Disable" : "Enable"}
           </button>
-          <UploadForm api={api} tenantId={tenantId} source={source} onUploaded={onChanged} />
+          <UploadForm api={api} tenantId={tenantId} source={source} onUpload={onUpload} />
         </div>
       </div>
 
@@ -582,12 +588,12 @@ function UploadForm({
   api,
   tenantId,
   source,
-  onUploaded
+  onUpload
 }: {
   api: AdminApi;
   tenantId: string;
   source: KnowledgeSource;
-  onUploaded: () => void;
+  onUpload: (fn: () => Promise<unknown>) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -595,19 +601,24 @@ function UploadForm({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // The upload runs through the parent so a rejection reaches the console's
+  // banner. Failing silently here left the operator with a form that looked
+  // untouched and a document that was never stored.
   const upload = async () => {
     if (!file) return;
     setBusy(true);
     try {
-      await api.uploadKnowledge(tenantId, source.sourceId, file, {
-        externalKey: externalKey || file.name,
-        title: title || file.name
-      });
+      const uploaded = await onUpload(() =>
+        api.uploadKnowledge(tenantId, source.sourceId, file, {
+          externalKey: externalKey || file.name,
+          title: title || file.name
+        })
+      );
+      if (!uploaded) return;
       setFile(null);
       setTitle("");
       setExternalKey("");
       setOpen(false);
-      onUploaded();
     } finally {
       setBusy(false);
     }

@@ -900,6 +900,32 @@ spec:
             # through the knowledge-storage claim.
             - name: INGESTION_STORAGE_ROOT
               value: /data/knowledge
+            # The upload route's object store and the answer path's retrieval
+            # are composed only when a search or embedding URL is present. With
+            # the storage root alone, this pod accepted no uploads
+            # (`storage_unavailable`) and answered every turn with no retrieval
+            # and no citations, while the worker behind it was fully wired.
+            - name: ELASTICSEARCH_URL
+              value: http://elasticsearch:9200
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+            - name: KNOWLEDGE_INDEX
+              value: tenant-knowledge-chunks
+            - name: EMBEDDING_URL
+              value: http://embedding-service:8001
+            - name: INGESTION_TO_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ingestion-to-embedding-credentials
+                  key: token
           volumeMounts:
             - name: knowledge-storage
               mountPath: /data/knowledge

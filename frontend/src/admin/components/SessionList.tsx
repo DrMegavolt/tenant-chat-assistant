@@ -109,11 +109,16 @@ export function SessionList({ sessions, selectedId, onSelect }: SessionListProps
                 <OutcomeBadge outcome={outcome} />
               </span>
               <span className="session-preview">
-                {session.lastMessage?.content ?? "No messages yet"}
+                {session.lastMessage?.content ?? "Open to read the transcript"}
               </span>
               <span className="session-meta">
-                {session.messageCount} messages · {session.leadCount} leads ·{" "}
-                {relativeTime(session.updatedAt)}
+                {[
+                  session.messageCount === undefined ? null : `${session.messageCount} messages`,
+                  session.leadCount === undefined ? null : `${session.leadCount} leads`,
+                  relativeTime(session.updatedAt)
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </span>
             </button>
           );

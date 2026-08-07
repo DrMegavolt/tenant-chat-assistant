@@ -23,32 +23,15 @@
     {{ if $index }},{{ end }}{ "name": "{{ $group }}", "path": "/{{ $group }}" }
 {{- end }}
   ],
-  "clientScopes": [
-    {
-      "name": "groups",
-      "description": "Group membership, mapped by the gateway to an application role",
-      "protocol": "openid-connect",
-      "attributes": {
-        "include.in.token.scope": "true",
-        "display.on.consent.screen": "false"
-      },
-      "protocolMappers": [
-        {
-          "name": "groups",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-group-membership-mapper",
-          "consentRequired": false,
-          "config": {
-            "claim.name": "groups",
-            "full.path": "false",
-            "id.token.claim": "true",
-            "access.token.claim": "true",
-            "userinfo.token.claim": "true"
-          }
-        }
-      ]
-    }
-  ],
+{{/*
+A realm representation carrying `clientScopes` is authoritative: Keycloak
+assigns exactly that list and skips the built-in scopes it would otherwise
+create, so declaring the `groups` scope here silently deleted `profile`,
+`email`, `roles`, `web-origins`, and `basic`. The gateway then requested
+`openid profile email groups` and Keycloak refused the whole authorization
+request with `invalid_scope`, making /admin/ unreachable. The key is therefore
+absent, and the bootstrap Job adds `groups` to the realm Keycloak built.
+*/}}
   "clients": [
     {
       "clientId": "{{ .Values.realm.clientId }}",
@@ -69,13 +52,17 @@
         "post.logout.redirect.uris": "{{ include "tenantchat.keycloak.gatewayUrl" . }}/*",
         "pkce.code.challenge.method": "S256"
       },
+{{/*
+`groups` is missing from this list on purpose: it does not exist yet at import
+time, and Keycloak drops an unresolvable scope name here without failing the
+import. The bootstrap Job creates it and attaches it as a default scope.
+*/}}
       "defaultClientScopes": [
         "basic",
         "profile",
         "email",
         "roles",
-        "web-origins",
-        "groups"
+        "web-origins"
       ],
       "optionalClientScopes": []
     }

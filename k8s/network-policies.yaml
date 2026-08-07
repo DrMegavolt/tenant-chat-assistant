@@ -179,6 +179,16 @@ spec:
         - podSelector:
             matchLabels:
               app: financing-agent
+        # The worker and the API hold matching egress rules, but a connection
+        # needs both sides: without these the ingestion handler could not embed
+        # a chunk and the answer path could not embed a query, while every
+        # egress policy read as though they could.
+        - podSelector:
+            matchLabels:
+              app: job-worker
+        - podSelector:
+            matchLabels:
+              app: chat-backend
       ports:
         - { protocol: TCP, port: 8001 }
 ---
@@ -248,6 +258,14 @@ spec:
         - podSelector:
             matchLabels:
               app: configure-kibana-system-user
+        # Same missing half as the embedding policy: the worker indexes chunks
+        # here and the API retrieves them.
+        - podSelector:
+            matchLabels:
+              app: job-worker
+        - podSelector:
+            matchLabels:
+              app: chat-backend
       ports:
         - { protocol: TCP, port: 9200 }
 ---
@@ -297,6 +315,20 @@ spec:
               app: postgres
       ports:
         - { protocol: TCP, port: 5432 }
+    # RAG-002: the answer path retrieves chunks and embeds the query, and the
+    # upload route needs the same index reachable to report on it.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - { protocol: TCP, port: 9200 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: embedding-service
+      ports:
+        - { protocol: TCP, port: 8001 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -191,16 +191,27 @@ kubectl get svc -n identity keycloak keycloak-lb -o wide
 
 `k8s/helm/keycloak/` is a Helm chart deploying Keycloak into the `identity`
 namespace as that provider, so the auth path runs end to end on a local
-cluster. It creates the `tenantchat` realm with the four role groups, the
-`groups` client scope the gateway reads, default-deny NetworkPolicies matching
-this namespace's shape, and a post-install Job that applies the client secret
-and the first operator account from Secrets. Its README covers the Secrets,
-the values with no default, and how the split browser/backchannel URLs work.
+cluster. It creates the `tenantchat` realm with the four role groups,
+default-deny NetworkPolicies matching this namespace's shape, and a post-install
+Job that applies the client secret, the first operator account, and the `groups`
+client scope the gateway reads. Its README covers the Secrets, the values with
+no default, why the `groups` scope is created by the Job rather than the realm
+import, and how the split browser/backchannel URLs work.
 
-The chart is not covered by `make deployment-security` or `make image-contracts`:
-both scan the flat `k8s/*.yaml` glob and parse plain YAML, which Go templates
-are not. `make keycloak-render` renders the chart so the same eyes can check the
-output; every image in it must end in an exact digest.
+The chart is still not covered by `make deployment-security` or
+`make image-contracts`: both scan the flat `k8s/*.yaml` glob and parse plain
+YAML, which Go templates are not. `make keycloak-render` renders the chart so
+the same eyes can check the output; every image in it must end in an exact
+digest.
+
+`make keycloak-check` is the automated part. It lints the chart and runs
+`tests/test_keycloak_realm_chart.py`, which renders against
+`values.local.example.yaml` and holds the realm to what Keycloak's import
+actually does with it — no `clientScopes` key, no client scope named before it
+exists, and every scope `OAUTH2_PROXY_SCOPE` requests reachable either as a
+built-in or from the bootstrap Job. These need helm, so they carry pytest's
+`chart` marker, sit outside the hermetic `make check`, and run in CI's `Helm
+charts` job instead.
 
 The `allow-oauth2-proxy-egress` policy admits the `identity` namespace on port
 8080 for the backchannel, and keeps external HTTPS for a hosted provider.

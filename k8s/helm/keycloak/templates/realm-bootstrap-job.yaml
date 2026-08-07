@@ -57,6 +57,39 @@ data:
     kc update "clients/$client_uuid" -s "secret=$CLIENT_SECRET" >/dev/null
     log "set the client secret for $CLIENT_ID"
 
+    # The realm import cannot declare this scope: a representation carrying
+    # `clientScopes` replaces the built-in set, which takes `profile` and
+    # `email` with it and makes every authorization request `invalid_scope`.
+    scope_id="$(kc get client-scopes --fields id,name --format csv --noquotes \
+      | grep ',groups$' | cut -d, -f1)"
+    if [ -z "$scope_id" ]; then
+      kc create client-scopes \
+        -s name=groups \
+        -s 'description=Group membership, mapped by the gateway to an application role' \
+        -s protocol=openid-connect \
+        -s 'attributes."include.in.token.scope"=true' \
+        -s 'attributes."display.on.consent.screen"=false' >/dev/null
+      scope_id="$(kc get client-scopes --fields id,name --format csv --noquotes \
+        | grep ',groups$' | cut -d, -f1)"
+      kc create "client-scopes/$scope_id/protocol-mappers/models" \
+        -s name=groups \
+        -s protocol=openid-connect \
+        -s protocolMapper=oidc-group-membership-mapper \
+        -s consentRequired=false \
+        -s 'config."claim.name"=groups' \
+        -s 'config."full.path"=false' \
+        -s 'config."id.token.claim"=true' \
+        -s 'config."access.token.claim"=true' \
+        -s 'config."userinfo.token.claim"=true' >/dev/null
+      log "created the groups client scope"
+    else
+      log "groups client scope already exists"
+    fi
+
+    # -n because this endpoint takes the assignment itself, not a patch.
+    kc update "clients/$client_uuid/default-client-scopes/$scope_id" -n >/dev/null
+    log "attached the groups scope to $CLIENT_ID as a default scope"
+
     if [ "${BOOTSTRAP_USER_ENABLED:-false}" != "true" ]; then
       log "bootstrap user disabled; done"
       exit 0

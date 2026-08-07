@@ -3,7 +3,7 @@ import { OUTCOME_LABELS, outcomeOf, type Outcome, type SessionSummary } from "sr
 /** Counts a dispatcher acts on, ordered by how urgent acting is. */
 const TILES: { key: string; label: string; of(sessions: SessionSummary[]): number }[] = [
   { key: "active", label: "Live now", of: (rows) => rows.filter((row) => row.active).length },
-  { key: "lead", label: "Leads", of: (rows) => sum(rows, (row) => row.leadCount) },
+  { key: "lead", label: "Leads", of: (rows) => sum(rows, (row) => row.leadCount ?? 0) },
   {
     key: "booked",
     label: "Booked",
@@ -19,7 +19,7 @@ const TILES: { key: string; label: string; of(sessions: SessionSummary[]): numbe
     label: "Abandoned",
     of: (rows) => rows.filter((row) => outcomeOf(row) === "abandoned").length
   },
-  { key: "messages", label: "Messages", of: (rows) => sum(rows, (row) => row.messageCount) }
+  { key: "messages", label: "Messages", of: (rows) => sum(rows, (row) => row.messageCount ?? 0) }
 ];
 
 function sum(rows: SessionSummary[], of: (row: SessionSummary) => number): number {
