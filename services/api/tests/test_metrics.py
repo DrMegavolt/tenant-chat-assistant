@@ -61,6 +61,7 @@ from tenantchat.core.metrics import (
     label_value_is_safe,
 )
 from tenantchat.core.routing import IntentName, RoutingOutcome, RoutingRule
+from tenantchat.core.resilience import CircuitState, Dependency, FailureKind
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolCall, ToolSpec
 from tenantchat.orchestration.prompts import DEFAULT_REGISTRY, DISPATCH_SYSTEM_TEMPLATE_ID
@@ -92,6 +93,9 @@ def _reachable_vocabulary() -> frozenset[str]:
         RoutingOutcome,
         RoutingRule,
         ToolName,
+        Dependency,
+        FailureKind,
+        CircuitState,
     )
     vocabulary = {member.value for family in families for member in family.__members__.values()}
     vocabulary.update(
@@ -225,7 +229,7 @@ class TestLabelContract:
         """
         assert set(METRIC_DEFINITIONS) == set(MetricName)
         kinds = {kind for kind, _ in METRIC_DEFINITIONS.values()}
-        assert kinds == {MetricKind.COUNTER, MetricKind.HISTOGRAM}
+        assert kinds == {MetricKind.COUNTER, MetricKind.HISTOGRAM, MetricKind.GAUGE}
         for name, (_, help_text) in METRIC_DEFINITIONS.items():
             assert help_text, name
 

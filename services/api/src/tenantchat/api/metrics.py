@@ -23,6 +23,7 @@ from prometheus_client import (
     REGISTRY,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -104,6 +105,14 @@ METRIC_DEFINITIONS: Final[Mapping[MetricName, tuple[MetricKind, str]]] = {
         MetricKind.COUNTER,
         "Visitor feedback submissions by rating: up or down.",
     ),
+    MetricName.DEPENDENCY_RETRIES: (
+        MetricKind.COUNTER,
+        "Dependency client retries by dependency and failure reason.",
+    ),
+    MetricName.CIRCUIT_STATE: (
+        MetricKind.GAUGE,
+        "Circuit state per dependency, 1 on the active state and 0 elsewhere.",
+    ),
 }
 
 
@@ -119,7 +128,7 @@ class PrometheusMetrics:
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
         self.registry = registry or REGISTRY
-        self._collectors: dict[MetricName, Counter | Histogram] = {}
+        self._collectors: dict[MetricName, Counter | Histogram | Gauge] = {}
 
     def observe(
         self,
@@ -156,6 +165,14 @@ class PrometheusMetrics:
                 collector.labels(**supplied).inc(value, exemplar=exemplar)
             else:
                 collector.inc(value, exemplar=exemplar)
+        elif isinstance(collector, Gauge):
+            # Gauges carry the current state, not per-request observations, so
+            # they are set without an exemplar: a state value is not a spike to
+            # drill into.
+            if supplied:
+                collector.labels(**supplied).set(value)
+            else:
+                collector.set(value)
         else:
             if supplied:
                 collector.labels(**supplied).observe(value, exemplar=exemplar)
@@ -186,11 +203,13 @@ class PrometheusMetrics:
             )
         return generate_latest(self.registry), CONTENT_TYPE_LATEST
 
-    def _build(self, name: MetricName) -> Counter | Histogram:
+    def _build(self, name: MetricName) -> Counter | Histogram | Gauge:
         kind, help_text = METRIC_DEFINITIONS[name]
         label_names = tuple(label.value for label in METRIC_LABELS[name])
         if kind is MetricKind.COUNTER:
             return Counter(name.value, help_text, label_names, registry=self.registry)
+        if kind is MetricKind.GAUGE:
+            return Gauge(name.value, help_text, label_names, registry=self.registry)
         return Histogram(name.value, help_text, label_names, registry=self.registry)
 
     @staticmethod

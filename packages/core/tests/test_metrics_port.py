@@ -65,6 +65,7 @@ def test_every_owned_label_value_is_bounded_and_disjoint_per_label_name() -> Non
         ToolOutcome,
         TurnOutcome,
     )
+    from tenantchat.core.resilience import CircuitState, Dependency, FailureKind
 
     enums_by_label: dict[str, tuple[type[StrEnum], ...]] = {
         # The label names the metrics contract distributes, from METRIC_LABELS:
@@ -74,6 +75,9 @@ def test_every_owned_label_value_is_bounded_and_disjoint_per_label_name() -> Non
         "verdict": (RetrievalVerdict, CitationVerdict),
         "operation": (Operation,),
         "kind": (TokenKind,),
+        "dependency": (Dependency,),
+        "reason": (FailureKind,),
+        "state": (CircuitState,),
     }
     for label, enums in enums_by_label.items():
         members = {member.value for enum in enums for member in enum}
