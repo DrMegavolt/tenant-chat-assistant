@@ -1407,3 +1407,34 @@ body {
   color: var(--text-muted, inherit);
   font-size: 0.78rem;
 }
+
+/* FEAT-004: the staff handoff queue. The layout mirrors the chat queue's
+   list-plus-detail split, and the actions sit on the detail so an accept
+   cannot be clicked by accident while scanning the list. */
+.handoff-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.handoff-queue .admin-queue {
+  max-height: 70vh;
+}
+
+.handoff-summary {
+  margin: 0 0 var(--space-2);
+}
+
+.handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+@media (max-width: 860px) {
+  .handoff-layout {
+    grid-template-columns: 1fr;
+  }
+}

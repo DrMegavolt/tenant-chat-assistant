@@ -304,7 +304,7 @@ runbooks.
 
 ### P1 demo-critical business actions
 
-- [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
+- [x] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 
 ### Gate B remediation — found by the `2026-08-06` repository review
 
@@ -365,7 +365,7 @@ proven by a domain task is `P2`, because the second CRM adapter teaches nothing
 the first outbox did not.
 
 - [x] `FEAT-001` — Knowledge-base administration workflow — `Done`
-- [ ] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
+- [x] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
 - [x] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
 - [x] `FEAT-011` — Customer-facing citations and source viewer — `Done`
 - [x] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
@@ -2992,7 +2992,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-004 — Human handoff queue and agent takeover
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1` for the Gate B slice; `P2` for the remainder
 - Type: `Feature/workflow`
 - Depends on: `SEC-001`, `DATA-002`, `AGENT-001`
@@ -3029,7 +3029,17 @@ promotion pipeline — which requires a cluster that runs for real.
   - Multi-user end-to-end tests cover race-to-accept, staff disconnect,
     release-and-resume, and resolution, asserting durable state alongside UI
     behavior.
-- Completion notes: _Pending._
+- Completion notes: Gate B slice done in migration `0018_handoff_ownership`
+  (`released_at`, `resolved_by_principal_id`, each pinned to the status it is
+  valid for) plus `packages/core/.../handoffs.py`, `services/api` handoff
+  store/router/visitor gate, and the admin Handoff queue tab. Ownership is a
+  conditional database update (one winner per race), the agent pauses while a
+  staff member holds the conversation and resumes on release, every transition
+  is audited, and visitor notices never name a staff member or a queue
+  position. Verified by `make check` (1581 Python + 170 frontend tests) and
+  `make test-database` (migration, repository, and agent-runtime Postgres
+  suites). Deferred remainder (`P2`): presence, priority, SLA timers,
+  reassignment UX, and the operator notification channel — see scope notes.
 
 ### FEAT-005 — Notification and outbound webhook workflow
 

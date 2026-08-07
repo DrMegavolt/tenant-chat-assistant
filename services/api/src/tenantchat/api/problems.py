@@ -30,6 +30,7 @@ from tenantchat.core.errors import (
     ConflictError,
     DomainError,
     ExpiredVisitorCredentialError,
+    HandoffTransitionError,
     InvalidVersionTransitionError,
     InvalidVisitorCredentialError,
     MissingRequiredFieldsError,
@@ -92,6 +93,11 @@ def _extensions(error: DomainError) -> dict[str, Any]:
         return {
             "currentState": error.current.value,
             "permittedStates": [state.value for state in error.permitted],
+        }
+    if isinstance(error, HandoffTransitionError):
+        return {
+            "currentState": error.current,
+            "permittedStates": sorted(error.permitted),
         }
     return {}
 

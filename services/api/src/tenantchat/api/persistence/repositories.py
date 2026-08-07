@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -34,7 +35,13 @@ from tenantchat.core.commands import (
     LeadUrgency,
 )
 from tenantchat.core.contact import Contact
-from tenantchat.core.errors import ConflictError, NotFoundError, SlotUnavailableError
+from tenantchat.core.errors import (
+    ConflictError,
+    HandoffTransitionError,
+    NotFoundError,
+    SlotUnavailableError,
+)
+from tenantchat.core.handoffs import HandoffStatus, state_notice
 from tenantchat.core.slots import OfferedSlot
 
 
@@ -267,6 +274,126 @@ async def _advance_action_session(
     )
     if updated.rowcount != 1:
         raise NotFoundError(detail="conversation absent or outside tenant")
+
+
+_HANDOFF_COLUMNS = (
+    "id",
+    "tenant_id",
+    "chat_session_id",
+    "status",
+    "reason",
+    "summary",
+    "assigned_principal_id",
+    "requested_at",
+    "assigned_at",
+    "released_at",
+    "resolved_at",
+    "resolved_by_principal_id",
+)
+_HANDOFF_SELECT = "SELECT " + ", ".join(_HANDOFF_COLUMNS)
+_HANDOFF_RETURNING = "RETURNING " + ", ".join(_HANDOFF_COLUMNS)
+
+# The ownership transitions (`FEAT-004`) are conditional updates: each admits
+# only the statuses its state machine may leave, so a race has exactly one
+# winner and the losers read the committed row state rather than their own
+# snapshot.
+_ACCEPT_SQL = (
+    "UPDATE handoffs "
+    "SET status = 'assigned', assigned_principal_id = :principal, "
+    "    assigned_at = now(), released_at = NULL, updated_at = now() "
+    "WHERE tenant_id = :tenant_id AND id = :handoff_id "
+    "  AND status IN ('requested', 'queued') " + _HANDOFF_RETURNING
+)
+_RELEASE_SQL = (
+    "UPDATE handoffs "
+    "SET status = 'queued', assigned_principal_id = NULL, assigned_at = NULL, "
+    "    released_at = now(), updated_at = now() "
+    "WHERE tenant_id = :tenant_id AND id = :handoff_id AND status = 'assigned' "
+    "  AND (assigned_principal_id = :principal OR :administrative) " + _HANDOFF_RETURNING
+)
+_RESOLVE_SQL = (
+    "UPDATE handoffs "
+    "SET status = 'resolved', resolved_by_principal_id = :principal, "
+    "    resolved_at = now(), updated_at = now() "
+    "WHERE tenant_id = :tenant_id AND id = :handoff_id "
+    "  AND status IN ('requested', 'queued', 'assigned') "
+    "  AND (status <> 'assigned' OR assigned_principal_id = :principal OR :administrative) "
+    + _HANDOFF_RETURNING
+)
+
+
+def _handoff(row: object) -> HandoffRecord:
+    mapping = row._mapping  # type: ignore[attr-defined]
+    return HandoffRecord(
+        handoff_id=f"HO-{mapping['id'].hex.upper()}",
+        tenant_id=mapping["tenant_id"],
+        session_id=str(mapping["chat_session_id"]),
+        reason=HandoffReason.parse(mapping["reason"]),
+        summary=mapping["summary"] or "",
+        status=mapping["status"],
+        assigned_principal_id=mapping["assigned_principal_id"],
+        created_at=mapping["requested_at"],
+        assigned_at=mapping["assigned_at"],
+        released_at=mapping["released_at"],
+        resolved_at=mapping["resolved_at"],
+        resolved_by_principal_id=mapping["resolved_by_principal_id"],
+    )
+
+
+def _handoff_id_uuid(handoff_id: str) -> uuid.UUID:
+    """The row UUID a ``HO-...`` reference names.
+
+    The queue's public identifier is the reference the assistant's committed
+    actions already surface; the store addresses rows by their raw UUID.
+    """
+    return uuid.UUID(handoff_id.removeprefix("HO-"))
+
+
+async def _append_message(
+    connection: AsyncConnection, tenant_id: str, session_id: uuid.UUID, content: str
+) -> None:
+    """Append a server-authored message inside the caller's transaction.
+
+    The sequence number is the session's current version, exactly as
+    :meth:`PostgresConversationStore.append` numbers messages, so a state
+    notice and a visitor message can never collide on the unique
+    ``(tenant, session, sequence)`` key. The session row is locked so the
+    notice is ordered against concurrent appends.
+    """
+    locked = await connection.execute(
+        text(
+            "SELECT version FROM chat_sessions "
+            "WHERE tenant_id = :tenant_id AND id = :session_id FOR UPDATE"
+        ),
+        {"tenant_id": tenant_id, "session_id": session_id},
+    )
+    version = locked.scalar_one_or_none()
+    if version is None:
+        raise NotFoundError(detail="conversation absent or outside tenant")
+    await connection.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, tenant_id, chat_session_id, sequence_number, role, content, metadata) "
+            "VALUES (:message_id, :tenant_id, :session_id, :sequence_number, 'system', "
+            ":content, '{}'::jsonb)"
+        ),
+        {
+            "message_id": uuid.uuid4(),
+            "tenant_id": tenant_id,
+            "session_id": session_id,
+            "sequence_number": version,
+            "content": content,
+        },
+    )
+    updated = await connection.execute(
+        text(
+            "UPDATE chat_sessions SET version = version + 1, last_activity_at = now() "
+            "WHERE tenant_id = :tenant_id AND id = :session_id AND version = :version"
+        ),
+        {"tenant_id": tenant_id, "session_id": session_id, "version": version},
+    )
+    if updated.rowcount != 1:
+        raise ConflictError(detail="conversation version changed while row was locked")
 
 
 class PostgresConversationStore:
@@ -530,6 +657,12 @@ class PostgresHandoffStore:
     the same transaction: a queued handoff whose session still reads ``active``
     is a conversation the assistant would keep answering while a staff member
     believes they own it.
+
+    The ownership mutations (`FEAT-004`) are conditional updates: the transition
+    is written only from a status the update's ``WHERE`` admits, so two consoles
+    accepting the same handoff at once have exactly one winner. The losing
+    update matches zero rows and the store raises :class:`HandoffTransitionError`
+    from the committed row state — the database is the arbiter, never a UI lock.
     """
 
     def __init__(self, engine: AsyncEngine) -> None:
@@ -578,6 +711,7 @@ class PostgresHandoffStore:
             session_id=str(authoritative_session_id),
             reason=command.reason,
             summary=command.summary,
+            status=HandoffStatus.REQUESTED.value,
             created_at=requested_at,
         )
 
@@ -585,26 +719,179 @@ class PostgresHandoffStore:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
-                    """
-                    SELECT id, tenant_id, chat_session_id, reason, summary, requested_at
-                    FROM handoffs
-                    WHERE tenant_id = :tenant_id
-                    ORDER BY requested_at, id
-                    """
+                    _HANDOFF_SELECT
+                    + " FROM handoffs WHERE tenant_id = :tenant_id ORDER BY requested_at, id"
                 ),
                 {"tenant_id": tenant_id},
             )
             rows = result.all()
-        return tuple(
-            HandoffRecord(
-                handoff_id=f"HO-{row.id.hex.upper()}",
-                tenant_id=row.tenant_id,
-                session_id=str(row.chat_session_id),
-                reason=HandoffReason.parse(row.reason),
-                summary=row.summary or "",
-                created_at=row.requested_at,
+        return tuple(_handoff(row) for row in rows)
+
+    async def open_for_tenant(self, tenant_id: str, *, limit: int) -> tuple[HandoffRecord, ...]:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    _HANDOFF_SELECT + " FROM handoffs WHERE tenant_id = :tenant_id "
+                    "   AND status IN ('requested', 'queued', 'assigned') "
+                    " ORDER BY requested_at, id LIMIT :limit"
+                ),
+                {"tenant_id": tenant_id, "limit": limit},
             )
-            for row in rows
+            rows = result.all()
+        return tuple(_handoff(row) for row in rows)
+
+    async def for_session(self, tenant_id: str, session_id: str) -> HandoffRecord | None:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    _HANDOFF_SELECT + " FROM handoffs WHERE tenant_id = :tenant_id "
+                    "   AND chat_session_id = :session_id "
+                    " ORDER BY requested_at DESC, id DESC LIMIT 1"
+                ),
+                {"tenant_id": tenant_id, "session_id": uuid.UUID(session_id)},
+            )
+            row = result.first()
+        return None if row is None else _handoff(row)
+
+    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
+        async with self._engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    text(_ACCEPT_SQL),
+                    {
+                        "tenant_id": tenant_id,
+                        "handoff_id": _handoff_id_uuid(handoff_id),
+                        "principal": principal_id,
+                    },
+                )
+            ).first()
+            if row is None:
+                await self._raise_transition(
+                    connection, tenant_id, handoff_id, allowed=frozenset({"requested", "queued"})
+                )
+            await self._state_change(connection, row, HandoffStatus.ASSIGNED)
+            await connection.execute(
+                text(
+                    "UPDATE chat_sessions SET status = 'waiting_for_staff', "
+                    "last_activity_at = now() "
+                    "WHERE tenant_id = :tenant_id AND id = :session_id "
+                    "AND status IN ('active', 'waiting_for_staff')"
+                ),
+                {"tenant_id": tenant_id, "session_id": row.chat_session_id},
+            )
+        return _handoff(row)
+
+    async def release(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        administrative: bool = False,
+    ) -> HandoffRecord:
+        async with self._engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    text(_RELEASE_SQL),
+                    {
+                        "tenant_id": tenant_id,
+                        "handoff_id": _handoff_id_uuid(handoff_id),
+                        "principal": principal_id,
+                        "administrative": administrative,
+                    },
+                )
+            ).first()
+            if row is None:
+                await self._raise_transition(
+                    connection, tenant_id, handoff_id, allowed=frozenset({"assigned"})
+                )
+            await self._state_change(connection, row, HandoffStatus.QUEUED)
+            await connection.execute(
+                text(
+                    "UPDATE chat_sessions SET status = 'active', last_activity_at = now() "
+                    "WHERE tenant_id = :tenant_id AND id = :session_id "
+                    "AND status = 'waiting_for_staff'"
+                ),
+                {"tenant_id": tenant_id, "session_id": row.chat_session_id},
+            )
+        return _handoff(row)
+
+    async def resolve(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        administrative: bool = False,
+    ) -> HandoffRecord:
+        async with self._engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    text(_RESOLVE_SQL),
+                    {
+                        "tenant_id": tenant_id,
+                        "handoff_id": _handoff_id_uuid(handoff_id),
+                        "principal": principal_id,
+                        "administrative": administrative,
+                    },
+                )
+            ).first()
+            if row is None:
+                await self._raise_transition(
+                    connection,
+                    tenant_id,
+                    handoff_id,
+                    allowed=frozenset({"requested", "queued", "assigned"}),
+                )
+            await self._state_change(connection, row, HandoffStatus.RESOLVED)
+            await connection.execute(
+                text(
+                    "UPDATE chat_sessions SET status = 'closed', closed_at = now(), "
+                    "last_activity_at = now() "
+                    "WHERE tenant_id = :tenant_id AND id = :session_id "
+                    "AND status IN ('active', 'waiting_for_staff')"
+                ),
+                {"tenant_id": tenant_id, "session_id": row.chat_session_id},
+            )
+        return _handoff(row)
+
+    async def _state_change(
+        self,
+        connection: AsyncConnection,
+        row: object,
+        status: HandoffStatus,
+    ) -> None:
+        """Write the state notice beside the transition, in the same transaction.
+
+        The notice is a server-authored ``system`` message: it is what makes a
+        staff transition visible in the transcript a returning visitor and an
+        operator both read, without pretending the assistant said it.
+        """
+        notice = state_notice(status)
+        if notice is None:
+            return
+        mapping = row._mapping  # type: ignore[attr-defined]
+        await _append_message(connection, mapping["tenant_id"], mapping["chat_session_id"], notice)
+
+    async def _raise_transition(
+        self,
+        connection: AsyncConnection,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        allowed: frozenset[str],
+    ) -> NoReturn:
+        result = await connection.execute(
+            text("SELECT status FROM handoffs WHERE tenant_id = :tenant_id AND id = :handoff_id"),
+            {"tenant_id": tenant_id, "handoff_id": _handoff_id_uuid(handoff_id)},
+        )
+        status = result.scalar_one_or_none()
+        if status is None:
+            raise NotFoundError(detail="handoff absent or outside tenant")
+        raise HandoffTransitionError(
+            current=status,
+            permitted=allowed,
+            detail=f"handoff {handoff_id} is {status}",
         )
 
 

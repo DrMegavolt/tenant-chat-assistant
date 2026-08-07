@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import { AccessConsole } from "src/admin/components/AccessConsole";
 import { AdminApi } from "src/admin/adminApi";
+import { HandoffQueue } from "src/admin/components/HandoffQueue";
 import { KnowledgeBase } from "src/admin/components/KnowledgeBase";
 import { ReviewQueue } from "src/admin/components/ReviewQueue";
 import { SessionDetail } from "src/admin/components/SessionDetail";
@@ -11,20 +12,21 @@ import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { relativeTime } from "src/admin/time";
 import { useAdminConsole } from "src/admin/useAdminConsole";
 
-type AdminView = "queue" | "reviews" | "traces" | "knowledge" | "access";
+type AdminView = "queue" | "reviews" | "traces" | "knowledge" | "access" | "handoffs";
 
 const VIEW_LABELS: Record<AdminView, string> = {
   queue: "Chat queue",
   reviews: "Review queue",
   traces: "AI turn explorer",
   knowledge: "Knowledge base",
-  access: "Access & audit"
+  access: "Access & audit",
+  handoffs: "Handoff queue"
 };
 
 /**
  * The operator console: every conversation, the ability to answer one, the
  * FEAT-008 review queue, the FEAT-015 AI turn explorer over the inference
- * plane, and the FEAT-001 knowledge base.
+ * plane, the FEAT-001 knowledge base, and the FEAT-004 staff handoff queue.
  *
  * The queue and the explorer are diagnosis surfaces, not live queues — the
  * console keeps polling only while the chat queue tab is open.
@@ -43,11 +45,13 @@ export function AdminPage() {
             ? "#queue"
             : view === "reviews"
               ? "#reviewTitle"
-              : view === "knowledge"
-                ? "#knowledgeTitle"
-                : view === "access"
-                  ? "#accessTitle"
-                  : "#traceTitle"
+                : view === "knowledge"
+                  ? "#knowledgeTitle"
+                  : view === "access"
+                    ? "#accessTitle"
+                    : view === "handoffs"
+                      ? "#handoffTitle"
+                      : "#traceTitle"
         }
       >
         Skip to main content
@@ -166,6 +170,17 @@ export function AdminPage() {
 
           {view === "access" && (
             <AccessConsole
+              api={api}
+              tenants={console_.tenants.map((tenant) => ({
+                tenantId: tenant.tenantId,
+                name: tenant.name
+              }))}
+              initialTenantId={console_.tenantId}
+            />
+          )}
+
+          {view === "handoffs" && (
+            <HandoffQueue
               api={api}
               tenants={console_.tenants.map((tenant) => ({
                 tenantId: tenant.tenantId,

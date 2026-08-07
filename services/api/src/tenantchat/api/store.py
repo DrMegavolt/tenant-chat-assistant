@@ -27,6 +27,7 @@ from tenantchat.core.commands import (
 from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.errors import (
     ConflictError,
+    HandoffTransitionError,
     NotFoundError,
     ReviewTransitionError,
     SlotUnavailableError,
@@ -69,7 +70,9 @@ from tenantchat.core.workflows import (
 
 
 def _reference(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:12].upper()}"
+    # The full UUID hex, matching the "HO-<uuid.hex>" form the Postgres stores
+    # build, so the queue's public identifier is the same shape in every store.
+    return f"{prefix}-{uuid.uuid4().hex.upper()}"
 
 
 class MessageRole(StrEnum):
@@ -133,12 +136,25 @@ class BookingRecord:
 
 @dataclass(frozen=True, slots=True)
 class HandoffRecord:
+    """One handoff row, with the full staff-ownership state (`FEAT-004`).
+
+    ``status`` is the closed ``handoff_status`` vocabulary; the assignment
+    fields are ``None`` together (the schema enforces the pairing), and a
+    release clears them while stamping ``released_at``.
+    """
+
     handoff_id: str
     tenant_id: str
     session_id: str
     reason: HandoffReason
     summary: str
     created_at: datetime
+    status: str = "requested"
+    assigned_principal_id: str | None = None
+    assigned_at: datetime | None = None
+    released_at: datetime | None = None
+    resolved_at: datetime | None = None
+    resolved_by_principal_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,9 +298,87 @@ class LeadStore(Protocol):
 
 
 class HandoffStore(Protocol):
-    async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord: ...
+    """Authoritative handoff rows, from escalation to staff resolution.
 
-    async def for_tenant(self, tenant_id: str) -> tuple[HandoffRecord, ...]: ...
+    ``record`` and ``for_tenant`` are the escalation side (`ARCH-001`); the
+    ownership operations are the `FEAT-004` staff side. Every ownership
+    mutation is a conditional write: the store applies it only from a status
+    the transition permits, so a race to accept has exactly one winner no
+    matter how many consoles fire at once — the database, not a UI lock, is
+    the arbiter.
+    """
+
+    async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord:
+        """Open a handoff and move the conversation to ``waiting_for_staff``.
+
+        Raises:
+            NotFoundError: the conversation does not belong to this tenant.
+        """
+
+    async def for_tenant(self, tenant_id: str) -> tuple[HandoffRecord, ...]:
+        """Every handoff row for a tenant, oldest first."""
+
+    async def open_for_tenant(self, tenant_id: str, *, limit: int) -> tuple[HandoffRecord, ...]:
+        """The tenant's open queue (``requested``/``queued``/``assigned``).
+
+        The staff queue reads this, oldest first and bounded to ``limit``.
+        Resolved and cancelled rows are history, not work.
+        """
+
+    async def for_session(self, tenant_id: str, session_id: str) -> HandoffRecord | None:
+        """The most recent handoff for one conversation, or ``None``.
+
+        The visitor-turn gate reads this: it is the conversation's current
+        state, and the router decides whether the agent may answer from its
+        ``status``.
+        """
+
+    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
+        """Assign an unowned handoff to one staff member, atomically.
+
+        Raises:
+            NotFoundError: no such handoff, or it belongs to another tenant.
+            HandoffTransitionError: the handoff already has an owner or closed.
+        """
+
+    async def release(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        administrative: bool = False,
+    ) -> HandoffRecord:
+        """Release an assigned handoff back to the queue and resume the agent.
+
+        ``administrative`` admits a supervisor releasing a colleague's stale
+        assignment (the staff-disconnect recovery path); otherwise only the
+        current owner may release.
+
+        Raises:
+            NotFoundError: no such handoff, or it belongs to another tenant.
+            HandoffTransitionError: not assigned, or held by someone else and
+                the caller is not authorized to release it.
+        """
+
+    async def resolve(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        administrative: bool = False,
+    ) -> HandoffRecord:
+        """Close an open handoff and mark the conversation closed.
+
+        Any staff member may resolve an unowned handoff; an assigned one is
+        resolved by its owner, or by a supervisor when ``administrative``.
+
+        Raises:
+            NotFoundError: no such handoff, or it belongs to another tenant.
+            HandoffTransitionError: the handoff is not open, or is held by
+                someone else and the caller is not authorized to resolve it.
+        """
 
 
 class MembershipStore(Protocol):
@@ -588,11 +682,32 @@ class InMemoryLeadStore:
         return tuple(record for record in self._records if record.tenant_id == tenant_id)
 
 
+def _handoff_not_found() -> NotFoundError:
+    return NotFoundError(detail="handoff absent or outside tenant")
+
+
+def _transition_error(
+    record: HandoffRecord, *, permitted: frozenset[str]
+) -> HandoffTransitionError:
+    return HandoffTransitionError(
+        current=record.status,
+        permitted=permitted,
+        detail=f"handoff {record.handoff_id} is {record.status}",
+    )
+
+
 class InMemoryHandoffStore:
-    """An explicit API test fake, never the production source of truth."""
+    """An explicit API test fake, never the production source of truth.
+
+    The ownership transitions serialize on an :class:`asyncio.Lock`, mirroring
+    the atomic conditional update the Postgres store runs. A hermetic test can
+    therefore race two accepts and observe one winner — the same guarantee the
+    repository specification asserts against the real database.
+    """
 
     def __init__(self) -> None:
         self._records: list[HandoffRecord] = []
+        self._lock = asyncio.Lock()
 
     async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord:
         handoff = HandoffRecord(
@@ -603,11 +718,107 @@ class InMemoryHandoffStore:
             summary=command.summary,
             created_at=datetime.now(UTC),
         )
-        self._records.append(handoff)
+        async with self._lock:
+            self._records.append(handoff)
         return handoff
 
     async def for_tenant(self, tenant_id: str) -> tuple[HandoffRecord, ...]:
         return tuple(record for record in self._records if record.tenant_id == tenant_id)
+
+    async def open_for_tenant(self, tenant_id: str, *, limit: int) -> tuple[HandoffRecord, ...]:
+        open_rows = [
+            record
+            for record in self._records
+            if record.tenant_id == tenant_id and record.status not in ("resolved", "cancelled")
+        ]
+        return tuple(open_rows[:limit])
+
+    async def for_session(self, tenant_id: str, session_id: str) -> HandoffRecord | None:
+        matches = [
+            record
+            for record in self._records
+            if record.tenant_id == tenant_id and record.session_id == session_id
+        ]
+        return matches[-1] if matches else None
+
+    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
+        async with self._lock:
+            for index, record in enumerate(self._records):
+                if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
+                    continue
+                if record.status not in ("requested", "queued"):
+                    raise _transition_error(
+                        record,
+                        permitted=frozenset({"requested", "queued"}),
+                    )
+                accepted = replace(
+                    record,
+                    status="assigned",
+                    assigned_principal_id=principal_id,
+                    assigned_at=datetime.now(UTC),
+                    released_at=None,
+                )
+                self._records[index] = accepted
+                return accepted
+        raise _handoff_not_found()
+
+    async def release(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        administrative: bool = False,
+    ) -> HandoffRecord:
+        async with self._lock:
+            for index, record in enumerate(self._records):
+                if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
+                    continue
+                if record.status != "assigned" or (
+                    record.assigned_principal_id != principal_id and not administrative
+                ):
+                    raise _transition_error(record, permitted=frozenset({"assigned"}))
+                released = replace(
+                    record,
+                    status="queued",
+                    assigned_principal_id=None,
+                    assigned_at=None,
+                    released_at=datetime.now(UTC),
+                )
+                self._records[index] = released
+                return released
+        raise _handoff_not_found()
+
+    async def resolve(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        administrative: bool = False,
+    ) -> HandoffRecord:
+        async with self._lock:
+            for index, record in enumerate(self._records):
+                if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
+                    continue
+                if record.status not in ("requested", "queued", "assigned") or (
+                    record.status == "assigned"
+                    and record.assigned_principal_id != principal_id
+                    and not administrative
+                ):
+                    raise _transition_error(
+                        record,
+                        permitted=frozenset({"requested", "queued", "assigned"}),
+                    )
+                resolved = replace(
+                    record,
+                    status="resolved",
+                    resolved_at=datetime.now(UTC),
+                    resolved_by_principal_id=principal_id,
+                )
+                self._records[index] = resolved
+                return resolved
+        raise _handoff_not_found()
 
 
 class InMemoryMembershipStore:

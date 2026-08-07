@@ -75,6 +75,7 @@ from tenantchat.api.routers import (
     admin,
     bookings,
     chat,
+    handoffs,
     health,
     jobs,
     knowledge,
@@ -818,6 +819,7 @@ def create_app(
     app.include_router(jobs.router)
     app.include_router(traces.router)
     app.include_router(reviews.router)
+    app.include_router(handoffs.router)
     app.include_router(knowledge.router)
     app.include_router(admin.router)
 

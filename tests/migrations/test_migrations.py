@@ -84,7 +84,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0017_source_generation_trace"
+    assert revision == "0018_handoff_ownership"
     assert {
         "tenant_status",
         "chat_session_status",
@@ -405,6 +405,73 @@ def test_a_handoff_summary_is_optional_but_never_blank(migration_database_url: s
                 (uuid.uuid4(), "tenant-a", session_id),
             )
         connection.rollback()
+
+
+@pytest.mark.integration
+def test_a_release_stamp_cannot_sit_on_a_handoff_still_in_staff_hands(
+    migration_database_url: str,
+) -> None:
+    """The FEAT-004 ownership columns are enforced by the schema.
+
+    ``released_at`` may only exist on a handoff that has been released back to
+    the queue (or has since finished), and the closing principal only on a
+    resolved handoff — the same discipline as the existing assignment checks.
+    """
+    upgrade_head(migration_database_url)
+    session_id = uuid.uuid4()
+
+    with psycopg.connect(psycopg_url(migration_database_url)) as connection:
+        connection.execute(
+            "INSERT INTO tenants (id, display_name) VALUES (%s, %s)", ("tenant-a", "Tenant A")
+        )
+        connection.execute(
+            "INSERT INTO chat_sessions (id, tenant_id) VALUES (%s, %s)", (session_id, "tenant-a")
+        )
+        connection.commit()
+
+        # A release stamp on a handoff that is still assigned is impossible.
+        with pytest.raises(errors.CheckViolation):
+            connection.execute(
+                """
+                INSERT INTO handoffs
+                    (id, tenant_id, chat_session_id, status, reason,
+                     assigned_principal_id, assigned_at, released_at)
+                VALUES (%s, %s, %s, 'assigned', 'customer_request', 'staff-1', now(), now())
+                """,
+                (uuid.uuid4(), "tenant-a", session_id),
+            )
+        connection.rollback()
+
+        # A closing principal only ever names a resolved handoff.
+        with pytest.raises(errors.CheckViolation):
+            connection.execute(
+                """
+                INSERT INTO handoffs
+                    (id, tenant_id, chat_session_id, status, reason, resolved_by_principal_id)
+                VALUES (%s, %s, %s, 'queued', 'customer_request', 'staff-1')
+                """,
+                (uuid.uuid4(), "tenant-a", session_id),
+            )
+        connection.rollback()
+
+        # The valid shape round-trips: released back to the queue, still open.
+        connection.execute(
+            """
+            INSERT INTO handoffs
+                (id, tenant_id, chat_session_id, status, reason, released_at)
+            VALUES (%s, %s, %s, 'queued', 'customer_request', now())
+            """,
+            (uuid.uuid4(), "tenant-a", session_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO handoffs
+                (id, tenant_id, chat_session_id, status, reason,
+                 resolved_by_principal_id, resolved_at)
+            VALUES (%s, %s, %s, 'resolved', 'customer_request', 'staff-1', now())
+            """,
+            (uuid.uuid4(), "tenant-a", session_id),
+        )
 
 
 @pytest.mark.integration

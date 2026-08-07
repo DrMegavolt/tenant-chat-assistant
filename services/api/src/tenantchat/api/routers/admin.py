@@ -34,6 +34,7 @@ from tenantchat.api.dependencies import (
     Bookings,
     Configuration,
     Conversations,
+    Handoffs,
     Leads,
     Memberships,
     Registry,
@@ -41,6 +42,7 @@ from tenantchat.api.dependencies import (
     TraceAccess,
     get_settings,
 )
+from tenantchat.api.faults import ForbiddenError
 from tenantchat.api.identity import (
     AdminIdentity,
     authorize_tenant_access,
@@ -327,6 +329,7 @@ async def send_staff_message(
     session_id: uuid.UUID,
     payload: StaffMessageRequest,
     conversations: Conversations,
+    handoffs: Handoffs,
     audit: Audit,
     request_id: RequestId,
 ) -> StaffMessageResponse:
@@ -335,6 +338,12 @@ async def send_staff_message(
     Stored with the ``staff`` role, distinct from ``assistant``: a reply a human
     wrote and one a model produced carry different weight for the customer
     reading them and for anyone auditing what was promised.
+
+    Single ownership (`FEAT-004`) is enforced here, not just by the queue UI:
+    a conversation another staff member currently holds accepts replies only
+    from that owner, so two operators cannot talk over each other into one
+    transcript. A conversation no one holds — no handoff, or one still waiting
+    in the queue — stays replyable by any staff member, exactly as before.
 
     The message does not enter the model's view of the conversation. Feeding
     staff replies back into the agent's transcript is `FEAT-004`, which owns the
@@ -347,7 +356,16 @@ async def send_staff_message(
 
     Raises:
         NotFoundError: no such conversation, or it belongs to another tenant.
+        ForbiddenError: a different staff member currently holds this
+            conversation.
     """
+    handoff = await handoffs.for_session(payload.tenant_id, str(session_id))
+    if (
+        handoff is not None
+        and handoff.status == "assigned"
+        and handoff.assigned_principal_id != identity.subject
+    ):
+        raise ForbiddenError
     record = await conversations.append(
         payload.tenant_id,
         session_id,
