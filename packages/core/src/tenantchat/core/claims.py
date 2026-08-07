@@ -114,13 +114,20 @@ class ClaimValidation:
 
 
 def sensitive_claims(text: str) -> tuple[Claim, ...]:
-    """Every sensitive claim an answer makes, prices then keyword sentences."""
+    """Every sensitive claim an answer makes, prices then keyword sentences.
+
+    Ordering contract: prices in order of appearance, then one claim per
+    sentence in sentence order, kinded by the keyword that appears earliest in
+    that sentence. Order is decided by text position alone, never by set
+    iteration, so the same answer stores the same ``claims_invalid`` bytes in
+    every interpreter regardless of ``PYTHONHASHSEED``.
+    """
     prices = tuple(Claim(ClaimKind.PRICE, amount) for amount in _PRICE_RE.findall(text))
     keyword_claims: list[Claim] = []
     for sentence in _SENTENCE_RE.split(text):
-        tokens = _keyword_tokens(sentence)
-        for keyword in tokens & _SENSITIVE_KEYWORDS:
-            keyword_claims.append(Claim(ClaimKind.of_keyword(keyword), sentence.strip()))
+        kind = _earliest_keyword_kind(sentence)
+        if kind is not None:
+            keyword_claims.append(Claim(kind, sentence.strip()))
     return prices + tuple(keyword_claims)
 
 
@@ -161,6 +168,23 @@ def validate_sensitive_claims(
 
 def _keyword_tokens(sentence: str) -> frozenset[str]:
     return frozenset(tokenize(sentence))
+
+
+def _earliest_keyword_kind(sentence: str) -> ClaimKind | None:
+    """The family of the sensitive keyword that appears earliest in ``sentence``.
+
+    One claim per sentence needs one representative keyword; the earliest is
+    the most salient because a sentence usually states its subject first.
+    """
+    earliest: tuple[int, str] | None = None
+    for position, token in enumerate(tokenize(sentence)):
+        if token in _SENSITIVE_KEYWORDS:
+            candidate = (position, token)
+            if earliest is None or candidate < earliest:
+                earliest = candidate
+    if earliest is None:
+        return None
+    return ClaimKind.of_keyword(earliest[1])
 
 
 def _sentence_supported(sentence: str, evidence_texts: Sequence[str]) -> bool:

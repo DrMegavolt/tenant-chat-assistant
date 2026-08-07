@@ -529,6 +529,27 @@ def test_a_failed_tool_result_is_a_contributing_tool_error(code: str) -> None:
     )
 
 
+def test_a_refused_tool_call_is_a_detected_quarantine() -> None:
+    """The guard refused a model-proposed call; the refusal is the
+    attributable quarantine event (`RAG-007`), proven by the record no matter
+    what the model meant by the call."""
+    trace = build_turn_trace(
+        _answered(refused_tools=["book_appointment"]),
+        pending=None,
+    )
+
+    assert _diagnoses(trace) == [
+        _diagnosis(
+            DiagnosisCause.INJECTION_QUARANTINE,
+            DiagnosisStage.TOOLS,
+            DiagnosisRole.PRIMARY,
+            DiagnosisStatus.DETECTED,
+            DiagnosisConfidence.HIGH,
+            ("verdicts.refused_tools:book_appointment",),
+        )
+    ]
+
+
 def test_committed_effects_carry_their_idempotency_keys() -> None:
     """The trace names every side effect and the key that makes it replay-safe."""
     transcript = [

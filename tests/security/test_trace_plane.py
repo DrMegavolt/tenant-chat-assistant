@@ -63,7 +63,9 @@ def _collector_config() -> dict[str, object]:
 def _redaction_allowlist() -> list[str]:
     processors = _collector_config()["processors"]
     assert isinstance(processors, dict)
-    allowlist = processors["redaction"]["allow_attributes"]
+    # The collector 0.127.0 image renamed `allow_attributes` to `allowed_keys`;
+    # the manifest ships the new key, so the test must read it.
+    allowlist = processors["redaction"]["allowed_keys"]
     assert isinstance(allowlist, list)
     assert all(isinstance(entry, str) for entry in allowlist)
     return allowlist

@@ -103,6 +103,11 @@ source = ["tenantchat"]
 show_missing = true
 skip_covered = true
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+# The hermetic suite (make test-cov, CI's quality job) reports ~82% with no
+# service containers; the Postgres integration suites run separately and do
+# not contribute here. 80 is that level minus a margin for legitimate line
+# movement, still tight enough that an untested surface stops the build.
+fail_under = 80
 
 [tool.ruff]
 target-version = "py312"

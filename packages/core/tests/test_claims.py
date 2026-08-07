@@ -7,7 +7,12 @@ no reliance on the model's honesty.
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+
 from tenantchat.core.claims import (
+    Claim,
     ClaimKind,
     ClaimVerdict,
     sensitive_claims,
@@ -83,6 +88,49 @@ def test_sensitive_claims_enumerates_prices_and_keyword_sentences() -> None:
     claims = sensitive_claims(answer)
     kinds = [claim.kind for claim in claims]
     assert kinds == [ClaimKind.PRICE, ClaimKind.PRICE, ClaimKind.COVERAGE, ClaimKind.PERMIT]
+
+
+def test_one_claim_per_sentence_kinded_by_its_earliest_keyword() -> None:
+    """Five keywords in one sentence yield one claim, not five: every claim is
+    the same sentence, so per-keyword records would only duplicate the bytes
+    stored in ``claims_invalid``."""
+    sentence = "Coverage is insured, bonded, licensed, and warranted."
+    assert sensitive_claims(sentence) == (Claim(ClaimKind.COVERAGE, sentence),)
+
+
+def test_claim_order_is_stable_across_python_hash_seeds() -> None:
+    """PYTHONHASHSEED reorders set iteration between interpreters, and the
+    claim order lands in the persisted turn record; the bytes must not depend
+    on the interpreter that recorded them. The review proved the old
+    frozenset intersection differed under seeds 1 and 42."""
+    program = (
+        "import json, sys\n"
+        "from tenantchat.core.claims import sensitive_claims\n"
+        "print(json.dumps([(claim.kind.value, claim.value)"
+        " for claim in sensitive_claims(sys.argv[1])]))\n"
+    )
+    answer = "The premium is covered and insured. A permit is required. The price is $120."
+    outcomes = set()
+    for seed in ("1", "42"):
+        # The same pinned toolchain the suite runs under, with the hash seed
+        # the test controls; bandit's untrusted-input warning does not apply.
+        result = subprocess.run(  # noqa: S603
+            ["uv", "run", "--frozen", "python", "-c", program, answer],  # noqa: S607
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        outcomes.add(result.stdout.strip())
+    assert outcomes == {
+        json.dumps(
+            [
+                ["price", "$120"],
+                ["coverage", "The premium is covered and insured."],
+                ["permit", "A permit is required."],
+            ]
+        )
+    }
 
 
 def test_plain_answer_without_sensitive_claims_is_supported() -> None:
