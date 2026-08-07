@@ -7,6 +7,7 @@ import {
   isUncertainStatus,
   OUTCOME_LABELS,
   type DiagnosisRecord,
+  type ExecutedGraphSection,
   type GoldCase,
   type PromptMessage,
   type PromptSegment,
@@ -249,16 +250,99 @@ const STATUS_LABELS: Record<GraphSource["status"], string> = {
   skipped: "skipped"
 };
 
+/**
+ * The executed-graph panel. A turn recorded after `OBS-006` carries a captured
+ * section of real node/edge events; this renders that as a waterfall with
+ * per-node duration and attempt count. A turn recorded before it — or a run
+ * whose listener degraded — has no section, and the FEAT-015 derived waterfall
+ * is shown instead, visibly marked derived so a viewer is never shown a
+ * derived view as a captured one.
+ */
 function ExecutedGraph({ content }: { content: TraceRead["content"] }) {
+  const executed = content.executedGraph;
+  return executed && executed.nodes.length > 0 ? (
+    <CapturedGraph section={executed} />
+  ) : (
+    <DerivedGraph content={content} />
+  );
+}
+
+function CapturedGraph({ section }: { section: ExecutedGraphSection }) {
+  const stoppedIndex = section.nodes.findIndex((node) => node.status === "error");
+  const stopped = stoppedIndex >= 0 ? section.nodes[stoppedIndex] : null;
+  const rendered = stopped ? section.nodes.slice(0, stoppedIndex + 1) : section.nodes;
+  return (
+    <section className="trace-panel" aria-labelledby="graphTitle">
+      <div className="admin-panel-header">
+        <h3 id="graphTitle">Executed graph</h3>
+        <span className="uncertain-chip">captured execution</span>
+        {section.runKind === "resume" && (
+          <span className="uncertain-chip">resumed from checkpoint</span>
+        )}
+      </div>
+      <p className="muted-copy">
+        Every node and edge below is a captured execution event — the node names, the edge taken at
+        each branch, per-node duration, and attempt count. No captured event carries prompt text,
+        evidence, an answer, or an argument value.
+      </p>
+      <p className="muted-copy">
+        {section.nodes.length} node(s) · {section.edges.length} edge(s) · run duration{" "}
+        {section.durationMs !== null && section.durationMs !== undefined
+          ? `${section.durationMs} ms`
+          : "not recorded"}
+      </p>
+      <ol className="graph-stages">
+        {rendered.map((node, index) => (
+          <li
+            key={`${node.name}-${node.attempt}-${index}`}
+            className={`graph-stage ${
+              node.status === "error" ? "failed" : node.interrupted ? "uncertain" : "ok"
+            }`}
+          >
+            <span className="graph-stage-status">
+              {node.status === "error" ? "failed" : node.interrupted ? "paused" : node.status}
+            </span>
+            <span className="graph-stage-body">
+              <strong>
+                {node.name}
+                {node.replayed && <span className="uncertain-chip">replayed</span>}
+              </strong>
+              <span className="muted-copy">
+                attempt {node.attempt} · edge {node.edge ?? "—"}
+                {node.interrupted && " · paused at confirmation"}
+              </span>
+              <span className="muted-copy">
+                {node.durationMs !== null && node.durationMs !== undefined
+                  ? `${node.durationMs} ms`
+                  : "entered, never exited"}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      {stopped && (
+        <p className="muted-copy" role="note">
+          The graph stopped at <code>{stopped.name}</code> — that node failed and nothing below it
+          ran. This is the captured execution, not an idealized completion.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function DerivedGraph({ content }: { content: TraceRead["content"] }) {
   const sources = graphSources(content);
   return (
     <section className="trace-panel" aria-labelledby="graphTitle">
       <div className="admin-panel-header">
         <h3 id="graphTitle">Executed structure</h3>
+        <span className="uncertain-chip">derived from stored trace fields</span>
       </div>
       <p className="muted-copy">
-        Every element below maps to a stored trace field (named under each row). Per-node durations
-        are not recorded by the trace; full LangGraph node/edge events are a documented follow-up.
+        This turn predates executed-graph capture (or its listener failed), so this view derives its
+        stages from the stored trace fields — named under each row — and is marked derived, not
+        captured. Per-node durations are not recorded for such a turn; full LangGraph node/edge
+        events are only available for turns recorded after the upgrade.
       </p>
       <ol className="graph-stages">
         {sources.map((source, index) => (

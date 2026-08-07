@@ -631,6 +631,7 @@ function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
         }
       : undefined,
     componentManifest: obj(wire.component_manifest),
+    executedGraph: executedGraphFromWire(wire.executed_graph),
     diagnoses: list(wire.diagnoses).map((diagnosis) => ({
       cause: str(diagnosis.cause),
       stage: str(diagnosis.stage),
@@ -640,6 +641,43 @@ function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
       evidence: listStr(diagnosis.evidence),
       detectorVersion: str(diagnosis.detector_version)
     }))
+  };
+}
+
+/** The `OBS-006` executed-graph section: node events are content-free, so the
+ * UI contract maps the wire shape directly. */
+function executedGraphFromWire(wire: unknown): TraceContent["executedGraph"] {
+  const section = obj(wire);
+  if (!Array.isArray(section.nodes)) return undefined;
+  return {
+    runKind: section.run_kind === "resume" ? "resume" : "send",
+    startedAt: strOrNull(section.started_at),
+    endedAt: strOrNull(section.ended_at),
+    durationMs: typeof section.duration_ms === "number" ? section.duration_ms : null,
+    nodes: section.nodes.map((raw) => {
+      const node = obj(raw);
+      return {
+        name: str(node.name),
+        attempt: typeof node.attempt === "number" ? node.attempt : 1,
+        edge: strOrNull(node.edge),
+        status: node.status === "error" ? "error" : "ok",
+        interrupted: node.interrupted === true,
+        replayed: node.replayed === true,
+        startedAt: strOrNull(node.started_at),
+        endedAt: strOrNull(node.ended_at),
+        durationMs: typeof node.duration_ms === "number" ? node.duration_ms : null
+      };
+    }),
+    edges: Array.isArray(section.edges)
+      ? section.edges.map((raw) => {
+          const edge = obj(raw);
+          return {
+            source: str(edge.source),
+            target: str(edge.target),
+            label: strOrNull(edge.label)
+          };
+        })
+      : []
   };
 }
 

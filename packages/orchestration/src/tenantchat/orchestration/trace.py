@@ -13,6 +13,16 @@ the content-free part — the same versions must hash the same, regardless of
 what was said — which is what makes "answers got worse last Tuesday" a
 question with an answer.
 
+The executed-graph section (`OBS-006`) sits beside that content: node names, the
+edge taken at each branch, per-node durations and attempt numbers, and each
+node's terminal status. It is captured by a LangGraph debug-stream listener in
+:mod:`tenantchat.orchestration.executed`, never inferred from state, and it is
+content-free — no argument, message, or evidence text enters an event. When the
+listener fails, the runtime degrades: this function records no executed-graph
+section, and readers show the derived view rather than a failed turn. That
+derived view is exactly the pre-`OBS-006` behavior, which is why the
+pure-function-over-checkpointed-state contract survives a listener bug.
+
 Attribution is :func:`diagnose`, a deterministic detector over the record
 alone. Only causes decidable from the record are ever emitted; the rest of the
 Gate B taxonomy — ``stale_source``, ``filter_exclusion``, ``retrieval_rank``,
@@ -24,12 +34,6 @@ mirrors the canonical form :attr:`AssembledPrompt.content_hash` hashes, so the
 exact prompt the provider received can be rebuilt from a turn record alone and
 re-hashed against the stored value — the "every answer is reconstructible"
 contract made executable.
-
-Deliberately not recorded here: the executed graph's nodes, edges, attempts,
-and timing. That is LangGraph execution data, not checkpoint state, and
-capturing it needs a callback listener that would tax the hot path this
-checkpoint state already pays for; it is documented in `BACKLOG.md` as the
-instrumentation follow-up.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from typing import Final
 from tenantchat.core.commands import HandoffReason
 from tenantchat.core.routing import ROUTING_POLICY_VERSION, RoutingOutcome, RoutingRule
 from tenantchat.orchestration.agents import AGENTS_VERSION
+from tenantchat.orchestration.executed import NodeStatus
 from tenantchat.orchestration.graph import GRAPH_VERSION
 from tenantchat.orchestration.model import (
     AssembledMessage,
@@ -53,7 +58,7 @@ from tenantchat.orchestration.model import (
     PromptSegment,
     ToolCall,
 )
-from tenantchat.orchestration.nodes import citation_ids
+from tenantchat.orchestration.nodes import DispatchNode, citation_ids
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
 
 # The status vocabulary is the graph's, not the trace's: the terminal nodes
@@ -65,7 +70,11 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 # The shape version of the trace's ``content`` object. Bumping it is a reviewable
 # change: the store's governance never parses content, so readers (the trace
 # viewer, export, erasure) must branch on this to stay honest across releases.
-TRACE_SCHEMA_VERSION: Final = "1"
+#
+# ``2`` added the ``executed_graph`` section under it. A record written at ``1``
+# has no such section, and a viewer shows it in the derived form — labelled as
+# derived — exactly like a ``2`` record whose listener failed.
+TRACE_SCHEMA_VERSION: Final = "2"
 
 DETECTOR_VERSION: Final = "diagnosis@1"
 
@@ -210,6 +219,9 @@ def build_turn_trace(
         "outcome": _outcome_section(state, pending),
         "component_manifest": manifest,
     }
+    executed = _executed_graph_section(state)
+    if executed is not None:
+        trace["executed_graph"] = executed
     trace["manifest_hash"] = manifest_hash(manifest)
     trace["diagnoses"] = [record.to_dict() for record in diagnose(trace)]
     return trace
@@ -454,6 +466,92 @@ def diagnose(trace: Mapping[str, object]) -> tuple[DiagnosisRecord, ...]:
         )
 
     return tuple(records)
+
+
+def _executed_graph_section(state: Mapping[str, object]) -> dict[str, object] | None:
+    """The captured `OBS-006` executed-graph section, rebuilt from the stored one.
+
+    The runtime writes the section into the checkpoint after the run; this
+    function is the trace boundary's re-serialization. It keeps only the closed
+    fields — node names from the ``DispatchNode`` vocabulary, bounded statuses,
+    edge labels, timestamps — and drops the whole section when the stored shape
+    does not conform, so a value that is not part of the executed-graph contract
+    (whatever wrote it) cannot reach the trace. ``None`` means the run had no
+    capture and readers show the derived view.
+    """
+    raw = state.get("executed_graph")
+    if not isinstance(raw, Mapping):
+        return None
+    raw_nodes = raw.get("nodes")
+    raw_edges = raw.get("edges")
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        return None
+    nodes: list[dict[str, object]] = []
+    for item in raw_nodes:
+        if not isinstance(item, Mapping):
+            return None
+        name = item.get("name")
+        if not isinstance(name, str):
+            return None
+        try:
+            DispatchNode(name)
+        except ValueError:
+            return None
+        status = item.get("status")
+        if status not in (NodeStatus.OK.value, NodeStatus.ERROR.value):
+            return None
+        nodes.append(
+            {
+                "name": name,
+                "attempt": _int(item.get("attempt"), 1),
+                "edge": str(item.get("edge")) if item.get("edge") else None,
+                "status": status,
+                "interrupted": bool(item.get("interrupted")),
+                "replayed": bool(item.get("replayed")),
+                "started_at": str(item["started_at"]) if item.get("started_at") else None,
+                "ended_at": str(item["ended_at"]) if item.get("ended_at") else None,
+                "duration_ms": (
+                    item["duration_ms"] if isinstance(item.get("duration_ms"), int) else None
+                ),
+            }
+        )
+    if not nodes:
+        return None
+    edges: list[dict[str, object]] = []
+    for item in raw_edges:
+        if not isinstance(item, Mapping):
+            return None
+        source = item.get("source")
+        target = item.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            return None
+        if target not in _GRAPH_NODE_NAMES or source not in _GRAPH_ENDPOINTS:
+            return None
+        edges.append(
+            {
+                "source": source,
+                "target": target,
+                "label": str(item.get("label")) if item.get("label") else None,
+            }
+        )
+    return {
+        "run_kind": str(raw.get("run_kind", "send")),
+        "started_at": str(raw["started_at"]) if raw.get("started_at") else None,
+        "ended_at": str(raw["ended_at"]) if raw.get("ended_at") else None,
+        "duration_ms": raw["duration_ms"] if isinstance(raw.get("duration_ms"), int) else None,
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+_GRAPH_NODE_NAMES: Final[frozenset[str]] = frozenset(
+    member.value for member in DispatchNode.__members__.values()
+)
+
+# The executed-graph's edge endpoints: the closed node vocabulary plus the
+# framework's START and END, which is how an edge into the first node or out of
+# a terminal one is recorded.
+_GRAPH_ENDPOINTS: Final[frozenset[str]] = _GRAPH_NODE_NAMES | frozenset({"__start__", "__end__"})
 
 
 def _retrieval_section(

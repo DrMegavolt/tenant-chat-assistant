@@ -67,6 +67,7 @@ class MetricName(StrEnum):
     RETRIEVAL_CANDIDATES = "tenantchat_retrieval_candidates_total"
     TOOL_CALLS = "tenantchat_tool_calls_total"
     TOOL_LATENCY = "tenantchat_tool_latency_seconds"
+    NODE_LATENCY = "tenantchat_node_latency_seconds"
     ROUTING_DECISIONS = "tenantchat_routing_decisions_total"
     BUSINESS_ACTIONS = "tenantchat_business_actions_total"
     BUSINESS_LATENCY = "tenantchat_business_latency_seconds"
@@ -98,6 +99,7 @@ class MetricLabelName(StrEnum):
     INTENT = "intent"
     RULE = "rule"
     TOOL = "tool"
+    NODE = "node"
     KIND = "kind"
     TEMPLATE = "template"
     VERDICT = "verdict"
@@ -137,6 +139,9 @@ class TurnOutcome(StrEnum):
     server would not publish it. Its value is qualified rather than a bare
     ``refused`` because ``outcome`` is a shared label name and ``ToolOutcome``
     already spends that value — a query for one must never match the other.
+    ``FAILED`` is a turn whose graph crashed mid-run (`OBS-006`), qualified for
+    the same reason: ``ToolOutcome`` already spends ``failed``, and an
+    ``outcome="failed"`` query must not match a failed tool call.
 
     The classes partition every terminal path, so the sum across this label
     equals the number of turns the API completed. A path that ends a turn
@@ -149,6 +154,7 @@ class TurnOutcome(StrEnum):
     ANSWER_REFUSED = "answer_refused"
     HANDED_OFF = "handed_off"
     PAUSED = "paused"
+    FAILED = "turn_failed"
 
 
 class ToolOutcome(StrEnum):
@@ -224,6 +230,7 @@ METRIC_LABELS: Final[Mapping[MetricName, tuple[MetricLabelName, ...]]] = {
     MetricName.RETRIEVAL_CANDIDATES: (),
     MetricName.TOOL_CALLS: (MetricLabelName.TOOL, MetricLabelName.OUTCOME),
     MetricName.TOOL_LATENCY: (MetricLabelName.TOOL, MetricLabelName.OUTCOME),
+    MetricName.NODE_LATENCY: (MetricLabelName.NODE, MetricLabelName.STATUS),
     MetricName.ROUTING_DECISIONS: (
         MetricLabelName.INTENT,
         MetricLabelName.OUTCOME,

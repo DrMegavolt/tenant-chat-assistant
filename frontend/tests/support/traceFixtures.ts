@@ -229,3 +229,163 @@ export const REPLAY_WIRE = {
     output_raw: "Replayed trial output."
   }
 };
+
+/** A captured `OBS-006` executed-graph section for one first run. */
+export const EXECUTED_GRAPH_SECTION = {
+  run_kind: "send",
+  started_at: "2026-08-03T20:00:00.001+00:00",
+  ended_at: "2026-08-03T20:00:00.050+00:00",
+  duration_ms: 49,
+  nodes: [
+    {
+      name: "route",
+      attempt: 1,
+      edge: "branch:to:route",
+      status: "ok",
+      interrupted: false,
+      replayed: false,
+      started_at: "2026-08-03T20:00:00.001+00:00",
+      ended_at: "2026-08-03T20:00:00.004+00:00",
+      duration_ms: 3
+    },
+    {
+      name: "model",
+      attempt: 1,
+      edge: "branch:to:model",
+      status: "ok",
+      interrupted: false,
+      replayed: false,
+      started_at: "2026-08-03T20:00:00.005+00:00",
+      ended_at: "2026-08-03T20:00:00.045+00:00",
+      duration_ms: 40
+    },
+    {
+      name: "finalize",
+      attempt: 1,
+      edge: "branch:to:finalize",
+      status: "ok",
+      interrupted: false,
+      replayed: false,
+      started_at: "2026-08-03T20:00:00.046+00:00",
+      ended_at: "2026-08-03T20:00:00.050+00:00",
+      duration_ms: 4
+    }
+  ],
+  edges: [
+    { source: "__start__", target: "route", label: "branch:to:route" },
+    { source: "route", target: "model", label: "branch:to:model" },
+    { source: "model", target: "finalize", label: "branch:to:finalize" }
+  ]
+};
+
+export const CAPTURED_READ_WIRE_CONTENT = {
+  ...TRACE_READ_WIRE_CONTENT,
+  schema_version: "2",
+  executed_graph: EXECUTED_GRAPH_SECTION
+};
+
+/** A captured resumed run: the interrupted node is replayed first. */
+export const RESUMED_READ_WIRE_CONTENT = {
+  ...TRACE_READ_WIRE_CONTENT,
+  schema_version: "2",
+  outcome: { status: "answered", rounds: 2, failure: null },
+  executed_graph: {
+    run_kind: "resume",
+    started_at: "2026-08-03T20:01:00.001+00:00",
+    ended_at: "2026-08-03T20:01:00.030+00:00",
+    duration_ms: 29,
+    nodes: [
+      {
+        name: "confirm_booking",
+        attempt: 1,
+        edge: "branch:to:confirm_booking",
+        status: "ok",
+        interrupted: false,
+        replayed: true,
+        started_at: "2026-08-03T20:01:00.001+00:00",
+        ended_at: "2026-08-03T20:01:00.006+00:00",
+        duration_ms: 5
+      },
+      {
+        name: "commit_booking",
+        attempt: 1,
+        edge: "branch:to:commit_booking",
+        status: "ok",
+        interrupted: false,
+        replayed: false,
+        started_at: "2026-08-03T20:01:00.007+00:00",
+        ended_at: "2026-08-03T20:01:00.020+00:00",
+        duration_ms: 13
+      },
+      {
+        name: "model",
+        attempt: 1,
+        edge: "branch:to:model",
+        status: "ok",
+        interrupted: false,
+        replayed: false,
+        started_at: "2026-08-03T20:01:00.021+00:00",
+        ended_at: "2026-08-03T20:01:00.026+00:00",
+        duration_ms: 5
+      },
+      {
+        name: "finalize",
+        attempt: 1,
+        edge: "branch:to:finalize",
+        status: "ok",
+        interrupted: false,
+        replayed: false,
+        started_at: "2026-08-03T20:01:00.027+00:00",
+        ended_at: "2026-08-03T20:01:00.030+00:00",
+        duration_ms: 3
+      }
+    ],
+    edges: [
+      { source: "__start__", target: "confirm_booking", label: "branch:to:confirm_booking" },
+      { source: "confirm_booking", target: "commit_booking", label: "branch:to:commit_booking" },
+      { source: "commit_booking", target: "model", label: "branch:to:model" },
+      { source: "model", target: "finalize", label: "branch:to:finalize" }
+    ]
+  }
+};
+
+/** A captured run whose graph crashed at the model node: it ends there. */
+export const CRASHED_READ_WIRE_CONTENT = {
+  ...TRACE_READ_WIRE_CONTENT,
+  schema_version: "2",
+  outcome: { status: "failed", rounds: 0, failure: "application_error" },
+  executed_graph: {
+    run_kind: "send",
+    started_at: "2026-08-03T20:02:00.001+00:00",
+    ended_at: null,
+    duration_ms: null,
+    nodes: [
+      {
+        name: "route",
+        attempt: 1,
+        edge: "branch:to:route",
+        status: "ok",
+        interrupted: false,
+        replayed: false,
+        started_at: "2026-08-03T20:02:00.001+00:00",
+        ended_at: "2026-08-03T20:02:00.004+00:00",
+        duration_ms: 3
+      },
+      {
+        name: "model",
+        attempt: 1,
+        edge: "branch:to:model",
+        status: "error",
+        interrupted: false,
+        replayed: false,
+        started_at: "2026-08-03T20:02:00.005+00:00",
+        ended_at: null,
+        duration_ms: null
+      }
+    ],
+    edges: [
+      { source: "__start__", target: "route", label: "branch:to:route" },
+      { source: "route", target: "model", label: "branch:to:model" }
+    ]
+  }
+};

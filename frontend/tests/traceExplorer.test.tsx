@@ -6,9 +6,12 @@ import { AdminApi } from "src/admin/adminApi";
 import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { jsonResponse } from "tests/support/backend";
 import {
+  CAPTURED_READ_WIRE_CONTENT,
+  CRASHED_READ_WIRE_CONTENT,
   GOLD_WIRE,
   RECORD_WIRE,
   REPLAY_WIRE,
+  RESUMED_READ_WIRE_CONTENT,
   SUSPECTED_RECORD_WIRE,
   TRACE_READ_WIRE_CONTENT,
   SUSPECTED_READ_WIRE_CONTENT,
@@ -229,6 +232,88 @@ describe("the executed-graph drill-down", () => {
     expect(within(toolsPanel).getByText(/error booking_already_proposed/i)).toBeTruthy();
     expect(within(toolsPanel).getByText("ok")).toBeTruthy();
     expect(within(toolsPanel).getByText("create_lead")).toBeTruthy();
+  });
+});
+
+describe("the captured executed graph (OBS-006)", () => {
+  /** Stub the backend so the turn-1 read returns the given trace content. */
+  function stubTraceRead(content: Record<string, unknown>) {
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+      if (url.includes("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "t" });
+      if (url.includes("/gold-cases")) return jsonResponse(GOLD_WIRE);
+      if (url.includes("/api/admin/traces/")) {
+        return jsonResponse(wireTraceContent("turn-1", content));
+      }
+      if (url.includes("/api/admin/traces?")) return jsonResponse({ records: [RECORD_WIRE] });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+  }
+
+  test("a captured turn renders the real nodes with durations and attempts", async () => {
+    stubTraceRead(CAPTURED_READ_WIRE_CONTENT);
+    renderExplorer();
+    await searchAndOpen();
+
+    const graph = screen.getByRole("heading", { name: "Executed graph" }).closest("section")!;
+    expect(within(graph).getByText("captured execution")).toBeTruthy();
+    expect(within(graph).getByText("route")).toBeTruthy();
+    expect(within(graph).getByText("model")).toBeTruthy();
+    expect(within(graph).getByText("finalize")).toBeTruthy();
+    expect(within(graph).getAllByText(/attempt 1/).length).toBe(3);
+    expect(within(graph).getByText(/40 ms/)).toBeTruthy();
+    expect(within(graph).getByText(/branch:to:model/)).toBeTruthy();
+    expect(within(graph).queryByText(/derived from stored trace fields/)).toBeNull();
+  });
+
+  test("a resumed turn is visibly marked and its replayed node identified", async () => {
+    stubTraceRead(RESUMED_READ_WIRE_CONTENT);
+    renderExplorer();
+    await searchAndOpen();
+
+    const graph = screen.getByRole("heading", { name: "Executed graph" }).closest("section")!;
+    expect(within(graph).getByText("resumed from checkpoint")).toBeTruthy();
+    expect(within(graph).getByText("confirm_booking")).toBeTruthy();
+    expect(within(graph).getByText("commit_booking")).toBeTruthy();
+    expect(within(graph).getByText("replayed")).toBeTruthy();
+    // The replayed node is the one the interrupt paused: first in the run.
+    const rows = within(graph).getAllByRole("listitem");
+    expect(rows[0]?.textContent ?? "").toContain("confirm_booking");
+  });
+
+  test("a crashed turn shows the nodes that ran and stops, never idealizing", async () => {
+    stubTraceRead(CRASHED_READ_WIRE_CONTENT);
+    renderExplorer();
+    await searchAndOpen();
+
+    const graph = screen.getByRole("heading", { name: "Executed graph" }).closest("section")!;
+    expect(within(graph).getByText("failed")).toBeTruthy();
+    expect(within(graph).getByText(/entered, never exited/)).toBeTruthy();
+    expect(within(graph).getByText(/The graph stopped at/)).toBeTruthy();
+    // No idealized completion: finalize never ran and must not appear.
+    expect(within(graph).queryByText("finalize")).toBeNull();
+  });
+
+  test("a turn recorded before capture is labelled derived, never shown as captured", async () => {
+    stubTraceRead(TRACE_READ_WIRE_CONTENT);
+    renderExplorer();
+    await searchAndOpen();
+
+    const graph = screen.getByRole("heading", { name: "Executed structure" }).closest("section")!;
+    expect(within(graph).getByText("derived from stored trace fields")).toBeTruthy();
+    expect(within(graph).queryByText("captured execution")).toBeNull();
+  });
+
+  test("the captured executed graph has no axe violations", async () => {
+    stubTraceRead(CAPTURED_READ_WIRE_CONTENT);
+    renderExplorer();
+    await searchAndOpen();
+
+    const results = await axe.run(document, {
+      resultTypes: ["violations"],
+      rules: { "color-contrast": { enabled: false }, "target-size": { enabled: false } }
+    });
+    expect(results.violations.map((violation) => violation.id)).toEqual([]);
   });
 });
 

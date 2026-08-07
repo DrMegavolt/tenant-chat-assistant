@@ -64,6 +64,7 @@ from tenantchat.core.resilience import CircuitState, Dependency, FailureKind
 from tenantchat.core.routing import IntentName, RoutingOutcome, RoutingRule
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolCall, ToolSpec
+from tenantchat.orchestration.nodes import DispatchNode
 from tenantchat.orchestration.prompts import DEFAULT_REGISTRY, DISPATCH_SYSTEM_TEMPLATE_ID
 from tenantchat.orchestration.tools import ToolName
 
@@ -93,9 +94,11 @@ def _reachable_vocabulary() -> frozenset[str]:
         RoutingOutcome,
         RoutingRule,
         ToolName,
+<<<<<<< HEAD
         Dependency,
         FailureKind,
         CircuitState,
+        DispatchNode,
     )
     vocabulary = {member.value for family in families for member in family.__members__.values()}
     vocabulary.update(
@@ -435,6 +438,38 @@ class TestAnAnsweredTurn:
             values[("tenantchat_citation_validation_total", frozenset({("verdict", "invalid")}))]
             == 2
         )
+
+    def test_per_node_latency_is_recorded_with_bounded_labels(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The `OBS-006` executed-graph capture feeds the node-latency histogram.
+
+        One sample per node the graph actually ran, labelled with the closed
+        node vocabulary and the bounded ok/error status — the cardinality test
+        proves the series cannot grow.
+        """
+        model.script = [ModelResponse(content="We are open until 7pm.", model_name="scripted")]
+        visitor = _open_session(client)
+        response = client.post(
+            "/api/chat", json={"message": "What are your hours?"}, headers=visitor.headers
+        )
+
+        assert response.status_code == 200
+        node_counts = {
+            sample.labels["node"]: sample.value
+            for sample in tenantchat_samples()
+            if sample.name == "tenantchat_node_latency_seconds_count"
+        }
+        assert set(node_counts) == {"route", "model", "finalize"}
+        assert all(value == 1 for value in node_counts.values())
+        # Every latency sample carries the bounded ok status and a trace exemplar.
+        latency = [
+            sample
+            for sample in tenantchat_samples()
+            if sample.name == "tenantchat_node_latency_seconds_count"
+        ]
+        assert all(sample.labels["status"] == "ok" for sample in latency)
+        assert _exemplar_trace_ids()
 
 
 class TestErrorPaths:

@@ -144,6 +144,42 @@ export interface DiagnosisRecord {
   detectorVersion?: string;
 }
 
+/**
+ * One captured `OBS-006` node execution. `attempt` counts how many times the
+ * node ran in this run (a tool loop runs `model` twice); `replayed` marks a
+ * re-execution — a second attempt in the same run, or the node an interrupted
+ * run re-executed on resume. `durationMs` is `null` when the node entered and
+ * never exited (a mid-graph crash).
+ */
+export interface ExecutedGraphNode {
+  name: string;
+  attempt: number;
+  edge?: string | null;
+  status: "ok" | "error";
+  interrupted: boolean;
+  replayed: boolean;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  durationMs?: number | null;
+}
+
+/** One captured edge: the branch that scheduled a node, by its label. */
+export interface ExecutedGraphEdge {
+  source: string;
+  target: string;
+  label?: string | null;
+}
+
+/** The captured executed-graph section, present only for post-`OBS-006` runs. */
+export interface ExecutedGraphSection {
+  runKind: "send" | "resume";
+  startedAt?: string | null;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  nodes: ExecutedGraphNode[];
+  edges: ExecutedGraphEdge[];
+}
+
 export interface OutcomeSection {
   status?: string | undefined;
   rounds?: number | undefined;
@@ -164,6 +200,7 @@ export interface TraceContent {
   componentManifest?: Record<string, unknown> | undefined;
   manifestHash?: string | undefined;
   diagnoses?: DiagnosisRecord[] | undefined;
+  executedGraph?: ExecutedGraphSection | undefined;
   [key: string]: unknown;
 }
 
@@ -229,7 +266,14 @@ export const DIAGNOSIS_CAUSES = [
 
 export const DIAGNOSIS_STATUSES = ["detected", "suspected", "confirmed", "inconclusive"] as const;
 
-export const OUTCOMES = ["answered", "paused", "escalated", "abstained", "clarified"] as const;
+export const OUTCOMES = [
+  "answered",
+  "paused",
+  "escalated",
+  "abstained",
+  "clarified",
+  "failed"
+] as const;
 
 export const OUTCOME_LABELS: Record<string, string> = {
   answered: "Answered",
@@ -237,6 +281,7 @@ export const OUTCOME_LABELS: Record<string, string> = {
   escalated: "Escalated",
   abstained: "Abstained",
   clarified: "Clarified",
+  failed: "Failed",
   unknown: "Unknown"
 };
 
