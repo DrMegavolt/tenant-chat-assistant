@@ -40,6 +40,11 @@ class TurnOutcome(StrEnum):
     is distinct from ``ABSTAINED``: an abstention means there was no evidence to
     answer from, a refusal means the model answered and the server would not
     publish what it said.
+
+    ``FAILED`` is a turn whose graph crashed mid-run (`OBS-006`): no terminal
+    node recorded an outcome because none completed. It is written by the
+    runtime, not by a node — the node that would have written it is the one
+    that crashed.
     """
 
     ANSWERED = "answered"
@@ -48,6 +53,7 @@ class TurnOutcome(StrEnum):
     ABSTAINED = "abstained"
     CLARIFIED = "clarified"
     REFUSED = "refused"
+    FAILED = "failed"
 
 
 class StoredToolCall(TypedDict):
@@ -172,6 +178,13 @@ class DispatchState(TypedDict):
     routing_decision: dict[str, object]
     prompt_assembly: dict[str, object]
     model_usage: dict[str, int]
+    # The `OBS-006` executed-graph section of the turn's run, written by the
+    # runtime from the captured debug events after the run finishes. It is
+    # execution metadata, content-free by construction (see
+    # :mod:`tenantchat.orchestration.executed`), and ``None`` when the run
+    # produced no capture — a degraded listener falls back to the trace's
+    # derived view, never to a failed turn.
+    executed_graph: dict[str, object] | None
 
 
 def visitor_entry(content: str) -> TranscriptEntry:
@@ -223,6 +236,7 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "routing_decision": {},
         "prompt_assembly": {},
         "model_usage": {},
+        "executed_graph": None,
     }
 
 
@@ -262,4 +276,7 @@ def next_turn(message: str) -> dict[str, object]:
         "routing_decision": {},
         "prompt_assembly": {},
         "model_usage": {},
+        # The route node re-decides every turn; the previous turn's executed
+        # graph must not leak into the next one.
+        "executed_graph": None,
     }

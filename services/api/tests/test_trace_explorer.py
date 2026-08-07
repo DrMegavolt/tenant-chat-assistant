@@ -1262,3 +1262,178 @@ class TestTheTenCaseWalkthrough:
             assert len(replays) == 2
             searches = [event for event in audit._events if event.action == "trace.search"]
             assert len(searches) == 10
+
+
+class TestExecutedGraphSection:
+    """`OBS-006`: the captured executed graph round-trips, and records written
+    before the capture (schema version 1) still open without one."""
+
+    def _plant(
+        self,
+        turns: InMemoryTurnRecordStore,
+        *,
+        schema_version: str,
+        executed_graph: Mapping[str, object] | None,
+    ) -> str:
+        session_id = uuid.uuid4()
+        recorded = asyncio.run(
+            turns.record(
+                TRACE_TENANT,
+                session_id,
+                trace_id=f"trace-exec-{schema_version}-{uuid.uuid4().hex[:8]}",
+                content={
+                    "schema_version": schema_version,
+                    "turn_index": 1,
+                    "routing": {"rule": "answer", "intent": "general"},
+                    "outcome": {"status": "answered", "rounds": 1, "failure": None},
+                    **({"executed_graph": executed_graph} if executed_graph is not None else {}),
+                },
+                outcome="answered",
+                turn_index=1,
+                trace_schema_version=schema_version,
+            )
+        )
+        return str(recorded.turn_id)
+
+    def test_a_schema_version_two_record_round_trips_its_captured_section(
+        self, explorer_app: ExplorerApp
+    ) -> None:
+        client, turns, _grants, _audit, _ = explorer_app
+        section: dict[str, object] = {
+            "run_kind": "send",
+            "started_at": "2026-08-07T00:00:00.001+00:00",
+            "ended_at": "2026-08-07T00:00:00.010+00:00",
+            "duration_ms": 9,
+            "nodes": [
+                {
+                    "name": "route",
+                    "attempt": 1,
+                    "edge": "branch:to:route",
+                    "status": "ok",
+                    "interrupted": False,
+                    "replayed": False,
+                    "started_at": "2026-08-07T00:00:00.001+00:00",
+                    "ended_at": "2026-08-07T00:00:00.004+00:00",
+                    "duration_ms": 3,
+                },
+                {
+                    "name": "model",
+                    "attempt": 1,
+                    "edge": "branch:to:model",
+                    "status": "ok",
+                    "interrupted": False,
+                    "replayed": False,
+                    "started_at": "2026-08-07T00:00:00.005+00:00",
+                    "ended_at": "2026-08-07T00:00:00.010+00:00",
+                    "duration_ms": 5,
+                },
+                {
+                    "name": "finalize",
+                    "attempt": 1,
+                    "edge": "branch:to:finalize",
+                    "status": "ok",
+                    "interrupted": False,
+                    "replayed": False,
+                    "started_at": "2026-08-07T00:00:00.011+00:00",
+                    "ended_at": "2026-08-07T00:00:00.013+00:00",
+                    "duration_ms": 2,
+                },
+            ],
+            "edges": [
+                {"source": "__start__", "target": "route", "label": "branch:to:route"},
+                {"source": "route", "target": "model", "label": "branch:to:model"},
+                {"source": "model", "target": "finalize", "label": "branch:to:finalize"},
+            ],
+        }
+        turn_id = self._plant(turns, schema_version="2", executed_graph=section)
+
+        response = client.get(
+            f"/api/admin/traces/{turn_id}",
+            params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+            headers=_operator(),
+        )
+
+        assert response.status_code == 200
+        content = response.json()["content"]
+        assert content["schema_version"] == "2"
+        assert content["executed_graph"] == section
+        assert [node["name"] for node in content["executed_graph"]["nodes"]] == [
+            "route",
+            "model",
+            "finalize",
+        ]
+
+    def test_a_schema_version_one_record_still_opens_without_a_section(
+        self, explorer_app: ExplorerApp
+    ) -> None:
+        """The derived-view contract: a pre-`OBS-006` record renders, and its
+        content carries no executed-graph section for the viewer to mistake for
+        a captured one."""
+        client, turns, _grants, _audit, _ = explorer_app
+        turn_id = self._plant(turns, schema_version="1", executed_graph=None)
+
+        response = client.get(
+            f"/api/admin/traces/{turn_id}",
+            params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+            headers=_operator(),
+        )
+
+        assert response.status_code == 200
+        content = response.json()["content"]
+        assert content["schema_version"] == "1"
+        assert "executed_graph" not in content
+
+    def test_a_recorded_crashed_graph_ends_at_the_error_node(
+        self, explorer_app: ExplorerApp
+    ) -> None:
+        """A mid-graph crash is stored as it happened: the section ends at the
+        node that failed, with no node after it and no idealized completion."""
+        client, turns, _grants, _audit, _ = explorer_app
+        section: dict[str, object] = {
+            "run_kind": "send",
+            "started_at": "2026-08-07T00:00:00.001+00:00",
+            "ended_at": None,
+            "duration_ms": None,
+            "nodes": [
+                {
+                    "name": "route",
+                    "attempt": 1,
+                    "edge": "branch:to:route",
+                    "status": "ok",
+                    "interrupted": False,
+                    "replayed": False,
+                    "started_at": "2026-08-07T00:00:00.001+00:00",
+                    "ended_at": "2026-08-07T00:00:00.004+00:00",
+                    "duration_ms": 3,
+                },
+                {
+                    "name": "model",
+                    "attempt": 1,
+                    "edge": "branch:to:model",
+                    "status": "error",
+                    "interrupted": False,
+                    "replayed": False,
+                    "started_at": "2026-08-07T00:00:00.005+00:00",
+                    "ended_at": None,
+                    "duration_ms": None,
+                },
+            ],
+            "edges": [
+                {"source": "__start__", "target": "route", "label": "branch:to:route"},
+                {"source": "route", "target": "model", "label": "branch:to:model"},
+            ],
+        }
+        turn_id = self._plant(turns, schema_version="2", executed_graph=section)
+
+        response = client.get(
+            f"/api/admin/traces/{turn_id}",
+            params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+            headers=_operator(),
+        )
+
+        assert response.status_code == 200
+        content = response.json()["content"]
+        nodes = content["executed_graph"]["nodes"]
+        assert [node["name"] for node in nodes] == ["route", "model"]
+        assert nodes[-1]["status"] == "error"
+        assert "finalize" not in [node["name"] for node in nodes]

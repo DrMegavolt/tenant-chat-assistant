@@ -299,7 +299,14 @@ def test_the_turn_record_pins_every_component_and_a_content_free_hash() -> None:
     assert record.component_manifest_hash == content["manifest_hash"]
     assert record.diagnosis_causes == ()
     assert record.turn_index == 1
-    assert record.trace_schema_version == "1"
+    assert record.trace_schema_version == "2"
+    # A post-`OBS-006` turn records the executed graph that actually ran.
+    executed = _section(content, "executed_graph")
+    assert [node["name"] for node in _list(executed, "nodes")] == [
+        "route",
+        "model",
+        "finalize",
+    ]
 
 
 def test_the_manifest_hash_is_content_free_but_component_sensitive() -> None:

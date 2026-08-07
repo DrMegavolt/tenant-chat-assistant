@@ -132,7 +132,10 @@ def build_dispatch_runtime(
         evidence=evidence,
         metrics=metrics,
     )
-    return DispatchRuntime(compile_dispatch_graph(dependencies, checkpointer))
+    return DispatchRuntime(
+        compile_dispatch_graph(dependencies, checkpointer),
+        metrics=metrics,
+    )
 
 
 def _turn(result: TurnResult) -> AssistantTurn:

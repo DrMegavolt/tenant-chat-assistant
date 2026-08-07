@@ -84,6 +84,10 @@ METRIC_DEFINITIONS: Final[Mapping[MetricName, tuple[MetricKind, str]]] = {
         MetricKind.HISTOGRAM,
         "Tool execution latency by tool and outcome.",
     ),
+    MetricName.NODE_LATENCY: (
+        MetricKind.HISTOGRAM,
+        "Graph node execution latency by node and terminal status.",
+    ),
     MetricName.ROUTING_DECISIONS: (
         MetricKind.COUNTER,
         "Routing decisions by chosen intent, outcome, and rule.",

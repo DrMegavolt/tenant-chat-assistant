@@ -765,3 +765,172 @@ def test_a_diagnosis_record_serializes_to_the_store_shape() -> None:
         "evidence": ["retrieval.sufficient:false"],
         "detector_version": "diagnosis@1",
     }
+
+
+def _executed_section(**overrides: object) -> dict[str, object]:
+    """A captured `OBS-006` executed-graph section, as the listener stores it."""
+    return {
+        "run_kind": "send",
+        "started_at": "2026-08-07T00:00:00.001+00:00",
+        "ended_at": "2026-08-07T00:00:00.010+00:00",
+        "duration_ms": 9,
+        "nodes": [
+            {
+                "name": "route",
+                "attempt": 1,
+                "edge": "branch:to:route",
+                "status": "ok",
+                "interrupted": False,
+                "replayed": False,
+                "started_at": "2026-08-07T00:00:00.001+00:00",
+                "ended_at": "2026-08-07T00:00:00.004+00:00",
+                "duration_ms": 3,
+            },
+            {
+                "name": "model",
+                "attempt": 1,
+                "edge": "branch:to:model",
+                "status": "ok",
+                "interrupted": False,
+                "replayed": False,
+                "started_at": "2026-08-07T00:00:00.005+00:00",
+                "ended_at": "2026-08-07T00:00:00.010+00:00",
+                "duration_ms": 5,
+            },
+        ],
+        "edges": [
+            {"source": "__start__", "target": "route", "label": "branch:to:route"},
+            {"source": "route", "target": "model", "label": "branch:to:model"},
+        ],
+    } | overrides
+
+
+def test_a_captured_executed_graph_section_is_recorded_under_schema_version_2() -> None:
+    """The `OBS-006` capture lands in the trace beside the derived content."""
+    trace = build_turn_trace(
+        _answered(executed_graph=_executed_section()),
+        pending=None,
+    )
+
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "2"
+    assert _section(trace, "executed_graph") == _executed_section()
+
+
+def test_a_turn_without_a_capture_records_no_executed_graph_section() -> None:
+    """No listener capture (a degraded listener, or a pre-`OBS-006` record) leaves
+    the trace without the section: readers show the derived view, never a
+    fabricated one."""
+    trace = build_turn_trace(_answered(executed_graph=None), pending=None)
+
+    assert "executed_graph" not in trace
+
+
+def test_the_executed_graph_section_rejects_content_outside_its_contract() -> None:
+    """The trace boundary re-serializes the section through its closed fields.
+
+    A node whose name is not in the graph vocabulary, or a section carrying a
+    stray value, is dropped whole rather than admitted to the trace: whatever
+    wrote it, it is not an executed-graph event.
+    """
+    trace = build_turn_trace(
+        _answered(
+            executed_graph=_executed_section(
+                nodes=[
+                    {"name": "route", "attempt": 1, "status": "ok"},
+                    {"name": "not_a_node", "attempt": 1, "status": "ok"},
+                ]
+            )
+        ),
+        pending=None,
+    )
+
+    assert "executed_graph" not in trace
+
+
+def test_the_executed_graph_section_drops_content_that_reached_the_state() -> None:
+    """A captured section's node fields are the only keys kept: anything else
+    that found its way into the checkpoint is execution metadata, not content."""
+    traced = build_turn_trace(
+        _answered(
+            executed_graph=_executed_section(
+                nodes=[
+                    {
+                        "name": "route",
+                        "attempt": 1,
+                        "edge": "branch:to:route",
+                        "status": "ok",
+                        "interrupted": False,
+                        "replayed": False,
+                        "started_at": "2026-08-07T00:00:00+00:00",
+                        "ended_at": "2026-08-07T00:00:00.003+00:00",
+                        "duration_ms": 3,
+                        "input": {"transcript": [{"content": "Dana PII-Marker Ruiz 555-222-1919"}]},
+                    }
+                ],
+                edges=[{"source": "__start__", "target": "route", "label": "branch:to:route"}],
+            )
+        ),
+        pending=None,
+    )
+
+    section = _section(traced, "executed_graph")
+    nodes = section["nodes"]
+    assert isinstance(nodes, list)
+    assert dict(nodes[0]).keys() == {
+        "name",
+        "attempt",
+        "edge",
+        "status",
+        "interrupted",
+        "replayed",
+        "started_at",
+        "ended_at",
+        "duration_ms",
+    }
+    assert "PII-Marker" not in json.dumps(section)
+    assert "555-222-1919" not in json.dumps(section)
+
+
+def test_a_crashed_turn_is_recorded_as_failed_with_an_application_error() -> None:
+    """A run whose graph crashed mid-way is a failed turn, not an answered one.
+
+    The runtime writes the failed outcome into state; the trace reads it, and
+    the detector attributes the crash as a detected application error that
+    reaches the review queue.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.FAILED.value,
+            failure="application_error",
+            answer="I could not finish that because of an unexpected error. Please try again.",
+            executed_graph=_executed_section(
+                nodes=[
+                    {
+                        "name": "route",
+                        "attempt": 1,
+                        "edge": "branch:to:route",
+                        "status": "error",
+                        "interrupted": False,
+                        "replayed": False,
+                        "started_at": "2026-08-07T00:00:00+00:00",
+                        "ended_at": None,
+                        "duration_ms": None,
+                    }
+                ],
+                edges=[{"source": "__start__", "target": "route", "label": "branch:to:route"}],
+            ),
+        ),
+        pending=None,
+    )
+
+    assert _section(trace, "outcome")["status"] == "failed"
+    assert _diagnoses(trace) == [
+        _diagnosis(
+            DiagnosisCause.APPLICATION_ERROR,
+            DiagnosisStage.OUTCOME,
+            DiagnosisRole.PRIMARY,
+            DiagnosisStatus.DETECTED,
+            DiagnosisConfidence.MEDIUM,
+            ("outcome.failure:application_error",),
+        )
+    ]
