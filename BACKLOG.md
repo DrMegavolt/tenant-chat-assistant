@@ -313,9 +313,9 @@ found missing from the demonstration's own claims. `RAG-010` is `P0` because it
 breaks a stated security invariant. None of these is optional for Gate B: three
 of them are the difference between a claim being tested and a claim being true.
 
-- [ ] `RAG-010` — Evidence boundary escaping and fence-aware content safety — `P0` — _defect in `RAG-007`_
+- [x] `RAG-010` — Evidence boundary escaping and fence-aware content safety — `P0` — _defect in `RAG-007`_
 - [ ] `OBS-005` — Turn outcome fidelity and diagnosis completeness — `P1` — _defect in `OBS-004`/`OBS-002`_
-- [ ] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
+- [x] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
 - [ ] `QA-006` — Gate-claim and backlog accuracy — `P1`
 - [ ] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
 - [ ] `FEAT-016` — Authorization and audit console — `P1`
