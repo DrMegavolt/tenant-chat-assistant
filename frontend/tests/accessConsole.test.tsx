@@ -210,9 +210,10 @@ describe("the FEAT-016 audit trail filters", () => {
 
     await waitFor(() => {
       const auditUrl = String(
-        fetchMock.mock.calls.find(([url]) =>
-          String(url).includes("/api/admin/audit") &&
-          String(url).includes("action=membership_assigned")
+        fetchMock.mock.calls.find(
+          ([url]) =>
+            String(url).includes("/api/admin/audit") &&
+            String(url).includes("action=membership_assigned")
         )?.[0]
       );
       expect(auditUrl).not.toBe("undefined");
@@ -232,7 +233,7 @@ describe("the FEAT-016 audit trail filters", () => {
 
     // Every filter is focusable in tab order, so a keyboard-only operator can
     // reach the whole surface.
-    const principal = screen.getByLabelText("Principal") as HTMLInputElement;
+    const principal = screen.getByLabelText("Principal");
     principal.focus();
     expect(document.activeElement).toBe(principal);
     fireEvent.change(principal, { target: { value: "platform-1" } });

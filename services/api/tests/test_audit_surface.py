@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 
 from services.api.tests.conftest import (
     BOOKING_TENANT,
-    LEAD_TENANT,
     TEST_OPERATOR_SUBJECT,
 )
 from tenantchat.api.identity import CSRF_HEADER, SUBJECT_HEADER
@@ -69,11 +68,7 @@ def _make_tenant_admin(
     subject: str = TEST_OPERATOR_SUBJECT,
 ) -> None:
     """Bypass the API so a test seeds membership without an audit row on purpose."""
-    asyncio.run(
-        membership_store.assign(
-            tenant_id=tenant_id, subject=subject, role="tenant_admin"
-        )
-    )
+    asyncio.run(membership_store.assign(tenant_id=tenant_id, subject=subject, role="tenant_admin"))
 
 
 def _event(
@@ -136,7 +131,7 @@ def test_an_operator_below_tenant_admin_cannot_read_the_audit_trail(
 def test_a_tenant_admin_reads_only_their_own_tenants_rows(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
@@ -160,7 +155,7 @@ def test_a_tenant_admin_reads_only_their_own_tenants_rows(
 def test_a_request_for_another_tenant_is_byte_identical_to_a_phantom_tenant(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """The console cannot be used to probe the tenant registry.
@@ -189,7 +184,7 @@ def test_a_request_for_another_tenant_is_byte_identical_to_a_phantom_tenant(
 def test_a_request_for_another_tenants_permissions_is_the_same_404(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
     headers = _admin_headers(operator_headers)
@@ -211,7 +206,7 @@ def test_a_request_for_another_tenants_permissions_is_the_same_404(
 def test_every_audit_read_is_itself_audited_and_terminates(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """An audit of an audit adds exactly one row and stops.
@@ -246,7 +241,7 @@ def test_every_audit_read_is_itself_audited_and_terminates(
 def test_an_audit_read_records_the_filters_that_ran(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """The console's own read is answerable as actor and filter, content-free."""
@@ -270,14 +265,16 @@ def test_an_audit_read_records_the_filters_that_ran(
 def test_audit_filters_narrow_by_action_principal_and_time(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
     base = datetime(2026, 8, 1, tzinfo=UTC)
     asyncio.run(
         audit_store.record(
-            _event(BOOKING_TENANT, action="staff_reply_sent", principal="operator-1", occurred_at=base)
+            _event(
+                BOOKING_TENANT, action="staff_reply_sent", principal="operator-1", occurred_at=base
+            )
         )
     )
     asyncio.run(
@@ -321,7 +318,11 @@ def test_audit_filters_narrow_by_action_principal_and_time(
 
     window = client.get(
         "/api/admin/audit",
-        params={"tenant_id": BOOKING_TENANT, "since": base.isoformat(), "until": (base + timedelta(minutes=30)).isoformat()},
+        params={
+            "tenant_id": BOOKING_TENANT,
+            "since": base.isoformat(),
+            "until": (base + timedelta(minutes=30)).isoformat(),
+        },
         headers=headers,
     )
     assert [event["action"] for event in window.json()["events"]] == ["staff_reply_sent"]
@@ -337,7 +338,7 @@ def test_audit_filters_narrow_by_action_principal_and_time(
 def test_audit_filters_never_escape_the_tenant(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """A filter that matches another tenant's rows matches nothing here."""
@@ -357,7 +358,7 @@ def test_audit_filters_never_escape_the_tenant(
 def test_the_limit_is_applied_after_the_filters(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """Filtering first and bounding second keeps the bound honest."""
@@ -408,12 +409,14 @@ def test_a_platform_administrator_reads_any_tenants_trail_without_a_membership(
 def test_an_audit_row_renders_the_permission_that_authorized_it(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
     asyncio.run(
-        audit_store.record(_event(BOOKING_TENANT, action="membership_assigned", principal="platform-1"))
+        audit_store.record(
+            _event(BOOKING_TENANT, action="membership_assigned", principal="platform-1")
+        )
     )
     asyncio.run(
         audit_store.record(_event(BOOKING_TENANT, action="trace.read", principal="operator-9"))
@@ -442,7 +445,7 @@ def test_an_audit_row_renders_the_permission_that_authorized_it(
 def test_no_content_field_is_reachable_from_any_audit_projection(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """The projection is bounded fields only, even when the store holds content.
@@ -476,10 +479,17 @@ def test_no_content_field_is_reachable_from_any_audit_projection(
 
     assert response.status_code == 200
     body = response.text
-    for leaked in ("the assembled prompt", "the retrieved chunk", "the model answer", "dana@example.com"):
+    for leaked in (
+        "the assembled prompt",
+        "the retrieved chunk",
+        "the model answer",
+        "dana@example.com",
+    ):
         assert leaked not in body
 
-    row = next(event for event in response.json()["events"] if event["action"] == "staff_reply_sent")
+    row = next(
+        event for event in response.json()["events"] if event["action"] == "staff_reply_sent"
+    )
     assert set(row) == AUDIT_PROJECTION_KEYS
     assert row["request_id"] == "req-content"
     assert row["resource_type"] == "chat_session"
@@ -489,7 +499,7 @@ def test_no_content_field_is_reachable_from_any_audit_projection(
 def test_a_tenant_admin_reads_the_permissions_view_with_grantors(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     """Who granted a role and when comes from the trail, never invented."""
@@ -525,7 +535,7 @@ def test_a_tenant_admin_reads_the_permissions_view_with_grantors(
 def test_a_role_seeded_without_an_assignment_shows_no_invented_grantor(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
 
@@ -543,7 +553,7 @@ def test_a_role_seeded_without_an_assignment_shows_no_invented_grantor(
 def test_trace_read_grants_are_listed_as_a_separate_control(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
     platform = operator_headers(role="platform_admin", **{SUBJECT_HEADER: "platform-1"})
@@ -571,7 +581,7 @@ def test_trace_read_grants_are_listed_as_a_separate_control(
 def test_revoking_a_role_or_a_grant_is_visible_without_a_redeploy(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
     platform = operator_headers(role="platform_admin", **{SUBJECT_HEADER: "platform-1"})
@@ -594,16 +604,22 @@ def test_revoking_a_role_or_a_grant_is_visible_without_a_redeploy(
     assert "operator-42" in {role["subject"] for role in before["roles"]}
     assert "operator-9" in {grant["subject"] for grant in before["grants"]}
 
-    assert client.delete(
-        "/api/admin/memberships",
-        params={"tenant_id": BOOKING_TENANT, "subject": "operator-42"},
-        headers=platform | {CSRF_HEADER: csrf},
-    ).status_code == 204
-    assert client.delete(
-        "/api/admin/trace-access",
-        params={"tenant_id": BOOKING_TENANT, "subject": "operator-9"},
-        headers=platform | {CSRF_HEADER: csrf},
-    ).status_code == 204
+    assert (
+        client.delete(
+            "/api/admin/memberships",
+            params={"tenant_id": BOOKING_TENANT, "subject": "operator-42"},
+            headers=platform | {CSRF_HEADER: csrf},
+        ).status_code
+        == 204
+    )
+    assert (
+        client.delete(
+            "/api/admin/trace-access",
+            params={"tenant_id": BOOKING_TENANT, "subject": "operator-9"},
+            headers=platform | {CSRF_HEADER: csrf},
+        ).status_code
+        == 204
+    )
 
     after = client.get(
         "/api/admin/permissions", params={"tenant_id": BOOKING_TENANT}, headers=headers
@@ -616,7 +632,7 @@ def test_revoking_a_role_or_a_grant_is_visible_without_a_redeploy(
 def test_a_revoked_principals_later_attempt_appears_in_the_trail_as_a_refusal(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
 ) -> None:
     """The refusal is a record, not an absence.
 
@@ -654,7 +670,9 @@ def test_a_revoked_principals_later_attempt_appears_in_the_trail_as_a_refusal(
         headers=_admin_headers(operator_headers),
     )
     assert trail.status_code == 200
-    refusals = [event for event in trail.json()["events"] if event["action"] == "trace.read_refused"]
+    refusals = [
+        event for event in trail.json()["events"] if event["action"] == "trace.read_refused"
+    ]
     assert len(refusals) == 1
     assert refusals[0]["principal"] == TEST_OPERATOR_SUBJECT
     assert "refused" in refusals[0]["permission"]
@@ -663,7 +681,7 @@ def test_a_revoked_principals_later_attempt_appears_in_the_trail_as_a_refusal(
 def test_a_membership_revocation_is_a_trail_record(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
 ) -> None:
     """Revoking a role is an audited action, visible on the trail."""
     _make_tenant_admin(membership_store, BOOKING_TENANT)
@@ -695,7 +713,7 @@ def test_a_membership_revocation_is_a_trail_record(
 def test_the_permissions_read_is_itself_audited(
     client: TestClient,
     operator_headers: Callable[..., dict[str, str]],
-    membership_store: object,
+    membership_store: InMemoryMembershipStore,
     audit_store: InMemoryAuditStore,
 ) -> None:
     _make_tenant_admin(membership_store, BOOKING_TENANT)
