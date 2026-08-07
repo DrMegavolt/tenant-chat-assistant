@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from fastapi import APIRouter, status
@@ -235,7 +235,40 @@ async def _record_turn(
             raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else 0
         ),
         trace_schema_version=str(trace.get("schema_version", "1")),
+        source_generation_ids=_cited_generations(trace),
     )
+
+
+def _cited_generations(trace: Mapping[str, object]) -> tuple[uuid.UUID, ...]:
+    """The index generations a turn's retrieval cited, as UUIDs.
+
+    `FEAT-001` links an index-integrity finding to the turns grounded in the
+    affected generation through this content-free projection. Values are the
+    retrieval section's own generation identifiers — never re-derived from
+    chunk text — and invalid or absent identifiers are dropped, so a runtime
+    that omits them degrades to "no related turns", not a malformed record.
+    """
+    retrieval = trace.get("retrieval")
+    if not isinstance(retrieval, dict):
+        return ()
+    raw: list[object] = [retrieval.get("generation_id")]
+    for key in ("candidates", "evidence"):
+        entries = retrieval.get(key)
+        if isinstance(entries, list):
+            raw.extend(entry.get("generation_id") for entry in entries if isinstance(entry, dict))
+    seen: set[uuid.UUID] = set()
+    generations: list[uuid.UUID] = []
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        try:
+            generation = uuid.UUID(value)
+        except ValueError:
+            continue
+        if generation not in seen:
+            seen.add(generation)
+            generations.append(generation)
+    return tuple(generations)
 
 
 async def _enqueue_technical_failure(

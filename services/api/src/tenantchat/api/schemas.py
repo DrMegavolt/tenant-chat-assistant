@@ -13,7 +13,7 @@ rather than being silently dropped and treated as absent.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Literal
 
@@ -37,8 +37,12 @@ from tenantchat.api.store import (
     TurnRecordProjection,
 )
 from tenantchat.core.citations import Citation
-from tenantchat.core.indexing import IndexIntegrityFinding
-from tenantchat.core.knowledge import DocumentVersion, KnowledgeDocument
+from tenantchat.core.indexing import IndexGeneration, IndexIntegrityFinding
+from tenantchat.core.knowledge import (
+    DocumentVersion,
+    KnowledgeDocument,
+    KnowledgeSource,
+)
 from tenantchat.core.ports import AssistantTurn, BookingConfirmation
 from tenantchat.core.tenant import PublicTenantView
 
@@ -896,6 +900,7 @@ class TraceSearchResponse(BaseModel):
     diagnosis_statuses: list[str]
     turn_index: int
     trace_schema_version: str
+    source_generation_ids: list[str]
 
     @classmethod
     def of(cls, record: TurnRecord) -> TraceSearchResponse:
@@ -910,6 +915,7 @@ class TraceSearchResponse(BaseModel):
             diagnosis_statuses=list(record.diagnosis_statuses),
             turn_index=record.turn_index,
             trace_schema_version=record.trace_schema_version,
+            source_generation_ids=[str(item) for item in record.source_generation_ids],
         )
 
 
@@ -1191,6 +1197,271 @@ class QuarantineReviewResponse(BaseModel):
             state=version.state.value,
             safety_state=version.safety_state.value,
         )
+
+
+class KnowledgeSourceCreateRequest(_Request):
+    """Create a source under the caller's tenant.
+
+    Idempotent on ``(tenant, domain, display_name)``: re-running onboarding
+    returns the existing source rather than splitting one body of content.
+    """
+
+    tenant_id: str = _TENANT_ID
+    domain: str = Field(min_length=2, max_length=63, pattern=r"^[a-z][a-z0-9-]{1,62}$")
+    kind: Literal["upload", "url", "manual"] = "upload"
+    display_name: str = Field(min_length=1, max_length=200)
+
+
+class KnowledgeSourceResponse(BaseModel):
+    source_id: uuid.UUID
+    tenant_id: str
+    domain: str
+    kind: str
+    display_name: str
+    enabled: bool
+
+    @classmethod
+    def of(cls, source: KnowledgeSource) -> KnowledgeSourceResponse:
+        return cls(
+            source_id=source.source_id,
+            tenant_id=source.tenant_id,
+            domain=source.domain.value,
+            kind=source.kind.value,
+            display_name=source.display_name,
+            enabled=source.enabled,
+        )
+
+
+class KnowledgeVersionSummary(BaseModel):
+    """One version as the operator reads it, with its index generation merged.
+
+    Content-free by construction: identifiers, states, counts, and timestamps
+    only. The chunk count and embedding model come from the persisted
+    generation record (`RAG-002`), so an operator can tell "indexed, and here
+    is what the index says it holds" from "indexing never finished" without
+    touching infrastructure logs.
+    """
+
+    version_id: uuid.UUID
+    revision: int
+    state: str
+    indexing_state: str
+    safety_state: str
+    visibility: str
+    checksum: str
+    byte_size: int
+    media_type: str
+    approved_at: datetime | None
+    published_at: datetime | None
+    superseded_at: datetime | None
+    indexed_at: datetime | None
+    effective_at: datetime | None
+    expires_at: datetime | None
+    index_error_code: str | None
+    generation_status: str | None
+    chunk_count: int
+    embedding_model: str | None
+
+    @classmethod
+    def of(
+        cls,
+        version: DocumentVersion,
+        generation: IndexGeneration | None,
+    ) -> KnowledgeVersionSummary:
+        return cls(
+            version_id=version.version_id,
+            revision=version.revision,
+            state=version.state.value,
+            indexing_state=version.indexing_state.value,
+            safety_state=version.safety_state.value,
+            visibility=version.visibility.value,
+            checksum=version.checksum.value,
+            byte_size=version.byte_size,
+            media_type=version.media_type,
+            approved_at=version.approved_at,
+            published_at=version.published_at,
+            superseded_at=version.superseded_at,
+            indexed_at=version.indexed_at,
+            effective_at=version.effective_at,
+            expires_at=version.expires_at,
+            index_error_code=version.index_error_code,
+            generation_status=generation.status.value if generation is not None else None,
+            chunk_count=generation.chunk_count if generation is not None else 0,
+            embedding_model=generation.embedding_model if generation is not None else None,
+        )
+
+
+class KnowledgeDocumentSummary(BaseModel):
+    document_id: uuid.UUID
+    source_id: uuid.UUID
+    external_key: str
+    title: str
+    deleted: bool
+    versions: list[KnowledgeVersionSummary]
+
+    @classmethod
+    def of(
+        cls,
+        document: KnowledgeDocument,
+        generations: Mapping[uuid.UUID, IndexGeneration],
+    ) -> KnowledgeDocumentSummary:
+        return cls(
+            document_id=document.document_id,
+            source_id=document.source.source_id,
+            external_key=document.external_key,
+            title=document.title,
+            deleted=document.deleted,
+            versions=[
+                KnowledgeVersionSummary.of(version, generations.get(version.version_id))
+                for version in document.versions
+            ],
+        )
+
+
+class KnowledgeSourceSummary(BaseModel):
+    source_id: uuid.UUID
+    tenant_id: str
+    domain: str
+    kind: str
+    display_name: str
+    enabled: bool
+    documents: list[KnowledgeDocumentSummary]
+
+    @classmethod
+    def of(
+        cls,
+        source: KnowledgeSource,
+        documents: Sequence[KnowledgeDocument],
+        generations: Mapping[uuid.UUID, IndexGeneration],
+    ) -> KnowledgeSourceSummary:
+        return cls(
+            source_id=source.source_id,
+            tenant_id=source.tenant_id,
+            domain=source.domain.value,
+            kind=source.kind.value,
+            display_name=source.display_name,
+            enabled=source.enabled,
+            documents=[
+                KnowledgeDocumentSummary.of(document, generations) for document in documents
+            ],
+        )
+
+
+class KnowledgeResponse(BaseModel):
+    sources: list[KnowledgeSourceSummary]
+    limit: int
+
+
+class KnowledgeDocumentDetailResponse(BaseModel):
+    document: KnowledgeDocumentSummary
+
+    @classmethod
+    def of(
+        cls,
+        document: KnowledgeDocument,
+        generations: Mapping[uuid.UUID, IndexGeneration],
+    ) -> KnowledgeDocumentDetailResponse:
+        return cls(document=KnowledgeDocumentSummary.of(document, generations))
+
+
+class KnowledgeVersionActionRequest(_Request):
+    """Tenant binding for a version mutation; the URL names the version."""
+
+    tenant_id: str = _TENANT_ID
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+class KnowledgeSourceEnabledRequest(_Request):
+    tenant_id: str = _TENANT_ID
+    enabled: bool
+
+
+class KnowledgeDeleteRequest(_Request):
+    tenant_id: str = _TENANT_ID
+
+
+class KnowledgeVersionActionResponse(BaseModel):
+    """One version after a lifecycle mutation, plus the ingestion job a
+    publish or reindex enqueued (``None`` when the action enqueued none)."""
+
+    version: KnowledgeVersionSummary
+    job: AdminJob | None
+
+    @classmethod
+    def of(
+        cls,
+        document: KnowledgeDocument,
+        version: DocumentVersion,
+        generations: Mapping[uuid.UUID, IndexGeneration],
+        *,
+        job: JobRecord | None = None,
+    ) -> KnowledgeVersionActionResponse:
+        return cls(
+            version=KnowledgeVersionSummary.of(version, generations.get(version.version_id)),
+            job=AdminJob.of(job) if job is not None else None,
+        )
+
+
+class KnowledgePreviewBlock(BaseModel):
+    location: str
+    text: str
+
+
+class KnowledgePreviewResponse(BaseModel):
+    """A bounded preview of one version's parsed content.
+
+    The operator's own document, rendered as the pipeline will split it: the
+    parser that would run, the chunk count it would produce, and a bounded
+    window of its source blocks — never the raw file, which stays in object
+    storage.
+    """
+
+    version_id: uuid.UUID
+    document_id: uuid.UUID
+    title: str
+    media_type: str
+    parser_version: str
+    chunk_count: int
+    blocks: list[KnowledgePreviewBlock]
+
+
+class KnowledgeFindingSummary(BaseModel):
+    """One bounded index-integrity finding linked to the affected source
+    version, for the admin console.
+
+    The fault fields are exactly the detector's (content-free by construction);
+    the source metadata makes the console render which source version a fault
+    names without a second lookup.
+    """
+
+    code: str
+    tenant_id: str
+    document_id: uuid.UUID
+    version_id: uuid.UUID
+    generation_id: uuid.UUID | None
+    detected_at: datetime
+    detail: dict[str, object]
+    source_name: str | None = None
+    document_title: str | None = None
+    revision: int | None = None
+
+    @classmethod
+    def of(cls, finding: IndexIntegrityFinding) -> KnowledgeFindingSummary:
+        return cls(
+            code=finding.code.value,
+            tenant_id=finding.tenant_id,
+            document_id=finding.document_id,
+            version_id=finding.version_id,
+            generation_id=finding.generation_id,
+            detected_at=finding.detected_at,
+            detail=dict(finding.detail),
+        )
+
+
+class KnowledgeFindingsResponse(BaseModel):
+    findings: list[KnowledgeFindingSummary]
+    limit: int
 
 
 class FeedbackRequest(_Request):

@@ -236,6 +236,15 @@ class DocumentVersion:
     safety_state: SafetyState = SafetyState.CLEAR
     effective_at: datetime | None = None
     expires_at: datetime | None = None
+    # Operator-facing provenance, denormalized like the effective window: the
+    # approval and publication decisions a console displays without re-deriving
+    # them from history.
+    approved_at: datetime | None = None
+    approved_by: str | None = None
+    published_at: datetime | None = None
+    superseded_at: datetime | None = None
+    indexed_at: datetime | None = None
+    index_error_code: str | None = None
 
     def __post_init__(self) -> None:
         if self.revision < 1:

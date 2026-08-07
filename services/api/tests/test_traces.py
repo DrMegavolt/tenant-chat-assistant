@@ -422,6 +422,7 @@ def test_search_is_gated_by_the_dedicated_role_and_audited_with_its_filters(
         "since": None,
         "until": None,
         "limit": 10,
+        "generation_id": None,
         "matches": 1,
     }
 

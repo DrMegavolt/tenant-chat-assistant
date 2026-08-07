@@ -738,6 +738,7 @@ class TurnRecord:
     diagnosis_statuses: tuple[str, ...] = ()
     turn_index: int = 0
     trace_schema_version: str = "1"
+    source_generation_ids: tuple[uuid.UUID, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -985,6 +986,7 @@ class TurnRecordStore(Protocol):
         diagnosis_statuses: tuple[str, ...] = (),
         turn_index: int = 0,
         trace_schema_version: str = "1",
+        source_generation_ids: tuple[uuid.UUID, ...] = (),
     ) -> TurnRecord:
         """Append one turn record for a session.
 
@@ -1028,13 +1030,15 @@ class TurnRecordStore(Protocol):
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 50,
+        generation_ids: tuple[uuid.UUID, ...] = (),
     ) -> tuple[TurnRecord, ...]:
         """The tenant's records matching the content-free filters, newest first.
 
         This is the `OBS-004` attribution query surface: filter by the
         component-manifest hash (what build answered), by diagnosis causes or
-        statuses (what failed, and how certain the record is), by outcome, or
-        by recorded time — bounded to *limit*.
+        statuses (what failed, and how certain the record is), by outcome, by
+        recorded time, or by the index generations the retrieval cited —
+        bounded to *limit*.
         """
 
     async def projections_for_turn(
@@ -1273,6 +1277,7 @@ class InMemoryTurnRecordStore:
         diagnosis_statuses: tuple[str, ...] = (),
         turn_index: int = 0,
         trace_schema_version: str = "1",
+        source_generation_ids: tuple[uuid.UUID, ...] = (),
     ) -> TurnRecord:
         record = TurnRecord(
             turn_id=uuid.uuid4(),
@@ -1287,6 +1292,7 @@ class InMemoryTurnRecordStore:
             diagnosis_statuses=tuple(diagnosis_statuses),
             turn_index=turn_index,
             trace_schema_version=trace_schema_version,
+            source_generation_ids=tuple(source_generation_ids),
         )
         async with self._lock:
             self._records[record.turn_id] = record
@@ -1336,9 +1342,11 @@ class InMemoryTurnRecordStore:
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 50,
+        generation_ids: tuple[uuid.UUID, ...] = (),
     ) -> tuple[TurnRecord, ...]:
         wanted_causes = set(causes)
         wanted_statuses = set(statuses)
+        wanted_generations = set(generation_ids)
         async with self._lock:
             records = [
                 replace(record, content=dict(record.content))
@@ -1352,6 +1360,10 @@ class InMemoryTurnRecordStore:
                 and (outcome is None or record.outcome == outcome)
                 and (since is None or record.recorded_at >= since)
                 and (until is None or record.recorded_at <= until)
+                and (
+                    not wanted_generations
+                    or bool(set(record.source_generation_ids) & wanted_generations)
+                )
             ]
         records.sort(key=lambda record: record.recorded_at, reverse=True)
         return tuple(records[:limit])
@@ -2157,6 +2169,74 @@ class KnowledgeStore(Protocol):
         """The tenant's versions in one safety state, for the review queue."""
         ...
 
+    async def list_sources(self, tenant_id: str) -> tuple[KnowledgeSource, ...]:
+        """Every source one tenant owns, for the admin console."""
+        ...
+
+    async def load_source(self, tenant_id: str, source_id: uuid.UUID) -> KnowledgeSource:
+        """One source, tenant-qualified.
+
+        Raises:
+            NotFoundError: the source is absent or belongs to another tenant.
+        """
+        ...
+
+    async def documents_for_source(
+        self, tenant_id: str, source_id: uuid.UUID
+    ) -> tuple[KnowledgeDocument, ...]:
+        """Every document under one source, with full revision history."""
+        ...
+
+    # The operator lifecycle surface `FEAT-001` drives: every write goes
+    # through the aggregate's plan methods, so the rules stay in the domain.
+    async def register_source(
+        self,
+        tenant_id: str,
+        *,
+        domain: KnowledgeDomain,
+        kind: SourceKind,
+        display_name: str,
+        external_reference: str | None = None,
+    ) -> KnowledgeSource:
+        """Create a source, or return the one already registered under the name."""
+        ...
+
+    async def set_source_enabled(
+        self, tenant_id: str, source_id: uuid.UUID, *, enabled: bool
+    ) -> KnowledgeSource:
+        """Withdraw or restore every document under a source at once."""
+        ...
+
+    async def approve(
+        self, tenant_id: str, version_id: uuid.UUID, *, approved_by: str, at: datetime
+    ) -> KnowledgeDocument:
+        """Record that a reviewer accepted a draft."""
+        ...
+
+    async def publish(
+        self,
+        tenant_id: str,
+        version_id: uuid.UUID,
+        *,
+        at: datetime,
+        effective_at: datetime | None = None,
+        expires_at: datetime | None = None,
+    ) -> KnowledgeDocument:
+        """Make one approved version current, superseding whichever was."""
+        ...
+
+    async def expire(
+        self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        """End the current version's effective window."""
+        ...
+
+    async def delete_document(
+        self, tenant_id: str, document_id: uuid.UUID, *, at: datetime
+    ) -> KnowledgeDocument:
+        """Withdraw a document and every revision of it (a tombstone)."""
+        ...
+
 
 class InMemoryKnowledgeStore:
     """Hermetic fake of the knowledge system of record (RAG-001).
@@ -2297,9 +2377,17 @@ class InMemoryKnowledgeStore:
         self, tenant_id: str, version_id: uuid.UUID, *, approved_by: str, at: datetime
     ) -> KnowledgeDocument:
         document = self._document_for_version(tenant_id, version_id)
-        document.plan_approval(version_id, approved_by=approved_by, at=at)
+        plan = document.plan_approval(version_id, approved_by=approved_by, at=at)
         version = document.version(version_id)
-        updated = self._apply(document, replace(version, state=VersionState.APPROVED))
+        updated = self._apply(
+            document,
+            replace(
+                version,
+                state=VersionState.APPROVED,
+                approved_at=plan.approved_at,
+                approved_by=plan.approved_by,
+            ),
+        )
         self._documents[document.document_id] = updated
         return updated
 
@@ -2319,7 +2407,9 @@ class InMemoryKnowledgeStore:
         versions: list[DocumentVersion] = []
         for item in document.versions:
             if item.version_id == plan.supersedes_version_id:
-                versions.append(replace(item, state=VersionState.SUPERSEDED))
+                versions.append(
+                    replace(item, state=VersionState.SUPERSEDED, superseded_at=plan.published_at)
+                )
             elif item.version_id == plan.version_id:
                 versions.append(
                     replace(
@@ -2327,6 +2417,8 @@ class InMemoryKnowledgeStore:
                         state=VersionState.PUBLISHED,
                         effective_at=plan.effective_at,
                         expires_at=plan.expires_at,
+                        published_at=plan.published_at,
+                        superseded_at=None,
                     )
                 )
             else:
@@ -2353,12 +2445,16 @@ class InMemoryKnowledgeStore:
     async def record_indexed(
         self, tenant_id: str, version_id: uuid.UUID, *, at: datetime
     ) -> KnowledgeDocument:
-        return await self._record_indexing(tenant_id, version_id, state=IndexingState.INDEXED)
+        return await self._record_indexing(
+            tenant_id, version_id, state=IndexingState.INDEXED, indexed_at=at
+        )
 
     async def record_index_failure(
         self, tenant_id: str, version_id: uuid.UUID, *, error_code: str
     ) -> KnowledgeDocument:
-        return await self._record_indexing(tenant_id, version_id, state=IndexingState.FAILED)
+        return await self._record_indexing(
+            tenant_id, version_id, state=IndexingState.FAILED, error_code=error_code
+        )
 
     async def _record_indexing(
         self,
@@ -2366,11 +2462,21 @@ class InMemoryKnowledgeStore:
         version_id: uuid.UUID,
         *,
         state: IndexingState,
+        indexed_at: datetime | None = None,
+        error_code: str | None = None,
     ) -> KnowledgeDocument:
         document = self._document_for_version(tenant_id, version_id)
         document.version_for_indexing(version_id)
         version = document.version(version_id)
-        updated = self._apply(document, replace(version, indexing_state=state))
+        updated = self._apply(
+            document,
+            replace(
+                version,
+                indexing_state=state,
+                indexed_at=indexed_at,
+                index_error_code=error_code,
+            ),
+        )
         self._documents[document.document_id] = updated
         return updated
 
@@ -2444,15 +2550,38 @@ class InMemoryKnowledgeStore:
         return updated
 
     async def versions_in_safety_state(
-        self, tenant_id: str, state: SafetyState
+        self, tenant_id: str, safety_state: SafetyState
     ) -> tuple[DocumentVersion, ...]:
         versions: list[DocumentVersion] = []
         for document in self._documents.values():
             if document.tenant_id != tenant_id:
                 continue
-            versions.extend(item for item in document.versions if item.safety_state is state)
+            versions.extend(item for item in document.versions if item.safety_state is safety_state)
         versions.sort(key=lambda item: (item.document_id, item.revision))
         return tuple(versions)
+
+    async def list_sources(self, tenant_id: str) -> tuple[KnowledgeSource, ...]:
+        sources: list[KnowledgeSource] = []
+        for (owner, _source_id), source in self._sources.items():
+            if owner == tenant_id:
+                sources.append(source)
+        sources.sort(key=lambda source: (source.domain.value, source.display_name))
+        return tuple(sources)
+
+    async def load_source(self, tenant_id: str, source_id: uuid.UUID) -> KnowledgeSource:
+        return self._source(tenant_id, source_id)
+
+    async def documents_for_source(
+        self, tenant_id: str, source_id: uuid.UUID
+    ) -> tuple[KnowledgeDocument, ...]:
+        source = self._source(tenant_id, source_id)
+        documents = [
+            document
+            for document in self._documents.values()
+            if document.tenant_id == tenant_id and document.source.source_id == source.source_id
+        ]
+        documents.sort(key=lambda document: document.external_key)
+        return tuple(documents)
 
 
 # ---------------------------------------------------------------------------
