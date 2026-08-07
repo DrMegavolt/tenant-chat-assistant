@@ -60,6 +60,15 @@ def tool_contract_manifest() -> dict[str, object] | None:
     }
 
 
+def query_planner_manifest() -> dict[str, object]:
+    """The conversation-aware query planner version, if the domain is importable."""
+    try:
+        from tenantchat.core.planning import PLANNER_VERSION
+    except ImportError:
+        return {"version": None}
+    return {"version": PLANNER_VERSION}
+
+
 def component_manifest(
     *,
     retriever: RetrieverConfig,
@@ -94,6 +103,7 @@ def component_manifest(
             "k": retriever.k,
             "parameters": dict(retriever.parameters),
         },
+        "query_planner": query_planner_manifest(),
         "parser_chunker": {"method": "fixture-authoring", "version": parser_chunker},
         "index_generation": {"method": "fixture-index", "chunks": corpus_chunks},
         "embedding": embedding_model,

@@ -74,7 +74,12 @@ def _run_pair(
     reports: dict[str, EvaluationReport] = {}
     for side, name in (("baseline", baseline), ("candidate", candidate)):
         entry = build_retriever_entry(
-            name, corpus, k, cases=spec.cases, abstain_threshold_value=spec.abstain_threshold
+            name,
+            corpus,
+            k,
+            cases=spec.cases,
+            abstain_threshold_value=spec.abstain_threshold,
+            vocabulary=spec.vocabulary,
         )
         reports[side] = asyncio.run(
             run_evaluation(
@@ -90,6 +95,7 @@ def _run_pair(
                 reranker=entry.reranker,
                 parser_chunker=spec.parser_chunker,
                 tenant_policy=spec.tenant_policy,
+                vocabulary=spec.vocabulary,
             )
         )
     comparison = compare_reports(

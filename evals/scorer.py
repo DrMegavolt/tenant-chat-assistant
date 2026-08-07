@@ -24,7 +24,7 @@ dimension that no case exercises is not scored and cannot fail the run.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -92,6 +92,8 @@ class CaseResult:
     abstain_correct: bool
     grounding_correct: bool | None
     cross_tenant_leaks: tuple[str, ...]
+    resolved_query: str | None = None
+    plan_mode: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         row: dict[str, object] = {
@@ -107,6 +109,10 @@ class CaseResult:
         }
         if self.case.prior_turns:
             row["prior_turns"] = list(self.case.prior_turns)
+        if self.resolved_query is not None:
+            row["resolved_query"] = self.resolved_query
+        if self.plan_mode is not None:
+            row["plan_mode"] = self.plan_mode
         for field in ("review_id", "trace_id", "turn_id"):
             value = getattr(self.case, field)
             if value is not None:
@@ -188,6 +194,8 @@ def score_cases(
     min_grounding: float = _GROUNDING_THRESHOLD,
     parser_chunker: str | None = None,
     tenant_policy: str | None = None,
+    resolved_queries: Mapping[str, str] | None = None,
+    plan_modes: Mapping[str, str] | None = None,
 ) -> EvaluationReport:
     """Score one run and decide whether it meets the configured thresholds."""
     case_results: list[CaseResult] = []
@@ -219,6 +227,8 @@ def score_cases(
                 abstain_correct=abstain_decision == case.expect_abstain,
                 grounding_correct=_grounding_correct(corpus, case),
                 cross_tenant_leaks=leaks,
+                resolved_query=None if resolved_queries is None else resolved_queries.get(case.id),
+                plan_mode=None if plan_modes is None else plan_modes.get(case.id),
             )
         )
     recalls = [result.recall for result in case_results if result.recall is not None]

@@ -108,21 +108,34 @@ class TestPIIGate(unittest.TestCase):
 
 
 class TestMultiTurnSlice(unittest.TestCase):
-    """The turn-pair slice the single-turn runner can score (RAG-006 is not
-    built: the resolved question is scored, the prior turns are documented)."""
+    """The turn-pair slice the planner resolves before scoring (RAG-006): the
+    raw follow-up is the case query, the prior turns are real input, and the
+    per-tenant vocabulary bounds what history may carry into the query."""
 
-    def test_multi_turn_cases_carry_documented_prior_turns(self) -> None:
-        spec = load_dataset("multi-turn-v1")
-        self.assertTrue(any(case.prior_turns for case in spec.cases))
+    def test_multi_turn_cases_carry_real_prior_turns_and_a_vocabulary(self) -> None:
+        spec = load_dataset("multi-turn-v2")
+        self.assertTrue(all(case.prior_turns for case in spec.cases))
+        self.assertTrue({"apex", "clearview"} <= set(spec.vocabulary))
         for case in spec.cases:
-            if case.prior_turns:
-                self.assertEqual(case.scenario, "multi_turn", case.id)
+            self.assertTrue(case.prior_turns, case.id)
+            self.assertIn(
+                case.scenario,
+                {"pronoun", "correction", "topic_shift", "malicious_prior"},
+                case.id,
+            )
 
     def test_multi_turn_dataset_runs_through_the_shared_runner(self) -> None:
-        spec, corpus = resolve_dataset("multi-turn-v1", 5)
-        self.assertEqual(len(spec.cases), 12)
+        spec, corpus = resolve_dataset("multi-turn-v2", 5)
+        self.assertEqual(len(spec.cases), 13)
         self.assertEqual(
             validate_against_corpus(spec, [chunk.chunk_id for chunk in corpus.chunks]), ()
+        )
+
+    def test_scenarios_cover_the_four_required_kinds(self) -> None:
+        spec = load_dataset("multi-turn-v2")
+        self.assertTrue(
+            {"pronoun", "correction", "topic_shift", "malicious_prior"}
+            <= {case.scenario for case in spec.cases}
         )
 
 

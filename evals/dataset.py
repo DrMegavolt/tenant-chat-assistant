@@ -8,10 +8,12 @@ Cases come inline or from a ``cases_file`` (the golden v1 dataset *is* the
 diverge); the corpus comes from an optional ``corpus_file`` or the shared
 fixture corpus.
 
-Multi-turn behavior (`RAG-006` is not built): a case carries ``prior_turns``
-as documentation and a ``query`` that is the resolved question the current
-single-turn runner scores — the exact input a future multi-turn assembler
-would produce. The extension point is the assembler, not the scorer.
+Multi-turn behavior (`RAG-006`): a case carries ``prior_turns`` and a ``query``
+that is the *raw* follow-up. The runner resolves the pair into a standalone
+retrieval query with ``tenantchat.core.planning.plan_query`` before scoring,
+using the dataset's per-tenant ``vocabulary`` — the server-approved known terms
+the planner may carry out of history. A dataset with no vocabulary is scored
+single-turn, as before.
 
 The PRIV-002 gate is enforced here, at load: every free-text case field
 (``query``, ``scenario``, ``answer``, ``prior_turns``) is scanned with the
@@ -27,6 +29,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 from evals.scorer import EvalCase
@@ -65,6 +68,7 @@ class DatasetSpec:
     corpus_file: str | None
     parser_chunker: str | None
     tenant_policy: str | None
+    vocabulary: dict[str, tuple[str, ...]] = dataclass_field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -142,7 +146,27 @@ def load_dataset(name: str) -> DatasetSpec:
         tenant_policy=None
         if manifest.get("tenant_policy") is None
         else str(manifest["tenant_policy"]),
+        vocabulary=_vocabulary(manifest.get("vocabulary")),
     )
+
+
+def _vocabulary(raw: object) -> dict[str, tuple[str, ...]]:
+    """The per-tenant known terms a multi-turn dataset may carry over.
+
+    A vocabulary is optional and must be a mapping of tenant id to a list of
+    terms; anything else fails the load, because a malformed vocabulary would
+    silently change which history the planner is allowed to use.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise DatasetError("vocabulary must be a per-tenant mapping")
+    parsed: dict[str, tuple[str, ...]] = {}
+    for tenant, terms in dict(raw).items():
+        if not isinstance(terms, list | tuple) or not all(isinstance(term, str) for term in terms):
+            raise DatasetError(f"vocabulary for tenant {tenant!r} must be a list of terms")
+        parsed[str(tenant)] = tuple(str(term) for term in terms)
+    return parsed
 
 
 def validate_against_corpus(dataset: DatasetSpec, known_chunks: Sequence[str]) -> tuple[str, ...]:
