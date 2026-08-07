@@ -316,7 +316,7 @@ of them are the difference between a claim being tested and a claim being true.
 - [x] `RAG-010` — Evidence boundary escaping and fence-aware content safety — `P0` — _defect in `RAG-007`_
 - [x] `OBS-005` — Turn outcome fidelity and diagnosis completeness — `Done`
 - [x] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
-- [ ] `QA-006` — Gate-claim and backlog accuracy — `P1`
+- [x] `QA-006` — Gate-claim and backlog accuracy — `P1`
 - [ ] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
 - [ ] `FEAT-016` — Authorization and audit console — `P1`
 
@@ -2633,7 +2633,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### QA-006 — Gate-claim and backlog accuracy
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Quality/process`
 - Depends on: none
@@ -2674,7 +2674,14 @@ promotion pipeline — which requires a cluster that runs for real.
 - Verification:
   - `make check`. Add a deliberate checkbox mismatch and a deliberate coverage
     drop locally and confirm each fails, then revert.
-- Completion notes: _Pending._
+- Completion notes: Added `tests/test_backlog_accuracy.py`, which asserts the
+  index checkbox state and the `###` detail `Status` agree for every backlog
+  task (checked `[x]` exactly when the detail reads `Status: Done`), and that
+  every indexed task has a detail entry. No index/detail drift remained after
+  the `2026-08-06` and `RAG-010`/`RAG-011` corrections, so no task state needed
+  fixing; a deliberately introduced mismatch failed the new test as expected.
+  A grep of `end-to-end` in test docstrings found no test claiming full-pipeline
+  coverage while seeding its own records.
 
 ## Feature and workflow task details
 
