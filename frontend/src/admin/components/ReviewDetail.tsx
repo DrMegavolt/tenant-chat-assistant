@@ -178,7 +178,8 @@ export function ReviewDetail({ api, tenantId, summary, onChanged }: ReviewDetail
     diagnosisCauses: review.diagnosisCauses,
     diagnosisStatuses: review.diagnosisStatuses,
     turnIndex: review.turnIndex,
-    traceSchemaVersion: "1"
+    traceSchemaVersion: "1",
+    sourceGenerationIds: []
   };
 
   const reviewRows = detail?.diagnoses ?? [];

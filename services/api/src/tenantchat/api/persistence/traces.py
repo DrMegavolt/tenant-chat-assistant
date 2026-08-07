@@ -44,6 +44,7 @@ _TRACE_COLUMNS = (
     "diagnosis_statuses",
     "turn_index",
     "trace_schema_version",
+    "source_generation_ids",
 )
 
 # A module constant, never a format site: every read selects the same columns.
@@ -65,6 +66,7 @@ def _turn_record(row: object) -> TurnRecord:
         diagnosis_statuses=tuple(mapping["diagnosis_statuses"]),
         turn_index=mapping["turn_index"],
         trace_schema_version=mapping["trace_schema_version"],
+        source_generation_ids=tuple(mapping["source_generation_ids"]),
     )
 
 
@@ -110,6 +112,7 @@ class PostgresTurnRecordStore:
         diagnosis_statuses: tuple[str, ...] = (),
         turn_index: int = 0,
         trace_schema_version: str = "1",
+        source_generation_ids: tuple[uuid.UUID, ...] = (),
     ) -> TurnRecord:
         try:
             async with self._engine.begin() as connection:
@@ -122,14 +125,16 @@ class PostgresTurnRecordStore:
                         INSERT INTO turn_records
                             (id, tenant_id, chat_session_id, trace_id, content, recorded_at,
                              outcome, component_manifest_hash, diagnosis_causes,
-                             diagnosis_statuses, turn_index, trace_schema_version)
+                             diagnosis_statuses, turn_index, trace_schema_version,
+                             source_generation_ids)
                         VALUES
                             (:id, :tenant_id, :session_id, :trace_id, :content, :recorded_at,
                              :outcome, :manifest_hash, :diagnosis_causes, :diagnosis_statuses,
-                             :turn_index, :schema_version)
+                             :turn_index, :schema_version, :source_generation_ids)
                         RETURNING id, tenant_id, chat_session_id, trace_id, content, recorded_at,
                                   outcome, component_manifest_hash, diagnosis_causes,
-                                  diagnosis_statuses, turn_index, trace_schema_version
+                                  diagnosis_statuses, turn_index, trace_schema_version,
+                                  source_generation_ids
                         """
                     ).bindparams(bindparam("content", type_=JSONB)),
                     {
@@ -145,6 +150,7 @@ class PostgresTurnRecordStore:
                         "diagnosis_statuses": list(diagnosis_statuses),
                         "turn_index": turn_index,
                         "schema_version": trace_schema_version,
+                        "source_generation_ids": list(source_generation_ids),
                     },
                 )
                 return _turn_record(result.one())
@@ -208,6 +214,7 @@ class PostgresTurnRecordStore:
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 50,
+        generation_ids: tuple[uuid.UUID, ...] = (),
     ) -> tuple[TurnRecord, ...]:
         clauses = ["tenant_id = :tenant_id"]
         params: dict[str, object] = {"tenant_id": tenant_id}
@@ -229,6 +236,9 @@ class PostgresTurnRecordStore:
         if until is not None:
             clauses.append("recorded_at <= :until")
             params["until"] = until
+        if generation_ids:
+            clauses.append("source_generation_ids @> :generation_ids")
+            params["generation_ids"] = list(generation_ids)
         bounded = min(limit, _MAX_TRACE_SEARCH_LIMIT)
         # The WHERE clause is built from a fixed clause list and bound
         # parameters only; no caller text ever reaches the statement.

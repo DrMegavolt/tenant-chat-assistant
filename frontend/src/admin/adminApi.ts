@@ -17,6 +17,13 @@ import type {
   TraceSearchFilters,
   TraceSearchRecord
 } from "src/admin/traceTypes";
+import type {
+  KnowledgeDocument,
+  KnowledgeFinding,
+  KnowledgePreview,
+  KnowledgeSource,
+  KnowledgeVersion
+} from "src/admin/knowledgeTypes";
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -109,6 +116,7 @@ export class AdminApi {
     if (filters.cause) params.set("cause", filters.cause);
     if (filters.diagnosisStatus) params.set("diagnosis_status", filters.diagnosisStatus);
     if (filters.manifestHash) params.set("manifest_hash", filters.manifestHash);
+    if (filters.generationId) params.set("generation_id", filters.generationId);
     const response = await this.request(`/api/admin/traces?${params}`);
     if (!response.ok) throw new Error(`Trace search failed with ${response.status}`);
     const payload = (await response.json()) as { records?: unknown[] };
@@ -254,6 +262,196 @@ export class AdminApi {
     return payload.case_id ?? "";
   }
 
+  /** The FEAT-001 knowledge tree: sources, documents, and versions. */
+  async knowledge(tenantId: string): Promise<KnowledgeSource[]> {
+    const response = await this.request(
+      `/api/admin/knowledge?tenant_id=${encodeURIComponent(tenantId)}&limit=200`
+    );
+    if (!response.ok) throw new Error(`Knowledge list failed with ${response.status}`);
+    const payload = (await response.json()) as { sources?: unknown[] };
+    return (payload.sources ?? []).map((wire) => knowledgeSourceFromWire(obj(wire)));
+  }
+
+  /** Create a source under the caller's tenant (idempotent per name). */
+  async createKnowledgeSource(
+    tenantId: string,
+    body: { domain: string; kind: string; displayName: string }
+  ): Promise<KnowledgeSource> {
+    const response = await this.request(`/api/admin/knowledge/sources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
+      body: JSON.stringify({
+        tenant_id: tenantId,
+        domain: body.domain,
+        kind: body.kind,
+        display_name: body.displayName
+      })
+    });
+    if (!response.ok) throw new Error(`Creating the source failed with ${response.status}`);
+    return knowledgeSourceFromWire(obj(await response.json()));
+  }
+
+  /** Withdraw or restore every document under a source at once. */
+  async setSourceEnabled(
+    sourceId: string,
+    tenantId: string,
+    enabled: boolean
+  ): Promise<KnowledgeSource> {
+    const response = await this.request(
+      `/api/admin/knowledge/sources/${encodeURIComponent(sourceId)}/enabled`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
+        body: JSON.stringify({ tenant_id: tenantId, enabled })
+      }
+    );
+    if (!response.ok) throw new Error(`Updating the source failed with ${response.status}`);
+    return knowledgeSourceFromWire(obj(await response.json()));
+  }
+
+  /** Stage a new document revision under one source. */
+  async uploadKnowledge(
+    tenantId: string,
+    sourceId: string,
+    file: File,
+    body: { externalKey: string; title: string }
+  ): Promise<{ versionId: string; documentId: string; revision: number }> {
+    const form = new FormData();
+    form.set("tenant_id", tenantId);
+    form.set("source_id", sourceId);
+    form.set("external_key", body.externalKey);
+    form.set("title", body.title);
+    form.set("file", file, file.name);
+    const response = await this.request("/api/admin/knowledge/uploads", {
+      method: "POST",
+      headers: { "X-CSRF-Token": await this.csrf() },
+      body: form
+    });
+    if (!response.ok) throw new Error(`Uploading the document failed with ${response.status}`);
+    const payload = (await response.json()) as {
+      version_id?: string;
+      document_id?: string;
+      revision?: number;
+    };
+    return {
+      versionId: payload.version_id ?? "",
+      documentId: payload.document_id ?? "",
+      revision: payload.revision ?? 0
+    };
+  }
+
+  /** Parse one version's stored bytes into a bounded preview. */
+  async previewVersion(versionId: string, tenantId: string): Promise<KnowledgePreview | null> {
+    const response = await this.request(
+      `/api/admin/knowledge/versions/${encodeURIComponent(versionId)}/preview?tenant_id=${encodeURIComponent(tenantId)}`
+    );
+    if (!response.ok) return null;
+    const payload = (await response.json()) as Record<string, unknown>;
+    return {
+      versionId: str(payload.version_id),
+      documentId: str(payload.document_id),
+      title: str(payload.title),
+      mediaType: str(payload.media_type),
+      parserVersion: str(payload.parser_version),
+      chunkCount: typeof payload.chunk_count === "number" ? payload.chunk_count : 0,
+      blocks: list(payload.blocks).map((block) => ({
+        location: str(block.location),
+        text: str(block.text)
+      }))
+    };
+  }
+
+  /** Mark a draft reviewed and publishable. */
+  async approveVersion(versionId: string, tenantId: string): Promise<KnowledgeVersion> {
+    return this.versionMutation(versionId, tenantId, "approve");
+  }
+
+  /** Make one approved version current and enqueue its ingestion job. */
+  async publishVersion(
+    versionId: string,
+    tenantId: string
+  ): Promise<{ version: KnowledgeVersion; jobId: string | null }> {
+    const mutation = await this.versionMutationResponse(versionId, tenantId, "publish");
+    return { version: mutation.version, jobId: strOrNull(mutation.job?.job_id) };
+  }
+
+  /** Re-run a version's ingestion job. */
+  async reindexVersion(versionId: string, tenantId: string): Promise<KnowledgeVersion> {
+    return this.versionMutation(versionId, tenantId, "reindex");
+  }
+
+  /** End the current version's effective window now. */
+  async expireVersion(versionId: string, tenantId: string): Promise<KnowledgeVersion> {
+    return this.versionMutation(versionId, tenantId, "expire");
+  }
+
+  /** Withdraw a document and every revision of it (a tombstone). */
+  async deleteDocument(documentId: string, tenantId: string): Promise<void> {
+    const response = await this.request(
+      `/api/admin/knowledge/documents/${encodeURIComponent(documentId)}`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
+        body: JSON.stringify({ tenant_id: tenantId })
+      }
+    );
+    if (!response.ok) throw new Error(`Deleting the document failed with ${response.status}`);
+  }
+
+  /** The tenant's open index-integrity findings, linked to source versions. */
+  async knowledgeFindings(tenantId: string): Promise<KnowledgeFinding[]> {
+    const response = await this.request(
+      `/api/admin/knowledge/index-findings?tenant_id=${encodeURIComponent(tenantId)}&limit=200`
+    );
+    if (!response.ok) throw new Error(`Findings list failed with ${response.status}`);
+    const payload = (await response.json()) as { findings?: unknown[] };
+    return (payload.findings ?? []).map((wire) => knowledgeFindingFromWire(obj(wire)));
+  }
+
+  /** Run the detector and persist the tenant's current findings. */
+  async runIntegrityCheck(tenantId: string): Promise<KnowledgeFinding[]> {
+    const response = await this.request(
+      `/api/admin/knowledge/index-integrity-check?tenant_id=${encodeURIComponent(tenantId)}`,
+      { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
+    );
+    if (!response.ok) throw new Error(`The integrity check failed with ${response.status}`);
+    const payload = (await response.json()) as { findings?: unknown[] };
+    return (payload.findings ?? []).map((wire) => knowledgeFindingFromWire(obj(wire)));
+  }
+
+  private async versionMutation(
+    versionId: string,
+    tenantId: string,
+    action: "approve" | "reindex" | "expire"
+  ): Promise<KnowledgeVersion> {
+    const mutation = await this.versionMutationResponse(versionId, tenantId, action);
+    return mutation.version;
+  }
+
+  private async versionMutationResponse(
+    versionId: string,
+    tenantId: string,
+    action: "approve" | "publish" | "reindex" | "expire"
+  ): Promise<{ version: KnowledgeVersion; job: { job_id?: string } | null }> {
+    const response = await this.request(
+      `/api/admin/knowledge/versions/${encodeURIComponent(versionId)}/${action}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": await this.csrf() },
+        body: JSON.stringify({ tenant_id: tenantId })
+      }
+    );
+    if (!response.ok) throw new Error(`${action} failed with ${response.status}`);
+    const payload = (await response.json()) as {
+      version?: unknown;
+      job?: { job_id?: string } | null;
+    };
+    return {
+      version: knowledgeVersionFromWire(obj(payload.version)),
+      job: payload.job ?? null
+    };
+  }
+
   private async csrf(): Promise<string> {
     if (this.csrfToken) return this.csrfToken;
     const response = await this.request("/api/admin/csrf-token");
@@ -285,7 +483,10 @@ function searchRecordFromWire(wire: Record<string, unknown>): TraceSearchRecord 
       ? wire.diagnosis_statuses.map(str)
       : [],
     turnIndex: typeof wire.turn_index === "number" ? wire.turn_index : 0,
-    traceSchemaVersion: str(wire.trace_schema_version)
+    traceSchemaVersion: str(wire.trace_schema_version),
+    sourceGenerationIds: Array.isArray(wire.source_generation_ids)
+      ? wire.source_generation_ids.map(str)
+      : []
   };
 }
 
@@ -568,6 +769,68 @@ function reviewDetailFromWire(wire: Record<string, unknown>): ReviewDetail {
     diagnoses: Array.isArray(wire.diagnoses)
       ? wire.diagnoses.map((row) => reviewDiagnosisFromWire(obj(row)))
       : []
+  };
+}
+
+function knowledgeSourceFromWire(wire: Record<string, unknown>): KnowledgeSource {
+  return {
+    sourceId: str(wire.source_id),
+    tenantId: str(wire.tenant_id),
+    domain: str(wire.domain),
+    kind: str(wire.kind),
+    displayName: str(wire.display_name),
+    enabled: wire.enabled === true,
+    documents: list(wire.documents).map((item) => knowledgeDocumentFromWire(item))
+  };
+}
+
+function knowledgeDocumentFromWire(wire: Record<string, unknown>): KnowledgeDocument {
+  return {
+    documentId: str(wire.document_id),
+    sourceId: str(wire.source_id),
+    externalKey: str(wire.external_key),
+    title: str(wire.title),
+    deleted: wire.deleted === true,
+    versions: list(wire.versions).map((item) => knowledgeVersionFromWire(item))
+  };
+}
+
+function knowledgeVersionFromWire(wire: Record<string, unknown>): KnowledgeVersion {
+  return {
+    versionId: str(wire.version_id),
+    revision: typeof wire.revision === "number" ? wire.revision : 0,
+    state: str(wire.state),
+    indexingState: str(wire.indexing_state),
+    safetyState: str(wire.safety_state),
+    visibility: str(wire.visibility),
+    checksum: str(wire.checksum),
+    byteSize: typeof wire.byte_size === "number" ? wire.byte_size : 0,
+    mediaType: str(wire.media_type),
+    approvedAt: strOrNull(wire.approved_at),
+    publishedAt: strOrNull(wire.published_at),
+    supersededAt: strOrNull(wire.superseded_at),
+    indexedAt: strOrNull(wire.indexed_at),
+    effectiveAt: strOrNull(wire.effective_at),
+    expiresAt: strOrNull(wire.expires_at),
+    indexErrorCode: strOrNull(wire.index_error_code),
+    generationStatus: strOrNull(wire.generation_status),
+    chunkCount: typeof wire.chunk_count === "number" ? wire.chunk_count : 0,
+    embeddingModel: strOrNull(wire.embedding_model)
+  };
+}
+
+function knowledgeFindingFromWire(wire: Record<string, unknown>): KnowledgeFinding {
+  return {
+    code: str(wire.code),
+    tenantId: str(wire.tenant_id),
+    documentId: str(wire.document_id),
+    versionId: str(wire.version_id),
+    generationId: strOrNull(wire.generation_id),
+    detectedAt: str(wire.detected_at),
+    detail: obj(wire.detail),
+    sourceName: strOrNull(wire.source_name),
+    documentTitle: strOrNull(wire.document_title),
+    revision: typeof wire.revision === "number" ? wire.revision : null
   };
 }
 

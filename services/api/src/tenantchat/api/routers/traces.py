@@ -116,6 +116,14 @@ RecordedUntilQuery = Annotated[
     ),
 ]
 TraceLimitQuery = Annotated[int, Query(ge=1, le=200)]
+GenerationIdQuery = Annotated[
+    uuid.UUID | None,
+    Query(
+        description="An ingestion index generation; only turns whose retrieval "
+        "cited it match. `FEAT-001` links index-integrity findings to the turns "
+        "grounded in the affected generation through this filter.",
+    ),
+]
 
 
 def _authorized_grants(request: Request) -> AdminIdentity:
@@ -343,16 +351,18 @@ async def search_turn_records(
     since: RecordedSinceQuery = None,
     until: RecordedUntilQuery = None,
     limit: TraceLimitQuery = 50,
+    generation_id: GenerationIdQuery = None,
 ) -> TraceSearchResponsePage:
     """The `OBS-004` attribution surface: records matching content-free filters.
 
     Filters are the content-free projection only — component-manifest hash,
-    diagnosis cause, diagnosis status, outcome, recorded time — so an operator
-    can ask "which build answered these turns", "which turns are merely
-    suspected of a citation error", or "what failed this morning" without the
-    query touching the opaque content object. Every search is audited with
-    the filter that ran, and results carry no content: the record itself is
-    fetched through the single-read route.
+    diagnosis cause, diagnosis status, outcome, recorded time, and the cited
+    index generation — so an operator can ask "which build answered these
+    turns", "which turns are merely suspected of a citation error", "what
+    failed this morning", or "which turns this index generation grounded"
+    without the query touching the opaque content object. Every search is
+    audited with the filter that ran, and results carry no content: the record
+    itself is fetched through the single-read route.
 
     Raises:
         ForbiddenError: the operator holds no trace-read grant for the tenant.
@@ -367,6 +377,7 @@ async def search_turn_records(
         since=since,
         until=until,
         limit=limit,
+        generation_ids=(generation_id,) if generation_id is not None else (),
     )
     await audit.record(
         AuditEvent(
@@ -386,6 +397,7 @@ async def search_turn_records(
                 "since": since.isoformat() if since else None,
                 "until": until.isoformat() if until else None,
                 "limit": limit,
+                "generation_id": str(generation_id) if generation_id is not None else None,
                 "matches": len(records),
             },
         )

@@ -88,6 +88,18 @@ PUBLISHED_OPERATIONS = {
     ("post", "/api/admin/knowledge/uploads"),
     ("get", "/api/admin/knowledge/index-findings"),
     ("post", "/api/admin/knowledge/index-integrity-check"),
+    # FEAT-001: the knowledge administration workflow — source creation, the
+    # tenant knowledge tree, preview, and the audited lifecycle mutations.
+    ("post", "/api/admin/knowledge/sources"),
+    ("get", "/api/admin/knowledge"),
+    ("get", "/api/admin/knowledge/documents/{document_id}"),
+    ("get", "/api/admin/knowledge/versions/{version_id}/preview"),
+    ("post", "/api/admin/knowledge/versions/{version_id}/approve"),
+    ("post", "/api/admin/knowledge/versions/{version_id}/publish"),
+    ("post", "/api/admin/knowledge/versions/{version_id}/reindex"),
+    ("post", "/api/admin/knowledge/versions/{version_id}/expire"),
+    ("delete", "/api/admin/knowledge/documents/{document_id}"),
+    ("post", "/api/admin/knowledge/sources/{source_id}/enabled"),
     # RAG-007: the quarantine review queue. Both routes are content-free by
     # construction — the flagged text lives in object storage, never on this
     # surface.

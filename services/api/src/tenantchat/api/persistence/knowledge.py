@@ -51,7 +51,8 @@ _DOCUMENT_COLUMNS = """
 _VERSION_COLUMNS = """
     v.id, v.tenant_id, v.document_id, v.revision, v.state, v.indexing_state,
     v.visibility, v.safety_state, v.checksum, v.byte_size, v.media_type, v.storage_key,
-    v.effective_at, v.expires_at
+    v.effective_at, v.expires_at, v.approved_at, v.approved_by, v.published_at,
+    v.superseded_at, v.indexed_at, v.index_error_code
 """
 
 
@@ -84,6 +85,12 @@ def _version(row: object) -> DocumentVersion:
         storage_key=mapping["storage_key"],
         effective_at=mapping["effective_at"],
         expires_at=mapping["expires_at"],
+        approved_at=mapping["approved_at"],
+        approved_by=mapping["approved_by"],
+        published_at=mapping["published_at"],
+        superseded_at=mapping["superseded_at"],
+        indexed_at=mapping["indexed_at"],
+        index_error_code=mapping["index_error_code"],
     )
 
 
@@ -799,6 +806,77 @@ class PostgresKnowledgeStore:
                 {"tenant_id": tenant_id, "safety_state": safety_state.value},
             )
             return tuple(_version(row) for row in result.all())
+
+    async def list_sources(self, tenant_id: str) -> tuple[KnowledgeSource, ...]:
+        """Every source one tenant owns, for the admin console.
+
+        Raises:
+            NotFoundError: if the tenant is absent or inactive.
+        """
+        async with self._engine.begin() as connection:
+            await require_active_tenant(connection, tenant_id)
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id AS source_id, tenant_id, domain, kind AS source_kind,
+                           display_name AS source_name, enabled AS source_enabled
+                    FROM knowledge_sources
+                    WHERE tenant_id = :tenant_id
+                    ORDER BY domain, display_name
+                    """
+                ),
+                {"tenant_id": tenant_id},
+            )
+            return tuple(_source(row) for row in result.all())
+
+    async def load_source(self, tenant_id: str, source_id: uuid.UUID) -> KnowledgeSource:
+        """One source, tenant-qualified.
+
+        Raises:
+            NotFoundError: if the source is absent or belongs to another tenant.
+        """
+        async with self._engine.begin() as connection:
+            return await self._read_source(connection, tenant_id, source_id)
+
+    async def documents_for_source(
+        self, tenant_id: str, source_id: uuid.UUID
+    ) -> tuple[KnowledgeDocument, ...]:
+        """Every document under one source, with full revision history.
+
+        Raises:
+            NotFoundError: if the source is absent, belongs to another tenant,
+                or the tenant is inactive.
+        """
+        async with self._engine.begin() as connection:
+            await self._read_source(connection, tenant_id, source_id)
+            result = await connection.execute(
+                text(
+                    f"""
+                    SELECT {_DOCUMENT_COLUMNS}
+                    FROM knowledge_documents d
+                    JOIN knowledge_sources s
+                      ON s.tenant_id = d.tenant_id AND s.domain = d.domain AND s.id = d.source_id
+                    WHERE d.tenant_id = :tenant_id AND d.source_id = :source_id
+                    ORDER BY d.external_key
+                    """  # noqa: S608 - interpolates a module constant, never caller input
+                ),
+                {"tenant_id": tenant_id, "source_id": source_id},
+            )
+            documents: list[KnowledgeDocument] = []
+            for row in result.all():
+                versions = await connection.execute(
+                    text(
+                        f"""
+                        SELECT {_VERSION_COLUMNS}
+                        FROM knowledge_document_versions v
+                        WHERE v.tenant_id = :tenant_id AND v.document_id = :document_id
+                        ORDER BY v.revision
+                        """  # noqa: S608 - interpolates a module constant, never caller input
+                    ),
+                    {"tenant_id": tenant_id, "document_id": row._mapping["document_id"]},
+                )
+                documents.append(_document(row, tuple(_version(item) for item in versions.all())))
+            return tuple(documents)
 
     async def _record_indexing(
         self,

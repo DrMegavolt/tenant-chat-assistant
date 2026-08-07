@@ -2771,7 +2771,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-001 — Knowledge-base administration workflow
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Feature`
 - Depends on: `SEC-001`, `RAG-001`, `RAG-002`
@@ -2787,7 +2787,60 @@ promotion pipeline — which requires a cluster that runs for real.
   - A tenant admin can distinguish an ingestion/index-integrity failure from a retrieval-quality failure without inspecting infrastructure logs.
 - Verification:
   - End-to-end test uploads, approves, publishes, queries, supersedes, and deletes a document, then seeds each bounded integrity fault and verifies its tenant-safe presentation.
-- Completion notes: _Pending._
+- Completion notes:
+  - **Backend surface** (`routers/knowledge.py`): the console drives the whole
+    lifecycle over the RAG-002 machinery — `POST /sources` (idempotent per
+    `(tenant, domain, name)`), `GET /knowledge` (the tenant tree: sources →
+    documents → versions with `indexing_state`, `index_error_code`,
+    `generation_status`, `chunk_count`, `embedding_model`, and the last
+    successful publish via `indexed_at`), `GET /documents/{id}`, `GET
+    /versions/{id}/preview` (runs the production scan/parser/chunker over the
+    staged bytes and returns a bounded window), `POST
+    /versions/{id}/{approve|publish|reindex|expire}`, `DELETE
+    /documents/{id}` (tombstone), and `POST /sources/{id}/enabled`. Publish and
+    reindex enqueue the idempotent `INGESTION` job through `submit_ingestion`;
+    rollback is the publish path (publishing a superseded version demotes the
+    current one in one transaction); publish refuses a draft, so draft content
+    cannot become answerable before approval — the retrievability predicate
+    also requires an indexed, clear, effective version. Every mutation is
+    audited to principal, tenant, request id, and content-free detail. All
+    reads are tenant-qualified by membership and store `WHERE` clauses.
+  - **Findings → source version and turns**: the two index-findings endpoints
+    now return each fault linked to its source version (`source_name`,
+    `document_title`, `revision`) while staying content-free by construction.
+    To link a finding to the turns grounded in the affected generation,
+    migration `0017_source_generation_trace` adds the content-free
+    `source_generation_ids uuid[]` projection to `turn_records` (GIN-indexed),
+    populated at trace-write time from the retrieval section's generation
+    identifiers; `/api/admin/traces` gains a `generation_id` filter so the
+    related-turns read stays on the audited, trace-read-gated surface.
+  - **Console** (`frontend/src/admin/`): a "Knowledge base" tab
+    (`components/KnowledgeBase.tsx`, `knowledgeTypes.ts`, adminApi methods,
+    CSS) with the tenant-scoped tree, source creation, upload, bounded preview,
+    the lifecycle actions, and the integrity findings panel (run-check button,
+    fault labels, related-turns view that reports the missing trace-read grant
+    rather than leaking).
+  - **Schema**: migration `0017_source_generation_trace` (adds
+    `turn_records.source_generation_ids`). No other schema change was needed —
+    the RAG-002/RAG-003 knowledge tables already carried every lifecycle field.
+  - Files: `services/api/src/tenantchat/api/routers/knowledge.py`,
+    `routers/traces.py`, `routers/chat.py`, `schemas.py`, `store.py`,
+    `persistence/{knowledge,traces}.py`, `packages/core/src/tenantchat/core/
+    knowledge.py` (operator provenance on `DocumentVersion`), migration
+    `0017_source_generation_trace`, `frontend/src/admin/{AdminPage.tsx,
+    adminApi.ts, admin.css, knowledgeTypes.ts, traceTypes.ts,
+    components/KnowledgeBase.tsx}`, and the `services/api/tests/
+    test_knowledge_admin.py`, `tests/migrations/test_migrations.py`,
+    `tests/openapi`/`traces`/`frontend` suites.
+  - Verified: `make check` (Python + frontend lint/format/types/tests/coverage,
+    deployment-security, and image contracts clean) and `make test-database`
+    (migration chain to head `0017`, repository, durability, and privacy suites
+    on disposable PostgreSQL 16). The full hermetic gate needs no DB/LLM;
+    migration and repository suites run under testcontainers when Docker is up.
+  - Coordination notes: FEAT-004 and FEAT-016 rebase onto this console shell —
+    the tab routing (`AdminView`) and `adminApi.ts` structure are kept flat and
+    additive; `TraceExplorer`/`TraceDetail` were not touched. The migration
+    revision `0017` is claimed and the migration-test head assertion updated.
 
 ### FEAT-002 — Real availability and calendar integration
 
