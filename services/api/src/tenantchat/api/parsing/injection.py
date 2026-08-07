@@ -45,11 +45,16 @@ _EXTRACT = re.compile(
     re.IGNORECASE,
 )
 
-# Embedded active content: scripts, event handlers, and command invocations.
+# Embedded active content and the RAG-007 evidence-fence tokens: scripts,
+# event handlers, command invocations, and the delimiters a hostile document
+# could otherwise use to escape the untrusted evidence region at prompt
+# assembly time. The assembly escape is the primary boundary; flagging the
+# tokens here quarantines the document before it can ever reach assembly.
 _ACTIVE = re.compile(
     r"<script|</script|<iframe|<object|<embed|onclick\s*=|onload\s*=|"
     r"javascript:|data:text/html|vbscript:|powershell\s+-|cmd\s+/c|"
-    r"bash\s+-[ci]|curl\s+[\"']?[-a-z]*[Ua-z]*http|/bin/(?:sh|bash)\b",
+    r"bash\s+-[ci]|curl\s+[\"']?[-a-z]*[Ua-z]*http|/bin/(?:sh|bash)\b|"
+    r"</evidence|<evidence",
     re.IGNORECASE,
 )
 
