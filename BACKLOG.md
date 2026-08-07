@@ -318,7 +318,7 @@ of them are the difference between a claim being tested and a claim being true.
 - [x] `RAG-011` — Deterministic claim extraction and cross-process evaluation determinism — `P1` — _defect in `RAG-007`/`RAG-008`_
 - [x] `QA-006` — Gate-claim and backlog accuracy — `P1`
 - [x] `OBS-006` — Executed-graph event capture — `P1` — _completes `FEAT-015`'s headline claim_
-- [ ] `FEAT-016` — Authorization and audit console — `P1`
+- [x] `FEAT-016` — Authorization and audit console — `P1`
 
 ### P2 product maturity — after Gate B
 
@@ -369,7 +369,7 @@ the first outbox did not.
 - [x] `FEAT-008` — User feedback and reviewed-answer workflow — `P1`
 - [x] `FEAT-011` — Customer-facing citations and source viewer — `Done`
 - [x] `FEAT-015` — AI turn explorer and executed-graph console — `P1`
-- [ ] `FEAT-016` — Authorization and audit console — `P1`
+- [x] `FEAT-016` — Authorization and audit console — `P1`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
 - [ ] `FEAT-002` — Real availability and calendar integration — `P2`
 - [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P2`
@@ -3352,7 +3352,7 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-016 — Authorization and audit console
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Feature/security operations`
 - Depends on: `SEC-001`, `PRIV-002`, `FEAT-001`
@@ -3399,7 +3399,35 @@ promotion pipeline — which requires a cluster that runs for real.
     bounds; browser tests for the permissions view, the grant/role distinction,
     keyboard navigation, and the cross-tenant `404`; a privacy test asserting no
     content field is reachable from any audit projection.
-- Completion notes: _Pending._
+- Completion notes: Built the read surface and permissions console on top of
+  the audit rows every privileged action already writes. `GET
+  /api/admin/audit` returns the content-free projection — action, actor type,
+  principal, tenant, request ID, trace ID, timestamp, the bounded resource
+  reference, and the permission that authorized the action — tenant-scoped and
+  RBAC-gated at `tenant_admin` (`platform_admin` spans every tenant). A
+  request naming a tenant the operator cannot administer is the same `404` as
+  one that never existed, so the console cannot probe the registry. Filters
+  are time range, action, and principal only — no free-text search. Every
+  successful read is itself audited through the same envelope, and an audit of
+  an audit terminates (the read's own row is recorded after the fetch). New
+  `GET /api/admin/permissions` lists the tenant's live roles (grantors
+  resolved from the `membership_assigned` trail) and the PRIV-002 trace-read
+  grants as two separate lists, so an admin role and a trace-read grant are
+  never read as one control; revocations are visible without a redeploy and a
+  revoked principal's later trace attempt appears in the trail as
+  `trace.read_refused`. `AuditStore.for_tenant` gained the content-free
+  filters (Postgres and the in-memory fake) and `MembershipStore` a per-tenant
+  listing. Frontend: a new `Access & audit` tab (`AccessConsole`) renders the
+  permissions view and the trail with each action beside its permission and
+  the current holders ("who could have done this, and who did"), keyboard-
+  reachable filters, and a clear 404 state. Verified: `make check` passes
+  (1565 Python tests incl. 20 new API tests, 172 frontend tests incl. 8 new
+  browser tests, coverage above floor) plus `make test-database` (83
+  repository/migration tests incl. 3 new audit/membership specs against real
+  PostgreSQL 16). Schema gap recorded, not invented: `trace_access_grants`
+  has no expiry column, so grants are permanent and the console renders
+  "Never" until `PRIV-002` introduces expiry; no migration was added (0017/0018
+  are claimed).
 
 ## Recommended dispatch sequence
 

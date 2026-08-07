@@ -19,10 +19,16 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
+from tenantchat.api.access import (
+    authorizing_permission,
+    permission_views,
+    tenant_admin_scoped,
+)
 from tenantchat.api.dependencies import (
     Audit,
     Bookings,
@@ -32,6 +38,7 @@ from tenantchat.api.dependencies import (
     Memberships,
     Registry,
     RequestId,
+    TraceAccess,
     get_settings,
 )
 from tenantchat.api.identity import (
@@ -43,10 +50,13 @@ from tenantchat.api.identity import (
     verify_csrf,
 )
 from tenantchat.api.schemas import (
+    AdminAuditEvent,
+    AdminAuditResponse,
     AdminBooking,
     AdminBookingsResponse,
     AdminLead,
     AdminLeadsResponse,
+    AdminPermissionsResponse,
     AdminSessionsResponse,
     AdminTenantsResponse,
     AdminTenantSummary,
@@ -70,11 +80,28 @@ _read_access = require_role("viewer")
 _reply_access = require_role("support_agent")
 _admin_mutation_access = require_role("platform_admin")
 _tenant_read = tenant_scoped("viewer")
+TenantAdminRead = Annotated[AdminIdentity, Depends(tenant_admin_scoped)]
 
 TenantIdQuery = Annotated[
     str, Query(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$", alias="tenant_id")
 ]
 PageSize = Annotated[int, Query(ge=1, le=200)]
+AuditSinceQuery = Annotated[
+    datetime | None, Query(description="Only events at or after this instant.")
+]
+AuditUntilQuery = Annotated[
+    datetime | None, Query(description="Only events at or before this instant.")
+]
+AuditActionQuery = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9._]*$",
+        description="A closed action name, never free text.",
+    ),
+]
+AuditPrincipalQuery = Annotated[str | None, Query(min_length=1, max_length=200)]
 
 
 def _audit_event(
@@ -422,3 +449,110 @@ async def revoke_membership(
             details={"subject": subject},
         )
     )
+
+
+@router.get("/api/admin/audit", response_model=AdminAuditResponse)
+async def read_audit_trail(
+    identity: TenantAdminRead,
+    tenant_id: TenantIdQuery,
+    registry: Registry,
+    audit: Audit,
+    request_id: RequestId,
+    since: AuditSinceQuery = None,
+    until: AuditUntilQuery = None,
+    action: AuditActionQuery = None,
+    principal: AuditPrincipalQuery = None,
+    limit: PageSize = 100,
+) -> AdminAuditResponse:
+    """The tenant's content-free audit trail — itself an audited read.
+
+    The rows are the ones every privileged action already wrote: action,
+    principal, tenant, request ID, trace ID, timestamp, and the bounded
+    resource reference. Filters are the closed set the trail may be queried by
+    — a time window, one action name, one principal — never free text, so a
+    tenant ID cannot become a search token. Each row carries the permission
+    that authorized its action, so a reviewer answers "who could have done
+    this, and who did" on one screen.
+
+    The read is recorded with the same envelope before it returns, so the
+    console cannot inspect an operator without leaving a record; recording does
+    not itself read the trail, which is what stops an audit of an audit.
+
+    Raises:
+        NotFoundError: no such tenant, or this operator administers it not.
+    """
+    registry.get(tenant_id)
+    events = await audit.for_tenant(
+        tenant_id,
+        limit=limit,
+        since=since,
+        until=until,
+        actions=(action,) if action else (),
+        principal=principal,
+    )
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="audit.read",
+            resource_type="audit_trail",
+            resource_id=None,
+            request_id=request_id,
+            details={
+                "since": since.isoformat() if since else None,
+                "until": until.isoformat() if until else None,
+                "action": action,
+                "principal": principal,
+                "limit": limit,
+                "matches": len(events),
+            },
+        )
+    )
+    return AdminAuditResponse(
+        events=[
+            AdminAuditEvent.of(event, permission=authorizing_permission(event.action))
+            for event in events
+        ],
+        limit=limit,
+    )
+
+
+@router.get("/api/admin/permissions", response_model=AdminPermissionsResponse)
+async def read_permissions(
+    identity: TenantAdminRead,
+    tenant_id: TenantIdQuery,
+    registry: Registry,
+    memberships: Memberships,
+    grants: TraceAccess,
+    audit: Audit,
+    request_id: RequestId,
+) -> AdminPermissionsResponse:
+    """The tenant's current roles and trace-read grants, grantors resolved.
+
+    The roles are the live membership rows and the grants the live PRIV-002
+    rows, so a revocation is reflected without a redeploy. Who granted each
+    role is the most recent ``membership_assigned`` audit row naming the
+    subject; a trace grant carries its grantor on the row. The two are
+    deliberately separate lists — an admin role and a trace-read grant
+    authorize different surfaces, and the console must not read one as the
+    other.
+
+    Raises:
+        NotFoundError: no such tenant, or this operator administers it not.
+    """
+    registry.get(tenant_id)
+    roles, grants_list = await permission_views(tenant_id, memberships, grants, audit)
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="permissions.read",
+            resource_type="tenant_permissions",
+            resource_id=None,
+            request_id=request_id,
+            details={"roles": len(roles), "grants": len(grants_list)},
+        )
+    )
+    return AdminPermissionsResponse(roles=roles, grants=grants_list)

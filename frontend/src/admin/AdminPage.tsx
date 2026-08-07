@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 
+import { AccessConsole } from "src/admin/components/AccessConsole";
 import { AdminApi } from "src/admin/adminApi";
 import { KnowledgeBase } from "src/admin/components/KnowledgeBase";
 import { ReviewQueue } from "src/admin/components/ReviewQueue";
@@ -10,13 +11,14 @@ import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { relativeTime } from "src/admin/time";
 import { useAdminConsole } from "src/admin/useAdminConsole";
 
-type AdminView = "queue" | "reviews" | "traces" | "knowledge";
+type AdminView = "queue" | "reviews" | "traces" | "knowledge" | "access";
 
 const VIEW_LABELS: Record<AdminView, string> = {
   queue: "Chat queue",
   reviews: "Review queue",
   traces: "AI turn explorer",
-  knowledge: "Knowledge base"
+  knowledge: "Knowledge base",
+  access: "Access & audit"
 };
 
 /**
@@ -43,7 +45,9 @@ export function AdminPage() {
               ? "#reviewTitle"
               : view === "knowledge"
                 ? "#knowledgeTitle"
-                : "#traceTitle"
+                : view === "access"
+                  ? "#accessTitle"
+                  : "#traceTitle"
         }
       >
         Skip to main content
@@ -151,6 +155,17 @@ export function AdminPage() {
 
           {view === "knowledge" && (
             <KnowledgeBase
+              api={api}
+              tenants={console_.tenants.map((tenant) => ({
+                tenantId: tenant.tenantId,
+                name: tenant.name
+              }))}
+              initialTenantId={console_.tenantId}
+            />
+          )}
+
+          {view === "access" && (
+            <AccessConsole
               api={api}
               tenants={console_.tenants.map((tenant) => ({
                 tenantId: tenant.tenantId,
