@@ -30,6 +30,43 @@ from typing import Any, Protocol
 import httpx
 
 from tenantchat.core.errors import ValidationError
+from tenantchat.core.metrics import MetricsReporter
+from tenantchat.core.resilience import (
+    AsyncResilientCaller,
+    Dependency,
+    FailureKind,
+    ResiliencePolicy,
+)
+
+# The connection pool each search/embedding client reuses across requests. A
+# per-request client (the prototype's shape) never reuses a connection, so every
+# call paid for a TCP handshake and TLS setup.
+_HTTP_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+
+
+def _classify_http_error(exc: Exception) -> FailureKind:
+    """Map a dependency's HTTP exception to the bounded retry decision (REL-001).
+
+    Timeouts, connection failures, resets, ``429``, and ``5xx`` are
+    outage-shaped and retryable. A non-``429`` ``4xx`` and a malformed response
+    are contract or policy failures that a retry cannot fix, so they are never
+    retried and never trip the breaker.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return FailureKind.TIMEOUT
+    if isinstance(exc, httpx.ConnectError):
+        return FailureKind.CONNECT
+    if isinstance(exc, httpx.TransportError):
+        return FailureKind.RESET
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code == 429:
+            return FailureKind.RATE_LIMITED
+        if 500 <= exc.response.status_code < 600:
+            return FailureKind.SERVER_ERROR
+        return FailureKind.REFUSED
+    if isinstance(exc, ValueError):
+        return FailureKind.MALFORMED
+    return FailureKind.REFUSED
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,19 +357,45 @@ class ElasticsearchSearchIndex:
         username: str | None,
         password: str | None,
         index_name: str,
-        timeout_seconds: float = 30.0,
+        policy: ResiliencePolicy | None = None,
+        metrics: MetricsReporter | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._index_name = index_name
-        self._timeout = httpx.Timeout(timeout_seconds)
+        resolved = policy or ResiliencePolicy()
+        # httpx 0.28 has connect/read/write/pool phases and no total; the total
+        # deadline is enforced by the resilient caller across the logical call.
+        self._timeout = httpx.Timeout(
+            connect=resolved.connect_timeout_seconds,
+            read=resolved.read_timeout_seconds,
+            write=resolved.write_timeout_seconds,
+            pool=resolved.pool_timeout_seconds,
+        )
         auth = None
         if username and password:
             token = base64.b64encode(f"{username}:{password}".encode()).decode()
             auth = {"Authorization": f"Basic {token}"}
         self._headers = {"Content-Type": "application/json", **(auth or {})}
+        self._client = httpx.AsyncClient(
+            timeout=self._timeout,
+            headers=self._headers,
+            limits=_HTTP_LIMITS,
+            transport=transport,
+        )
+        self._resilience = AsyncResilientCaller(
+            dependency=Dependency.SEARCH,
+            policy=resolved,
+            classify=_classify_http_error,
+            metrics=metrics,
+        )
 
     def _url(self, suffix: str) -> str:
         return f"{self._base_url}/{self._index_name}/{suffix}"
+
+    async def close(self) -> None:
+        """Release the underlying connection pool."""
+        await self._client.aclose()
 
     async def index_chunks(self, chunks: Sequence[IndexedChunk]) -> int:
         if not chunks:
@@ -527,21 +590,25 @@ class ElasticsearchSearchIndex:
         if use_index:
             url = self._url(url)
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.request(method, url, content=body, headers=self._headers)
-        except httpx.HTTPError as exc:
+            return await self._resilience.run(
+                lambda: self._raw_request(method, url, body, allow_404=allow_404)
+            )
+        except Exception as exc:
             raise SearchIndexOperationError("search index unreachable") from exc
+
+    async def _raw_request(
+        self, method: str, url: str, body: str, *, allow_404: bool
+    ) -> dict[str, Any]:
+        response = await self._client.request(method, url, content=body)
         if response.status_code == 404 and allow_404:
             return {}
-        if response.status_code >= 400:
-            code = response.status_code
-            raise SearchIndexOperationError(f"search index refused request ({code})")
+        response.raise_for_status()
         try:
             payload = response.json()
         except ValueError as exc:
-            raise SearchIndexOperationError("search index returned non-JSON") from exc
+            raise ValueError("search index returned non-JSON") from exc
         if not isinstance(payload, dict):
-            raise SearchIndexOperationError("search index returned non-object JSON")
+            raise ValueError("search index returned non-object JSON")
         return payload
 
 
@@ -621,16 +688,42 @@ class EmbeddingServiceClient:
         base_url: str,
         token: str | None,
         batch_size: int = 16,
-        timeout_seconds: float = 300.0,
+        policy: ResiliencePolicy | None = None,
+        metrics: MetricsReporter | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._batch_size = max(1, min(batch_size, 128))
-        self._timeout = httpx.Timeout(timeout_seconds)
+        resolved = policy or ResiliencePolicy()
+        # httpx 0.28 has connect/read/write/pool phases and no total; the total
+        # deadline is enforced by the resilient caller across the logical call.
+        self._timeout = httpx.Timeout(
+            connect=resolved.connect_timeout_seconds,
+            read=resolved.read_timeout_seconds,
+            write=resolved.write_timeout_seconds,
+            pool=resolved.pool_timeout_seconds,
+        )
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self._headers = headers
+        self._client = httpx.AsyncClient(
+            timeout=self._timeout,
+            headers=self._headers,
+            limits=_HTTP_LIMITS,
+            transport=transport,
+        )
+        self._resilience = AsyncResilientCaller(
+            dependency=Dependency.EMBEDDING,
+            policy=resolved,
+            classify=_classify_http_error,
+            metrics=metrics,
+        )
+
+    async def close(self) -> None:
+        """Release the underlying connection pool."""
+        await self._client.aclose()
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         batches: list[tuple[float, ...]] = []
@@ -638,27 +731,37 @@ class EmbeddingServiceClient:
         dimensions = 0
         for start in range(0, len(texts), self._batch_size):
             batch = texts[start : start + self._batch_size]
-            try:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    response = await client.post(
-                        f"{self._base_url}/embed",
-                        json={"texts": list(batch)},
-                        headers=self._headers,
-                    )
-            except httpx.HTTPError as exc:
-                raise EmbeddingUnavailableError("embedding provider unreachable") from exc
-            if response.status_code >= 400:
-                raise EmbeddingUnavailableError("embedding provider refused the batch")
-            try:
-                payload = response.json()
-            except ValueError as exc:
-                raise EmbeddingUnavailableError("embedding provider returned non-JSON") from exc
-            if not isinstance(payload, dict):
-                raise EmbeddingUnavailableError("embedding provider returned non-object JSON")
-            model = str(payload.get("model", model))
-            dimensions = int(payload.get("dimensions", dimensions))
-            embeddings = payload.get("embeddings", [])
+            payload_model, payload_dimensions, embeddings = await self._embed_batch(batch)
+            model = str(payload_model or model)
+            dimensions = int(payload_dimensions or dimensions)
             batches.extend(tuple(float(value) for value in item) for item in embeddings)
         if not batches:
             raise EmbeddingUnavailableError("embedding provider returned no vectors")
         return EmbeddingResult(model=model, dimensions=dimensions, vectors=batches)
+
+    async def _embed_batch(self, batch: Sequence[str]) -> tuple[str, int, list[Any]]:
+        try:
+            return await self._resilience.run(lambda: self._request_batch(batch))
+        except Exception as exc:
+            raise EmbeddingUnavailableError("embedding provider unreachable") from exc
+
+    async def _request_batch(self, batch: Sequence[str]) -> tuple[str, int, list[Any]]:
+        response = await self._client.post(f"{self._base_url}/embed", json={"texts": list(batch)})
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ValueError("embedding provider returned non-JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("embedding provider returned non-object JSON")
+        embeddings = payload.get("embeddings", [])
+        if not isinstance(embeddings, list):
+            raise ValueError("embedding provider returned non-list embeddings")
+        for item in embeddings:
+            if not isinstance(item, Sequence) or isinstance(item, str):
+                raise ValueError("embedding provider returned a malformed vector")
+        return (
+            str(payload.get("model", "")),
+            int(payload.get("dimensions", 0)),
+            embeddings,
+        )

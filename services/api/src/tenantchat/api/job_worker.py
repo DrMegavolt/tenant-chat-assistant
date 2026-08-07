@@ -41,6 +41,7 @@ from tenantchat.api.jobs import (
     JobStore,
 )
 from tenantchat.api.logging_setup import configure_logging, resolve_service
+from tenantchat.api.metrics import METRICS
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -154,10 +155,14 @@ def ingestion_job_handler(
             username=settings.elasticsearch_username,
             password=settings.elasticsearch_password,
             index_name=settings.elasticsearch_index,
+            policy=settings.elasticsearch_resilience,
+            metrics=METRICS,
         ),
         embedder=EmbeddingServiceClient(
             base_url=settings.embedding_url,
             token=settings.embedding_token,
+            policy=settings.embedding_resilience,
+            metrics=METRICS,
         ),
         audit=PostgresAuditStore(knowledge.engine),
     )

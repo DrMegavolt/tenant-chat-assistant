@@ -1105,7 +1105,7 @@ guarantees by construction.
 
 ### REL-001 — Resilient dependency clients
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P1`
 - Type: `Reliability`
 - Depends on: `API-001`, `AI-001`
@@ -1121,7 +1121,41 @@ guarantees by construction.
   - A timeout after a committed action cannot create a duplicate on retry.
 - Verification:
   - Failure-injection tests cover timeout, reset, `429`, `5xx`, malformed response, and recovery.
-- Completion notes: _Pending._
+- Completion notes: Centralized the dependency-client resilience envelope in
+  `tenantchat.core.resilience` (`REL-001`): bounded retries with exponential
+  backoff and jitter, a per-dependency circuit breaker (CLOSED/OPEN/HALF_OPEN)
+  with cooldown probing and half-open recovery, and a hard total deadline that
+  cancels an in-flight attempt that overruns it. Observability is a closed
+  vocabulary on the existing metrics plane — `tenantchat_dependency_retries_total`
+  (dependency, reason) and the `tenantchat_circuit_state` gauge (dependency,
+  state) — identifiers and enums only, enforced by the label contract and the
+  cardinality test. The OpenAI-compatible LLM adapter applies the
+  connect/read/write/pool envelope and retries outage-shaped failures (timeout,
+  reset, `429`, `5xx`) inside the client, never contract failures, and trips a
+  breaker so a dead provider fails fast instead of holding a worker through
+  every timeout; the metrics-recording wrapper maps breaker refusals to
+  `status=unavailable` and total-deadline expiry to `timeout`. The
+  Elasticsearch and embedding clients now reuse one pooled connection per
+  instance instead of a per-request client, run the same envelope, and surface
+  exhausted retries through their existing `SearchIndexOperationError` /
+  `EmbeddingUnavailableError` types, so ingestion's retryable codes and the
+  graph's handoff behavior are unchanged. Cancellation is never counted,
+  slept through, or retried. Per-dependency budgets live in `Settings`
+  (`llm_resilience`, `elasticsearch_resilience`, `embedding_resilience`) with
+  documented defaults and `LLM_*` / `ES_*` / `EMBEDDING_*` overrides, wired at
+  both composition roots (`app.py` and `job_worker.py`). Failure-injection
+  tests cover timeout, reset, `429`, `5xx`, malformed response, and recovery
+  for each client, plus cancellation, open/closed/half-open breaker recovery,
+  bounded retries, idempotent bulk-upsert retries, and the metric label
+  contract. `make check` passes: 1471 Python tests (82.8% coverage) and 118
+  frontend tests, with strict lint/format/type checks, deployment-security,
+  and image contracts. Retry safety: the only operations any client retries
+  are side-effect-free (a chat completion, an embedding batch, or an
+  idempotent Elasticsearch write keyed by deterministic `_id`s), so a timeout
+  after a committed action cannot create a duplicate; business effects stay
+  idempotency-keyed in the domain services. `AI-002` should rebase onto the
+  per-request `policy`/`metrics` constructor boundary on
+  `OpenAICompatibleChatModel`.
 
 ### REL-002 — Dependency-aware health, graceful startup, and shutdown
 

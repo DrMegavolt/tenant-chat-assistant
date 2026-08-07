@@ -72,6 +72,8 @@ class MetricName(StrEnum):
     BUSINESS_LATENCY = "tenantchat_business_latency_seconds"
     CITATION_VALIDATION = "tenantchat_citation_validation_total"
     FEEDBACK_SUBMITTED = "tenantchat_feedback_submitted_total"
+    DEPENDENCY_RETRIES = "tenantchat_dependency_retries_total"
+    CIRCUIT_STATE = "tenantchat_circuit_state"
 
 
 class MetricKind(StrEnum):
@@ -79,6 +81,7 @@ class MetricKind(StrEnum):
 
     COUNTER = "counter"
     HISTOGRAM = "histogram"
+    GAUGE = "gauge"
 
 
 class MetricLabelName(StrEnum):
@@ -99,6 +102,9 @@ class MetricLabelName(StrEnum):
     TEMPLATE = "template"
     VERDICT = "verdict"
     RATING = "rating"
+    DEPENDENCY = "dependency"
+    REASON = "reason"
+    STATE = "state"
 
 
 class Operation(StrEnum):
@@ -227,6 +233,8 @@ METRIC_LABELS: Final[Mapping[MetricName, tuple[MetricLabelName, ...]]] = {
     MetricName.BUSINESS_LATENCY: (MetricLabelName.OPERATION,),
     MetricName.CITATION_VALIDATION: (MetricLabelName.VERDICT,),
     MetricName.FEEDBACK_SUBMITTED: (MetricLabelName.RATING,),
+    MetricName.DEPENDENCY_RETRIES: (MetricLabelName.DEPENDENCY, MetricLabelName.REASON),
+    MetricName.CIRCUIT_STATE: (MetricLabelName.DEPENDENCY, MetricLabelName.STATE),
 }
 
 # The value enums this package owns. The routing, tool, and intent vocabularies

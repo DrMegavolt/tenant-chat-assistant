@@ -21,6 +21,7 @@ from typing import Final
 import httpx
 
 from tenantchat.core.metrics import MetricName, MetricsReporter, Status, TokenKind
+from tenantchat.core.resilience import DependencyUnavailableError
 from tenantchat.orchestration.model import AssembledPrompt, ChatModel, ModelResponse, ToolSpec
 
 # The usage keys the OpenAI-compatible contract documents, projected onto the
@@ -49,8 +50,18 @@ class MetricRecordingChatModel:
         started = time.monotonic()
         try:
             response = await self._inner.complete(prompt, tools=tools)
-        except httpx.TimeoutException:
+        except (httpx.TimeoutException, TimeoutError):
+            # ``httpx.TimeoutException`` is a phase timeout (connect/read/write/
+            # pool); the builtin ``TimeoutError`` is the REL-001 total deadline
+            # expiring across the whole logical call. Both mean "the provider
+            # did not answer in time", so both are one status.
             self._record(Status.TIMEOUT, prompt, started)
+            raise
+        except DependencyUnavailableError:
+            # The breaker refused the call without touching the network. The
+            # dependency is down, not this request's fault, so it records as
+            # unavailable rather than error.
+            self._record(Status.UNAVAILABLE, prompt, started)
             raise
         except Exception:
             # Deliberately broad: any provider failure is one status on the
