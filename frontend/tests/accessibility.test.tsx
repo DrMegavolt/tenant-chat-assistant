@@ -3,7 +3,13 @@ import axe from "axe-core";
 import { describe, expect, test } from "vitest";
 
 import { mountWidget } from "src/widget/mount";
-import { TENANTS, jsonResponse, stubBackend, workingBackend } from "tests/support/backend";
+import {
+  TENANTS,
+  citedBackend,
+  jsonResponse,
+  stubBackend,
+  workingBackend
+} from "tests/support/backend";
 import {
   allInWidget,
   inWidget,
@@ -42,6 +48,18 @@ describe("automated accessibility checks", () => {
     stubBackend(workingBackend());
     await renderDemo();
     await openBookingConfirmation();
+
+    expect(await violations(document)).toEqual([]);
+  });
+
+  test("the open source viewer has no axe violations", async () => {
+    stubBackend(citedBackend());
+    await renderDemo();
+
+    submitChat("Do you do tune-ups?");
+    await waitFor(() => expect(inWidget(".citation-button")).not.toBeNull());
+    fireEvent.click(requireInWidget(".citation-button"));
+    await waitFor(() => expect(inWidget(".source-viewer-excerpt")).not.toBeNull());
 
     expect(await violations(document)).toEqual([]);
   });

@@ -13,6 +13,7 @@ import type {
   ServerMessage,
   ServerSession,
   SessionSnapshot,
+  SourceView,
   TenantDirectory,
   TurnProvenance,
   WireMessageRole
@@ -59,6 +60,17 @@ export class CredentialRejectedError extends Error {
   }
 }
 
+/**
+ * The backend cannot show a source: absent, superseded, expired, revoked, or
+ * another tenant's. Every reason is the same bounded failure to the widget,
+ * so a citation cannot be used to probe what a tenant has.
+ */
+export class SourceUnavailableError extends Error {
+  constructor() {
+    super("This source is no longer available.");
+  }
+}
+
 /** Wire shapes the FastAPI backend actually returns (snake_case). */
 interface WireTurn {
   session_id: string;
@@ -72,8 +84,26 @@ interface WireTurn {
     address?: string;
   } | null;
   committed: Array<{ action: string; reference: string; replayed: boolean }>;
+  citations?: Array<{
+    source_id: string;
+    title: string;
+    source_name: string;
+    location: string;
+    revision: number;
+    effective_at: string;
+  }>;
   provenance: { model_name: string; graph_version: string; prompt_version: string };
   credential: string;
+}
+
+interface WireSourceView {
+  source_id: string;
+  title: string;
+  source_name: string;
+  location: string;
+  text: string;
+  revision: number;
+  effective_at: string;
 }
 
 interface WireSession {
@@ -112,6 +142,16 @@ function normalizeTurn(wire: WireTurn): ChatTurnResponse {
       action: c.action,
       reference: c.reference,
       replayed: c.replayed
+    })),
+    // Absent on a reply from an older backend; the contract sends it on every
+    // turn, and the widget must render nothing rather than assume it exists.
+    citations: (wire.citations ?? []).map((c) => ({
+      sourceId: c.source_id,
+      title: c.title,
+      sourceName: c.source_name,
+      location: c.location,
+      revision: c.revision,
+      effectiveAt: c.effective_at
     })),
     provenance,
     credential: wire.credential
@@ -249,6 +289,34 @@ export class ChatApi {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Resolve a citation to the authorized view of its source (`RAG-005`).
+   *
+   * The widget never assumes a source is still answerable: the server rechecks
+   * tenant, audience, and quarantine on every read and answers 404 for every
+   * reason a chunk is not retrievable. Any non-OK response is the same bounded
+   * `SourceUnavailableError`, so the failure cannot leak whether the source
+   * exists.
+   *
+   * @throws {SourceUnavailableError} when the source is not answerable.
+   */
+  async source(credential: string, sourceId: string): Promise<SourceView> {
+    const response = await fetch(this.url(`/api/chat/sources/${encodeURIComponent(sourceId)}`), {
+      headers: { [VISITOR_CREDENTIAL_HEADER]: credential }
+    });
+    if (!response.ok) throw new SourceUnavailableError();
+    const wire = (await response.json()) as WireSourceView;
+    return {
+      sourceId: wire.source_id,
+      title: wire.title,
+      sourceName: wire.source_name,
+      location: wire.location,
+      text: wire.text,
+      revision: wire.revision,
+      effectiveAt: wire.effective_at
+    };
   }
 
   /**

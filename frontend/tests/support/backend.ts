@@ -92,6 +92,50 @@ export const CONSENT_GRANTED = {
   granted_at: "2026-08-04T00:00:00Z"
 };
 
+/** One curated citation, shaped exactly as `CitationSummary` publishes it. */
+export const CITED_REPLY = {
+  session_id: "session-1",
+  turn_id: "turn-cited",
+  reply: "Clearview’s maintenance plans cover an annual tune-up.",
+  pending: null,
+  committed: [],
+  citations: [
+    {
+      source_id: "src-hvac-guide",
+      title: "HVAC Maintenance Guide",
+      source_name: "Clearview Policies",
+      location: "Maintenance",
+      revision: 2,
+      effective_at: "2026-07-01T00:00:00Z"
+    },
+    {
+      source_id: "src-tuning-policy",
+      title: "Annual Tune-up Policy",
+      source_name: "Clearview Policies",
+      location: "Pricing",
+      revision: 1,
+      effective_at: "2026-06-15T00:00:00Z"
+    }
+  ],
+  provenance: {
+    model_name: "scripted",
+    graph_version: "dispatch@1",
+    prompt_version: "dispatch-system@1"
+  },
+  credential: CREDENTIAL
+};
+
+/** The authorized view `GET /api/chat/sources/{id}` returns for those citations. */
+export const SOURCE_VIEW = {
+  source_id: "src-hvac-guide",
+  title: "HVAC Maintenance Guide",
+  source_name: "Clearview Policies",
+  location: "Maintenance",
+  text: "Annual maintenance includes a tune-up, a filter check, and a safety inspection.",
+  revision: 2,
+  effective_at: "2026-07-01T00:00:00Z"
+};
+
 export function jsonResponse(body: unknown, { ok = true, status = 200 } = {}) {
   return Promise.resolve({ ok, status, json: () => Promise.resolve(body) });
 }
@@ -145,6 +189,37 @@ export function workingBackend(): RouteHandler {
     if (url.endsWith("/api/chat/confirmation")) return jsonResponse(BOOKING_CONFIRMED);
     if (url.endsWith("/api/chat/consent")) return jsonResponse(CONSENT_GRANTED);
     if (url.endsWith("/api/chat")) return jsonResponse(AVAILABILITY_REPLY);
+    return null;
+  };
+}
+
+/**
+ * A backend that answers every turn with one cited reply and serves the
+ * authorized source view, so a citation suite does not have to restate the
+ * surrounding endpoints. The source answer is injectable: a revoked or absent
+ * source can return a 404, or a function can reject like a network failure.
+ * A rejecting function rather than a bare promise keeps the rejection inside
+ * the fetch, where the widget catches it.
+ */
+export function citedBackend(
+  citations: unknown = CITED_REPLY.citations,
+  sourceAnswer: Promise<unknown> | (() => Promise<unknown>) = jsonResponse(SOURCE_VIEW)
+): RouteHandler {
+  return (url, init) => {
+    if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+    if (url.endsWith("/api/chat/session")) {
+      return jsonResponse({
+        session: { session_id: "session-1" },
+        messages: [],
+        credential: CREDENTIAL
+      });
+    }
+    if (url.includes("/api/chat/sources/")) {
+      return typeof sourceAnswer === "function" ? sourceAnswer() : sourceAnswer;
+    }
+    if (url.endsWith("/api/chat") && init?.method === "POST") {
+      return jsonResponse({ ...CITED_REPLY, citations });
+    }
     return null;
   };
 }
