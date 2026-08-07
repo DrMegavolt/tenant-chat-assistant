@@ -45,13 +45,13 @@ export function AdminPage() {
             ? "#queue"
             : view === "reviews"
               ? "#reviewTitle"
-                : view === "knowledge"
-                  ? "#knowledgeTitle"
-                  : view === "access"
-                    ? "#accessTitle"
-                    : view === "handoffs"
-                      ? "#handoffTitle"
-                      : "#traceTitle"
+              : view === "knowledge"
+                ? "#knowledgeTitle"
+                : view === "access"
+                  ? "#accessTitle"
+                  : view === "handoffs"
+                    ? "#handoffTitle"
+                    : "#traceTitle"
         }
       >
         Skip to main content
