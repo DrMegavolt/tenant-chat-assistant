@@ -322,7 +322,7 @@ of them are the difference between a claim being tested and a claim being true.
 
 ### P2 product maturity — after Gate B
 
-- [ ] `AI-002` — Model safety, quotas, and cost controls — `P2`
+- [x] `AI-002` — Model safety, quotas, and cost controls — `P2`
 - [ ] `FEAT-010` — Streaming, cancellation, and reliable message delivery — `P2`
 - [ ] `FEAT-002` — Real availability and calendar integration — `P2`
 - [ ] `FEAT-003` — CRM lead integration and delivery guarantees — `P2`
@@ -1865,7 +1865,7 @@ guarantees by construction.
 
 ### AI-002 — Model safety, quotas, and cost controls
 
-- Status: `Todo`
+- Status: `Done`
 - Priority: `P2`
 - Type: `AI safety/operations`
 - Priority note: Per-tenant spend budgets and cost attribution are a billing
@@ -1887,7 +1887,50 @@ guarantees by construction.
   - Policy blocks and model fallbacks are auditable and measurable.
 - Verification:
   - Tests cover quota exhaustion, provider failure, unsafe input/output, and fallback selection.
-- Completion notes: _Pending._
+- Completion notes: The per-tenant budget ledger lives in a new
+  `tenantchat.core.budgets` module beside `resilience.py`, exactly as the Wave 8
+  note (8C) directs: enforcement is a peer of the timeout/circuit policy, not a
+  second wrapper. `BudgetEnforcer` (in-memory, the `RateLimitStore` precedent)
+  tracks per-tenant tokens, actions, and in-flight model calls and is
+  content-free by construction — its read surface (`UsageSnapshot`) is tenant
+  ID plus counts, nothing a visitor said. `TenantPolicy` gained a private
+  `budgets: TenantBudget | None` field (``None`` = platform default, never
+  unlimited) and the seeded tenants carry budgets with spend thresholds, so a
+  tenant plan is a data change, not a code path. The dispatch graph enforces at
+  the tenant boundary: an input-policy and token-budget preflight block a turn
+  before any model spend, the model call is the one thing that holds a
+  concurrency slot (`enter_call`/`exit_call`), and action caps are checked
+  before a lead or a confirmed booking commits — a refused action is a refusal
+  payload the model can work around, never a partial commit. Escalation to a
+  human is deliberately never budget-gated. Input/output policy is
+  deterministic and business-domain: per-message length and binary-content
+  refusal, and over-length model prose is refused whole rather than silently
+  truncated (the same reporting-over-truncation rule `AI-003` applies to
+  assembly). Model fallback is a `FallbackChatModel` in `providers/` that hands
+  outage-shaped failures (including a primary's open circuit breaker) to the
+  next provider and never falls back on a contract failure; the serving model
+  is the turn's `model_name` and each hop is a bounded `MODEL_FALLBACKS`
+  metric, so fallback is both auditable and measurable. Safe responses are
+  cached by `CachingChatModel` (opt-in `CHAT_API_LLM_RESPONSE_CACHE`): the key
+  is the assembled prompt's content hash plus the offered tools, only prose
+  answers with no tool calls are stored, a hit reports zero fresh usage, and
+  the store is bounded and TTL'd. Observability follows `ADR-0010`: four new
+  content-free metrics (`POLICY_BLOCKS`, `MODEL_FALLBACKS`, `RESPONSE_CACHE`,
+  `BUDGET_ALERTS`) with closed label enums, spend alerts log under the tenant
+  pseudonym, and the metric cardinality ceiling was deliberately raised from 80
+  to 96 for the new vocabularies. Changed: new `packages/core/src/tenantchat/
+  core/budgets.py`, `providers/{fallback,cache}.py`; edited `tenant.py`,
+  `resilience.py` (public `is_retryable` predicate), `metrics.py`, `nodes.py`,
+  `dependencies.py`, `settings.py`, `app.py`, `agent.py`, `registry.py`, the
+  API metrics adapter, `.env.example`; new tests `test_budgets.py`,
+  `test_fallback.py`, `test_response_cache.py`, `test_ai002_wiring.py`.
+  Verified: `make check` (1591 hermetic Python tests plus the frontend suite;
+  lock, lint, format, mypy strict, coverage at 83.7% against the 80% floor,
+  deployment security, and image contracts clean). Follow-ups: a durable
+  multi-process usage ledger behind the `BudgetLedger` port (the in-memory
+  enforcer is correct for one process, like the in-memory rate-limit store),
+  and `AI-002`'s noted budget-tuning against `PromptBudget` defaults remains for
+  the turn that configures real provider pricing.
 
 ### AI-003 — Versioned prompt assembly and template registry
 

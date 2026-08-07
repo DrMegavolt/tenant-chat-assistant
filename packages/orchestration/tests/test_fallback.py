@@ -65,11 +65,9 @@ class _StubModel:
         response: ModelResponse,
         *,
         failure: BaseException | None = None,
-        name: str = "stub",
     ) -> None:
         self._response = response
         self._failure = failure
-        self._name = name
         self.calls = 0
 
     async def complete(
@@ -83,10 +81,6 @@ class _StubModel:
         if self._failure is not None:
             raise self._failure
         return self._response
-
-    @property
-    def name(self) -> str:
-        return self._name
 
 
 def _chain(*models: _StubModel, metrics: _RecordingMetrics | None = None) -> FallbackChatModel:
