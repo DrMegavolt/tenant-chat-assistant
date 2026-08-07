@@ -92,6 +92,7 @@ export function AccessConsole({ api, tenants, initialTenantId }: AccessConsolePr
           return;
         }
         setNotFound(false);
+        setError(null);
         setPermissions(view);
         setEvents(rows);
       } catch {
