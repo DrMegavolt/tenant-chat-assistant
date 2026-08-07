@@ -81,7 +81,10 @@ class DiagnosisCause(StrEnum):
     ``stale_source`` through ``query_rewrite_error`` are part of the taxonomy
     but are not decidable from the record alone, so :func:`diagnose` never
     emits them: a cause that can only be suspected is a review note, not a
-    dimension.
+    dimension. ``injection_quarantine`` is the one exception that reads like
+    intent but is proven by the record: a tool call the server-owned guard
+    refused (``verdicts.refused_tools``) happened, whatever the model meant
+    by it.
     """
 
     STALE_SOURCE = "stale_source"
@@ -95,6 +98,7 @@ class DiagnosisCause(StrEnum):
     PROMPT_REGRESSION = "prompt_regression"
     MODEL_BEHAVIOR = "model_behavior"
     GROUNDING_OR_CITATION_ERROR = "grounding_or_citation_error"
+    INJECTION_QUARANTINE = "injection_quarantine"
     TOOL_ERROR = "tool_error"
     APPLICATION_ERROR = "application_error"
     PROVIDER_FAILURE = "provider_failure"
@@ -422,6 +426,19 @@ def diagnose(trace: Mapping[str, object]) -> tuple[DiagnosisRecord, ...]:
                     evidence=(f"tools.result.error:{code}",),
                 )
             )
+
+    refused = _list_of_str(verdicts.get("refused_tools"))
+    if refused:
+        records.append(
+            DiagnosisRecord(
+                cause=DiagnosisCause.INJECTION_QUARANTINE,
+                stage=DiagnosisStage.TOOLS,
+                role=DiagnosisRole.PRIMARY,
+                status=DiagnosisStatus.DETECTED,
+                confidence=DiagnosisConfidence.HIGH,
+                evidence=tuple(f"verdicts.refused_tools:{tool}" for tool in refused),
+            )
+        )
 
     return tuple(records)
 

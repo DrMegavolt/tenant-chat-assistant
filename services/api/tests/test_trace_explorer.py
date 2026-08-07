@@ -452,6 +452,15 @@ def _seeded_cases() -> tuple[SeededCase, ...]:
             "claims_invalid": [],
         },
         "outcome": {"status": "abstained", "rounds": 0, "failure": "insufficient_evidence"},
+        "diagnoses": [
+            _diagnosis(
+                "injection_quarantine",
+                stage="tools",
+                status="detected",
+                confidence="high",
+                evidence=("verdicts.refused_tools:book_appointment",),
+            )
+        ],
     }
 
     rows = (
@@ -558,8 +567,8 @@ def _seeded_cases() -> tuple[SeededCase, ...]:
             10,
             "injection_quarantine",
             "abstained",
-            (),
-            (),
+            ("injection_quarantine",),
+            ("detected",),
             quarantine,
             {
                 "outcome": "abstained",
@@ -867,6 +876,7 @@ class TestTheSixFilters:
             "grounding_or_citation_error",
             "tool_error",
             "ingestion_or_index_error",
+            "injection_quarantine",
         ):
             found = _search(client, TRACE_TENANT, cause=cause)
             assert found, f"cause filter {cause} returned nothing"
@@ -1197,9 +1207,10 @@ class TestTheTenCaseWalkthrough:
     def test_ten_cases_are_locatable_drillable_and_where_relevant_replayable(
         self,
     ) -> None:
-        """The Gate B acceptance script's ten cases, end to end: six-filter
-        locate, full-record drill, and a replay result for the cases whose
-        stored prompts reconstruct."""
+        """The FEAT-015 contract across the ten seeded records: six-filter
+        locate, full-record drill, and replay where the stored prompt
+        reconstructs. The records are planted by hand, so this proves the
+        explorer surface — never the graph that produces real traces."""
         model = ScriptedModel(
             [
                 ModelResponse(

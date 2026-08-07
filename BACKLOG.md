@@ -291,11 +291,11 @@ runbooks.
 - [x] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
 - [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
 - [x] `RAG-008` — RAG evaluation and regression suite — `P1`
-- [ ] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
-- [ ] `OBS-001` — Structured logging and request correlation — `P1`
+- [x] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
+- [x] `OBS-001` — Structured logging and request correlation — `P1`
 - [x] `OBS-002` — LLM, RAG, tool, and business metrics — `P1`
 - [x] `OBS-004` — Inference trace, answer provenance, and failure attribution — `P1`
-- [ ] `PRIV-002` — Inference trace data plane, retention, and access control — `P1`
+- [x] `PRIV-002` — Inference trace data plane, retention, and access control — `P1`
 
 ### P1 demo-critical business actions
 
