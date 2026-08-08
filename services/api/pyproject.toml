@@ -18,6 +18,10 @@ dependencies = [
     # SQLAlchemy's async facade uses greenlet even with a native async driver.
     # Declare it explicitly because SQLAlchemy's optional marker misses macOS arm64.
     "greenlet==3.5.4",
+    # L8-OTEL: OTel SDK and OTLP HTTP exporter for span emission to the collector.
+    "opentelemetry-api>=1.28,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.28,<2",
+    "opentelemetry-sdk>=1.28,<2",
     "psycopg[binary]==3.2.3",
     "pydantic==2.10.5",
     # FastAPI multipart forms need the parser at runtime; declared explicitly

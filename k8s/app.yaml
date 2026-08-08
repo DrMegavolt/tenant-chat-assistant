@@ -826,6 +826,8 @@ spec:
       app: chat-backend
   template:
     metadata:
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
       labels:
         app: chat-backend
         app.kubernetes.io/name: chat-backend
@@ -961,6 +963,8 @@ spec:
       app: job-worker
   template:
     metadata:
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: llm-chat/python-instrumentation
       labels:
         app: job-worker
         app.kubernetes.io/name: job-worker
@@ -976,6 +980,8 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: OTEL_SERVICE_NAME
+              value: job-worker
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

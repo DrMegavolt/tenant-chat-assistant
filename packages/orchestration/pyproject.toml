@@ -26,6 +26,9 @@ dependencies = [
     # orchestration package imports it directly; it is already in the resolved
     # graph via langgraph-core, so this only makes the direct dependency explicit.
     "httpx==0.28.1",
+    # L8-OTEL: content-free GenAI-convention spans. Only the API (no SDK) lives
+    # here; the tracer-provider setup is the API service's responsibility.
+    "opentelemetry-api>=1.28,<2",
 ]
 
 [build-system]
