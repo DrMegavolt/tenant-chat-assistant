@@ -187,6 +187,52 @@ kubectl get svc -n llm-chat web web-lb -o wide
 kubectl get svc -n identity keycloak keycloak-lb -o wide
 ```
 
+## Trace viewers (OBS-004)
+
+Arize Phoenix and MLflow are deployed side by side in `observability` as
+candidate viewers for the operational plane, so the choice ADR-0010 defers to
+`OBS-004` can be made against the same span stream rather than from
+documentation. Both are projections: deleting either loses no provenance,
+because the turn record in Postgres is the system of record.
+
+Phoenix stores its credentials in a `phoenix-secret` the operator creates, so
+that `helm upgrade` cannot rotate `PHOENIX_SECRET` and invalidate everything
+Phoenix has encrypted with it:
+
+```bash
+kubectl create secret generic phoenix-secret -n observability \
+  --from-literal=PHOENIX_SECRET="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 40)" \
+  --from-literal=PHOENIX_ADMIN_SECRET="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 40)" \
+  --from-literal=PHOENIX_POSTGRES_PASSWORD='postgres' \
+  --from-literal=PHOENIX_SMTP_PASSWORD='' \
+  --from-literal=PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 40)"
+```
+
+```bash
+helm upgrade --install phoenix \
+  oci://registry-1.docker.io/arizephoenix/phoenix-helm --version 11.0.16 \
+  --namespace observability -f k8s/helm/phoenix/values.yaml --wait
+
+helm repo add community-charts https://community-charts.github.io/helm-charts
+helm upgrade --install mlflow community-charts/mlflow --version 1.11.4 \
+  --namespace observability -f k8s/helm/mlflow/values.yaml --wait
+
+kubectl apply -f k8s/trace-viewers.yaml
+kubectl apply -f k8s/otel-collector.yaml
+```
+
+`PHOENIX_ADMIN_SECRET` doubles as a pre-shared bearer token, which is what lets
+the collector's exporter be declarative instead of depending on a key minted by
+hand in the Phoenix UI. The admin password for browser login is in the same
+Secret under `PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD`.
+
+Both exporters sit in the traces pipeline behind the `redaction` processor, so
+neither viewer can receive prompt, evidence, or contact text regardless of what
+the application emits. Turning on `TRACE_CONTENT_EXPORT` is a separate decision
+that ADR-0010 gates on the viewer being authenticated and inside the trust
+boundary — Phoenix already satisfies that; MLflow, deployed here with host
+validation disabled for kubelet probes, does not.
+
 ## Identity provider
 
 `k8s/helm/keycloak/` is a Helm chart deploying Keycloak into the `identity`

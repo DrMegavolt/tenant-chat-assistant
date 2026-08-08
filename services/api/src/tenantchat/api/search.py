@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -42,6 +43,8 @@ from tenantchat.core.resilience import (
 # per-request client (the prototype's shape) never reuses a connection, so every
 # call paid for a TCP handshake and TLS setup.
 _HTTP_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+
+logger = logging.getLogger(__name__)
 
 
 def _classify_http_error(exc: Exception) -> FailureKind:
@@ -461,9 +464,7 @@ class ElasticsearchSearchIndex:
         if version_id is not None:
             must = query["query"]["bool"]["must"]
             must.append({"term": {"version_id": str(version_id)}})
-        response = await self._request(
-            "POST", self._url("_count"), json.dumps(query), use_index=True
-        )
+        response = await self._request("POST", "_count", json.dumps(query), use_index=True)
         return int(response.get("count", 0))
 
     async def active_embedding_models(
@@ -482,9 +483,7 @@ class ElasticsearchSearchIndex:
                 }
             },
         }
-        response = await self._request(
-            "POST", self._url("_search"), json.dumps(query), use_index=True
-        )
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
         buckets = response.get("aggregations", {}).get("models", {}).get("buckets", [])
         return tuple(str(bucket["key"]) for bucket in buckets)
 
@@ -504,9 +503,7 @@ class ElasticsearchSearchIndex:
                 }
             },
         }
-        response = await self._request(
-            "POST", self._url("_search"), json.dumps(query), use_index=True
-        )
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
         buckets = response.get("aggregations", {}).get("versions", {}).get("buckets", [])
         version_ids = [uuid.UUID(str(bucket["key"])) for bucket in buckets]
         return tuple(sorted(version_ids))
@@ -526,11 +523,24 @@ class ElasticsearchSearchIndex:
                 }
             },
         }
-        response = await self._request(
-            "POST", self._url("_search"), json.dumps(query), use_index=True
-        )
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
         hits = response.get("hits", {}).get("hits", [])
-        return tuple(_chunk_from_hit(hit) for hit in hits)
+        # A document this adapter did not write is skipped, not raised on. The
+        # index is derived and shared — the retired prototype ingester still
+        # leaves chunks keyed `doc_id` — and one foreign document must not cost
+        # a tenant every answer it could have grounded. `chunk_by_id` stays
+        # strict: there the caller named one chunk and a silent miss would
+        # drop a citation the answer already made.
+        chunks: list[IndexedChunk] = []
+        for hit in hits:
+            try:
+                chunks.append(_chunk_from_hit(hit))
+            except (ValueError, SearchIndexOperationError):
+                logger.warning(
+                    "skipped an unreadable chunk in the retrieval pool",
+                    extra={"chunk_id": hit.get("_id"), "index": self._index_name},
+                )
+        return tuple(chunks)
 
     async def chunk_by_id(self, *, tenant_id: str, chunk_id: str) -> IndexedChunk | None:
         query = {
@@ -545,9 +555,7 @@ class ElasticsearchSearchIndex:
                 }
             },
         }
-        response = await self._request(
-            "POST", self._url("_search"), json.dumps(query), use_index=True
-        )
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
         hits = response.get("hits", {}).get("hits", [])
         if not hits:
             return None
@@ -587,6 +595,13 @@ class ElasticsearchSearchIndex:
     async def _request(
         self, method: str, url: str, body: str, *, use_index: bool = False, allow_404: bool = True
     ) -> dict[str, Any]:
+        """Issue one request.
+
+        ``url`` is an absolute URL, or — when ``use_index`` is set — a suffix
+        below the index that this method resolves. Passing an already-resolved
+        URL *and* ``use_index`` concatenates the two, which Elasticsearch
+        answers with a 400 that surfaces only as an unavailable retriever.
+        """
         if use_index:
             url = self._url(url)
         try:

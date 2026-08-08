@@ -1,0 +1,51 @@
+# MLflow — OBS-004 candidate trace viewer, deployed beside Phoenix so the two
+# can be compared on the same span stream before one is chosen.
+#
+# Same ADR-0010 status as Phoenix: a projection fed by the collector, holding
+# only what survives the redaction allowlist. MLflow's OTLP receiver is
+# HTTP-only and routes by the `x-mlflow-experiment-id` header, which the
+# collector supplies.
+#
+# SQLite on a PVC rather than Postgres: this is an evaluation deployment with a
+# single writer, and `helm uninstall` plus one PVC delete removes it completely.
+# Promoting it means switching backendStore to postgres, not rewriting this.
+
+replicaCount: 1
+
+backendStore:
+  databaseMigration: true
+  defaultSqlitePath: /mlflow-data/mlflow.db
+
+artifactRoot:
+  defaultArtifactRoot: /mlflow-data/mlartifacts
+
+extraVolumes:
+  - name: mlflow-data
+    persistentVolumeClaim:
+      claimName: mlflow-data
+
+extraVolumeMounts:
+  - name: mlflow-data
+    mountPath: /mlflow-data
+
+service:
+  type: ClusterIP
+  port: 80
+  containerPort: 5000
+
+# MLflow 3.x rejects requests whose Host header is not on this list. Kubelet
+# probes address the pod by its scheduled IP, which no static list can predict,
+# so host validation cannot be both enabled and correct here. The viewer is
+# reachable only on the LAN and holds content-free spans; the collector, not
+# this middleware, is what controls who can write to it.
+serverAllowedHosts:
+  - "*"
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    # 1Gi OOM-killed the uvicorn worker set within ten seconds of startup.
+    memory: 3Gi

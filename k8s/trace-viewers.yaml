@@ -1,0 +1,64 @@
+# OBS-004 trace-viewer projections: storage and LAN exposure.
+#
+# The Helm charts keep their own Services ClusterIP so upgrades cannot move an
+# address; these Services own the MetalLB allocation, matching
+# k8s/public-loadbalancers.yaml and k8s/observability-exposure.yaml.
+#
+# Both viewers hold operational-plane spans only. They are not authorized to
+# receive prompt or evidence text, and the collector's redaction allowlist —
+# not their own configuration — is what guarantees that.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-data
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: phoenix-lb
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: phoenix
+    app.kubernetes.io/part-of: tenant-chat
+    tenantchat.openai.com/exposure: public-loadbalancer
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 192.168.1.182
+  externalTrafficPolicy: Cluster
+  selector:
+    app: phoenix
+  ports:
+    - name: http
+      port: 6006
+      targetPort: 6006
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-lb
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/part-of: tenant-chat
+    tenantchat.openai.com/exposure: public-loadbalancer
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 192.168.1.183
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/instance: mlflow
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000

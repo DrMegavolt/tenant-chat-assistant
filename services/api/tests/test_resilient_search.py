@@ -475,3 +475,120 @@ class TestSearchObservability:
             if name == "tenantchat_circuit_state"
         }
         assert state[frozenset({("dependency", "search"), ("state", "closed")})] == 1.0
+
+
+class TestSearchUrls:
+    """Every read path must address the index exactly once.
+
+    `_request(..., use_index=True)` resolves its `url` argument below the
+    index, so passing an already-resolved URL produced
+    `http://search:9200/<index>/http://search:9200/<index>/_search`.
+    Elasticsearch answered 400, the evidence source raised, and the turn
+    recorded `retriever_version: "unavailable"` — an abstention indistinguishable
+    from a genuine no-match, on every grounded answer.
+    """
+
+    def _capture(self, call: str) -> str:
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={"count": 0, "hits": {"hits": []}, "aggregations": {}},
+            )
+
+        index = _index(httpx.MockTransport(handler), applied=policy())
+
+        async def invoke() -> None:
+            try:
+                if call == "active_chunks":
+                    await index.active_chunks(tenant_id="t1")
+                elif call == "chunk_by_id":
+                    await index.chunk_by_id(tenant_id="t1", chunk_id="c1")
+                elif call == "active_version_ids":
+                    await index.active_version_ids(tenant_id="t1", document_id=uuid.uuid4())
+                elif call == "active_embedding_models":
+                    await index.active_embedding_models(tenant_id="t1", version_id=uuid.uuid4())
+                else:
+                    await index.active_chunk_count(tenant_id="t1")
+            finally:
+                await index.close()
+
+        asyncio.run(invoke())
+        assert len(seen) == 1
+        return seen[0]
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            # The evidence source reads through this one, so a doubled URL here
+            # disables retrieval for every turn.
+            "active_chunks",
+            "chunk_by_id",
+            "active_version_ids",
+            "active_embedding_models",
+            "active_chunk_count",
+        ],
+    )
+    def test_a_read_url_names_the_index_once(self, call: str) -> None:
+        url = self._capture(call)
+
+        assert url.startswith(f"http://search:9200/{INDEX_NAME}/")
+        assert url.count(INDEX_NAME) == 1
+        assert url.count("http://") == 1
+
+
+class TestForeignDocuments:
+    def test_an_unreadable_chunk_does_not_empty_the_retrieval_pool(self) -> None:
+        """One foreign document must not cost a tenant every grounded answer.
+
+        The index is derived and shared: the retired prototype ingester keys
+        its chunks `doc_id`, and `IndexedChunk.from_document` rejects those.
+        Raising on the pool read made a single such document surface as
+        `retriever_version: "unavailable"` for every turn in that tenant —
+        an abstention indistinguishable from having no knowledge at all.
+        """
+        readable = {
+            "_id": "chunk-1",
+            "_source": {
+                "tenant_id": "t1",
+                "domain": "policy",
+                "document_id": str(uuid.uuid4()),
+                "version_id": str(uuid.uuid4()),
+                "generation_id": str(uuid.uuid4()),
+                "title": "Fees",
+                "section": "3. Fees and Rates",
+                "text": "The emergency after-hours call-out fee is $145.",
+                "embedding_model": "test-model",
+                "embedding": [0.1, 0.2],
+                "active": True,
+                "created_at": "2026-08-07T00:00:00+00:00",
+            },
+        }
+        # The prototype's shape: `doc_id` instead of `document_id`.
+        foreign = {
+            "_id": "legacy-1",
+            "_source": {
+                "tenant_id": "t1",
+                "doc_id": "financing-overview",
+                "chunk_id": "legacy-1",
+                "text": "Financing is available.",
+                "active": True,
+                "created_at": "2026-08-07T00:00:00+00:00",
+            },
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"hits": {"hits": [foreign, readable]}})
+
+        index = _index(httpx.MockTransport(handler), applied=policy())
+
+        async def invoke() -> tuple[str, ...]:
+            try:
+                chunks = await index.active_chunks(tenant_id="t1")
+                return tuple(chunk.chunk_id for chunk in chunks)
+            finally:
+                await index.close()
+
+        assert asyncio.run(invoke()) == ("chunk-1",)

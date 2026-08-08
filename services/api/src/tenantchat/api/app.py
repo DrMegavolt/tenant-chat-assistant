@@ -22,6 +22,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from tenantchat.api.actions import RecordedBookingService
 from tenantchat.api.agent import build_conversation_runtime
 from tenantchat.api.correlation import CorrelationMiddleware
+from tenantchat.api.evidence import RetrievalEvidenceSource
 from tenantchat.api.faults import TransportError
 from tenantchat.api.guards import (
     BodySizeLimitMiddleware,
@@ -71,6 +72,7 @@ from tenantchat.api.problems import (
 )
 from tenantchat.api.redaction import install_pii_log_filter
 from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
+from tenantchat.api.retrieval import HybridRetrieverConfig
 from tenantchat.api.routers import (
     admin,
     bookings,
@@ -88,6 +90,8 @@ from tenantchat.api.routers import (
 )
 from tenantchat.api.search import (
     ElasticsearchSearchIndex,
+    Embedder,
+    EmbeddingServiceClient,
     InMemorySearchIndex,
     SearchIndex,
 )
@@ -651,6 +655,31 @@ def create_app(
         object_store = MemoryObjectStore()
         search_index = InMemorySearchIndex()
 
+    # `RAG-005`: without this the runtime is handed `evidence=None` and answers
+    # every turn from the prompt alone — no retrieval, no citations, and no
+    # abstention — while the index beside it holds the tenant's approved
+    # knowledge. A caller that injected its own source keeps it.
+    owned_query_embedder: Embedder | None = None
+    if (
+        evidence_source is None
+        and search_index is not None
+        and knowledge_store is not None
+        and resolved.embedding_url is not None
+    ):
+        owned_query_embedder = EmbeddingServiceClient(
+            base_url=resolved.embedding_url,
+            token=resolved.embedding_token,
+            policy=resolved.embedding_resilience,
+            metrics=METRICS,
+        )
+        evidence_source = RetrievalEvidenceSource(
+            index=search_index,
+            embedder=owned_query_embedder,
+            knowledge=knowledge_store,
+            config=HybridRetrieverConfig(),
+            metrics=METRICS,
+        )
+
     # SEC-002: the visitor credential signer. Production composition required
     # the key above, so every real deployment signs with a shared secret it
     # holds. A test composition without a key gets an ephemeral one: sessions
@@ -742,6 +771,10 @@ def create_app(
                 closing.push_async_callback(owned.close)
             if isinstance(search_index, ElasticsearchSearchIndex):
                 closing.push_async_callback(search_index.close)
+            # Only the client this composition built: an injected evidence
+            # source owns whatever it was given.
+            if isinstance(owned_query_embedder, EmbeddingServiceClient):
+                closing.push_async_callback(owned_query_embedder.close)
             # Opened here rather than in the builder because the checkpointer
             # owns a connection pool, and a pool created at import time outlives
             # nothing and belongs to no event loop.

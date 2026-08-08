@@ -8,6 +8,16 @@ spec:
   managementState: managed
   image: otel/opentelemetry-collector-contrib:0.127.0@sha256:e94cfd92357aa21f4101dda3c0c01f90e6f24115ba91b263c4d09fed7911ae68
   replicas: 1
+  env:
+    # Phoenix runs with authentication on, so the projection cannot be written
+    # to by anything else on the LAN. PHOENIX_ADMIN_SECRET doubles as a
+    # pre-shared bearer token, which keeps the exporter declarative — no key
+    # minted by hand through the UI and pasted into a manifest.
+    - name: PHOENIX_ADMIN_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: phoenix-secret
+          key: PHOENIX_ADMIN_SECRET
   ports:
     - name: otlp-grpc
       port: 4317
@@ -105,13 +115,28 @@ spec:
           insecure: true
       prometheus:
         endpoint: 0.0.0.0:8889
+      # OBS-004 viewer projections. Both sit in the same traces pipeline as
+      # Tempo, downstream of `redaction`, which is what makes adding them a
+      # configuration change rather than a privacy decision. Both speak
+      # OTLP/HTTP only — neither accepts gRPC — so they cannot reuse the Tempo
+      # exporter's transport.
+      otlphttp/phoenix:
+        endpoint: http://phoenix-svc.observability.svc.cluster.local:6006
+        headers:
+          authorization: "Bearer ${env:PHOENIX_ADMIN_SECRET}"
+      otlphttp/mlflow:
+        endpoint: http://mlflow.observability.svc.cluster.local
+        headers:
+          # MLflow routes spans to an experiment by header; 0 is the Default
+          # experiment every server creates on first start.
+          x-mlflow-experiment-id: "0"
 
     service:
       pipelines:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, redaction, batch]
-          exporters: [otlp/tempo]
+          exporters: [otlp/tempo, otlphttp/phoenix, otlphttp/mlflow]
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, redaction, batch]
