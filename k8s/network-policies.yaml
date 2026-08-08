@@ -158,6 +158,48 @@ spec:
       ports:
         - { protocol: TCP, port: 8003 }
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-chat-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8004 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-job-worker-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: job-worker
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { protocol: TCP, port: 8005 }
+---
 # The API serves the visitor and admin surfaces on the single port 8004; the
 # prototype's separate public listener (8000) and its call out to the financing
 # agent are gone.  Postgres remains reachable for the persistence adapters.
@@ -492,7 +534,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: [chat-backend, embedding-service, ingestion-service, financing-agent]
+        values: [chat-backend, job-worker, embedding-service, ingestion-service, financing-agent]
   policyTypes: [Egress]
   egress:
     - to:

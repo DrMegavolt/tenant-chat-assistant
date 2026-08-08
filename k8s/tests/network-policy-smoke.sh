@@ -71,8 +71,8 @@ create_client() {
 }
 
 create_server web 8080
-# One Service backs the single-port API workload; prometheus has no scrape
-# policy for it because the API exposes no /metrics yet (OBS-002).
+# The API serves /metrics on port 8004; the prometheus caller is admitted by
+# allow-prometheus-chat-metrics.
 create_server chat-backend 8004
 kubectl -n "$target_ns" expose pod chat-backend \
   --name=chat-admin --port=8004 --target-port=8004 >/dev/null
@@ -166,6 +166,7 @@ expect_allowed "$target_ns" web oauth2-proxy 4180
 expect_allowed "$observability_ns" prometheus embedding-service 8001
 expect_allowed "$observability_ns" prometheus ingestion-service 8002
 expect_allowed "$observability_ns" prometheus financing-agent 8003
+expect_allowed "$observability_ns" prometheus chat-backend 8004
 expect_allowed "$target_ns" chat-backend postgres 5432
 expect_allowed "$target_ns" financing-agent embedding-service 8001
 expect_allowed "$target_ns" financing-agent elasticsearch 9200
