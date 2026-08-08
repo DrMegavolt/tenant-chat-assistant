@@ -56,13 +56,17 @@ least two lines sharing one `trace_id`:
   during a request logs under the request's trace with the same tenant
   pseudonym. The payload fingerprint ignores the trace field — a retried
   enqueue with a fresh trace is still the same work.
-- **Financing, embedding, retrieval**: a service calling an internal service
-  attaches `X-Request-Id` and `X-Trace-Id` via the correlation context, and the
-  callee binds them into its own context. The side services already forward the
-  headers hop by hop (financing → embedding, ingestion → embedding); RAG wiring
-  that calls them from the API does the same through `correlation_headers()`.
-  Because the context is ambient, every future tool that logs inside a request
-  lines up under the same trace without new plumbing.
+- **Internal services**: every outbound call the API makes to an internal
+  service — Elasticsearch and the embedding service — attaches `X-Request-Id`
+  and `X-Trace-Id` via `correlation_headers()`. Because the correlation context
+  is ambient (a `contextvars.ContextVar`), the infrastructure clients
+  (`ElasticsearchSearchIndex` and `EmbeddingServiceClient`) read it at call
+  time and merge the headers into each request automatically. A tool or graph
+  node that logs inside a request inherits the same trace without new plumbing.
+  The job worker uses the same clients; its bound context (from the enqueuing
+  request's payload) flows through to every internal call the worker makes.
+  Headers are placed only on internal-service calls and never on a third-party
+  provider call (e.g. an LLM API).
 
 To follow a turn: take `request_id` from any problem document or response
 header, then filter the log store for that `request_id` (or the `trace_id` it

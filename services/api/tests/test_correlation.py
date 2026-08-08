@@ -10,6 +10,7 @@ deployment would ship.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import io
 import json
@@ -17,6 +18,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -34,6 +36,10 @@ from tenantchat.api.correlation import (
 )
 from tenantchat.api.logging_setup import build_json_handler
 from tenantchat.api.problems import REQUEST_ID_HEADER
+from tenantchat.api.search import (
+    ElasticsearchSearchIndex,
+    EmbeddingServiceClient,
+)
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.orchestration.checkpoints import InMemorySaver
 
@@ -285,3 +291,98 @@ class TestTracedTurn:
 
         lines = _json_lines(captured_logs)
         assert not any(line.get("event") == "request completed" for line in lines)
+
+
+class TestCorrelationPropagation:
+    def test_elasticsearch_index_carries_correlation_headers(self) -> None:
+        captured_headers: list[httpx.Headers] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_headers.append(request.headers)
+            return httpx.Response(200, json={"count": 0})
+
+        bind(CorrelationContext(request_id="req-es", trace_id="trace-es"))
+        try:
+            index = ElasticsearchSearchIndex(
+                base_url="http://search:9200",
+                username="elastic",
+                password="pw",
+                index_name="test-index",
+                transport=httpx.MockTransport(handler),
+            )
+
+            async def invoke() -> None:
+                try:
+                    await index.active_chunk_count(tenant_id="t1")
+                finally:
+                    await index.close()
+
+            asyncio.run(invoke())
+        finally:
+            reset()
+
+        assert len(captured_headers) >= 1
+        sent = captured_headers[0]
+        assert sent.get(REQUEST_ID_HEADER) == "req-es"
+        assert sent.get(TRACE_ID_HEADER) == "trace-es"
+
+    def test_embedding_service_carries_correlation_headers(self) -> None:
+        captured_headers: list[httpx.Headers] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_headers.append(request.headers)
+            return httpx.Response(
+                200,
+                json={"model": "test", "dimensions": 4, "embeddings": [[0.1, 0.1, 0.1, 0.1]]},
+            )
+
+        bind(CorrelationContext(request_id="req-emb", trace_id="trace-emb"))
+        try:
+            client = EmbeddingServiceClient(
+                base_url="http://embed:8080",
+                token=None,
+                transport=httpx.MockTransport(handler),
+            )
+
+            async def invoke() -> None:
+                try:
+                    await client.embed(["hello"])
+                finally:
+                    await client.close()
+
+            asyncio.run(invoke())
+        finally:
+            reset()
+
+        assert len(captured_headers) >= 1
+        sent = captured_headers[0]
+        assert sent.get(REQUEST_ID_HEADER) == "req-emb"
+        assert sent.get(TRACE_ID_HEADER) == "trace-emb"
+
+    def test_no_correlation_headers_when_context_not_bound(self) -> None:
+        captured_headers: list[httpx.Headers] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_headers.append(request.headers)
+            return httpx.Response(200, json={"count": 0})
+
+        index = ElasticsearchSearchIndex(
+            base_url="http://search:9200",
+            username=None,
+            password=None,
+            index_name="test-index",
+            transport=httpx.MockTransport(handler),
+        )
+
+        async def invoke() -> None:
+            try:
+                await index.active_chunk_count(tenant_id="t1")
+            finally:
+                await index.close()
+
+        asyncio.run(invoke())
+
+        assert len(captured_headers) >= 1
+        sent = captured_headers[0]
+        assert REQUEST_ID_HEADER not in sent
+        assert TRACE_ID_HEADER not in sent
