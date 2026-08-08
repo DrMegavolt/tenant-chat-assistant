@@ -1,0 +1,56 @@
+# Release template. Runs `scripts/seed_knowledge.py` to seed governed knowledge
+# for both demo tenants through the real ingestion lifecycle — upload, approve,
+# publish, and poll the durable ingestion job to completion. Idempotent on re-run.
+#
+# This replaces the legacy `seed-ingestion-job.yaml` for the governed pipeline.
+# The legacy job still populates the financing side-agent's separate Elasticsearch
+# index and runs alongside this one.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-knowledge
+  namespace: llm-chat
+  labels:
+    app.kubernetes.io/name: seed-knowledge
+    app.kubernetes.io/component: ingestion-seed
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seed-knowledge
+        app.kubernetes.io/component: ingestion-seed
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: registry.example.invalid/tenantchat/api@sha256:REPLACE_WITH_API_DIGEST
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command:
+            - /app/.venv/bin/python
+            - /app/scripts/seed_knowledge.py
+          env:
+            - name: API_BASE_URL
+              value: http://chat-admin:8004
+            - name: ADMIN_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: admin-gateway-credentials
+                  key: token
+            - name: ADMIN_CSRF_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: admin-csrf-secret
+                  key: secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault

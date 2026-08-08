@@ -15,7 +15,7 @@ NPM := npm --prefix frontend
 	dev worker js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
-	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate
+	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate seed-knowledge
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -137,6 +137,9 @@ keycloak-check: keycloak-lint keycloak-test ## Lint and verify the Keycloak char
 
 image-contracts: ## Verify immutable image and Kubernetes artifact contracts
 	$(UV_RUN) python scripts/verify_image_contracts.py
+
+seed-knowledge: ## Seed governed knowledge for both demo tenants through the real lifecycle
+	$(UV_RUN) python scripts/seed_knowledge.py
 
 images-build: ## Build all five deployable images and record local metadata/digests
 	./scripts/build_images.sh

@@ -367,6 +367,29 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "token",
         )
 
+    governed_seed = _document_for(documents, "Job", "seed-knowledge")
+    if governed_seed is None:
+        errors.append("Job/seed-knowledge: missing from deployment input")
+    else:
+        _require_env_ref(
+            errors,
+            governed_seed[1],
+            "seed-knowledge",
+            "ADMIN_GATEWAY_TOKEN",
+            "secretKeyRef",
+            "admin-gateway-credentials",
+            "token",
+        )
+        _require_env_ref(
+            errors,
+            governed_seed[1],
+            "seed-knowledge",
+            "ADMIN_CSRF_SECRET",
+            "secretKeyRef",
+            "admin-csrf-secret",
+            "secret",
+        )
+
 
 def _check_examples(errors: list[str]) -> None:
     examples = [ROOT / ".env.example", *sorted((K8S_DIR / "examples").glob("*.env.example"))]
