@@ -74,7 +74,13 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 # ``2`` added the ``executed_graph`` section under it. A record written at ``1``
 # has no such section, and a viewer shows it in the derived form — labelled as
 # derived — exactly like a ``2`` record whose listener failed.
-TRACE_SCHEMA_VERSION: Final = "2"
+#
+# ``3`` added the ``original_message``, ``resolved_query``, and ``plan`` fields
+# to the retrieval section. A ``2`` or ``1`` record carries only ``query``, the
+# original user message; a ``3`` record carries both the raw message and the
+# planner's resolved standalone query, exposed by the retrieval funnel when they
+# differ.
+TRACE_SCHEMA_VERSION: Final = "3"
 
 DETECTOR_VERSION: Final = "diagnosis@1"
 
@@ -562,8 +568,12 @@ def _retrieval_section(
     meta = _mapping(state.get("evidence_meta"))
     if not meta:
         return None
-    return {
-        "query": _latest_user_message(history),
+    original = _latest_user_message(history)
+    resolved = meta.get("query")
+    plan = meta.get("plan")
+    section: dict[str, object] = {
+        "query": original,
+        "original_message": original,
         "sufficient": bool(meta.get("sufficient")),
         "retriever_version": str(meta.get("retriever_version", "")),
         "reranker": meta.get("reranker"),
@@ -584,6 +594,11 @@ def _retrieval_section(
         ],
         "evidence": evidence,
     }
+    if resolved is not None:
+        section["resolved_query"] = resolved
+    if plan is not None:
+        section["plan"] = plan
+    return section
 
 
 def _tools_section(

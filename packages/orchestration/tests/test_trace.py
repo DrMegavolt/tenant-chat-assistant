@@ -170,7 +170,7 @@ def test_the_trace_carries_the_schema_version_and_turn_index() -> None:
     """The shape version is the reader's contract; the index the query key."""
     trace = build_turn_trace(_answered(), pending=None)
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "3"
     assert trace["turn_index"] == 1
 
 
@@ -186,6 +186,7 @@ def test_the_retrieval_section_names_candidates_filters_and_budgets() -> None:
     trace = build_turn_trace(_answered(), pending=None)
     retrieval = _section(trace, "retrieval")
     assert retrieval["query"] == "What are your hours?"
+    assert retrieval["original_message"] == "What are your hours?"
     assert retrieval["sufficient"] is True
     assert retrieval["retriever_version"] == "search@1"
     assert retrieval["reranker"] == "bigram-overlap"
@@ -805,14 +806,14 @@ def _executed_section(**overrides: object) -> dict[str, object]:
     } | overrides
 
 
-def test_a_captured_executed_graph_section_is_recorded_under_schema_version_2() -> None:
+def test_a_captured_executed_graph_section_is_recorded_under_schema_version_3() -> None:
     """The `OBS-006` capture lands in the trace beside the derived content."""
     trace = build_turn_trace(
         _answered(executed_graph=_executed_section()),
         pending=None,
     )
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "2"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "3"
     assert _section(trace, "executed_graph") == _executed_section()
 
 
@@ -934,3 +935,66 @@ def test_a_crashed_turn_is_recorded_as_failed_with_an_application_error() -> Non
             ("outcome.failure:application_error",),
         )
     ]
+
+
+def test_the_retrieval_section_carries_resolved_query_when_the_plan_provides_one() -> None:
+    """A multi-turn message resolved from a pronoun reference carries both forms.
+
+    ``query`` and ``original_message`` keep the raw visitor input ("it"),
+    ``resolved_query`` carries the planner's standalone resolution, and
+    ``plan`` carries the full planning record so every decision is checkable.
+    """
+    meta = _evidence_meta(query="Clearview HVAC maintenance How much does it cost?")
+    meta["plan"] = {
+        "planner_version": "query-planning@1",
+        "tenant_id": "clearview",
+        "workflow": "general",
+        "query": "Clearview HVAC maintenance How much does it cost?",
+        "mode": "resolve_pronoun",
+        "topic": "Clearview HVAC maintenance",
+        "entities": ["Clearview HVAC maintenance"],
+        "history_used": 1,
+        "reset": False,
+    }
+    trace = build_turn_trace(
+        _answered(
+            evidence_meta=meta,
+            transcript=[
+                {
+                    "role": "user",
+                    "content": "I need Clearview HVAC maintenance",
+                    "tool_calls": [],
+                    "tool_call_id": "",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Sure, let me look up our maintenance plans.",
+                    "tool_calls": [],
+                    "tool_call_id": "",
+                },
+                {
+                    "role": "user",
+                    "content": "How much does it cost?",
+                    "tool_calls": [],
+                    "tool_call_id": "",
+                },
+                {
+                    "role": "assistant",
+                    "content": "The maintenance plan costs $199 per year. [evidence:doc-1]",
+                    "tool_calls": [],
+                    "tool_call_id": "",
+                },
+            ],
+        ),
+        pending=None,
+    )
+    retrieval = _section(trace, "retrieval")
+
+    assert retrieval["query"] == "How much does it cost?"
+    assert retrieval["original_message"] == "How much does it cost?"
+    assert retrieval["resolved_query"] == "Clearview HVAC maintenance How much does it cost?"
+    assert isinstance(retrieval["plan"], Mapping)
+    assert retrieval["plan"]["query"] == "Clearview HVAC maintenance How much does it cost?"
+    assert retrieval["plan"]["mode"] == "resolve_pronoun"
+    assert retrieval["plan"]["history_used"] == 1
+    assert retrieval["plan"]["planner_version"] == "query-planning@1"

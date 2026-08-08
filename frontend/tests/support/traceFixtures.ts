@@ -389,3 +389,25 @@ export const CRASHED_READ_WIRE_CONTENT = {
     ]
   }
 };
+/** A v3 record: the retrieval section carries the resolved query and plan beside the original. */
+export const V3_READ_WIRE_CONTENT = {
+  ...CAPTURED_READ_WIRE_CONTENT,
+  schema_version: "3",
+  turn_index: 4,
+  retrieval: {
+    ...CAPTURED_READ_WIRE_CONTENT.retrieval,
+    original_message: "How much does it cost?",
+    resolved_query: "Clearview HVAC maintenance How much does it cost?",
+    plan: {
+      planner_version: "query-planning@1",
+      tenant_id: "clearview",
+      workflow: "general",
+      query: "Clearview HVAC maintenance How much does it cost?",
+      mode: "resolve_pronoun",
+      topic: "Clearview HVAC maintenance",
+      entities: ["Clearview HVAC maintenance"],
+      history_used: 1,
+      reset: false
+    }
+  }
+};
