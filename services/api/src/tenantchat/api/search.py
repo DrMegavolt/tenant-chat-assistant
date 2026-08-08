@@ -30,6 +30,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from tenantchat.api.correlation import correlation_headers
 from tenantchat.core.errors import ValidationError
 from tenantchat.core.metrics import MetricsReporter
 from tenantchat.core.resilience import (
@@ -614,7 +615,9 @@ class ElasticsearchSearchIndex:
     async def _raw_request(
         self, method: str, url: str, body: str, *, allow_404: bool
     ) -> dict[str, Any]:
-        response = await self._client.request(method, url, content=body)
+        response = await self._client.request(
+            method, url, content=body, headers=correlation_headers()
+        )
         if response.status_code == 404 and allow_404:
             return {}
         response.raise_for_status()
@@ -761,7 +764,11 @@ class EmbeddingServiceClient:
             raise EmbeddingUnavailableError("embedding provider unreachable") from exc
 
     async def _request_batch(self, batch: Sequence[str]) -> tuple[str, int, list[Any]]:
-        response = await self._client.post(f"{self._base_url}/embed", json={"texts": list(batch)})
+        response = await self._client.post(
+            f"{self._base_url}/embed",
+            json={"texts": list(batch)},
+            headers=correlation_headers(),
+        )
         response.raise_for_status()
         try:
             payload = response.json()
