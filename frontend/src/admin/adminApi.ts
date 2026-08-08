@@ -19,6 +19,9 @@ import type { ReviewDetail, ReviewDiagnosis, ReviewSummary } from "src/admin/rev
 import type {
   GoldCase,
   ReplayResult,
+  ReplayTrialsResult,
+  ReplayRetrievalResult,
+  ReplayTemplateResult,
   TraceContent,
   TraceRead,
   TraceSearchFilters,
@@ -191,6 +194,82 @@ export class AdminApi {
     );
     if (!response.ok) throw new Error(`Replay failed with ${response.status}`);
     return replayFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Bounded repeated trials: N replays of the stored prompt through the
+   * current model, reported as an aggregate with an explicit stochastic label.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async replayTrials(
+    turnId: string,
+    tenantId: string,
+    trials: number = 3
+  ): Promise<ReplayTrialsResult> {
+    const response = await this.request(
+      `/api/admin/traces/${encodeURIComponent(turnId)}/replay/trials?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": await this.csrf()
+        },
+        body: JSON.stringify({ trials })
+      }
+    );
+    if (!response.ok) throw new Error(`Replay trials failed with ${response.status}`);
+    return replayTrialsFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Immutable-index retrieval replay with optional gold-evidence substitution.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async replayRetrieval(
+    turnId: string,
+    tenantId: string,
+    goldEvidence?: { sourceId: string; text: string }[]
+  ): Promise<ReplayRetrievalResult> {
+    const response = await this.request(
+      `/api/admin/traces/${encodeURIComponent(turnId)}/replay/retrieval?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": await this.csrf()
+        },
+        body: JSON.stringify({ gold_evidence: goldEvidence ?? null })
+      }
+    );
+    if (!response.ok) throw new Error(`Replay retrieval failed with ${response.status}`);
+    return replayRetrievalFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Template-version-pinned replay: model and evidence constant, template pinned.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async replayTemplate(
+    turnId: string,
+    tenantId: string,
+    templateVersion?: number
+  ): Promise<ReplayTemplateResult> {
+    const response = await this.request(
+      `/api/admin/traces/${encodeURIComponent(turnId)}/replay/template?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": await this.csrf()
+        },
+        body: JSON.stringify({ template_version: templateVersion ?? null })
+      }
+    );
+    if (!response.ok) throw new Error(`Replay template failed with ${response.status}`);
+    return replayTemplateFromWire((await response.json()) as Record<string, unknown>);
   }
 
   /** The reviewer-labelled gold cases for one tenant (trace-read gated). */
@@ -909,6 +988,96 @@ function replayFromWire(wire: Record<string, unknown>): ReplayResult {
       modelName: str(replayed.model_name),
       outputRaw: str(replayed.output_raw)
     }
+  };
+}
+
+function replayTrialsFromWire(wire: Record<string, unknown>): ReplayTrialsResult {
+  const original = obj(wire.original);
+  return {
+    turnId: str(wire.turn_id),
+    recordedAt: str(wire.recorded_at),
+    manifestHash: str(wire.manifest_hash),
+    currentManifestHash: strOrNull(wire.current_manifest_hash),
+    manifestChanged: wire.manifest_changed === true,
+    stochastic: wire.stochastic === true,
+    components: Array.isArray(wire.components)
+      ? (wire.components as ReplayTrialsResult["components"])
+      : [],
+    original: {
+      contentHash: str(original.content_hash),
+      modelName: str(original.model_name),
+      outputRaw: str(original.output_raw)
+    },
+    trials: list(wire.trials).map((trial) => ({
+      trialIndex: typeof trial.trial_index === "number" ? trial.trial_index : 0,
+      contentHash: str(trial.content_hash),
+      modelName: str(trial.model_name),
+      outputRaw: str(trial.output_raw)
+    })),
+    trialCount: typeof wire.trial_count === "number" ? wire.trial_count : 0,
+    constant: str(wire.constant),
+    variable: str(wire.variable)
+  };
+}
+
+function replayRetrievalFromWire(wire: Record<string, unknown>): ReplayRetrievalResult {
+  const original = obj(wire.original);
+  const replayed = obj(wire.replayed);
+  return {
+    turnId: str(wire.turn_id),
+    recordedAt: str(wire.recorded_at),
+    manifestHash: str(wire.manifest_hash),
+    currentManifestHash: strOrNull(wire.current_manifest_hash),
+    manifestChanged: wire.manifest_changed === true,
+    stochastic: wire.stochastic === true,
+    components: Array.isArray(wire.components)
+      ? (wire.components as ReplayRetrievalResult["components"])
+      : [],
+    original: {
+      contentHash: str(original.content_hash),
+      modelName: str(original.model_name),
+      outputRaw: str(original.output_raw)
+    },
+    replayed: {
+      contentHash: str(replayed.content_hash),
+      modelName: str(replayed.model_name),
+      outputRaw: str(replayed.output_raw)
+    },
+    generationAvailable: wire.generation_available === true,
+    generationId: strOrNull(wire.generation_id),
+    goldEvidenceCount: typeof wire.gold_evidence_count === "number" ? wire.gold_evidence_count : 0,
+    constant: str(wire.constant),
+    variable: str(wire.variable)
+  };
+}
+
+function replayTemplateFromWire(wire: Record<string, unknown>): ReplayTemplateResult {
+  const original = obj(wire.original);
+  const replayed = obj(wire.replayed);
+  return {
+    turnId: str(wire.turn_id),
+    recordedAt: str(wire.recorded_at),
+    manifestHash: str(wire.manifest_hash),
+    currentManifestHash: strOrNull(wire.current_manifest_hash),
+    manifestChanged: wire.manifest_changed === true,
+    stochastic: wire.stochastic === true,
+    components: Array.isArray(wire.components)
+      ? (wire.components as ReplayTemplateResult["components"])
+      : [],
+    original: {
+      contentHash: str(original.content_hash),
+      modelName: str(original.model_name),
+      outputRaw: str(original.output_raw)
+    },
+    replayed: {
+      contentHash: str(replayed.content_hash),
+      modelName: str(replayed.model_name),
+      outputRaw: str(replayed.output_raw)
+    },
+    templateRef: str(wire.template_ref),
+    templateMatchesCurrent: wire.template_matches_current === true,
+    constant: str(wire.constant),
+    variable: str(wire.variable)
   };
 }
 

@@ -1176,6 +1176,352 @@ class TestReplay:
         assert response.json()["code"] == "chat_unavailable"
 
 
+class TestReplayTrials:
+    def _replay_client(
+        self,
+        *,
+        script: list[ModelResponse],
+    ) -> tuple[
+        TestClient,
+        InMemoryTurnRecordStore,
+        InMemoryTraceAccessStore,
+        InMemoryAuditStore,
+        ScriptedModel,
+    ]:
+        model = ScriptedModel(script)
+        client, turns, grants, audit, _ = _explorer_app(model=model)
+        asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+        return client, turns, grants, audit, model
+
+    def test_replay_trials_runs_n_model_calls_and_reports_aggregate(self) -> None:
+        """Bounded repeated trials: each trial gets the same prompt, and the
+        response carries every trial alongside an explicit stochastic label."""
+        client, turns, _grants, audit, model = self._replay_client(
+            script=[
+                ModelResponse(content="Trial 0 output.", model_name="scripted"),
+                ModelResponse(content="Trial 1 output.", model_name="scripted"),
+                ModelResponse(content="Trial 2 output.", model_name="scripted"),
+            ]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/trials",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"trials": 3},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["stochastic"] is True
+        assert body["trial_count"] == 3
+        assert body["constant"] == "prompt_and_evidence"
+        assert body["variable"] == "model_output"
+        assert len(body["trials"]) == 3
+        assert body["trials"][0]["output_raw"] == "Trial 0 output."
+        assert body["trials"][1]["output_raw"] == "Trial 1 output."
+        assert body["trials"][2]["output_raw"] == "Trial 2 output."
+        assert body["manifest_changed"] is False
+        assert len(model.calls) == 3
+
+        trial_audits = [event for event in audit._events if event.action == "trace.replay_trials"]
+        assert len(trial_audits) == 1
+        assert trial_audits[0].details["trials"] == 3
+
+    def test_replay_trials_is_bounded_at_five(self) -> None:
+        """The trials parameter is bounded at 5: an unbounded loop against a
+        live model is a footgun."""
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[ModelResponse(content="ok", model_name="scripted")] * 6
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/trials",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"trials": 10},
+            headers=headers,
+        )
+
+        assert response.status_code == 422
+
+    def test_replay_trials_no_tool_calls_in_any_trial(self) -> None:
+        """No model call in a repeated-trial replay offers tools. Every trial
+        runs through the same no-tool path, so no domain effect can be touched."""
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[
+                ModelResponse(content="Trial 0", model_name="scripted"),
+                ModelResponse(content="Trial 1", model_name="scripted"),
+            ]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/trials",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"trials": 2},
+            headers=headers,
+        )
+
+        assert len(model.calls) == 2
+        for call in model.calls:
+            assert all(not message.tool_calls for message in call.messages)
+
+    def test_replay_trials_requires_dedicated_role_and_csrf(self) -> None:
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[ModelResponse(content="ok", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+
+        no_role = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/trials",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"trials": 2},
+        )
+        assert no_role.status_code == 401
+
+        with_role = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/trials",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"trials": 2},
+            headers=_operator(),
+        )
+        assert with_role.status_code == 403
+        assert with_role.json()["code"] == "csrf_validation_failed"
+
+
+class TestReplayRetrieval:
+    def _replay_client(
+        self,
+        *,
+        script: list[ModelResponse],
+    ) -> tuple[
+        TestClient,
+        InMemoryTurnRecordStore,
+        InMemoryTraceAccessStore,
+        InMemoryAuditStore,
+        ScriptedModel,
+    ]:
+        model = ScriptedModel(script)
+        client, turns, grants, audit, _ = _explorer_app(model=model)
+        asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+        return client, turns, grants, audit, model
+
+    def test_replay_retrieval_refuses_when_generation_is_gone(self) -> None:
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[ModelResponse(content="should never run", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/retrieval",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"gold_evidence": None},
+            headers=headers,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "generation_unavailable"
+
+    def test_replay_retrieval_with_gold_evidence_substitution(self) -> None:
+        client, turns, _grants, audit, model = self._replay_client(
+            script=[ModelResponse(content="With gold evidence.", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/retrieval",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={
+                "gold_evidence": [
+                    {"source_id": "gold-1", "text": "Gold passage one."},
+                    {"source_id": "gold-2", "text": "Gold passage two."},
+                ]
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "generation_unavailable"
+
+    def test_replay_retrieval_audited_to_actor_turn_reason(self) -> None:
+        client, turns, _grants, audit, model = self._replay_client(
+            script=[ModelResponse(content="ok", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/retrieval",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"gold_evidence": None},
+            headers=headers,
+        )
+
+        retrieval_audits = [
+            event for event in audit._events if event.action == "trace.replay_retrieval"
+        ]
+        assert len(retrieval_audits) == 1
+        assert retrieval_audits[0].principal_id == "operator-7"
+        assert str(retrieval_audits[0].resource_id) == _planted_turn_id(turns, case)
+        assert retrieval_audits[0].details["reason"] == READ_REASON
+        assert retrieval_audits[0].details["generation_exists"] is False
+
+    def test_replay_retrieval_no_tool_calls(self) -> None:
+        """Replay with retrieval carries no tools, ensuring no domain effects."""
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[ModelResponse(content="ok", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/retrieval",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"gold_evidence": None},
+            headers=headers,
+        )
+
+        if model.calls:
+            for call in model.calls:
+                assert all(not message.tool_calls for message in call.messages)
+
+
+class TestReplayTemplate:
+    def _replay_client(
+        self,
+        *,
+        script: list[ModelResponse],
+    ) -> tuple[
+        TestClient,
+        InMemoryTurnRecordStore,
+        InMemoryTraceAccessStore,
+        InMemoryAuditStore,
+        ScriptedModel,
+    ]:
+        model = ScriptedModel(script)
+        client, turns, grants, audit, _ = _explorer_app(model=model)
+        asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+        return client, turns, grants, audit, model
+
+    def test_replay_template_pins_to_stored_version_by_default(self) -> None:
+        """Without an explicit version, the replay uses the stored template_ref,
+        and the response states which version ran and whether it matches current."""
+        client, turns, _grants, audit, model = self._replay_client(
+            script=[ModelResponse(content="Replayed with stored template.", model_name="scripted")]
+        )
+        case = _seeded_cases()[5]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/template",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"template_version": None},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["stochastic"] is True
+        assert body["template_ref"].startswith("dispatch-system@")
+        assert body["template_matches_current"] is False
+        assert body["constant"] == "prompt_template_version"
+        assert body["variable"] == "model_output"
+
+        template_audits = [
+            event for event in audit._events if event.action == "trace.replay_template"
+        ]
+        assert len(template_audits) == 1
+        assert template_audits[0].details["template_ref"] == body["template_ref"]
+
+    def test_replay_template_with_version_pins_current_version(self) -> None:
+        client, turns, _grants, audit, model = self._replay_client(
+            script=[ModelResponse(content="Replayed with current template.", model_name="scripted")]
+        )
+        case = _seeded_cases()[5]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/template",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"template_version": 4},
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["template_ref"] == "dispatch-system@4"
+        assert body["template_matches_current"] is True
+
+    def test_replay_template_no_tool_calls(self) -> None:
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[ModelResponse(content="ok", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/template",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"template_version": None},
+            headers=headers,
+        )
+
+        if model.calls:
+            for call in model.calls:
+                assert all(not message.tool_calls for message in call.messages)
+
+    def test_replay_template_requires_dedicated_role_and_csrf(self) -> None:
+        client, turns, _grants, _audit, model = self._replay_client(
+            script=[ModelResponse(content="ok", model_name="scripted")]
+        )
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+
+        no_role = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/template",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"template_version": None},
+        )
+        assert no_role.status_code == 401
+
+        with_role = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/template",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"template_version": None},
+            headers=_operator(),
+        )
+        assert with_role.status_code == 403
+        assert with_role.json()["code"] == "csrf_validation_failed"
+
+
 class TestGoldSnapshot:
     def test_the_embedded_snapshot_matches_the_eval_fixtures(self) -> None:
         """The fixtures are the source of truth; drift in either direction is
@@ -1218,6 +1564,9 @@ class TestTheTenCaseWalkthrough:
                     model_name="scripted",
                 ),
                 ModelResponse(content="Replayed trial output.", model_name="scripted"),
+                ModelResponse(content="Trial 0 model behavior.", model_name="scripted"),
+                ModelResponse(content="Trial 1 model behavior.", model_name="scripted"),
+                ModelResponse(content="Template-pinned replay.", model_name="scripted"),
             ]
         )
         client, turns, grants, audit, _ = _explorer_app(model=model)
@@ -1247,9 +1596,9 @@ class TestTheTenCaseWalkthrough:
                     )
                 else:
                     assert content["diagnoses"] == []
+                headers = _operator()
+                headers[CSRF_HEADER] = _csrf(client, headers)
                 if case.number in (6, 7):
-                    headers = _operator()
-                    headers[CSRF_HEADER] = _csrf(client, headers)
                     replayed = client.post(
                         f"/api/admin/traces/{turn.turn_id}/replay",
                         params={"tenant_id": case.tenant_id, "reason": READ_REASON},
@@ -1257,9 +1606,38 @@ class TestTheTenCaseWalkthrough:
                     )
                     assert replayed.status_code == 200, replayed.text
                     assert replayed.json()["stochastic"] is True
+                if case.number == 7:
+                    trials = client.post(
+                        f"/api/admin/traces/{turn.turn_id}/replay/trials",
+                        params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+                        json={"trials": 2},
+                        headers=headers,
+                    )
+                    assert trials.status_code == 200, trials.text
+                    body = trials.json()
+                    assert body["trial_count"] == 2
+                    assert len(body["trials"]) == 2
+                if case.number == 6:
+                    template = client.post(
+                        f"/api/admin/traces/{turn.turn_id}/replay/template",
+                        params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+                        json={"template_version": None},
+                        headers=headers,
+                    )
+                    assert template.status_code == 200, template.text
+                    body = template.json()
+                    assert body["template_matches_current"] is False
 
             replays = [event for event in audit._events if event.action == "trace.replay"]
             assert len(replays) == 2
+            trial_audits = [
+                event for event in audit._events if event.action == "trace.replay_trials"
+            ]
+            assert len(trial_audits) == 1
+            template_audits = [
+                event for event in audit._events if event.action == "trace.replay_template"
+            ]
+            assert len(template_audits) == 1
             searches = [event for event in audit._events if event.action == "trace.search"]
             assert len(searches) == 10
 

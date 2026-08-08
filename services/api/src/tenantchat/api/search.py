@@ -214,6 +214,18 @@ class SearchIndex(Protocol):
         """
         ...
 
+    async def has_active_chunks_for_generation(
+        self, *, tenant_id: str, generation_id: uuid.UUID
+    ) -> bool:
+        """Whether the index still holds active chunks for a generation.
+
+        This is the `OBS-004` retrieval-replay gate: a turn record pinned to a
+        generation that no longer exists cannot have its retrieval reproduced,
+        and the replay must refuse rather than silently answering against the
+        current index.
+        """
+        ...
+
 
 class InMemorySearchIndex:
     """Hermetic fake mirroring the Elasticsearch adapter's semantics.
@@ -315,6 +327,15 @@ class InMemorySearchIndex:
         if chunk is None or chunk.tenant_id != tenant_id or not chunk.active:
             return None
         return chunk
+
+    async def has_active_chunks_for_generation(
+        self, *, tenant_id: str, generation_id: uuid.UUID
+    ) -> bool:
+        return any(
+            chunk.generation_id == generation_id
+            for chunk in self._chunks.values()
+            if chunk.tenant_id == tenant_id and chunk.active
+        )
 
 
 def _inactive(chunk: IndexedChunk) -> IndexedChunk:
@@ -560,6 +581,29 @@ class ElasticsearchSearchIndex:
         if not hits:
             return None
         return _chunk_from_hit(hits[0])
+
+    async def has_active_chunks_for_generation(
+        self, *, tenant_id: str, generation_id: uuid.UUID
+    ) -> bool:
+        query = {
+            "size": 0,
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"tenant_id": tenant_id}},
+                        {"term": {"active": True}},
+                        {"term": {"generation_id": str(generation_id)}},
+                    ]
+                }
+            },
+        }
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
+        total = response.get("hits", {}).get("total", {})
+        if isinstance(total, Mapping):
+            return int(total.get("value", 0)) > 0
+        if isinstance(total, int):
+            return total > 0
+        return False
 
     async def ensure_mapping(self, dimensions: int) -> None:
         """Create the index with the chunk mapping when it does not exist yet."""

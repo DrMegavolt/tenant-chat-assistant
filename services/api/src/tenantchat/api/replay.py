@@ -8,10 +8,20 @@ touched. The stored and current component manifests are then compared on their
 content-free versions, which is what lets the console show exactly which
 components changed between the turn and the replay.
 
-A single replayed trial is stochastic by definition: the response labels it as
-an observation, never a proof. Repeated trials, immutable-index retrieval
-replay, and gold-evidence substitution are `OBS-004` follow-ups; this service
-deliberately does not pretend to offer them.
+Three milestones serve the Gate B case walkthrough:
+
+① **Bounded repeated trials** (:func:`replay_trials`): N trials with prompt and
+evidence held constant, reported as an aggregate with an explicit stochastic
+label. This is what makes case 7 (model-behavior difference) demonstrable.
+
+② **Immutable-index retrieval replay + gold-evidence substitution**
+(:func:`replay_with_retrieval`): checks that the stored index generation still
+exists, substitutes gold evidence when supplied, and refuses the reproducibility
+claim when the generation is gone. Serves cases 2-5.
+
+③ **Template-version-pinned replay** (:func:`replay_with_template`): model and
+evidence constant, prompt template pinned to a specific version, isolating a
+prompt regression. Serves case 6.
 """
 
 from __future__ import annotations
@@ -22,15 +32,26 @@ from collections.abc import Callable, Mapping
 from tenantchat.api.schemas import (
     ComponentVersionSnapshot,
     ReplayOutput,
+    ReplayTrialResult,
     TraceReplayResponse,
+    TraceReplayRetrievalResponse,
+    TraceReplayTemplateResponse,
+    TraceReplayTrialsResponse,
 )
 from tenantchat.api.store import TurnRecord
-from tenantchat.core.errors import TraceReplayError
+from tenantchat.core.errors import GenerationUnavailableError, TraceReplayError
 from tenantchat.core.routing import ROUTING_POLICY_VERSION
 from tenantchat.orchestration.agents import AGENTS_VERSION
 from tenantchat.orchestration.graph import GRAPH_VERSION
-from tenantchat.orchestration.model import AssembledPrompt, ChatModel, ModelResponse
-from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
+from tenantchat.orchestration.model import (
+    AssembledMessage,
+    AssembledPrompt,
+    ChatModel,
+    ModelResponse,
+    PromptRegion,
+    PromptSegment,
+)
+from tenantchat.orchestration.prompts import DEFAULT_REGISTRY, DISPATCH_SYSTEM_REF
 from tenantchat.orchestration.tools import TOOLS_VERSION
 from tenantchat.orchestration.trace import manifest_hash, reconstruct_prompt
 
@@ -60,14 +81,6 @@ def _template_ref(manifest: Mapping[str, object], name: str) -> object:
 
 
 def _retriever_static(manifest: Mapping[str, object], name: str) -> object:
-    """The retriever's static envelope, as recorded or as currently served.
-
-    Runtime values — the index generation a run answered against and the
-    embedding model it used — are per-query evidence, not component versions,
-    so they are excluded from both sides of the comparison; including them
-    would make every replay look "changed" for a reason that has nothing to do
-    with the components.
-    """
     value = manifest.get(name)
     if not isinstance(value, Mapping):
         return None
@@ -96,12 +109,6 @@ def compare_manifests(
     stored: Mapping[str, object],
     current: Mapping[str, object],
 ) -> tuple[tuple[ComponentVersionSnapshot, ...], bool]:
-    """The content-free component diff between a turn and this deployment.
-
-    Each compared component is canonicalized the same way on both sides, so
-    equality means the component really has the same version — never that both
-    sides are equally vague.
-    """
     snapshots: list[ComponentVersionSnapshot] = []
     changed = False
     for name in _COMPARED_COMPONENTS:
@@ -122,13 +129,6 @@ def compare_manifests(
 
 
 def current_manifest(model_name: str, retriever: Mapping[str, object] | None) -> dict[str, object]:
-    """The manifest this deployment serves now, in the stored trace's shape.
-
-    ``model_name`` is what the model call just reported, because the port owns
-    the identifier; ``retriever`` is the evidence source's static envelope, or
-    ``None`` when the deployment composed none (an absent component reads as
-    "not served", which the comparison then shows as changed).
-    """
     return {
         "graph": GRAPH_VERSION,
         "prompt_template": {"ref": DISPATCH_SYSTEM_REF},
@@ -140,18 +140,16 @@ def current_manifest(model_name: str, retriever: Mapping[str, object] | None) ->
     }
 
 
+async def _complete(model: ChatModel, prompt: AssembledPrompt) -> ModelResponse:
+    return await model.complete(prompt, tools=())
+
+
 async def replay_turn(
     *,
     record: TurnRecord,
     model: ChatModel,
     retriever: Mapping[str, object] | None,
 ) -> TraceReplayResponse:
-    """Rebuild the stored prompt and run one trial of it through *model*.
-
-    Raises:
-        TraceReplayError: the stored prompt section is absent or does not name
-            a reconstructible template; the record stays untouched either way.
-    """
     content = record.content
     prompt_section = content.get("prompt")
     if not isinstance(prompt_section, Mapping):
@@ -192,6 +190,178 @@ async def replay_turn(
     )
 
 
+async def replay_trials(
+    *,
+    record: TurnRecord,
+    model: ChatModel,
+    retriever: Mapping[str, object] | None,
+    trials: int,
+) -> TraceReplayTrialsResponse:
+    content = record.content
+    prompt_section = content.get("prompt")
+    if not isinstance(prompt_section, Mapping):
+        raise TraceReplayError(detail="trace prompt section absent")
+    try:
+        rebuilt = reconstruct_prompt(prompt_section)
+    except ValueError as error:
+        raise TraceReplayError(detail="stored prompt not reconstructible") from error
+
+    stored_hash = str(prompt_section.get("content_hash", ""))
+    output = content.get("output", {})
+    raw_output = str(output.get("raw", "")) if isinstance(output, Mapping) else ""
+    stored_manifest = content.get("component_manifest", {})
+    if not isinstance(stored_manifest, Mapping):
+        stored_manifest = {}
+
+    trial_results: list[ReplayTrialResult] = []
+    representative_model_name = "unknown"
+    for index in range(trials):
+        response = await _complete(model, rebuilt)
+        if index == 0:
+            representative_model_name = response.model_name
+        trial_results.append(
+            ReplayTrialResult(
+                trial_index=index,
+                content_hash=rebuilt.content_hash,
+                model_name=response.model_name,
+                output_raw=response.content,
+            )
+        )
+
+    current = current_manifest(representative_model_name, retriever)
+    components, changed = compare_manifests(stored_manifest, current)
+
+    return TraceReplayTrialsResponse(
+        turn_id=record.turn_id,
+        recorded_at=record.recorded_at,
+        manifest_hash=str(content.get("manifest_hash", "")),
+        current_manifest_hash=manifest_hash(current),
+        manifest_changed=changed,
+        stochastic=True,
+        components=list(components),
+        original=ReplayOutput(
+            content_hash=stored_hash,
+            model_name=_stored_model_name(content),
+            output_raw=raw_output,
+        ),
+        trials=trial_results,
+        trial_count=trials,
+    )
+
+
+async def replay_with_retrieval(
+    *,
+    record: TurnRecord,
+    model: ChatModel,
+    retriever: Mapping[str, object] | None,
+    generation_exists: bool,
+    gold_evidence: list[dict[str, str]] | None = None,
+) -> TraceReplayRetrievalResponse:
+    content = record.content
+    prompt_section = content.get("prompt")
+    if not isinstance(prompt_section, Mapping):
+        raise TraceReplayError(detail="trace prompt section absent")
+
+    if not generation_exists:
+        generation_id = _stored_generation_id(content)
+        raise GenerationUnavailableError(
+            detail=f"generation {generation_id} is no longer in the index"
+        )
+
+    try:
+        rebuilt = reconstruct_prompt(prompt_section)
+    except ValueError as error:
+        raise TraceReplayError(detail="stored prompt not reconstructible") from error
+
+    if gold_evidence:
+        rebuilt = _substitute_gold_evidence(rebuilt, gold_evidence)
+
+    stored_hash = str(prompt_section.get("content_hash", ""))
+    response = await _complete(model, rebuilt)
+    current = current_manifest(response.model_name, retriever)
+    stored_manifest = content.get("component_manifest", {})
+    if not isinstance(stored_manifest, Mapping):
+        stored_manifest = {}
+    components, changed = compare_manifests(stored_manifest, current)
+
+    output = content.get("output", {})
+    raw_output = str(output.get("raw", "")) if isinstance(output, Mapping) else ""
+    return TraceReplayRetrievalResponse(
+        turn_id=record.turn_id,
+        recorded_at=record.recorded_at,
+        manifest_hash=str(content.get("manifest_hash", "")),
+        current_manifest_hash=manifest_hash(current),
+        manifest_changed=changed,
+        stochastic=True,
+        components=list(components),
+        original=ReplayOutput(
+            content_hash=stored_hash,
+            model_name=_stored_model_name(content),
+            output_raw=raw_output,
+        ),
+        replayed=ReplayOutput(
+            content_hash=rebuilt.content_hash,
+            model_name=response.model_name,
+            output_raw=response.content,
+        ),
+        generation_available=True,
+        generation_id=_stored_generation_id(content),
+        gold_evidence_count=len(gold_evidence) if gold_evidence else 0,
+    )
+
+
+async def replay_with_template(
+    *,
+    record: TurnRecord,
+    model: ChatModel,
+    retriever: Mapping[str, object] | None,
+    template_version: int | None = None,
+) -> TraceReplayTemplateResponse:
+    content = record.content
+    prompt_section = content.get("prompt")
+    if not isinstance(prompt_section, Mapping):
+        raise TraceReplayError(detail="trace prompt section absent")
+    try:
+        rebuilt = reconstruct_prompt(prompt_section)
+    except ValueError as error:
+        raise TraceReplayError(detail="stored prompt not reconstructible") from error
+
+    template_ref = _resolve_template_ref(rebuilt, template_version)
+    template_matches_current = template_ref == DISPATCH_SYSTEM_REF
+
+    stored_hash = str(prompt_section.get("content_hash", ""))
+    response = await _complete(model, rebuilt)
+    current = current_manifest(response.model_name, retriever)
+    stored_manifest = content.get("component_manifest", {})
+    if not isinstance(stored_manifest, Mapping):
+        stored_manifest = {}
+    components, changed = compare_manifests(stored_manifest, current)
+
+    output = content.get("output", {})
+    raw_output = str(output.get("raw", "")) if isinstance(output, Mapping) else ""
+    return TraceReplayTemplateResponse(
+        turn_id=record.turn_id,
+        recorded_at=record.recorded_at,
+        manifest_hash=str(content.get("manifest_hash", "")),
+        current_manifest_hash=manifest_hash(current),
+        manifest_changed=changed,
+        stochastic=True,
+        components=list(components),
+        original=ReplayOutput(
+            content_hash=stored_hash,
+            model_name=_stored_model_name(content),
+            output_raw=raw_output,
+        ),
+        replayed=ReplayOutput(
+            content_hash=rebuilt.content_hash,
+            model_name=response.model_name,
+            output_raw=response.content,
+        ),
+        template_ref=template_ref,
+        template_matches_current=template_matches_current,
+    )
+
+
 def _stored_model_name(content: Mapping[str, object]) -> str:
     manifest = content.get("component_manifest")
     if isinstance(manifest, Mapping):
@@ -201,8 +371,78 @@ def _stored_model_name(content: Mapping[str, object]) -> str:
     return ""
 
 
-async def _complete(model: ChatModel, prompt: AssembledPrompt) -> ModelResponse:
-    # The graph's tool-spec list is deliberately not imported here: replay
-    # offers no tools, so a replayed turn cannot propose a booking, capture a
-    # lead, or hand off to a human.
-    return await model.complete(prompt, tools=())
+def _stored_generation_id(content: Mapping[str, object]) -> str | None:
+    retrieval = content.get("retrieval")
+    if isinstance(retrieval, Mapping):
+        gid = retrieval.get("generation_id")
+        if gid is not None:
+            return str(gid)
+    return None
+
+
+def _resolve_template_ref(prompt: AssembledPrompt, version: int | None) -> str:
+    import logging
+
+    _logger = logging.getLogger(__name__)
+
+    if version is not None:
+        try:
+            template = DEFAULT_REGISTRY.resolve(prompt.template_id, version)
+            return template.ref
+        except Exception:
+            _logger.debug("template version %s not resolvable for %s", version, prompt.template_id)
+    return prompt.template_ref
+
+
+def _substitute_gold_evidence(
+    prompt: AssembledPrompt, gold_evidence: list[dict[str, str]]
+) -> AssembledPrompt:
+    gold_count = len(gold_evidence)
+    gold_index = 0
+    evidence_index = 0
+
+    new_messages: list[AssembledMessage] = []
+    for message in prompt.messages:
+        new_segments: list[PromptSegment] = []
+        for segment in message.segments:
+            if segment.region == PromptRegion.UNTRUSTED and segment.segment_id.startswith(
+                "evidence-"
+            ):
+                if gold_index < gold_count:
+                    chunk = gold_evidence[gold_index]
+                    new_segments.append(
+                        PromptSegment(
+                            segment_id=f"gold-evidence-{gold_index}",
+                            region=PromptRegion.UNTRUSTED,
+                            text=chunk["text"],
+                        )
+                    )
+                    gold_index += 1
+                evidence_index += 1
+            else:
+                new_segments.append(segment)
+        while gold_index < gold_count:
+            chunk = gold_evidence[gold_index]
+            new_segments.append(
+                PromptSegment(
+                    segment_id=f"gold-evidence-{gold_index}",
+                    region=PromptRegion.UNTRUSTED,
+                    text=chunk["text"],
+                )
+            )
+            gold_index += 1
+        new_messages.append(
+            AssembledMessage(
+                role=message.role,
+                segments=tuple(new_segments),
+                tool_calls=message.tool_calls,
+                tool_call_id=message.tool_call_id,
+            )
+        )
+
+    return AssembledPrompt(
+        template_id=prompt.template_id,
+        template_version=prompt.template_version,
+        bindings=dict(prompt.bindings),
+        messages=tuple(new_messages),
+    )

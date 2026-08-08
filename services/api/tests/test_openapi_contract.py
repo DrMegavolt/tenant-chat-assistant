@@ -73,6 +73,12 @@ PUBLISHED_OPERATIONS = {
     # model, no tools) and the gold-evidence overlay, both under the same
     # dedicated role and audit rules as the reads.
     ("post", "/api/admin/traces/{turn_id}/replay"),
+    # L7-REPLAY: bounded repeated trials, immutable-index retrieval replay,
+    # and template-version-pinned replay — three milestones serving Gate B
+    # cases 2-7, each under the same trace-read role and audit rules.
+    ("post", "/api/admin/traces/{turn_id}/replay/trials"),
+    ("post", "/api/admin/traces/{turn_id}/replay/retrieval"),
+    ("post", "/api/admin/traces/{turn_id}/replay/template"),
     ("get", "/api/admin/traces/gold-cases"),
     ("get", "/api/admin/trace-access"),
     ("post", "/api/admin/trace-access"),
