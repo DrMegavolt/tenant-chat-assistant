@@ -58,6 +58,7 @@ from tenantchat.core.metrics import (
     MetricLabelError,
     MetricLabelName,
     MetricName,
+    TruncationKind,
     label_value_is_safe,
 )
 from tenantchat.core.resilience import CircuitState, Dependency, FailureKind
@@ -98,6 +99,7 @@ def _reachable_vocabulary() -> frozenset[str]:
         FailureKind,
         CircuitState,
         DispatchNode,
+        TruncationKind,
     )
     vocabulary = {member.value for family in families for member in family.__members__.values()}
     vocabulary.update(
@@ -354,6 +356,25 @@ class TestAnAnsweredTurn:
             == 3
         )
         assert values[("tenantchat_turn_outcomes_total", frozenset({("outcome", "answered")}))] == 1
+
+        assert any(
+            sample.name.startswith("tenantchat_router_confidence")
+            and sample.name.endswith("_count")
+            and sample.value >= 1.0
+            for sample in tenantchat_samples()
+        )
+        assert any(
+            sample.name == "tenantchat_token_cost_total"
+            and frozenset(sample.labels.items())
+            == frozenset({("kind", "prompt"), ("template", TEMPLATE_REF)})
+            for sample in tenantchat_samples()
+        )
+        assert any(
+            sample.name == "tenantchat_token_cost_total"
+            and frozenset(sample.labels.items())
+            == frozenset({("kind", "completion"), ("template", TEMPLATE_REF)})
+            for sample in tenantchat_samples()
+        )
 
         counts = [
             sample
@@ -1022,6 +1043,153 @@ class TestLabelSafety:
         vocabulary = _reachable_vocabulary()
         assert all(label_value_is_safe(value) for value in vocabulary)
         assert len(vocabulary) <= METRIC_CARDINALITY_CEILING
+
+
+class TestNewMetrics:
+    def test_router_confidence_records_with_no_call_site_labels(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The confidence histogram records per turn with no labels.
+
+        Confidence is a pure distribution — no outcome, intent, or template
+        label rides alongside it. The Prometheus `le` bucket labels are
+        collector-owned, not call-site-controlled.
+        """
+        model.script = [ModelResponse(content="We are open until 7pm.", model_name="scripted")]
+        visitor = _open_session(client)
+
+        response = client.post(
+            "/api/chat", json={"message": "What are your hours?"}, headers=visitor.headers
+        )
+
+        assert response.status_code == 200
+        confidence_samples = [
+            sample
+            for sample in tenantchat_samples()
+            if sample.name.startswith("tenantchat_router_confidence")
+        ]
+        assert confidence_samples, "router confidence recorded no samples"
+        non_le_labels = {
+            label_name
+            for sample in confidence_samples
+            for label_name in sample.labels
+            if label_name != "le"
+        }
+        assert not non_le_labels, f"router confidence carries call-site labels: {non_le_labels}"
+
+    def test_router_confidence_is_not_emitted_as_a_label(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The raw confidence value is in the histogram, not a label.
+
+        A label would carry the raw score and create a series per distinct
+        confidence value, which is unbounded. The histogram buckets the value
+        without exposing it as a label.
+        """
+        model.script = [ModelResponse(content="We are open.", model_name="scripted")]
+        visitor = _open_session(client)
+
+        client.post("/api/chat", json={"message": "What are your hours?"}, headers=visitor.headers)
+
+        vocabulary = _reachable_vocabulary()
+        for sample in tenantchat_samples():
+            if sample.name.startswith("tenantchat_router_confidence"):
+                for label_name, label_value in sample.labels.items():
+                    if label_name == "le":
+                        continue
+                    assert label_value in vocabulary, (
+                        f"router confidence label {label_name} carries "
+                        f"out-of-vocabulary value {label_value!r}"
+                    )
+
+    def test_token_cost_records_prompt_and_completion_kinds(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The cost counter mirrors the token metric: prompt and completion kinds.
+
+        The template label matches the assembled prompt's registry reference.
+        """
+        model.script = [
+            ModelResponse(
+                content="We are open until 7pm.",
+                model_name="scripted",
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            )
+        ]
+        visitor = _open_session(client)
+
+        response = client.post(
+            "/api/chat", json={"message": "What are your hours?"}, headers=visitor.headers
+        )
+
+        assert response.status_code == 200
+        values = sample_values()
+        assert (
+            "tenantchat_token_cost_total",
+            frozenset({("kind", "prompt"), ("template", TEMPLATE_REF)}),
+        ) in values, "prompt cost not recorded"
+        assert (
+            "tenantchat_token_cost_total",
+            frozenset({("kind", "completion"), ("template", TEMPLATE_REF)}),
+        ) in values, "completion cost not recorded"
+        prompt_cost = values[
+            (
+                "tenantchat_token_cost_total",
+                frozenset({("kind", "prompt"), ("template", TEMPLATE_REF)}),
+            )
+        ]
+        completion_cost = values[
+            (
+                "tenantchat_token_cost_total",
+                frozenset({("kind", "completion"), ("template", TEMPLATE_REF)}),
+            )
+        ]
+        assert prompt_cost > 0, "prompt cost is zero"
+        assert completion_cost > 0, "completion cost is zero"
+
+    def test_token_cost_labels_are_bounded(self, client: TestClient, model: ScriptedModel) -> None:
+        """The cost counter's label values stay in the closed vocabulary."""
+        model.script = [
+            ModelResponse(
+                content="Hi.",
+                model_name="scripted",
+                usage={"prompt_tokens": 3, "completion_tokens": 1},
+            )
+        ]
+        visitor = _open_session(client)
+
+        client.post("/api/chat", json={"message": "Hello"}, headers=visitor.headers)
+
+        vocabulary = _reachable_vocabulary()
+        for sample in tenantchat_samples():
+            if sample.name == "tenantchat_token_cost_total":
+                for label_name, label_value in sample.labels.items():
+                    assert label_value in vocabulary, (
+                        f"token cost label {label_name} carries "
+                        f"out-of-vocabulary value {label_value!r}"
+                    )
+
+    def test_context_truncation_labels_are_bounded(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The truncation counter uses the closed `TruncationKind` enum.
+
+        Even when no truncation occurred, the contract that the `kind` label
+        only carries ``history`` or ``evidence`` must hold.
+        """
+        model.script = [ModelResponse(content="We are open.", model_name="scripted")]
+        visitor = _open_session(client)
+
+        client.post("/api/chat", json={"message": "What are your hours?"}, headers=visitor.headers)
+
+        vocabulary = _reachable_vocabulary()
+        for sample in tenantchat_samples():
+            if sample.name == "tenantchat_context_truncation_total":
+                for label_name, label_value in sample.labels.items():
+                    assert label_value in vocabulary, (
+                        f"context truncation label {label_name} carries "
+                        f"out-of-vocabulary value {label_value!r}"
+                    )
 
 
 class TestScrapeSurface:
