@@ -58,6 +58,7 @@ from tenantchat.core.metrics import (
     MetricName,
     Operation,
     ToolOutcome,
+    TruncationKind,
     TurnOutcome,
 )
 from tenantchat.core.planning import ConversationTurn, RetrievalPlan, plan_query
@@ -622,6 +623,7 @@ class DispatchNodes:
                 "rule": decision.rule.value,
             },
         )
+        self._observe(MetricName.ROUTER_CONFIDENCE, decision.confidence, labels={})
         if decision.outcome is RoutingOutcome.CLARIFY:
             # A clarification ends the turn here: the question is the answer,
             # and the router declining to guess is a quality class of its own.
@@ -760,6 +762,12 @@ class DispatchNodes:
             for item in (bundle.items if bundle is not None else ())
         )
         outcome = _assemble_prompt(policy, state, evidence)
+        for excluded in outcome.excluded:
+            self._observe(
+                MetricName.CONTEXT_TRUNCATION,
+                1,
+                labels={"kind": TruncationKind(excluded.kind.value).value},
+            )
         if self._should_abstain_after_assembly(agent, bundle, outcome):
             # The retrieval verdict passed, but the assembled prompt carried no
             # evidence segment — a budget cut, not a retriever failure. The

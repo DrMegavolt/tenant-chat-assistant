@@ -26,6 +26,9 @@ not the other fails the contract test.
 | `tenantchat_tool_calls_total` | counter | `tool`, `outcome` | tools node / booking commit |
 | `tenantchat_tool_latency_seconds` | histogram | `tool`, `outcome` | tools node / booking commit |
 | `tenantchat_routing_decisions_total` | counter | `intent`, `outcome`, `rule` | routing node |
+| `tenantchat_router_confidence` | histogram | — | routing node |
+| `tenantchat_context_truncation_total` | counter | `kind` | call-model node |
+| `tenantchat_token_cost_total` | counter | `kind`, `template` | model adapter wrapper |
 | `tenantchat_business_actions_total` | counter | `operation`, `status` | idempotent action services |
 | `tenantchat_business_latency_seconds` | histogram | `operation` | idempotent action services |
 | `tenantchat_citation_validation_total` | counter | `verdict` | chat router |
@@ -40,7 +43,8 @@ Label value vocabulary (closed):
 - `verdict`: `sufficient`, `insufficient` (retrieval) and `valid`, `invalid` (citations)
 - `intent`: the `IntentName` enum, or `none` for a clarification
 - `rule`: the `RoutingRule` enum; `tool`: the `ToolName` enum or `unknown`
-- `kind`: `prompt`, `completion`, `total`; `template`: a registry ref such as `dispatch-system@3`
+- `kind`: `prompt`, `completion`, `total` (tokens) and `history`, `evidence` (truncation)
+- `template`: a registry ref such as `dispatch-system@3`
 
 ## The label policy
 
@@ -126,6 +130,29 @@ sum by (tool) (rate(tenantchat_tool_calls_total{outcome="failed"}[5m]))
 # Clarification rate — the router declining to guess
 sum(rate(tenantchat_routing_decisions_total{outcome="clarify"}[5m]))
   / sum(rate(tenantchat_routing_decisions_total[5m]))
+
+# Router confidence distribution — p50/p95/p99 per five minutes
+histogram_quantile(0.50, sum by (le) (rate(tenantchat_router_confidence_bucket[5m])))
+histogram_quantile(0.95, sum by (le) (rate(tenantchat_router_confidence_bucket[5m])))
+
+# Context-truncation rate by kind — history vs evidence drops per five minutes
+sum by (kind) (rate(tenantchat_context_truncation_total[5m]))
+
+# Token cost per template — prompt vs completion, in micro-dollars per five minutes
+sum by (kind, template) (
+  rate(tenantchat_token_cost_total[5m])
+)
+
+# Token cost derived from the raw token counter — multiplies tokens by the
+# canonical demo rates (0.15 µ$ / prompt token, 0.60 µ$ / completion token)
+sum by (template) (
+  rate(tenantchat_llm_tokens_total{kind="prompt"}[5m]) * 0.15
+  + rate(tenantchat_llm_tokens_total{kind="completion"}[5m]) * 0.60
+)
+
+# Cost as fraction of total per template
+sum by (template) (rate(tenantchat_token_cost_total[5m]))
+  / sum(rate(tenantchat_token_cost_total[5m]))
 ```
 
 ## Recording semantics

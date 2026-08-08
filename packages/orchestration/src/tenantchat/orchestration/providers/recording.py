@@ -33,6 +33,13 @@ _USAGE_KINDS: Final = (
     (TokenKind.TOTAL, "total_tokens"),
 )
 
+# Cost per token in micro-dollars (USD x 10^-6). Prompt tokens are cheaper than
+# completions; these are canonical demo rates, not provider-agreed pricing.
+# A PromQL query can multiply the `tenantchat_llm_tokens_total` counter by
+# these rates to get the same estimate independently.
+_MICRO_DOLLARS_PER_PROMPT_TOKEN: Final = 0.15
+_MICRO_DOLLARS_PER_COMPLETION_TOKEN: Final = 0.6
+
 
 class MetricRecordingChatModel:
     """Records every completion on the wrapped model against the metrics port."""
@@ -78,6 +85,21 @@ class MetricRecordingChatModel:
                     float(tokens),
                     labels={"kind": kind.value, "template": prompt.template_ref},
                 )
+        prompt_tokens = response.usage.get("prompt_tokens", 0)
+        completion_tokens = response.usage.get("completion_tokens", 0)
+        template = prompt.template_ref
+        if prompt_tokens:
+            self._metrics.observe(
+                MetricName.TOKEN_COST,
+                float(prompt_tokens) * _MICRO_DOLLARS_PER_PROMPT_TOKEN,
+                labels={"kind": TokenKind.PROMPT.value, "template": template},
+            )
+        if completion_tokens:
+            self._metrics.observe(
+                MetricName.TOKEN_COST,
+                float(completion_tokens) * _MICRO_DOLLARS_PER_COMPLETION_TOKEN,
+                labels={"kind": TokenKind.COMPLETION.value, "template": template},
+            )
         return response
 
     def _record(self, status: Status, prompt: AssembledPrompt, started: float) -> None:

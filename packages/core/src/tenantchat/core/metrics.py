@@ -42,7 +42,7 @@ LABEL_VALUE_PATTERN: Final = re.compile(r"\A[a-z0-9_.@-]{1,64}\Z")
 # sentinel; a new label dimension is a deliberate widening that must raise this
 # number with a test. `AI-002` raised it from 80 to 96 for its safety/quotas
 # surface: the block-reason, cache-result, and alert-level vocabularies.
-METRIC_CARDINALITY_CEILING: Final = 96
+METRIC_CARDINALITY_CEILING: Final = 100
 
 # The value the routing metric records for the intent label when the router
 # chose no intent (a clarification): the clarify outcome has no chosen intent,
@@ -81,6 +81,9 @@ class MetricName(StrEnum):
     MODEL_FALLBACKS = "tenantchat_model_fallbacks_total"
     RESPONSE_CACHE = "tenantchat_response_cache_total"
     BUDGET_ALERTS = "tenantchat_budget_alerts_total"
+    ROUTER_CONFIDENCE = "tenantchat_router_confidence"
+    CONTEXT_TRUNCATION = "tenantchat_context_truncation_total"
+    TOKEN_COST = "tenantchat_token_cost_total"  # noqa: S105
 
 
 class MetricKind(StrEnum):
@@ -260,6 +263,13 @@ class AlertLevel(StrEnum):
     CRITICAL = "critical"
 
 
+class TruncationKind(StrEnum):
+    """What kind of context was dropped from an assembled prompt."""
+
+    HISTORY = "history"
+    EVIDENCE = "evidence"
+
+
 # The label names each metric may carry, as the adapter's hard contract. A label
 # name that is not listed here is rejected at record time, so a metric can never
 # grow a dimension by omission.
@@ -290,6 +300,9 @@ METRIC_LABELS: Final[Mapping[MetricName, tuple[MetricLabelName, ...]]] = {
     MetricName.MODEL_FALLBACKS: (MetricLabelName.REASON,),
     MetricName.RESPONSE_CACHE: (MetricLabelName.RESULT,),
     MetricName.BUDGET_ALERTS: (MetricLabelName.LEVEL,),
+    MetricName.ROUTER_CONFIDENCE: (),
+    MetricName.CONTEXT_TRUNCATION: (MetricLabelName.KIND,),
+    MetricName.TOKEN_COST: (MetricLabelName.KIND, MetricLabelName.TEMPLATE),
 }
 
 # The value enums this package owns. The routing, tool, and intent vocabularies
@@ -308,6 +321,7 @@ BOUNDED_LABEL_VALUE_ENUMS: Final[tuple[type[StrEnum], ...]] = (
     BlockReason,
     CacheResult,
     AlertLevel,
+    TruncationKind,
 )
 
 

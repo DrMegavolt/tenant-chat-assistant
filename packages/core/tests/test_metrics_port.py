@@ -63,6 +63,7 @@ def test_every_owned_label_value_is_bounded_and_disjoint_per_label_name() -> Non
         Status,
         TokenKind,
         ToolOutcome,
+        TruncationKind,
         TurnOutcome,
     )
     from tenantchat.core.resilience import CircuitState, Dependency, FailureKind
@@ -74,7 +75,7 @@ def test_every_owned_label_value_is_bounded_and_disjoint_per_label_name() -> Non
         "status": (Status, ActionStatus),
         "verdict": (RetrievalVerdict, CitationVerdict),
         "operation": (Operation,),
-        "kind": (TokenKind,),
+        "kind": (TokenKind, TruncationKind),
         "dependency": (Dependency,),
         "reason": (FailureKind,),
         "state": (CircuitState,),

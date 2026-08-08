@@ -133,6 +133,18 @@ METRIC_DEFINITIONS: Final[Mapping[MetricName, tuple[MetricKind, str]]] = {
         MetricKind.COUNTER,
         "Per-tenant spend alerts fired by level: warn or critical.",
     ),
+    MetricName.ROUTER_CONFIDENCE: (
+        MetricKind.HISTOGRAM,
+        "Router confidence distribution across routing decisions.",
+    ),
+    MetricName.CONTEXT_TRUNCATION: (
+        MetricKind.COUNTER,
+        "Prompt context items dropped by assembly budget, by kind: history or evidence.",
+    ),
+    MetricName.TOKEN_COST: (
+        MetricKind.COUNTER,
+        "Estimated token cost by kind and prompt template, in micro-dollars.",
+    ),
 }
 
 
