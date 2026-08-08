@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from tenantchat.api import otel_setup
 from tenantchat.api.actions import RecordedBookingService
 from tenantchat.api.agent import build_conversation_runtime
 from tenantchat.api.correlation import CorrelationMiddleware
@@ -135,6 +136,7 @@ from tenantchat.core.visitor_session import (
 )
 from tenantchat.orchestration.checkpoints import Checkpointer, postgres_checkpointer
 from tenantchat.orchestration.model import ChatModel
+from tenantchat.orchestration.otel import SpanRecordingChatModel
 from tenantchat.orchestration.providers.cache import CachingChatModel
 from tenantchat.orchestration.providers.fallback import FallbackChatModel
 from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibleChatModel
@@ -152,6 +154,10 @@ _CORS_RESPONSE_HEADERS = (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _shutdown_otel() -> None:
+    otel_setup.shutdown_otel()
 
 
 class AdminCorsConfineMiddleware:
@@ -431,6 +437,9 @@ def create_app(
             is missing a setting it cannot run without.
     """
     resolved = settings or Settings.from_environment()
+    # L8-OTEL: initialise the OTel tracer provider before the first span is
+    # created, so startup probes and HTTP auto-instrumentation record traces.
+    otel_setup.init_otel()
     # The log plane is configured before anything else can log: the first line
     # the process emits is already structured and carries the service name.
     configure_logging(
@@ -483,6 +492,14 @@ def create_app(
         effective_model = owned_models[0]
         if len(owned_models) > 1:
             effective_model = FallbackChatModel(owned_models, metrics=METRICS)
+    # L8-OTEL: wrap the model chain in a content-free GenAI-convention span
+    # recorder *before* the metrics wrapper so both sit at the same observation
+    # level around the actual provider calls.
+    if effective_model is not None:
+        effective_model = SpanRecordingChatModel(
+            effective_model,
+            gen_ai_system=resolved.llm_model or "",
+        )
     # The metrics wrapper is observation only: it delegates every call and
     # records latency, outcome, and token counts around it (`OBS-002`). A
     # provider failure still escapes to the graph exactly as before.
@@ -785,6 +802,7 @@ def create_app(
                     postgres_checkpointer(resolved.database_url)
                 )
                 running.state.conversation_runtime = compose_runtime(saver, effective_model)
+            closing.push_async_callback(_shutdown_otel)
             yield
 
     app = FastAPI(

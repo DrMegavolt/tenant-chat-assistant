@@ -232,3 +232,120 @@ def test_the_manifest_never_enables_content_export() -> None:
     security_gate._check_trace_content_export(errors, documents)
 
     assert not errors, "the tracked deployment must not enable TRACE_CONTENT_EXPORT"
+
+
+def test_every_emitted_attribute_is_on_the_collector_allowlist() -> None:
+    """Every attribute the orchestration OTel module sets must survive redaction.
+
+    The collector is the only fan-out point and its allowlist is the whole story:
+    an attribute not on it is dropped before any exporter sees it. If the emitter
+    sets a key that the allowlist does not name, the value is lost at the collector
+    and the span attribute is effectively dead. This test guarantees the two stay
+    in sync.
+    """
+    from tenantchat.orchestration.otel import EMITTED_ATTRIBUTES
+
+    allowlist = _redaction_allowlist()
+    missing = [
+        attr
+        for attr in EMITTED_ATTRIBUTES
+        if not any(re.fullmatch(_anchor(pattern), attr) for pattern in allowlist)
+    ]
+    assert (
+        not missing
+    ), f"orchestration OTel module emits attributes not on the collector allowlist: {missing}"
+
+
+def test_no_content_attribute_is_emitted_by_the_otel_module() -> None:
+    """The emitter must never set an attribute whose key is a content one.
+
+    The allowlist test above prevents content from reaching an exporter, but the
+    emitter itself must not name a content-bearing key — because naming one that
+    the allowlist later drops is still a content-bearing key in source code, and
+    a grep of the codebase for those keys must return nothing outside of this
+    test and the redaction config comment.
+    """
+    from tenantchat.orchestration.otel import EMITTED_ATTRIBUTES
+
+    for content_attribute in CONTENT_ATTRIBUTES:
+        assert (
+            content_attribute not in EMITTED_ATTRIBUTES
+        ), f"orchestration OTel module has a content-bearing attribute: {content_attribute}"
+
+
+def _exporter_endpoints() -> list[str]:
+    config = _collector_config()
+    exporters = config["exporters"]
+    assert isinstance(exporters, dict)
+    endpoints: list[str] = []
+    for _name, spec in exporters.items():
+        if not isinstance(spec, dict):
+            continue
+        endpoint = spec.get("endpoint")
+        if isinstance(endpoint, str):
+            endpoints.append(endpoint)
+    return endpoints
+
+
+def test_phoenix_and_mlflow_exporters_are_in_cluster() -> None:
+    """The two GenAI trace viewers must be reachable only inside the cluster.
+
+    Phoenix and MLflow sit downstream of redaction, so adding them was a config
+    change, not a privacy decision. Their endpoints must name in-cluster
+    addresses so no one accidentally widens the trust boundary by editing the
+    manifest.
+    """
+    from urllib.parse import urlparse
+
+    endpoints = _exporter_endpoints()
+    viewer_endpoints = [ep for ep in endpoints if "phoenix" in ep or "mlflow" in ep]
+    assert viewer_endpoints, "must find at least one Phoenix or MLflow exporter endpoint"
+
+    external: list[str] = []
+    for endpoint in viewer_endpoints:
+        host = (urlparse(endpoint).hostname or "").lower()
+        if (
+            host
+            and not host.endswith(".svc.cluster.local")
+            and host
+            not in (
+                "localhost",
+                "127.0.0.1",
+                "::1",
+            )
+        ):
+            external.append(endpoint)
+    assert not external, f"Phoenix/MLflow exporter endpoints must be in-cluster, got: {external}"
+
+
+def test_chat_backend_and_job_worker_have_instrumentation_annotations() -> None:
+    """Both the API and the worker must carry the OTel Python injection annotation.
+
+    Without it, the k8s instrumentation operator does not inject the OTel SDK
+    and the auto-instrumented HTTP/DB spans never appear. The manual GenAI spans
+    from the orchestration layer still work (they use the API, not the SDK), but
+    the turn is not followable across services without the base HTTP spans from
+    auto-instrumentation.
+    """
+    app_yaml = REPO_ROOT / "k8s" / "app.yaml"
+    documents = list(yaml.safe_load_all(app_yaml.read_text(encoding="utf-8")))
+    annotated: set[str] = set()
+    for doc in documents:
+        if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+            continue
+        metadata = doc.get("metadata", {})
+        name = metadata.get("name", "") if isinstance(metadata, dict) else ""
+        spec = doc.get("spec", {})
+        template = spec.get("template", {}) if isinstance(spec, dict) else {}
+        template_meta = template.get("metadata", {}) if isinstance(template, dict) else {}
+        annotations = (
+            template_meta.get("annotations", {}) if isinstance(template_meta, dict) else {}
+        )
+        if annotations.get("instrumentation.opentelemetry.io/inject-python"):
+            annotated.add(str(name))
+
+    expected = {"chat-backend", "job-worker"}
+    missing = expected - annotated
+    assert (
+        not missing
+    ), f"these deployments lack the OTel Python instrumentation annotation: {missing}"

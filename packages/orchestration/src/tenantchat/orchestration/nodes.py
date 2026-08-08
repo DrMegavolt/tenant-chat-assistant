@@ -79,6 +79,7 @@ from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransit
 from tenantchat.orchestration.agents import AGENTS_VERSION, AgentSpec
 from tenantchat.orchestration.dependencies import DispatchDependencies
 from tenantchat.orchestration.model import MessageRole, ToolCall
+from tenantchat.orchestration.otel import set_tenant_identity
 from tenantchat.orchestration.prompts import (
     DEFAULT_BUDGET,
     DEFAULT_REGISTRY,
@@ -732,6 +733,7 @@ class DispatchNodes:
 
     async def call_model(self, state: DispatchState) -> dict[str, Any]:
         """Ask the model what to do next, grounded in this turn's evidence."""
+        set_tenant_identity(state["tenant_id"], state["session_id"])
         policy = await self._deps.policies.policy(state["tenant_id"])
         budget = policy.budgets or DEFAULT_TENANT_BUDGET
         ledger = self._deps.budgets

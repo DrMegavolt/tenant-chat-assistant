@@ -38,6 +38,7 @@ from tenantchat.core.budgets import BudgetEnforcer, TenantBudget
 from tenantchat.core.metrics import AlertLevel
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import ModelResponse, ToolCall
+from tenantchat.orchestration.otel import SpanRecordingChatModel
 from tenantchat.orchestration.providers.cache import CachingChatModel
 from tenantchat.orchestration.providers.fallback import FallbackChatModel
 from tenantchat.orchestration.providers.recording import MetricRecordingChatModel
@@ -374,7 +375,8 @@ class TestFallbackComposition:
 
         model = app.state.chat_model
         assert isinstance(model, MetricRecordingChatModel)
-        assert isinstance(model._inner, FallbackChatModel)
+        assert isinstance(model._inner, SpanRecordingChatModel)
+        assert isinstance(model._inner._inner, FallbackChatModel)
         assert settings.llm_fallback_base_url == "http://secondary/v1"
 
 
