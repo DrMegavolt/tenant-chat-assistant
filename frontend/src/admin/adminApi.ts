@@ -718,6 +718,9 @@ function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
     retrieval: retrieval
       ? {
           query: str(retrieval.query),
+          originalMessage: str(retrieval.original_message),
+          resolvedQuery: strOrNull(retrieval.resolved_query),
+          plan: obj(retrieval.plan),
           sufficient: retrieval.sufficient === true,
           retrieverVersion: str(retrieval.retriever_version),
           reranker: strOrNull(retrieval.reranker),

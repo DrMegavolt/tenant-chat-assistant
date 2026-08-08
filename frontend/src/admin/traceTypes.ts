@@ -60,6 +60,12 @@ export interface RetrievalCandidate {
 
 export interface RetrievalSection {
   query?: string;
+  /** The raw visitor message, as written (v3+). Same as ``query`` for v1/v2. */
+  originalMessage?: string;
+  /** The planner's resolved standalone query (v3+), present when it differs from the raw message. */
+  resolvedQuery?: string | null;
+  /** The full retrieval plan the planner produced (v3+). */
+  plan?: Record<string, unknown> | null;
   sufficient?: boolean;
   retrieverVersion?: string;
   reranker?: string | null;
