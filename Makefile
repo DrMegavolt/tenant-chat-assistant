@@ -16,7 +16,7 @@ NPM := npm --prefix frontend
 	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate \
-	seed-knowledge dashboard-check
+	seed-knowledge dashboard-check harness-a harness-b harness-live
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -208,3 +208,9 @@ clean: ## Remove caches and build artifacts
 
 harness-a: ## Run the L9a Gate B harness against the real graph (hermetic, no LLM)
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
+
+harness-b: ## Run the full L9a+L9b Gate B harness (hermetic, no LLM, all 10 cases)
+	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
+
+harness-live: ## Run L9b live mode against the cluster's LM-Studio endpoint (demo seed)
+	$(UV_RUN) python scripts/harness_live.py
