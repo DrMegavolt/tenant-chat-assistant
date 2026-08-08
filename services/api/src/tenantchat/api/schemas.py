@@ -1114,6 +1114,132 @@ class TraceReplayResponse(BaseModel):
     replayed: ReplayOutput
 
 
+class ReplayTrialsRequest(_Request):
+    """Bounded repeated trials of the stored prompt through the current model.
+
+    ``trials`` is capped at 5: an unbounded replay loop against a live model
+    is a footgun, and a handful of trials is enough to show a stochastic
+    behavior difference without pretending to be a statistical test.
+    """
+
+    trials: int = Field(ge=1, le=5, default=3)
+
+
+class ReplayTrialResult(BaseModel):
+    """One trial in a repeated-trial aggregate: the same prompt, same model, same
+    constraints — different output by the model's own stochasticity."""
+
+    trial_index: int
+    content_hash: str
+    model_name: str
+    output_raw: str
+
+
+class TraceReplayTrialsResponse(BaseModel):
+    """The aggregate result of N bounded repeated trials.
+
+    Every trial ran the same stored prompt through the *current* model with no
+    tools. The aggregate is reported as an explicit stochastic observation:
+    multiple trials show variance, but they do not constitute a statistical
+    proof. ``constant`` names what was held constant (prompt, evidence, model)
+    and ``variable`` names what was allowed to vary (the model's output).
+    """
+
+    turn_id: uuid.UUID
+    recorded_at: datetime
+    manifest_hash: str
+    current_manifest_hash: str | None
+    manifest_changed: bool
+    stochastic: bool  # Always True for model calls
+    components: list[ComponentVersionSnapshot]
+    original: ReplayOutput
+    trials: list[ReplayTrialResult]
+    trial_count: int
+    constant: str = "prompt_and_evidence"
+    variable: str = "model_output"
+
+
+class GoldEvidenceSubstitution(BaseModel):
+    """One gold chunk to substitute into the replay's evidence section."""
+
+    source_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=8192)
+
+
+class ReplayRetrievalRequest(_Request):
+    """Immutable-index retrieval replay, optionally with gold-evidence substitution.
+
+    ``gold_evidence``, when supplied, replaces the stored evidence passages in
+    the prompt before sending it to the model. The generation id the turn was
+    retrieved against is read from the stored record; when that generation is
+    gone, the replay refuses rather than silently answering against current data.
+    """
+
+    gold_evidence: list[GoldEvidenceSubstitution] | None = None
+
+
+class TraceReplayRetrievalResponse(BaseModel):
+    """The result of a retrieval replay with an explicit generation check.
+
+    ``generation_available`` is the reproducibility gate: ``True`` when the
+    stored generation still has active chunks in the index, ``False`` when it
+    does not (the route returns a 400, not this shape). ``generation_id`` is
+    the stored generation the check ran against. ``gold_evidence_count`` is
+    the number of gold chunks that were substituted (0 when none were provided).
+    """
+
+    turn_id: uuid.UUID
+    recorded_at: datetime
+    manifest_hash: str
+    current_manifest_hash: str | None
+    manifest_changed: bool
+    stochastic: bool
+    components: list[ComponentVersionSnapshot]
+    original: ReplayOutput
+    replayed: ReplayOutput
+    generation_available: bool
+    generation_id: str | None
+    gold_evidence_count: int = 0
+    constant: str = "prompt_with_pinned_retrieval"
+    variable: str = "model_output"
+
+
+class ReplayTemplateRequest(_Request):
+    """Template-version-pinned replay: hold model and evidence constant, pin the
+    prompt template to a specific version to isolate a prompt regression.
+
+    ``template_version``, when supplied, names the version of the template to
+    render against; when ``None`` (the default), the stored template version
+    is used — isolating a prompt regression from a model or evidence change.
+    """
+
+    template_version: int | None = Field(default=None, ge=1)
+
+
+class TraceReplayTemplateResponse(BaseModel):
+    """The result of a template-version-pinned replay.
+
+    ``template_ref`` names the exact template version the replay was rendered
+    with. ``template_matches_current`` is ``True`` when the pinned version is
+    the same as the deployment's current version, ``False`` when it is not
+    (which is the whole point of this surface).
+    """
+
+    turn_id: uuid.UUID
+    recorded_at: datetime
+    manifest_hash: str
+    current_manifest_hash: str | None
+    manifest_changed: bool
+    stochastic: bool
+    components: list[ComponentVersionSnapshot]
+    original: ReplayOutput
+    replayed: ReplayOutput
+    template_ref: str
+    template_matches_current: bool
+    constant: str = "prompt_template_version"
+    variable: str = "model_output"
+
+
 class GoldEvidenceItem(BaseModel):
     """One reviewer-labelled chunk a Gate B case is anchored to."""
 

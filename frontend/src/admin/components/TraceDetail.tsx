@@ -12,6 +12,7 @@ import {
   type PromptMessage,
   type PromptSegment,
   type ReplayResult,
+  type ReplayTrialsResult,
   type RetrievalSection,
   type RoutingSection,
   type ToolsSection,
@@ -36,8 +37,10 @@ export interface TraceDetailProps {
 export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
   const [trace, setTrace] = useState<TraceRead | null>(null);
   const [replay, setReplay] = useState<ReplayResult | null>(null);
+  const [replayTrials, setReplayTrials] = useState<ReplayTrialsResult | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
   const [isReplaying, setReplaying] = useState(false);
+  const [isReplayingTrials, setReplayingTrials] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +72,18 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
       setReplayError("The replay did not run. The model may be unavailable.");
     } finally {
       setReplaying(false);
+    }
+  };
+
+  const runReplayTrials = async () => {
+    setReplayingTrials(true);
+    setReplayError(null);
+    try {
+      setReplayTrials(await api.replayTrials(record.turnId, tenantId, 3));
+    } catch {
+      setReplayError("The replay trials did not run. The model may be unavailable.");
+    } finally {
+      setReplayingTrials(false);
     }
   };
 
@@ -104,9 +119,12 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
 
       <ReplayPanel
         replay={replay}
+        replayTrials={replayTrials}
         isReplaying={isReplaying}
+        isReplayingTrials={isReplayingTrials}
         error={replayError}
         onReplay={() => void runReplay()}
+        onReplayTrials={() => void runReplayTrials()}
       />
     </article>
   );
@@ -733,22 +751,34 @@ function ToolsPanel({ tools }: { tools: ToolsSection | undefined }) {
 
 function ReplayPanel({
   replay,
+  replayTrials,
   isReplaying,
+  isReplayingTrials,
   error,
-  onReplay
+  onReplay,
+  onReplayTrials
 }: {
   replay: ReplayResult | null;
+  replayTrials: ReplayTrialsResult | null;
   isReplaying: boolean;
+  isReplayingTrials: boolean;
   error: string | null;
   onReplay: () => void;
+  onReplayTrials: () => void;
 }) {
+  const replayData = replayTrials ?? replay;
+  const hasResult = replayData !== null;
+  const shownComponents = hasResult ? replayData.components : [];
+  const shownOriginal = hasResult ? replayData.original : null;
+  const shownChanged = hasResult ? replayData.manifestChanged : false;
+
   return (
     <section className="trace-panel" aria-labelledby="replayTitle">
       <div className="admin-panel-header">
         <h3 id="replayTitle">Safe replay</h3>
         <span className="muted-copy">audited · current model · no tools</span>
       </div>
-      {!replay ? (
+      {!hasResult ? (
         <>
           <p className="muted-copy">
             Replays the stored prompt through the current model with no tools, so nothing
@@ -759,13 +789,28 @@ function ReplayPanel({
               {error}
             </p>
           )}
-          <button type="button" className="ghost-button" onClick={onReplay} disabled={isReplaying}>
-            {isReplaying ? "Replaying…" : "Run one safe replay"}
-          </button>
+          <p>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={onReplay}
+              disabled={isReplaying}
+            >
+              {isReplaying ? "Replaying…" : "Run one safe replay"}
+            </button>{" "}
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={onReplayTrials}
+              disabled={isReplayingTrials}
+            >
+              {isReplayingTrials ? "Running 3 trials…" : "Run 3 trials"}
+            </button>
+          </p>
         </>
       ) : (
         <>
-          {replay.manifestChanged ? (
+          {shownChanged ? (
             <p className="replay-warning" role="note">
               The components this turn ran under differ from what this deployment serves now. The
               replay ran under the current components, marked below.
@@ -775,10 +820,47 @@ function ReplayPanel({
               This deployment serves the same components the turn ran under.
             </p>
           )}
-          <p className="replay-warning" role="note">
-            A single replayed trial is stochastic: it is an observation, never a proof. The original
-            record is untouched.
-          </p>
+          {replayTrials ? (
+            <>
+              <p className="replay-warning" role="note">
+                {replayTrials.trials.length} bounded repeated trials — each trial holds{" "}
+                {replayTrials.constant} constant and varies only {replayTrials.variable}. Multiple
+                trials show variance but are still labelled stochastic: they are observations, never
+                a proof.
+              </p>
+              <div className="replay-outputs">
+                <div>
+                  <h4>Original output</h4>
+                  <pre>{shownOriginal?.outputRaw || "—"}</pre>
+                </div>
+                {replayTrials.trials.map((trial) => (
+                  <div key={trial.trialIndex}>
+                    <h4>
+                      Trial {trial.trialIndex + 1} ({trial.modelName || "current model"})
+                    </h4>
+                    <pre>{trial.outputRaw || "—"}</pre>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : replay ? (
+            <>
+              <p className="replay-warning" role="note">
+                A single replayed trial is stochastic: it is an observation, never a proof. The
+                original record is untouched.
+              </p>
+              <div className="replay-outputs">
+                <div>
+                  <h4>Original output</h4>
+                  <pre>{replay.original.outputRaw || "—"}</pre>
+                </div>
+                <div>
+                  <h4>Replayed output ({replay.replayed.modelName || "current model"})</h4>
+                  <pre>{replay.replayed.outputRaw || "—"}</pre>
+                </div>
+              </div>
+            </>
+          ) : null}
           <table className="trace-table">
             <thead>
               <tr>
@@ -788,7 +870,7 @@ function ReplayPanel({
               </tr>
             </thead>
             <tbody>
-              {replay.components.map((component) => (
+              {shownComponents.map((component) => (
                 <tr key={component.name} className={component.changed ? "manifest-changed" : ""}>
                   <td>{component.name}</td>
                   <td>
@@ -802,16 +884,6 @@ function ReplayPanel({
               ))}
             </tbody>
           </table>
-          <div className="replay-outputs">
-            <div>
-              <h4>Original output</h4>
-              <pre>{replay.original.outputRaw || "—"}</pre>
-            </div>
-            <div>
-              <h4>Replayed output ({replay.replayed.modelName || "current model"})</h4>
-              <pre>{replay.replayed.outputRaw || "—"}</pre>
-            </div>
-          </div>
         </>
       )}
     </section>
