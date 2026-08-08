@@ -1,0 +1,415 @@
+{
+  "title": "LLM Operations & Token Cost",
+  "uid": "tenantchat-llm-operations",
+  "description": "LLM call rates, error rates, latency, and token consumption \u2014 the model plane in the operational metrics surface. Template refs (dispatch-system@N) separate versioned prompts.",
+  "tags": [
+    "tenantchat",
+    "llm",
+    "cost",
+    "performance"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Data source"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "LLM Calls \u2014 Rate by Template & Status",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "sum by (template, status) (rate(tenantchat_llm_calls_total[$__rate_interval]))",
+          "legendFormat": "{{template}}/{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Every model adapter call is labelled by assembled prompt template ref and status (ok/error/timeout/unavailable)."
+    },
+    {
+      "id": 2,
+      "title": "LLM Error Rate",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(tenantchat_llm_calls_total{status=\"error\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 1.0
+              },
+              {
+                "color": "red",
+                "value": 5.0
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "LLM Timeout Rate",
+      "type": "stat",
+      "gridPos": {
+        "x": 4,
+        "y": 10,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(tenantchat_llm_calls_total{status=\"timeout\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 1.0
+              },
+              {
+                "color": "red",
+                "value": 3.0
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Model Fallback Rate",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 10,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(tenantchat_model_fallbacks_total[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 1.0
+              },
+              {
+                "color": "red",
+                "value": 5.0
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Response Cache Hit Rate",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 10,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(tenantchat_response_cache_total{result=\"hit\"}[$__rate_interval])) / sum(rate(tenantchat_response_cache_total[$__rate_interval])) * 100",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green"
+              },
+              {
+                "color": "green",
+                "value": 1.0
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Token Rate \u2014 by Kind",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(tenantchat_llm_tokens_total[$__rate_interval]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "prompt = input tokens, completion = output tokens, total = prompt + completion."
+    },
+    {
+      "id": 7,
+      "title": "Token Rate \u2014 by Template",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (template) (rate(tenantchat_llm_tokens_total[$__rate_interval]))",
+          "legendFormat": "{{template}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Breakdown of token consumption per prompt template ref. High completion tokens from one template may signal verbose responses."
+    },
+    {
+      "id": 8,
+      "title": "p95 LLM Latency by Template",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, template) (rate(tenantchat_llm_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{template}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

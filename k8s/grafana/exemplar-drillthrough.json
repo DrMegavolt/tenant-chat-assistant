@@ -1,0 +1,231 @@
+{
+  "title": "Exemplar \u2192 Trace \u2192 Explorer Drill-Through",
+  "uid": "tenantchat-exemplar-drillthrough",
+  "description": "The beat that ties the operational plane to the inference plane: latency histograms carry trace_id exemplars. Click a histogram bar \u2192 inspect the exemplar \u2192 open Tempo with the trace_id \u2192 open the admin explorer with the same trace_id to see the turn's content and reasoning. Requires a Tempo datasource configured in Grafana (auto-discovered by kube-prometheus-stack when Tempo is in the same cluster).",
+  "tags": [
+    "tenantchat",
+    "exemplar",
+    "trace",
+    "drillthrough"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Data source"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Turn Latency Histogram \u2014 p95 with Exemplars",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(tenantchat_turn_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Each histogram bucket carries the latest trace_id as an exemplar. Click a point \u2192 Query inspector \u2192 Exemplars tab \u2192 copy the trace_id. Uses the bucket query (not histogram_quantile) for exemplar access: sum by (le, operation) (rate(tenantchat_turn_latency_seconds_bucket[$__rate_interval]))."
+    },
+    {
+      "id": 2,
+      "title": "Turn Latency Buckets (for exemplar access)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "sum by (le, operation) (rate(tenantchat_turn_latency_seconds_bucket[$__rate_interval]))",
+          "legendFormat": "{{operation}} le={{le}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "View exemplars: click any point, press Shift+drag to zoom, inspect the Prometheus query result, or open Query inspector \u2192 Exemplars. The trace_id links to Tempo when the Tempo datasource is configured."
+    },
+    {
+      "id": 3,
+      "title": "LLM Latency Buckets (for exemplar access)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "sum by (le, template) (rate(tenantchat_llm_latency_seconds_bucket[$__rate_interval]))",
+          "legendFormat": "{{template}} le={{le}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "LLM call latency buckets with trace_id exemplars. A spike with an exemplar tags the exact turn that was slow."
+    },
+    {
+      "id": 4,
+      "title": "Retrieval Latency Buckets (for exemplar access)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "sum by (le, status) (rate(tenantchat_retrieval_latency_seconds_bucket[$__rate_interval]))",
+          "legendFormat": "{{status}} le={{le}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Retrieval latency buckets with trace_id exemplars. Correlate a slow retrieval with the turn's outcome."
+    },
+    {
+      "id": 5,
+      "title": "Drill-Through Workflow",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 10
+      },
+      "options": {
+        "content": "# Exemplar \u2192 Trace ID \u2192 Explorer Drill-Through\n\nThis dashboard ties the operational plane (Grafana/Prometheus) to the inference plane (turn records in Postgres).\n\n## Step 1: Find the exemplar\n- Hover over any histogram panel above and press **Shift+drag** to select a time range\n- Open **Query inspector \u2192 Exemplars** to see trace IDs attached to the latest samples\n\n## Step 2: Open the trace in Tempo\n- Copy the `trace_id` value from the exemplar\n- Open **Tempo** (`http://192.168.1.170:3200` or your configured Tempo LB)\n- Paste the trace ID and inspect the full span waterfall\n\n## Step 3: Inspect the turn content in the admin explorer\n- Take the same `trace_id`\n- In the **admin explorer** (FEAT-015), query by trace ID:\n  ```\n  $ADMIN/api/admin/traces/by-trace-id/$TRACE_ID?tenant_id=<tenant>&reason=incident_investigation\n  ```\n- This returns the full turn record: prompt, retrieved evidence, model output, validator verdicts, diagnosis causes\n\n## Which UI answers which question\n| Question | Tool |\n|---|---|\n| Rates and classes over time | **Grafana** \u2014 dashboards in this file |\n| One request's shape and timing | **Tempo/Phoenix** \u2014 span waterfall |\n| One turn's content and reasoning | **Admin Explorer (FEAT-015)** \u2014 turn record |\n| Evaluation datasets and experiments | **MLflow** \u2014 experiment tracking |\n\nGrafana shows **trends and aggregates**. Tempo/Phoenix shows **one request's structure**.\nThe explorer shows **one turn's content** \u2014 the prompt, evidence, and reasoning the\noperational plane deliberately excludes (ADR-0010).",
+        "mode": "markdown"
+      }
+    }
+  ]
+}
