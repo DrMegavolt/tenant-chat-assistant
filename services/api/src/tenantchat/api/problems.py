@@ -30,6 +30,7 @@ from tenantchat.core.errors import (
     ConflictError,
     DomainError,
     ExpiredVisitorCredentialError,
+    GenerationUnavailableError,
     HandoffOwnershipError,
     HandoffTransitionError,
     InvalidVersionTransitionError,
@@ -38,6 +39,7 @@ from tenantchat.core.errors import (
     NotFoundError,
     PolicyViolationError,
     SlotUnavailableError,
+    TraceReplayError,
     UnknownServiceError,
     ValidationError,
 )
@@ -66,6 +68,8 @@ _STATUS_BY_TYPE: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (PolicyViolationError, 403),
     (NotFoundError, 404),
     (ConflictError, 409),
+    (GenerationUnavailableError, 400),
+    (TraceReplayError, 400),
 )
 
 _DEFAULT_STATUS: Final = 400

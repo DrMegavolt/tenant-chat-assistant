@@ -28,6 +28,7 @@ from tenantchat.api.dependencies import (
     Audit,
     Registry,
     RequestId,
+    SearchIndexes,
     TraceAccess,
     TurnRecords,
     get_settings,
@@ -40,16 +41,27 @@ from tenantchat.api.identity import (
     require_trace_read,
     verify_csrf,
 )
-from tenantchat.api.replay import replay_turn
+from tenantchat.api.replay import (
+    replay_trials,
+    replay_turn,
+    replay_with_retrieval,
+    replay_with_template,
+)
 from tenantchat.api.schemas import (
     GoldCaseResponse,
     GoldCasesResponse,
     GoldEvidenceItem,
+    ReplayRetrievalRequest,
+    ReplayTemplateRequest,
+    ReplayTrialsRequest,
     TraceAccessesResponse,
     TraceAccessRequest,
     TraceAccessResponse,
     TraceReadResponse,
     TraceReplayResponse,
+    TraceReplayRetrievalResponse,
+    TraceReplayTemplateResponse,
+    TraceReplayTrialsResponse,
     TraceSearchResponsePage,
 )
 from tenantchat.api.store import AuditActorType, AuditEvent
@@ -462,6 +474,234 @@ async def replay_turn_record(
                 "changed_components": [
                     component.name for component in result.components if component.changed
                 ],
+            },
+        )
+    )
+    return result
+
+
+@router.post(
+    "/api/admin/traces/{turn_id}/replay/trials",
+    response_model=TraceReplayTrialsResponse,
+)
+async def replay_turn_trials(
+    identity: TraceReader,
+    turn_id: uuid.UUID,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    payload: ReplayTrialsRequest,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+    request: Request,
+) -> TraceReplayTrialsResponse:
+    """Bounded repeated trials of one stored turn through the current model.
+
+    Each trial sends the same stored prompt through the *current* model with no
+    tools. The response is an aggregate — all trials listed, with an explicit
+    stochastic label. ``trials`` is bounded at 5: an unbounded replay loop
+    against a live model is a footgun.
+
+    Each trial is audited like a single replay: actor, turn, reason, and the
+    trial count.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+        NotFoundError: no such turn record, or it belongs to another tenant.
+        ChatUnavailableError: this deployment composed no model to replay with.
+        TraceReplayError: the stored record names no reconstructible prompt.
+    """
+    registry.get(tenant_id)
+    verify_csrf(request, identity, get_settings(request))
+    record = await turns.get(tenant_id, turn_id)
+    model = request.app.state.chat_model
+    if model is None:
+        raise ChatUnavailableError
+    evidence = request.app.state.evidence_source
+    retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+    result = await replay_trials(
+        record=record, model=model, retriever=retriever, trials=payload.trials
+    )
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.replay_trials",
+            resource_type="turn_record",
+            resource_id=record.turn_id,
+            request_id=request_id,
+            details={
+                "reason": reason.value,
+                "manifest_changed": result.manifest_changed,
+                "changed_components": [
+                    component.name for component in result.components if component.changed
+                ],
+                "trials": result.trial_count,
+            },
+        )
+    )
+    return result
+
+
+@router.post(
+    "/api/admin/traces/{turn_id}/replay/retrieval",
+    response_model=TraceReplayRetrievalResponse,
+)
+async def replay_turn_retrieval(
+    identity: TraceReader,
+    turn_id: uuid.UUID,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    payload: ReplayRetrievalRequest,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+    request: Request,
+    search_index: SearchIndexes,
+) -> TraceReplayRetrievalResponse:
+    """Immutable-index retrieval replay, optionally with gold-evidence substitution.
+
+    Checks that the stored index generation still has active chunks. When it
+    does not, the route refuses (400 ``generation_unavailable``) rather than
+    silently replaying against current data — a replay that quietly changes its
+    evidence is worse than no replay. When ``gold_evidence`` is provided, those
+    passages replace the stored evidence before the prompt reaches the model.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+        NotFoundError: no such turn record, or it belongs to another tenant.
+        ChatUnavailableError: this deployment composed no model to replay with.
+        TraceReplayError: the stored record names no reconstructible prompt.
+        GenerationUnavailableError: the index generation is gone.
+    """
+    registry.get(tenant_id)
+    verify_csrf(request, identity, get_settings(request))
+    record = await turns.get(tenant_id, turn_id)
+    model = request.app.state.chat_model
+    if model is None:
+        raise ChatUnavailableError
+    evidence = request.app.state.evidence_source
+    retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+
+    content = record.content
+    retrieval = content.get("retrieval")
+    generation_id_str = None
+    generation_exists = False
+    if isinstance(retrieval, dict):
+        gid = retrieval.get("generation_id")
+        if gid is not None:
+            try:
+                gen_uuid = uuid.UUID(str(gid))
+                generation_id_str = str(gid)
+                if search_index is not None:
+                    generation_exists = await search_index.has_active_chunks_for_generation(
+                        tenant_id=tenant_id, generation_id=gen_uuid
+                    )
+            except ValueError:
+                pass
+
+    gold_evidence: list[dict[str, str]] | None = None
+    if payload.gold_evidence:
+        gold_evidence = [
+            {"source_id": item.source_id, "text": item.text} for item in payload.gold_evidence
+        ]
+
+    try:
+        result = await replay_with_retrieval(
+            record=record,
+            model=model,
+            retriever=retriever,
+            generation_exists=generation_exists,
+            gold_evidence=gold_evidence,
+        )
+    finally:
+        await audit.record(
+            AuditEvent(
+                tenant_id=tenant_id,
+                actor_type=AuditActorType.STAFF,
+                principal_id=identity.subject,
+                action="trace.replay_retrieval",
+                resource_type="turn_record",
+                resource_id=record.turn_id,
+                request_id=request_id,
+                details={
+                    "reason": reason.value,
+                    "generation_id": generation_id_str,
+                    "generation_exists": generation_exists,
+                    "gold_evidence_count": len(gold_evidence) if gold_evidence else 0,
+                },
+            )
+        )
+    return result
+
+
+@router.post(
+    "/api/admin/traces/{turn_id}/replay/template",
+    response_model=TraceReplayTemplateResponse,
+)
+async def replay_turn_template(
+    identity: TraceReader,
+    turn_id: uuid.UUID,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    payload: ReplayTemplateRequest,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+    request: Request,
+) -> TraceReplayTemplateResponse:
+    """Template-version-pinned replay: model and evidence constant, prompt pinned.
+
+    Sends the stored prompt through the *current* model with no tools,
+    explicitly pinning which template version was used — the stored version
+    by default, or a caller-supplied one — so a prompt regression can be
+    isolated from a model change.
+
+    The response carries ``template_ref`` (the version actually used) and
+    ``template_matches_current`` (``True`` when the pinned version is the
+    same as the deployment's current version).
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+        NotFoundError: no such turn record, or it belongs to another tenant.
+        ChatUnavailableError: this deployment composed no model to replay with.
+        TraceReplayError: the stored record names no reconstructible prompt.
+    """
+    registry.get(tenant_id)
+    verify_csrf(request, identity, get_settings(request))
+    record = await turns.get(tenant_id, turn_id)
+    model = request.app.state.chat_model
+    if model is None:
+        raise ChatUnavailableError
+    evidence = request.app.state.evidence_source
+    retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+    result = await replay_with_template(
+        record=record,
+        model=model,
+        retriever=retriever,
+        template_version=payload.template_version,
+    )
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.replay_template",
+            resource_type="turn_record",
+            resource_id=record.turn_id,
+            request_id=request_id,
+            details={
+                "reason": reason.value,
+                "manifest_changed": result.manifest_changed,
+                "changed_components": [
+                    component.name for component in result.components if component.changed
+                ],
+                "template_ref": result.template_ref,
+                "template_matches_current": result.template_matches_current,
             },
         )
     )

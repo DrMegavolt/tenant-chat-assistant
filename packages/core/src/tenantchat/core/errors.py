@@ -168,6 +168,19 @@ class TraceReplayError(DomainError):
     message = "This turn record cannot be replayed."
 
 
+class GenerationUnavailableError(DomainError):
+    """The index generation this turn was retrieved against is no longer available.
+
+    A replay that quietly changes its evidence is worse than no replay — when
+    the generation is gone, the service must refuse the reproducibility claim
+    rather than silently replaying against current data. ``detail`` carries the
+    generation id so the operator log is specific.
+    """
+
+    code = "generation_unavailable"
+    message = "The index generation this turn was retrieved against is no longer available."
+
+
 class InvalidVisitorCredentialError(DomainError):
     """A presented visitor credential is not one this server issued.
 
