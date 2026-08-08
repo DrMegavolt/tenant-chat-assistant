@@ -205,3 +205,9 @@ clean: ## Remove caches and build artifacts
 
 harness-a: ## Run the L9a Gate B harness against the real graph (hermetic, no LLM)
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
+
+harness-b: ## Run the full L9a+L9b Gate B harness (hermetic, no LLM, all 10 cases)
+	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
+
+harness-live: ## Run L9b live mode against the cluster's LM-Studio endpoint (demo seed)
+	$(UV_RUN) python scripts/harness_live.py
