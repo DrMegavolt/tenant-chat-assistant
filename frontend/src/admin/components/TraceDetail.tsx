@@ -495,6 +495,8 @@ function RoutingPanel({ routing }: { routing: RoutingSection | null | undefined 
 }
 
 function RetrievalFunnel({ retrieval }: { retrieval: RetrievalSection | null | undefined }) {
+  const hasResolved = retrieval?.resolvedQuery && retrieval.resolvedQuery !== retrieval.query;
+  const displayQuery = retrieval?.resolvedQuery ?? retrieval?.query;
   return (
     <section className="trace-panel" aria-labelledby="funnelTitle">
       <div className="admin-panel-header">
@@ -505,8 +507,14 @@ function RetrievalFunnel({ retrieval }: { retrieval: RetrievalSection | null | u
         <p className="muted-copy">No retrieval run recorded.</p>
       ) : (
         <>
+          {hasResolved && (
+            <p className="muted-copy">
+              Original: <code>{retrieval.originalMessage ?? retrieval.query ?? "—"}</code>
+            </p>
+          )}
           <p className="muted-copy">
-            Query: <code>{retrieval.query || "—"}</code> · retriever{" "}
+            {hasResolved ? "Resolved: " : "Query: "}
+            <code>{displayQuery || "—"}</code> · retriever{" "}
             <code>{retrieval.retrieverVersion ?? "?"}</code> · reranker{" "}
             <code>{retrieval.reranker ?? "none"}</code> · sufficient:{" "}
             {retrieval.sufficient ? "yes" : "no"}

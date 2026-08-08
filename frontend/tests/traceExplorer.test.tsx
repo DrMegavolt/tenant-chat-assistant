@@ -16,6 +16,7 @@ import {
   TRACE_READ_WIRE_CONTENT,
   SUSPECTED_READ_WIRE_CONTENT,
   PARTIAL_READ_WIRE_CONTENT,
+  V3_READ_WIRE_CONTENT,
   wireTraceContent
 } from "tests/support/traceFixtures";
 
@@ -33,16 +34,20 @@ function stubTraceBackend() {
     if (url.includes("/replay")) return jsonResponse(REPLAY_WIRE);
     if (url.includes("/gold-cases")) return jsonResponse(GOLD_WIRE);
     if (url.includes("/api/admin/traces/")) {
-      const content = url.includes("turn-2")
-        ? SUSPECTED_READ_WIRE_CONTENT
-        : url.includes("turn-3")
-          ? PARTIAL_READ_WIRE_CONTENT
-          : TRACE_READ_WIRE_CONTENT;
-      const turnId = url.includes("turn-2")
-        ? "turn-2"
-        : url.includes("turn-3")
-          ? "turn-3"
-          : "turn-1";
+      const content = url.includes("turn-4")
+        ? V3_READ_WIRE_CONTENT
+        : url.includes("turn-2")
+          ? SUSPECTED_READ_WIRE_CONTENT
+          : url.includes("turn-3")
+            ? PARTIAL_READ_WIRE_CONTENT
+            : TRACE_READ_WIRE_CONTENT;
+      const turnId = url.includes("turn-4")
+        ? "turn-4"
+        : url.includes("turn-2")
+          ? "turn-2"
+          : url.includes("turn-3")
+            ? "turn-3"
+            : "turn-1";
       return jsonResponse(wireTraceContent(turnId, content));
     }
     if (url.includes("/api/admin/traces?")) {
@@ -68,6 +73,13 @@ async function searchAndOpen() {
   await screen.findByText(/grounding \/ citation error/i, { selector: ".session-preview" });
   fireEvent.click(screen.getByRole("button", { name: /Turn 8/i }));
   await screen.findByRole("heading", { name: /Turn 8/ });
+}
+
+async function searchAndOpenV3() {
+  fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+  await screen.findByRole("button", { name: /Turn 4/i });
+  fireEvent.click(screen.getByRole("button", { name: /Turn 4/i }));
+  await screen.findByRole("heading", { name: /Turn 4/ });
 }
 
 describe("the trace explorer filters", () => {
@@ -341,6 +353,37 @@ describe("the coordinated drill-down panels", () => {
     expect(within(panel).getByText("clearview-windows-5")).toBeTruthy();
     expect(within(panel).getByText("0.8")).toBeTruthy();
     expect(within(panel).getByText("0.4")).toBeTruthy();
+  });
+
+  test("the v3 retrieval funnel shows original and resolved when the planner rewrote the query", async () => {
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+      if (url.includes("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "t" });
+      if (url.includes("/replay")) return jsonResponse(REPLAY_WIRE);
+      if (url.includes("/gold-cases")) return jsonResponse(GOLD_WIRE);
+      if (url.includes("/api/admin/traces/")) {
+        const content = url.includes("turn-4") ? V3_READ_WIRE_CONTENT : TRACE_READ_WIRE_CONTENT;
+        const turnId = url.includes("turn-4") ? "turn-4" : "turn-1";
+        return jsonResponse(wireTraceContent(turnId, content));
+      }
+      if (url.includes("/api/admin/traces?"))
+        return jsonResponse({
+          records: [
+            RECORD_WIRE,
+            { ...RECORD_WIRE, turn_id: "turn-4", turn_index: 4, trace_schema_version: "3" }
+          ]
+        });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderExplorer();
+    await searchAndOpenV3();
+
+    const panel = screen.getByRole("heading", { name: "Retrieval funnel" }).closest("section")!;
+    expect(within(panel).getByText(/Original:/)).toBeTruthy();
+    expect(within(panel).getByText(/Resolved:/)).toBeTruthy();
+    expect(within(panel).getByText(/Clearview HVAC maintenance/)).toBeTruthy();
+    const codes = within(panel).getAllByText(/How much does it cost\?/);
+    expect(codes).toHaveLength(2);
   });
 
   test("the prompt renders trusted and untrusted regions and the budget exclusions", async () => {
