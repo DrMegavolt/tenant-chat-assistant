@@ -57,10 +57,12 @@ eval-gate: ## Baseline-vs-candidate regression gate over every versioned dataset
 	$(UV_RUN) python -m evals.gate --dataset multi-turn-v2 --verify-determinism
 	$(UV_RUN) python -m evals.gate --dataset adversarial-v1 --verify-determinism
 
-dashboard-check: ## Validate Grafana dashboard JSON syntax
+dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated output
 	@for f in k8s/grafana/*.json; do \
-		python3 -c "import json; json.load(open('$$f'))" && echo "  OK: $$f" || exit 1; \
+		$(UV_RUN) python -c "import json; json.load(open('$$f'))" && echo "  OK: $$f" || exit 1; \
 	done
+	@$(UV_RUN) python k8s/grafana/_generate_dashboards.py
+	@git diff --exit-code -- k8s/grafana/*.json || { echo "Generated dashboards differ from committed JSON. Regenerate with: uv run python k8s/grafana/_generate_dashboards.py"; exit 1; }
 
 test-cov: ## Run tests with a coverage report
 	$(UV_RUN) pytest -m "not integration and not chart" --cov --cov-report=term-missing \

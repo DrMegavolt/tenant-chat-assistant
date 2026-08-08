@@ -572,6 +572,11 @@ def _retrieval_section(
     resolved = meta.get("query")
     plan = meta.get("plan")
     section: dict[str, object] = {
+        # "query" is the original user message for backward compatibility with
+        # consumers that predate the resolved-query split (schema ≤2). The
+        # planner's resolved query is in "resolved_query"; the raw message is
+        # duplicated as "original_message" so readers do not need to know the
+        # version history.
         "query": original,
         "original_message": original,
         "sufficient": bool(meta.get("sufficient")),

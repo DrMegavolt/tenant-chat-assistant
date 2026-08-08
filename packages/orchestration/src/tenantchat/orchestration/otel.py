@@ -96,7 +96,7 @@ class SpanRecordingChatModel:
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
         tracer = _tracer()
-        span = tracer.start_span(
+        with tracer.start_as_current_span(
             "chat",
             kind=SpanKind.CLIENT,
             attributes={
@@ -104,33 +104,31 @@ class SpanRecordingChatModel:
                 _GEN_AI_OPERATION: "chat",
                 _GEN_AI_REQUEST_MODEL: (prompt.bindings.get("model") or self._system),
             },
-        )
-        tenant_id = _tenant_id_var.get()
-        session_id = _session_id_var.get()
-        if tenant_id:
-            span.set_attribute(_TENANT_ID, tenant_id)
-        if session_id:
-            span.set_attribute(_SESSION_ID, session_id)
-        try:
-            response = await self._inner.complete(prompt, tools=tools)
-        except Exception as exc:
-            span.set_attribute(_GEN_AI_ERROR_TYPE, type(exc).__name__)
-            span.set_status(StatusCode.ERROR, str(exc)[:256])
-            span.end()
-            raise
-        span.set_attribute(_GEN_AI_RESPONSE_MODEL, response.model_name)
-        if response.content.strip() and not response.tool_calls:
-            span.set_attribute(_GEN_AI_RESPONSE_FINISH_REASON, "stop")
-        elif response.tool_calls:
-            span.set_attribute(_GEN_AI_RESPONSE_FINISH_REASON, "tool_calls")
-        for kind_key, attr in (
-            ("prompt_tokens", _GEN_AI_USAGE_INPUT),
-            ("completion_tokens", _GEN_AI_USAGE_OUTPUT),
-            ("total_tokens", _GEN_AI_USAGE_TOTAL),
-        ):
-            tokens = response.usage.get(kind_key)
-            if tokens is not None:
-                span.set_attribute(attr, int(tokens))
-        span.set_status(StatusCode.OK)
-        span.end()
-        return response
+        ) as span:
+            tenant_id = _tenant_id_var.get()
+            session_id = _session_id_var.get()
+            if tenant_id:
+                span.set_attribute(_TENANT_ID, tenant_id)
+            if session_id:
+                span.set_attribute(_SESSION_ID, session_id)
+            try:
+                response = await self._inner.complete(prompt, tools=tools)
+            except Exception as exc:
+                span.set_attribute(_GEN_AI_ERROR_TYPE, type(exc).__name__)
+                span.set_status(StatusCode.ERROR, str(exc)[:256])
+                raise
+            span.set_attribute(_GEN_AI_RESPONSE_MODEL, response.model_name)
+            if response.content.strip() and not response.tool_calls:
+                span.set_attribute(_GEN_AI_RESPONSE_FINISH_REASON, "stop")
+            elif response.tool_calls:
+                span.set_attribute(_GEN_AI_RESPONSE_FINISH_REASON, "tool_calls")
+            for kind_key, attr in (
+                ("prompt_tokens", _GEN_AI_USAGE_INPUT),
+                ("completion_tokens", _GEN_AI_USAGE_OUTPUT),
+                ("total_tokens", _GEN_AI_USAGE_TOTAL),
+            ):
+                tokens = response.usage.get(kind_key)
+                if tokens is not None:
+                    span.set_attribute(attr, int(tokens))
+            span.set_status(StatusCode.OK)
+            return response

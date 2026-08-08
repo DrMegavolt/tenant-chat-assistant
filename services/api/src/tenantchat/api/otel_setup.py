@@ -4,10 +4,10 @@ Sets up the global tracer provider with an OTLP HTTP exporter pointed at the
 collector's HTTP endpoint. The collector is the only fan-out point; the exporter
 configuration is operator-facing and never touches content-export settings.
 
-The tracer provider is initialized at startup and flushed at shutdown. A
-deployment without an OTLP endpoint configured (``OTEL_EXPORTER_OTLP_ENDPOINT``
-unset or empty) runs with a no-op provider, so a local development process
-needs nothing extra to start.
+The tracer provider is initialized at startup and flushed at shutdown. When the
+``OTEL_EXPORTER_OTLP_ENDPOINT`` environment variable is unset or empty the
+function returns a no-op provider with no exporter, so a local development
+process or hermetic test suite needs nothing extra to start.
 """
 
 from __future__ import annotations
@@ -23,28 +23,24 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 logger = logging.getLogger(__name__)
 
-_SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "chat-backend")
-_OTLP_ENDPOINT = os.environ.get(
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "http://otel-gateway-collector.observability:4318/v1/traces",
-)
-
 
 def init_otel() -> TracerProvider:
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "chat-backend").strip()
     resource = Resource.create(
         {
-            "service.name": _SERVICE_NAME,
+            "service.name": service_name,
             "service.namespace": "llm-chat",
         }
     )
     provider = TracerProvider(resource=resource)
-    if _OTLP_ENDPOINT.strip():
-        exporter = OTLPSpanExporter(endpoint=_OTLP_ENDPOINT.strip())
+    if endpoint:
+        exporter = OTLPSpanExporter(endpoint=endpoint)
         processor = BatchSpanProcessor(exporter)
         provider.add_span_processor(processor)
         logger.info(
             "otel trace exporter configured",
-            extra={"endpoint": _OTLP_ENDPOINT, "service": _SERVICE_NAME},
+            extra={"endpoint": endpoint, "service": service_name},
         )
     else:
         logger.info("otel running with no exporter (no-op)")

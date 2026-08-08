@@ -47,7 +47,7 @@ GATEWAY_TOKEN = _require("ADMIN_GATEWAY_TOKEN")
 CSRF_SECRET = _require("ADMIN_CSRF_SECRET")
 TIMEOUT = int(_env("HARNESS_TIMEOUT", "60"))
 
-HARNESS_TENANT = "clearview"
+HARNESS_TENANTS = ("clearview", "apex")
 
 GATEWAY_TOKEN_HEADER = "X-TenantChat-Gateway-Token"  # noqa: S105
 SUBJECT_HEADER = "X-Auth-Subject"
@@ -259,44 +259,46 @@ def _send_message(credential: str, message: str) -> dict[str, Any]:
 def run_cases() -> None:
     _verify_health()
 
+    for tenant_id in HARNESS_TENANTS:
+        report("─" * 60)
+        report(f"Running Gate B cases — tenant: {tenant_id}")
+        report("─" * 60)
+
+        for case in CASES:
+            case_id = case["id"]
+            query = case["query"]
+            label = case["label"]
+            run_id = uuid.uuid4().hex[:8]
+
+            report(f"\n[{case_id}] {label}")
+            report(f"  query: {query}")
+            report(f"  run:   {run_id}")
+
+            try:
+                session_id, credential = _open_session(tenant_id)
+                report(f"  session: {session_id[:8]}...")
+
+                turn = _send_message(credential, query)
+                reply = turn.get("reply", "")
+                turn_id = turn.get("turn_id")
+                outcome = turn.get("outcome", "unknown")
+                citations = turn.get("citations", [])
+                pending = turn.get("pending")
+
+                report(f"  reply:   {reply[:200]}{'...' if len(reply) > 200 else ''}")
+                report(f"  turn_id: {turn_id}")
+                report(f"  outcome: {outcome}")
+                if citations:
+                    report(f"  citations: {len(citations)}")
+                if pending:
+                    report(f"  pending:  {pending.get('awaiting', 'unknown')}")
+            except Exception as exc:
+                report(f"  ERROR: {exc}")
+
+        report("")
+
     report("─" * 60)
-    report("Running Gate B cases against live cluster")
-    report("─" * 60)
-
-    for case in CASES:
-        case_id = case["id"]
-        query = case["query"]
-        label = case["label"]
-        run_id = uuid.uuid4().hex[:8]
-
-        report(f"\n[{case_id}] {label}")
-        report(f"  query: {query}")
-        report(f"  run:   {run_id}")
-
-        try:
-            session_id, credential = _open_session(HARNESS_TENANT)
-            report(f"  session: {session_id[:8]}...")
-
-            turn = _send_message(credential, query)
-            reply = turn.get("reply", "")
-            turn_id = turn.get("turn_id")
-            outcome = turn.get("outcome", "unknown")
-            citations = turn.get("citations", [])
-            pending = turn.get("pending")
-
-            report(f"  reply:   {reply[:200]}{'...' if len(reply) > 200 else ''}")
-            report(f"  turn_id: {turn_id}")
-            report(f"  outcome: {outcome}")
-            if citations:
-                report(f"  citations: {len(citations)}")
-            if pending:
-                report(f"  pending:  {pending.get('awaiting', 'unknown')}")
-        except Exception as exc:
-            report(f"  ERROR: {exc}")
-
-    report("")
-    report("─" * 60)
-    report(f"Live run complete. {len(CASES)} cases executed.")
+    report(f"Live run complete. {len(HARNESS_TENANTS)} x {len(CASES)} cases executed.")
     report("─" * 60)
 
 

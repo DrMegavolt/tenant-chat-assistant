@@ -13,13 +13,20 @@ L4/L5 dependency.
 from __future__ import annotations
 
 import json
-import os
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 OUT_DIR = Path(__file__).resolve().parent
 
 
-def dash(title, uid, description, tags, panels):
+def dash(
+    title: str,
+    uid: str,
+    description: str,
+    tags: Sequence[str],
+    panels: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "title": title,
         "uid": uid,
@@ -47,20 +54,20 @@ def dash(title, uid, description, tags, panels):
 def ts_panel(
     id_: int,
     title: str,
-    x,
-    y,
-    w,
-    h,
-    targets: list[dict],
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    targets: list[dict[str, Any]],
     *,
     unit: str = "reqps",
-    overrides: list | None = None,
+    overrides: Sequence[dict[str, Any]] | None = None,
     draw: str = "line",
     fill: int = 10,
     stack: bool = False,
     desc: str = "",
-) -> dict:
-    fc: dict = {
+) -> dict[str, Any]:
+    fc: dict[str, Any] = {
         "defaults": {
             "unit": unit,
             "custom": {
@@ -98,18 +105,18 @@ def ts_panel(
 def stat_panel(
     id_: int,
     title: str,
-    x,
-    y,
-    w,
-    h,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
     expr: str,
     *,
     unit: str = "percent",
     decimals: int = 1,
-    thresholds: list | None = None,
+    thresholds: Sequence[dict[str, Any]] | None = None,
     color_mode: str = "background",
     graph_mode: str = "area",
-) -> dict:
+) -> dict[str, Any]:
     if thresholds is None:
         thresholds = [
             {"color": "green", "value": None},

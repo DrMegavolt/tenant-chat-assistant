@@ -160,6 +160,22 @@ async def _shutdown_otel() -> None:
     otel_setup.shutdown_otel()
 
 
+def _provider_name(base_url: str) -> str:
+    """Derive a ``gen_ai.system`` value from the LLM provider URL.
+
+    ``gen_ai.system`` is a GenAI semantic-convention attribute that names the
+    provider, not the model. The model goes into ``gen_ai.request.model``.
+    """
+    if not base_url:
+        return ""
+    lowered = base_url.lower()
+    if "lm-studio" in lowered or "localhost" in lowered or "127.0.0.1" in lowered:
+        return "lm_studio"
+    if "openai.com" in lowered:
+        return "openai"
+    return "openai_compatible"
+
+
 class AdminCorsConfineMiddleware:
     """Keep the operator console off the cross-origin surface.
 
@@ -496,9 +512,10 @@ def create_app(
     # recorder *before* the metrics wrapper so both sit at the same observation
     # level around the actual provider calls.
     if effective_model is not None:
+        provider = _provider_name(resolved.llm_base_url or "")
         effective_model = SpanRecordingChatModel(
             effective_model,
-            gen_ai_system=resolved.llm_model or "",
+            gen_ai_system=provider,
         )
     # The metrics wrapper is observation only: it delegates every call and
     # records latency, outcome, and token counts around it (`OBS-002`). A

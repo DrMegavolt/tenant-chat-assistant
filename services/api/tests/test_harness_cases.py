@@ -336,24 +336,34 @@ _CASE_10_SCRIPT = [
 ]
 
 
-async def _plant_case_1(knowledge: InMemoryKnowledgeStore, index: InMemorySearchIndex) -> str:
+async def _plant_case_1(
+    knowledge: InMemoryKnowledgeStore,
+    index: InMemorySearchIndex,
+    *,
+    tenant_id: str = _HARNESS_TENANT,
+) -> str:
     """Seed evidence for a correct grounded answer. Returns the visitor message."""
     await _seed_knowledge(
         knowledge,
         index,
-        tenant_id=_HARNESS_TENANT,
+        tenant_id=tenant_id,
         chunk_ids=_CASE_1_CHUNK_IDS,
         texts=_CASE_1_CHUNK_TEXTS,
     )
     return "What are your hours?"
 
 
-async def _plant_case_8(knowledge: InMemoryKnowledgeStore, index: InMemorySearchIndex) -> str:
+async def _plant_case_8(
+    knowledge: InMemoryKnowledgeStore,
+    index: InMemorySearchIndex,
+    *,
+    tenant_id: str = _HARNESS_TENANT,
+) -> str:
     """Seed evidence that does NOT include the citation the model invents."""
     await _seed_knowledge(
         knowledge,
         index,
-        tenant_id=_HARNESS_TENANT,
+        tenant_id=tenant_id,
         chunk_ids=_CASE_8_CHUNK_IDS,
         texts=_CASE_8_CHUNK_TEXTS,
     )
@@ -938,16 +948,16 @@ class TestCase3MissingGeneration:
             content = cast(dict[str, Any], record.content)
 
             retrieval = content.get("retrieval")
-            if retrieval is not None:
-                retrieval_map = cast(dict[str, Any], retrieval)
-                evidence = retrieval_map.get("evidence", [])
-                assert isinstance(evidence, list)
-                assert (
-                    len(evidence) == 0
-                ), f"expected empty evidence (no index), got {len(evidence)} items"
-                assert (
-                    retrieval_map.get("sufficient") is False
-                ), "missing generation is insufficient"
+            assert (
+                retrieval is not None
+            ), "case 3 must produce a retrieval section (empty evidence, not absent)"
+            retrieval_map = cast(dict[str, Any], retrieval)
+            evidence = retrieval_map.get("evidence", [])
+            assert isinstance(evidence, list)
+            assert (
+                len(evidence) == 0
+            ), f"expected empty evidence (no index), got {len(evidence)} items"
+            assert retrieval_map.get("sufficient") is False, "missing generation is insufficient"
 
             assert (
                 content["outcome"]["status"] == "abstained"
@@ -1104,3 +1114,130 @@ class TestCase7ModelBehavior:
         assert (
             len(outputs) >= 2
         ), f"expected at least 2 distinct outputs across {trials} trials, got {len(outputs)}"
+
+
+# ── Apex (lead) tenant coverage ──────────────────────────────────────────
+# _HARNESS_TENANT is clearview (booking tenant); the acceptance criterion
+# requires both tenants because booking-tenant and lead-tenant policy drive
+# different graph paths. These tests repeat the key cases against apex.
+
+
+class TestHarnessApexTenant:
+    APEX = _OTHER_TENANT
+
+    def test_case_1_apex_grounded_answer(self) -> None:
+        """Grounded answer with valid citation for the lead tenant."""
+        knowledge = InMemoryKnowledgeStore()
+        index = InMemorySearchIndex()
+        message = asyncio.run(_plant_case_1(knowledge, index, tenant_id=self.APEX))
+        model = ScriptedModel([ModelResponse(content=_CASE_1_TEXT, model_name="scripted")])
+        client, turns, _grants, _audit, _kn, _sx = _build_app(
+            model,
+            knowledge=knowledge,
+            search_index=index,
+            with_evidence=True,
+            tenant_id=self.APEX,
+            operator_tenants=(self.APEX,),
+        )
+        with client:
+            record = asyncio.run(_run_turn(client, self.APEX, message))
+            content = cast(dict[str, Any], record.content)
+
+            assert _CASE_1_CHUNK_IDS[1] in json.dumps(content["verdicts"]["citations"])
+            assert content["verdicts"]["citation_invalid"] == []
+            assert content["outcome"]["status"] == "answered"
+            assert record.diagnosis_causes == ()
+            assert record.outcome == "answered"
+            _assert_trace_schema_and_graph(record)
+
+    def test_case_8_apex_fabricated_citation(self) -> None:
+        """Fabricated citation detection for the lead tenant."""
+        knowledge = InMemoryKnowledgeStore()
+        index = InMemorySearchIndex()
+        message = asyncio.run(_plant_case_8(knowledge, index, tenant_id=self.APEX))
+        model = ScriptedModel([ModelResponse(content=_CASE_8_TEXT, model_name="scripted")])
+        client, turns, _grants, _audit, _kn, _sx = _build_app(
+            model,
+            knowledge=knowledge,
+            search_index=index,
+            with_evidence=True,
+            tenant_id=self.APEX,
+            operator_tenants=(self.APEX,),
+        )
+        with client:
+            record = asyncio.run(_run_turn(client, self.APEX, message))
+            content = cast(dict[str, Any], record.content)
+
+            assert content["verdicts"]["citation_invalid"] == ["clearview-windows-99"]
+            causes = {entry["cause"] for entry in content["diagnoses"]}
+            assert DiagnosisCause.GROUNDING_OR_CITATION_ERROR.value in causes
+            assert record.diagnosis_causes == (DiagnosisCause.GROUNDING_OR_CITATION_ERROR.value,)
+            _assert_trace_schema_and_graph(record)
+
+    def test_apex_explorer_filters(self) -> None:
+        """Key explorer filters work for apex-turn records."""
+        knowledge = InMemoryKnowledgeStore()
+        index = InMemorySearchIndex()
+        message = asyncio.run(_plant_case_1(knowledge, index, tenant_id=self.APEX))
+        model = ScriptedModel([ModelResponse(content=_CASE_1_TEXT, model_name="scripted")])
+        client, turns, grants, _audit, _kn, _sx = _build_app(
+            model,
+            knowledge=knowledge,
+            search_index=index,
+            with_evidence=True,
+            tenant_id=self.APEX,
+            operator_tenants=(_HARNESS_TENANT, self.APEX),
+        )
+        asyncio.run(grants.grant(_HARNESS_TENANT, "operator-7", granted_by="platform-admin-1"))
+        asyncio.run(grants.grant(self.APEX, "operator-7", granted_by="platform-admin-1"))
+
+        with client:
+            record = asyncio.run(_run_turn(client, self.APEX, message))
+            assert record.tenant_id == self.APEX
+
+            answered = _search(client, self.APEX, outcome="answered")
+            assert str(record.turn_id) in {r["turn_id"] for r in answered}
+
+            all_found = _search(client, self.APEX)
+            assert str(record.turn_id) in {r["turn_id"] for r in all_found}
+
+            crossing = _search(client, _HARNESS_TENANT, outcome="answered")
+            assert not any(
+                r["turn_id"] == str(record.turn_id) for r in crossing
+            ), "apex record leaked to clearview filter"
+
+    def test_apex_tenant_isolation(self) -> None:
+        """Apex records are invisible to clearview — and vice versa — in the
+        explorer and the trace detail endpoint.
+        """
+        knowledge = InMemoryKnowledgeStore()
+        index = InMemorySearchIndex()
+        message = asyncio.run(_plant_case_1(knowledge, index, tenant_id=self.APEX))
+        model = ScriptedModel([ModelResponse(content=_CASE_1_TEXT, model_name="scripted")])
+        client, turns, grants, _audit, _kn, _sx = _build_app(
+            model,
+            knowledge=knowledge,
+            search_index=index,
+            with_evidence=True,
+            tenant_id=self.APEX,
+            operator_tenants=(_HARNESS_TENANT, self.APEX),
+        )
+        asyncio.run(grants.grant(_HARNESS_TENANT, "operator-7", granted_by="platform-admin-1"))
+        asyncio.run(grants.grant(self.APEX, "operator-7", granted_by="platform-admin-1"))
+
+        with client:
+            record = asyncio.run(_run_turn(client, self.APEX, message))
+            assert record.tenant_id == self.APEX
+
+            found = _search(client, self.APEX, outcome="answered")
+            assert str(record.turn_id) in {r["turn_id"] for r in found}
+
+            other_found = _search(client, _HARNESS_TENANT, outcome="answered")
+            assert not other_found, "apex record leaked to clearview"
+
+            direct = client.get(
+                f"/api/admin/traces/{record.turn_id}",
+                params={"tenant_id": _HARNESS_TENANT, "reason": READ_REASON},
+                headers=_operator(),
+            )
+            assert direct.status_code == 404
