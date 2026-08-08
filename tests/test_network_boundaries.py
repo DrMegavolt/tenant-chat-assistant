@@ -53,6 +53,8 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
         "allow-prometheus-embedding-metrics",
         "allow-prometheus-ingestion-metrics",
         "allow-prometheus-financing-metrics",
+        "allow-prometheus-chat-metrics",
+        "allow-prometheus-job-worker-metrics",
         "allow-rag-callers-to-embedding",
         "allow-seed-to-ingestion",
         "allow-application-to-postgres",
@@ -219,13 +221,13 @@ def test_internal_data_routes_require_auth_but_health_and_metrics_do_not() -> No
 
 
 def test_prometheus_is_the_only_cross_namespace_metrics_caller() -> None:
-    """Prometheus reaches the side-service metrics ports; the API has no
-    `/metrics` yet (`OBS-002`), so no policy may grant scraping to it."""
+    """Prometheus reaches every workload exposing a `/metrics` endpoint."""
     policies = load_documents("k8s/network-policies.yaml")
     expected = {
         "allow-prometheus-embedding-metrics": ("embedding-service", 8001),
         "allow-prometheus-ingestion-metrics": ("ingestion-service", 8002),
         "allow-prometheus-financing-metrics": ("financing-agent", 8003),
+        "allow-prometheus-chat-metrics": ("chat-backend", 8004),
     }
     for name, (app, port) in expected.items():
         metrics = resource(policies, "NetworkPolicy", name)
@@ -243,7 +245,8 @@ def test_prometheus_is_the_only_cross_namespace_metrics_caller() -> None:
         if policy.get("kind") == "NetworkPolicy"
         and policy["metadata"]["name"].startswith("allow-prometheus-")
     }
-    assert frozenset({"app": "chat-backend"}.items()) not in metrics_targets
+    assert frozenset({"app": "chat-backend"}.items()) in metrics_targets
+    assert frozenset({"app": "job-worker"}.items()) in metrics_targets
 
 
 def test_every_intra_namespace_egress_allowance_has_a_matching_ingress_rule() -> None:
