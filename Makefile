@@ -202,3 +202,6 @@ clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage coverage.xml coverage htmlcov artifacts
 	rm -rf frontend/dist frontend/node_modules/.tmp
 	find . -type d -name __pycache__ -not -path './.venv/*' -prune -exec rm -rf {} +
+
+harness-a: ## Run the L9a Gate B harness against the real graph (hermetic, no LLM)
+	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
