@@ -202,15 +202,41 @@ class _ReservationLostError(Exception):
 async def _action_session(
     connection: AsyncConnection, tenant_id: str, client_correlation_id: str
 ) -> uuid.UUID:
-    """Resolve an untrusted correlation label to a server-owned session row.
+    """Resolve a server-issued session UUID to its existing row.
 
-    The label is never returned by a read or treated as authorization. The
-    tenant-leading unique index only groups today's write-only API actions until
-    SEC-002 replaces it with a server-issued visitor credential.
+    SEC-002 credentials name an authoritative session by its primary key. This
+    function resolves that key to the row under a row lock. When the caller
+    supplies an existing session UUID the row is reused directly — no shadow
+    row is inserted, so a handoff for this session is immediately discoverable
+    by the pause gate.
+
+    A value that is not a valid UUID (a legacy client correlation label) falls
+    through to the write-only correlation path, which is preserved for backward
+    compatibility but must never be reached through a SEC-002 credential.
     """
     await require_active_tenant(connection, tenant_id)
-    session_id = uuid.uuid4()
     correlation = client_correlation_id or None
+
+    if correlation is not None:
+        try:
+            candidate = uuid.UUID(correlation)
+        except ValueError:
+            candidate = None
+        if candidate is not None:
+            existing = await connection.execute(
+                text(
+                    """
+                    SELECT id FROM chat_sessions
+                    WHERE tenant_id = :tenant_id AND id = :session_id
+                    FOR UPDATE
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_id": candidate},
+            )
+            if existing.first() is not None:
+                return candidate
+
+    session_id = uuid.uuid4()
     if correlation is None:
         await connection.execute(
             text(

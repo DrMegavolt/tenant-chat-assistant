@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import psycopg
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
+    PostgresConversationStore,
     PostgresHandoffStore,
 )
 from tenantchat.api.registry import TenantRegistry
@@ -311,5 +313,49 @@ def test_the_visitor_gate_reads_the_committed_handoff_state(
             assert await store.for_session("clearview", recorded.session_id) is None
         finally:
             await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_a_handoff_on_a_real_session_reuses_the_session_not_a_shadow_row(
+    repository_database_url: str,
+) -> None:
+    """A server-issued session UUID must not spawn a second ``chat_sessions`` row.
+
+    BUG-001: when the caller passes a real session UUID the store created earlier,
+    ``_action_session`` must resolve it to that existing row instead of inserting
+    a shadow row that the pause gate cannot discover.
+    """
+
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            conversations = PostgresConversationStore(database.engine)
+            handoffs = PostgresHandoffStore(database.engine)
+            created = await conversations.create("apex")
+            real_session_id = str(created.session_id)
+
+            recorded = await handoffs.record(command(), session_id=real_session_id)
+
+            assert uuid.UUID(recorded.session_id) == created.session_id
+            held = await handoffs.for_session("apex", real_session_id)
+            assert held is not None
+            assert held.status == HandoffStatus.REQUESTED.value
+        finally:
+            await database.dispose()
+
+        with psycopg.connect(psycopg_url(repository_database_url)) as connection:
+            rows = connection.execute(
+                "SELECT count(*) FROM chat_sessions WHERE tenant_id = 'apex'"
+            ).fetchone()
+            assert rows is not None
+            assert rows[0] == 1
+
+            handoff = connection.execute(
+                "SELECT chat_session_id FROM handoffs WHERE tenant_id = 'apex'"
+            ).fetchone()
+            assert handoff is not None
+            assert str(handoff[0]) == real_session_id
 
     asyncio.run(scenario())
