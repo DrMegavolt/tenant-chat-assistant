@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from tenantchat.api.jobs import JobEvent, JobRecord
 from tenantchat.api.store import (
@@ -214,7 +214,12 @@ class HealthResponse(BaseModel):
 
 
 class ChatSessionRequest(_Request):
-    tenant_id: str = _TENANT_ID
+    tenant_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+        validation_alias=AliasChoices("tenant_id", "tenantId"),
+    )
 
 
 class ChatRequest(_Request):
