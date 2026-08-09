@@ -68,10 +68,12 @@ _PRICING = {
 }
 
 _BOOKING_ENABLED = (
-    "You may book. Call get_availability before offering any slot, pass slot labels back "
-    "exactly as they were returned, and call book_appointment once you have the service, "
-    "slot, name, contact, and address. The customer is asked to confirm before anything "
-    "is committed, so do not invent a confirmation step of your own."
+    "You may book. Call get_availability before offering any slot. Present the available "
+    "slots as a clear, numbered list with one slot per line — use the formatted field from "
+    "the tool result when available. Pass slot labels back exactly as they were returned "
+    "in the slots list, and call book_appointment once you have the service, slot, name, "
+    "contact, and address. The customer is asked to confirm before anything is committed, "
+    "so do not invent a confirmation step of your own."
 )
 _BOOKING_DISABLED = (
     "You may not book. Do not call get_availability or book_appointment. Offer the phone "

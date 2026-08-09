@@ -1661,7 +1661,13 @@ class DispatchNodes:
                 detail=f"{requested!r} did not resolve for tenant {policy.tenant_id}",
             )
         slots = await self._deps.availability.offered_slots(policy.tenant_id, service.slug)
-        return _payload(service=service.display_name, slots=[slot.label for slot in slots])
+        slot_labels = [slot.label for slot in slots]
+        formatted = "\n".join(f"{i}. {label}" for i, label in enumerate(slot_labels, 1))
+        return _payload(
+            service=service.display_name,
+            slots=slot_labels,
+            formatted=f"Available {service.display_name} slots:\n\n{formatted}",
+        )
 
     async def _create_lead(
         self,
