@@ -164,7 +164,7 @@ class RateLimitMiddleware:
         self._last_store_failure_logged: float = 0.0
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") == "/healthz":
+        if scope["type"] != "http" or scope.get("path") in {"/healthz", "/readyz"}:
             await self.app(scope, receive, send)
             return
 

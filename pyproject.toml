@@ -103,9 +103,6 @@ line-length = 100
 extend-exclude = [
     "architecture/likec4/node_modules",
     "architecture/likec4/dist",
-    # Side-service entrypoint that predates the shared packages; will be
-    # rewritten to import from the packages once the RAG work lands.
-    "services/embedding/app.py",
 ]
 
 [tool.ruff.lint]
@@ -151,7 +148,7 @@ show_error_codes = true
 # Named per converted service rather than as `services`: the sibling directories
 # still hold excluded side-service scripts, and mypy errors on a directory with
 # nothing to check.
-files = ["packages", "services/api", "scripts", "tests", "evals", "runtime_security.py"]
+files = ["packages", "services/api", "services/embedding/app.py", "scripts", "tests", "evals", "runtime_security.py"]
 exclude = ["architecture/"]
 # `tenantchat` is a PEP 420 namespace package under a src layout, so mypy cannot
 # infer where the package root starts. Without these it derives two module names

@@ -139,11 +139,14 @@ class TestRateLimits:
         assert document["retryAfterSeconds"] == retry_after
         assert document["limitScope"] == "ip"
 
-    def test_healthz_is_exempt_from_rate_budgets(self, build_app: Callable[..., FastAPI]) -> None:
+    @pytest.mark.parametrize("path", ["/healthz", "/readyz"])
+    def test_probes_are_exempt_from_rate_budgets(
+        self, build_app: Callable[..., FastAPI], path: str
+    ) -> None:
         policy = RateLimitPolicy(ip_requests=1, window_seconds=60)
         with TestClient(build_app(rate_limits=policy), raise_server_exceptions=False) as client:
             for _ in range(3):
-                assert client.get("/healthz").status_code == 200
+                assert client.get(path).status_code == 200
 
     def test_the_session_budget_keys_on_the_server_issued_id(
         self, build_app: Callable[..., FastAPI]

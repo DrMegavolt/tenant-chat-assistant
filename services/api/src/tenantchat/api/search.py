@@ -227,6 +227,12 @@ class SearchIndex(Protocol):
         """
         ...
 
+    async def generation_chunks(
+        self, *, tenant_id: str, generation_id: uuid.UUID
+    ) -> tuple[IndexedChunk, ...]:
+        """All retained chunks for one generation, including inactive snapshots."""
+        ...
+
 
 class InMemorySearchIndex:
     """Hermetic fake mirroring the Elasticsearch adapter's semantics.
@@ -338,6 +344,20 @@ class InMemorySearchIndex:
             if chunk.tenant_id == tenant_id and chunk.active
         )
 
+    async def generation_chunks(
+        self, *, tenant_id: str, generation_id: uuid.UUID
+    ) -> tuple[IndexedChunk, ...]:
+        return tuple(
+            sorted(
+                (
+                    chunk
+                    for chunk in self._chunks.values()
+                    if chunk.tenant_id == tenant_id and chunk.generation_id == generation_id
+                ),
+                key=lambda chunk: chunk.chunk_id,
+            )
+        )
+
 
 def _inactive(chunk: IndexedChunk) -> IndexedChunk:
     # dataclasses.replace preserves the frozen contract without hand-writing
@@ -421,6 +441,14 @@ class ElasticsearchSearchIndex:
     async def close(self) -> None:
         """Release the underlying connection pool."""
         await self._client.aclose()
+
+    async def ready(self) -> None:
+        """Require the embedding process and pinned model to be ready."""
+        response = await self._client.get(f"{self._base_url}/ready")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("status") != "ready":
+            raise EmbeddingUnavailableError("embedding provider is not ready")
 
     async def index_chunks(self, chunks: Sequence[IndexedChunk]) -> int:
         if not chunks:
@@ -605,6 +633,33 @@ class ElasticsearchSearchIndex:
         if isinstance(total, int):
             return total > 0
         return False
+
+    async def generation_chunks(
+        self, *, tenant_id: str, generation_id: uuid.UUID
+    ) -> tuple[IndexedChunk, ...]:
+        query = {
+            "size": 10000,
+            "sort": [{"chunk_id": "asc"}],
+            "query": {
+                "bool": {
+                    "must": [
+                        {"term": {"tenant_id": tenant_id}},
+                        {"term": {"generation_id": str(generation_id)}},
+                    ]
+                }
+            },
+        }
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
+        chunks: list[IndexedChunk] = []
+        for hit in response.get("hits", {}).get("hits", []):
+            try:
+                chunks.append(_chunk_from_hit(hit))
+            except (ValueError, SearchIndexOperationError):
+                logger.warning(
+                    "skipped an unreadable chunk in a replay generation",
+                    extra={"chunk_id": hit.get("_id"), "index": self._index_name},
+                )
+        return tuple(chunks)
 
     async def ensure_mapping(self, dimensions: int) -> None:
         """Create the index with the chunk mapping when it does not exist yet."""

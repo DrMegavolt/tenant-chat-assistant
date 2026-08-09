@@ -51,8 +51,10 @@ def render_manifests(
     *,
     app_template: Path,
     migration_template: Path,
+    seed_template: Path,
     app_output: Path,
     migration_output: Path,
+    seed_output: Path,
     pull_repository: str,
     oauth2_proxy_digest: str,
     digests: dict[str, str],
@@ -68,6 +70,7 @@ def render_manifests(
 
     app = app_template.read_text(encoding="utf-8")
     migration = migration_template.read_text(encoding="utf-8")
+    seed = seed_template.read_text(encoding="utf-8")
     for image in APPLICATION_IMAGES:
         digest = _validated_digest(digests[image], source=f"{image} digest")
         old = (
@@ -90,6 +93,13 @@ def render_manifests(
                 expected=1,
                 source=migration_template,
             )
+            seed = _replace_exact(
+                seed,
+                old,
+                new,
+                expected=1,
+                source=seed_template,
+            )
 
     oauth2_proxy_placeholder = "sha256:REPLACE_WITH_OAUTH2_PROXY_DIGEST"
     app = _replace_exact(
@@ -99,7 +109,11 @@ def render_manifests(
         expected=1,
         source=app_template,
     )
-    for source, rendered in ((app_template, app), (migration_template, migration)):
+    for source, rendered in (
+        (app_template, app),
+        (migration_template, migration),
+        (seed_template, seed),
+    ):
         unresolved = UNRESOLVED_DIGEST.search(rendered)
         if unresolved is not None:
             raise ValueError(f"{source}: unresolved digest token {unresolved.group(0)}")
@@ -108,6 +122,7 @@ def render_manifests(
     migration_output.parent.mkdir(parents=True, exist_ok=True)
     app_output.write_text(app, encoding="utf-8")
     migration_output.write_text(migration, encoding="utf-8")
+    seed_output.write_text(seed, encoding="utf-8")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -115,8 +130,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata-dir", type=Path, required=True)
     parser.add_argument("--app-template", type=Path, required=True)
     parser.add_argument("--migration-template", type=Path, required=True)
+    parser.add_argument("--seed-template", type=Path, required=True)
     parser.add_argument("--app-output", type=Path, required=True)
     parser.add_argument("--migration-output", type=Path, required=True)
+    parser.add_argument("--seed-output", type=Path, required=True)
     parser.add_argument("--pull-repository", required=True)
     parser.add_argument("--oauth2-proxy-digest", required=True)
     return parser
@@ -129,8 +146,10 @@ def main() -> int:
         render_manifests(
             app_template=args.app_template,
             migration_template=args.migration_template,
+            seed_template=args.seed_template,
             app_output=args.app_output,
             migration_output=args.migration_output,
+            seed_output=args.seed_output,
             pull_repository=args.pull_repository.rstrip("/"),
             oauth2_proxy_digest=args.oauth2_proxy_digest,
             digests=digests,

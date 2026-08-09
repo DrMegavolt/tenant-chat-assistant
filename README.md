@@ -158,7 +158,7 @@ name, address, and phone or email.
 The backend owns the tenant policy and tool calls:
 
 - Tenant configuration: allowed services, pricing policy, booking policy, phone, address, hours, escalation rules.
-- Retrieval: the prototype's main chat path answers from tenant policy and tools, not from retrieval. Only the financing side-agent (`services/financing-agent`) queries the knowledge index today; putting governed retrieval on the main path is `RAG-004` through `RAG-006`.
+- Retrieval: the main chat path embeds each resolved query, retrieves only the tenant's approved knowledge generation, applies hybrid ranking and context budgets, abstains below the calibrated evidence threshold, and validates citations before publishing an answer.
 - Tools: `check_service_area`, `get_availability`, `book_appointment`, `create_lead`, `handoff_to_human`.
 - Guardrails: no pricing unless policy allows it, no booking unless policy allows it, human handoff for uncertainty or risky requests.
 - Admin: live chat list, transcript view, lead/tool panels, and manual staff replies into a visitor chat.
@@ -259,13 +259,14 @@ The placeholder-only examples, safe local provisioning workflow, production
 secret-manager path, and mandatory rotation warning are in
 [`k8s/README.md`](k8s/README.md). The deploy script fails before changing
 workloads when a required resource or key is missing and never displays values.
-It also requires a rendered application manifest whose six release image
+It also requires rendered application and seed manifests whose release image
 contracts have been replaced with registry digests. See
 [`docs/runbooks/container-images.md`](docs/runbooks/container-images.md) for the
 locked build, non-root smoke, metadata, and scanning workflow.
 
 For the full local MicroK8s sequence, install the Keycloak Helm chart first and
-then run `./k8s/deploy.sh` as documented in [`k8s/README.md`](k8s/README.md).
+then run `./k8s/deploy.sh <app-release> <seed-release>` as documented in
+[`k8s/README.md`](k8s/README.md).
 That deploy applies the public `web-lb` and `keycloak-lb` MetalLB Services at
 `192.168.1.180` and `192.168.1.181`; the HTTPS browser endpoints continue to use
 the Traefik ingress hostname.

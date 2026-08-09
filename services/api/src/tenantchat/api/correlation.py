@@ -117,11 +117,21 @@ def reset() -> None:
 
 
 def current() -> CorrelationContext | None:
-    return _context.get()
+    current_context = _context.get()
+    if current_context is None:
+        return None
+    active_span = otel_trace.get_current_span()
+    span_context = active_span.get_span_context()
+    if not span_context.is_valid:
+        return current_context
+    active_trace_id = format(span_context.trace_id, "032x")
+    if active_trace_id == current_context.trace_id:
+        return current_context
+    return replace(current_context, trace_id=active_trace_id)
 
 
 def trace_id() -> str | None:
-    current_context = _context.get()
+    current_context = current()
     return None if current_context is None else current_context.trace_id
 
 
@@ -131,7 +141,7 @@ def context_extra() -> dict[str, str]:
     Merged at log sites that run outside a request (the job worker), so the
     record is self-contained even for a handler that is not correlation-aware.
     """
-    current_context = _context.get()
+    current_context = current()
     if current_context is None:
         return {}
     extra: dict[str, str] = {
@@ -150,7 +160,7 @@ def correlation_headers() -> dict[str, str]:
     reads the same header names and binds them into its own context, so one
     trace crosses service boundaries.
     """
-    current_context = _context.get()
+    current_context = current()
     if current_context is None:
         return {}
     return {
@@ -182,16 +192,16 @@ class CorrelationMiddleware:
             return
 
         request_id = uuid.uuid4().hex
-        active_span = otel_trace.get_current_span()
-        span_context = active_span.get_span_context()
-        if span_context.is_valid:
-            trace_id = format(span_context.trace_id, "032x")
-        else:
-            trace_id = uuid.uuid4().hex
+        # The OTel ASGI middleware injected by the operator is inside this
+        # outer correlation layer, so its server span does not exist yet. This
+        # UUID is only a fallback for uninstrumented local runs; ``current()``
+        # resolves the active OTel trace dynamically once the inner layer has
+        # started it.
+        fallback_trace_id = uuid.uuid4().hex
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
-        state["trace_id"] = trace_id
-        bind(CorrelationContext(request_id=request_id, trace_id=trace_id))
+        state["trace_id"] = fallback_trace_id
+        bind(CorrelationContext(request_id=request_id, trace_id=fallback_trace_id))
 
         started = time.monotonic()
         status_code: int | None = None
@@ -204,9 +214,18 @@ class CorrelationMiddleware:
                 status_code = int(message.get("status", 0))
                 headers = list(message.get("headers", []))
                 names = {name.decode("latin-1").lower() for name, _value in headers}
+                resolved_context = current()
+                response_trace_id = (
+                    resolved_context.trace_id if resolved_context is not None else fallback_trace_id
+                )
+                # Persist the inner OTel span's ID before its middleware exits.
+                # The access log runs afterward, when no active span remains.
+                if resolved_context is not None:
+                    _context.set(resolved_context)
+                state["trace_id"] = response_trace_id
                 for name, value in (
                     (REQUEST_ID_HEADER, request_id),
-                    (TRACE_ID_HEADER, trace_id),
+                    (TRACE_ID_HEADER, response_trace_id),
                 ):
                     if name.lower() not in names:
                         headers.append((name.encode("latin-1"), value.encode("latin-1")))

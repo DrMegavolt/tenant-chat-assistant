@@ -4,15 +4,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS="llm-chat"
 APP_MANIFEST="${1:-}"
+SEED_MANIFEST="${2:-}"
 
-if [[ -z "$APP_MANIFEST" || ! -f "$APP_MANIFEST" ]]; then
-  echo "usage: $0 <release-app-manifest.yaml>" >&2
-  echo "render k8s/app.yaml by replacing every REPLACE_WITH_*_DIGEST token first" >&2
+if [[ -z "$APP_MANIFEST" || ! -f "$APP_MANIFEST" || -z "$SEED_MANIFEST" || ! -f "$SEED_MANIFEST" ]]; then
+  echo "usage: $0 <release-app-manifest.yaml> <release-seed-manifest.yaml>" >&2
+  echo "render both release templates with immutable API/image digests first" >&2
   exit 2
 fi
 "$ROOT_DIR/scripts/verify_deployment_security.py"
 "$ROOT_DIR/scripts/verify_image_contracts.py"
 "$ROOT_DIR/scripts/verify_release_manifest.py" "$APP_MANIFEST"
+"$ROOT_DIR/scripts/verify_release_manifest.py" --images-only "$SEED_MANIFEST"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -53,10 +55,8 @@ require_key secret privacy-database-credentials databaseUrl
 require_key secret kibana-credentials username
 require_key secret kibana-credentials password
 require_key secret llm-provider-credentials apiKey
-require_key secret chat-to-financing-credentials token
-require_key secret seed-to-ingestion-credentials token
 require_key secret ingestion-to-embedding-credentials token
-require_key secret financing-to-embedding-credentials token
+require_key secret chat-to-embedding-credentials token
 require_key configmap llm-runtime baseUrl
 require_key configmap llm-runtime model
 require_key configmap llm-runtime timeoutSeconds
@@ -95,17 +95,12 @@ kubectl apply -f "$ROOT_DIR/k8s/public-loadbalancers.yaml"
 kubectl apply -f "$ROOT_DIR/k8s/network-policies.yaml"
 kubectl apply -f "$APP_MANIFEST"
 
-kubectl -n "$NS" create configmap financing-docs \
-  --from-file=apex-financing-options.md="$ROOT_DIR/docs/apex/financing/financing-options.md" \
-  --from-file=clearview-financing-options.md="$ROOT_DIR/docs/clearview/financing/financing-options.md" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
 kubectl -n "$NS" delete job configure-kibana-system-user --ignore-not-found=true
 kubectl apply -f "$ROOT_DIR/k8s/kibana-setup-job.yaml"
 kubectl -n "$NS" wait --for=condition=complete job/configure-kibana-system-user --timeout=300s
 
 kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
-kubectl -n "$NS" rollout restart deploy/web deploy/oauth2-proxy deploy/chat-backend deploy/job-worker deploy/embedding-service deploy/ingestion-service deploy/financing-agent deploy/kibana
+kubectl -n "$NS" rollout restart deploy/web deploy/oauth2-proxy deploy/chat-backend deploy/job-worker deploy/embedding-service deploy/kibana
 kubectl -n "$NS" rollout status deploy/oauth2-proxy --timeout=180s
 kubectl -n "$NS" rollout status deploy/chat-backend --timeout=180s
 kubectl -n "$NS" rollout status deploy/job-worker --timeout=180s
@@ -116,10 +111,8 @@ kubectl -n "$NS" rollout status deploy/web --timeout=180s
 kubectl -n "$NS" delete svc/web-admin --ignore-not-found=true
 kubectl -n "$NS" delete networkpolicy/allow-public-ingress-to-chat --ignore-not-found=true
 kubectl -n "$NS" rollout status deploy/embedding-service --timeout=900s
-kubectl -n "$NS" rollout status deploy/ingestion-service --timeout=300s
-kubectl -n "$NS" rollout status deploy/financing-agent --timeout=300s
 kubectl -n "$NS" rollout status deploy/kibana --timeout=600s
 
-kubectl -n "$NS" delete job seed-financing-docs --ignore-not-found=true
-kubectl apply -f "$ROOT_DIR/k8s/seed-ingestion-job.yaml"
-kubectl -n "$NS" wait --for=condition=complete job/seed-financing-docs --timeout=900s
+kubectl -n "$NS" delete job seed-knowledge --ignore-not-found=true
+kubectl apply -f "$SEED_MANIFEST"
+kubectl -n "$NS" wait --for=condition=complete job/seed-knowledge --timeout=900s

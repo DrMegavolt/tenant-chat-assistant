@@ -1162,17 +1162,16 @@ class TraceReplayTrialsResponse(BaseModel):
 class GoldEvidenceSubstitution(BaseModel):
     """One gold chunk to substitute into the replay's evidence section."""
 
-    source_id: str = Field(min_length=1, max_length=200)
+    source_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,200}$")
     text: str = Field(min_length=1, max_length=8192)
 
 
 class ReplayRetrievalRequest(_Request):
-    """Immutable-index retrieval replay, optionally with gold-evidence substitution.
+    """Generation-pinned retrieval replay, optionally with gold substitution.
 
-    ``gold_evidence``, when supplied, replaces the stored evidence passages in
-    the prompt before sending it to the model. The generation id the turn was
-    retrieved against is read from the stored record; when that generation is
-    gone, the replay refuses rather than silently answering against current data.
+    Without gold evidence, the retained generation is reranked using the stored
+    resolved query. With gold evidence, those passages replace that result. A
+    missing generation refuses rather than silently using current data.
     """
 
     gold_evidence: list[GoldEvidenceSubstitution] | None = None
@@ -1200,7 +1199,7 @@ class TraceReplayRetrievalResponse(BaseModel):
     generation_available: bool
     generation_id: str | None
     gold_evidence_count: int = 0
-    constant: str = "prompt_with_pinned_retrieval"
+    constant: str = "query_retriever_and_index_generation"
     variable: str = "model_output"
 
 
@@ -1208,9 +1207,8 @@ class ReplayTemplateRequest(_Request):
     """Template-version-pinned replay: hold model and evidence constant, pin the
     prompt template to a specific version to isolate a prompt regression.
 
-    ``template_version``, when supplied, names the version of the template to
-    render against; when ``None`` (the default), the stored template version
-    is used — isolating a prompt regression from a model or evidence change.
+    ``template_version`` names the retained template rendered with the stored
+    bindings; ``None`` renders the original version as a reproducibility check.
     """
 
     template_version: int | None = Field(default=None, ge=1)
@@ -1236,8 +1234,8 @@ class TraceReplayTemplateResponse(BaseModel):
     replayed: ReplayOutput
     template_ref: str
     template_matches_current: bool
-    constant: str = "prompt_template_version"
-    variable: str = "model_output"
+    constant: str = "replay_model_evidence_history_and_bindings"
+    variable: str = "prompt_template_and_model_output"
 
 
 class GoldEvidenceItem(BaseModel):

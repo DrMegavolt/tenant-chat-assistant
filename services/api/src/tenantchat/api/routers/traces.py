@@ -562,9 +562,9 @@ async def replay_turn_retrieval(
     request: Request,
     search_index: SearchIndexes,
 ) -> TraceReplayRetrievalResponse:
-    """Immutable-index retrieval replay, optionally with gold-evidence substitution.
+    """Generation-pinned retrieval replay, optionally with gold substitution.
 
-    Checks that the stored index generation still has active chunks. When it
+    Checks that the stored index generation still has retained chunks. When it
     does not, the route refuses (400 ``generation_unavailable``) rather than
     silently replaying against current data — a replay that quietly changes its
     evidence is worse than no replay. When ``gold_evidence`` is provided, those
@@ -589,6 +589,7 @@ async def replay_turn_retrieval(
     content = record.content
     retrieval = content.get("retrieval")
     generation_id_str = None
+    gen_uuid: uuid.UUID | None = None
     generation_exists = False
     if isinstance(retrieval, dict):
         gid = retrieval.get("generation_id")
@@ -597,8 +598,10 @@ async def replay_turn_retrieval(
                 gen_uuid = uuid.UUID(str(gid))
                 generation_id_str = str(gid)
                 if search_index is not None:
-                    generation_exists = await search_index.has_active_chunks_for_generation(
-                        tenant_id=tenant_id, generation_id=gen_uuid
+                    generation_exists = bool(
+                        await search_index.generation_chunks(
+                            tenant_id=tenant_id, generation_id=gen_uuid
+                        )
                     )
             except ValueError:
                 pass
@@ -610,11 +613,25 @@ async def replay_turn_retrieval(
         ]
 
     try:
+        retrieved_evidence: list[dict[str, str]] | None = None
+        if generation_exists and gold_evidence is None and gen_uuid is not None:
+            replay_generation = getattr(evidence, "replay_generation", None)
+            if replay_generation is not None:
+                query = ""
+                if isinstance(retrieval, dict):
+                    query = str(retrieval.get("resolved_query") or retrieval.get("query") or "")
+                retrieved_evidence = await replay_generation(
+                    tenant_id=tenant_id,
+                    query=query,
+                    generation_id=gen_uuid,
+                )
+
         result = await replay_with_retrieval(
             record=record,
             model=model,
             retriever=retriever,
             generation_exists=generation_exists,
+            retrieved_evidence=retrieved_evidence,
             gold_evidence=gold_evidence,
         )
     finally:
@@ -654,12 +671,10 @@ async def replay_turn_template(
     request_id: RequestId,
     request: Request,
 ) -> TraceReplayTemplateResponse:
-    """Template-version-pinned replay: model and evidence constant, prompt pinned.
+    """Template-version-pinned replay with model, evidence, and history constant.
 
-    Sends the stored prompt through the *current* model with no tools,
-    explicitly pinning which template version was used — the stored version
-    by default, or a caller-supplied one — so a prompt regression can be
-    isolated from a model change.
+    Renders the selected retained template using the stored binding values and
+    sends the counterfactual prompt through the current model with no tools.
 
     The response carries ``template_ref`` (the version actually used) and
     ``template_matches_current`` (``True`` when the pinned version is the

@@ -173,6 +173,13 @@ spec:
     - name: OTEL_PYTHON_DISABLED_INSTRUMENTATIONS
       value: aws_lambda
   python:
+    # Pinned rather than left to the operator default (0.50b0), whose FastAPI
+    # instrumentation predates the _IncludedRouter tree that FastAPI >= 0.137
+    # builds for include_router() routes and raises AttributeError on every
+    # request to one. 0.64b0 also tracks opentelemetry-api 1.43, next to the
+    # 1.44 this project locks, so the injected bundle and the application agree
+    # on the SDK the emitted spans go through.
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python@sha256:35cffd38fc714f4b9326a94d2ccf118e9f769cb519902c280e01c8cd2aa04fca
     env:
       - name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS
         value: /health,/metrics

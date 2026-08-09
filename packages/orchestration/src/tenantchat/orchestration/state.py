@@ -29,6 +29,16 @@ from enum import StrEnum
 from typing import Annotated, TypedDict
 
 
+def reduce_model_invocations(
+    current: list[dict[str, object]],
+    update: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Accumulate calls within a turn and let an empty next-turn update reset them."""
+    if not update:
+        return []
+    return [*current, *update]
+
+
 class TurnOutcome(StrEnum):
     """How the turn ended, as the closed status vocabulary the graph records.
 
@@ -183,7 +193,7 @@ class DispatchState(TypedDict):
     # four invocations rather than only the last. Each entry carries the
     # round number, model name, usage block, prompt assembly, and whether the
     # call produced content (`OBS-004`).
-    model_invocations: Annotated[list[dict[str, object]], operator.add]
+    model_invocations: Annotated[list[dict[str, object]], reduce_model_invocations]
     # The `OBS-006` executed-graph section of the turn's run, written by the
     # runtime from the captured debug events after the run finishes. It is
     # execution metadata, content-free by construction (see

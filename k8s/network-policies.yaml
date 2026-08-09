@@ -98,6 +98,24 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: allow-seed-to-chat
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: seed-knowledge
+      ports:
+        - { protocol: TCP, port: 8004 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: allow-prometheus-embedding-metrics
   namespace: llm-chat
 spec:
@@ -385,6 +403,24 @@ spec:
               app: postgres
       ports:
         - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-seed-egress
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: seed-knowledge
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: chat-backend
+      ports:
+        - { protocol: TCP, port: 8004 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

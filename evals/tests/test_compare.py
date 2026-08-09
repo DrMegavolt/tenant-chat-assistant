@@ -114,6 +114,11 @@ class TestComparisonReport(_Base):
         comparison = self.compare(ExceptionRegistry(()))
         self.assertLess(comparison.aggregate_deltas["recall_at_k"], 0.0)
 
+    def test_summary_marks_unscored_dimensions(self) -> None:
+        comparison = self.compare(ExceptionRegistry(()))
+        scored = cast(Mapping[str, object], comparison.candidate["scored"])
+        self.assertFalse(scored["grounding_correctness"])
+
     def test_regressions_carry_case_metric_and_provenance(self) -> None:
         comparison = self.compare(ExceptionRegistry(()))
         by_case = {delta.case: delta for delta in comparison.regressions}

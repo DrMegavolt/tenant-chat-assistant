@@ -33,7 +33,7 @@ from tenantchat.api.retrieval import (
     lexical_overlap,
     rank_chunks,
 )
-from tenantchat.api.search import Embedder, EmbeddingResult, IndexedChunk
+from tenantchat.api.search import Embedder, EmbeddingResult, IndexedChunk, InMemorySearchIndex
 
 QUERY_VECTOR = (1.0, 0.0, 0.0, 0.0)
 
@@ -57,6 +57,7 @@ def _chunk(
     domain: str = "hvac",
     document_id: uuid.UUID | None = None,
     version_id: uuid.UUID | None = None,
+    generation_id: uuid.UUID | None = None,
     embedding: tuple[float, ...] = QUERY_VECTOR,
     active: bool = True,
 ) -> IndexedChunk:
@@ -66,7 +67,7 @@ def _chunk(
         domain=domain,
         document_id=document_id or uuid.uuid4(),
         version_id=version_id or uuid.uuid4(),
-        generation_id=uuid.uuid4(),
+        generation_id=generation_id or uuid.uuid4(),
         title="",
         section="",
         text=text,
@@ -99,6 +100,31 @@ def _config(
         min_evidence_score=min_evidence_score,
         calibration=calibration,
     )
+
+
+def test_retained_generation_read_includes_superseded_inactive_chunks() -> None:
+    index = InMemorySearchIndex()
+    generation = uuid.uuid4()
+    document = uuid.uuid4()
+    chunk = _chunk("old", "historical evidence", document_id=document, generation_id=generation)
+    asyncio.run(index.index_chunks([chunk]))
+    asyncio.run(
+        index.deactivate_stale_chunks(
+            tenant_id="apex",
+            document_id=document,
+            keep_generation_id=uuid.uuid4(),
+        )
+    )
+
+    assert (
+        asyncio.run(
+            index.has_active_chunks_for_generation(tenant_id="apex", generation_id=generation)
+        )
+        is False
+    )
+    retained = asyncio.run(index.generation_chunks(tenant_id="apex", generation_id=generation))
+    assert [item.chunk_id for item in retained] == ["old"]
+    assert retained[0].active is False
 
 
 def _rank(

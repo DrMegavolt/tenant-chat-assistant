@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import datetime
 
 from tenantchat.api.retrieval import (
@@ -148,6 +150,46 @@ class RetrievalEvidenceSource:
         )
         self._record(Status.OK, verdict, started, candidates=len(bundle.items))
         return bundle
+
+    async def replay_generation(
+        self, *, tenant_id: str, query: str, generation_id: uuid.UUID
+    ) -> list[dict[str, str]]:
+        """Rerank an exact retained generation without mutating active index state."""
+        retained = await self._index.generation_chunks(
+            tenant_id=tenant_id, generation_id=generation_id
+        )
+        pool = tuple(replace(chunk, active=True) for chunk in retained)
+        ranked = await rank_chunks(
+            embedder=self._embedder,
+            chunks=pool,
+            query=query,
+            filters=RetrievalFilters(tenant_id=tenant_id),
+            config=self._config,
+            k=self._config.k,
+        )
+        admitted = assemble_context(
+            chunks_by_id={chunk.chunk_id: chunk for chunk in pool},
+            ranked=ranked,
+            budget=ContextBudget(
+                max_sources=self._config.max_sources,
+                max_context_tokens=self._config.max_context_tokens,
+            ),
+        )
+        by_id = {chunk.chunk_id: chunk for chunk in pool}
+        return [
+            {
+                "source_id": item.chunk_id,
+                "text": f"{by_id[item.chunk_id].title}\n{by_id[item.chunk_id].text}",
+            }
+            for item in admitted
+        ]
+
+    async def ready(self, *, tenant_id: str) -> None:
+        """Prove both retrieval dependencies are reachable for readiness."""
+        await self._index.active_chunk_count(tenant_id=tenant_id)
+        ready = getattr(self._embedder, "ready", None)
+        if ready is not None:
+            await ready()
 
     async def _retrieve(self, tenant_id: str, query: str) -> EvidenceBundle:
         try:

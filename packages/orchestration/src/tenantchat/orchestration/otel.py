@@ -85,9 +85,16 @@ class SpanRecordingChatModel:
     empty strings — never a crash and never a spurious value.
     """
 
-    def __init__(self, inner: ChatModel, *, gen_ai_system: str = "") -> None:
+    def __init__(
+        self,
+        inner: ChatModel,
+        *,
+        gen_ai_system: str = "",
+        request_model: str = "unknown",
+    ) -> None:
         self._inner = inner
         self._system = gen_ai_system
+        self._request_model = request_model or "unknown"
 
     async def complete(
         self,
@@ -102,7 +109,7 @@ class SpanRecordingChatModel:
             attributes={
                 _GEN_AI_SYSTEM: self._system,
                 _GEN_AI_OPERATION: "chat",
-                _GEN_AI_REQUEST_MODEL: (prompt.bindings.get("model") or self._system),
+                _GEN_AI_REQUEST_MODEL: self._request_model,
             },
             record_exception=False,
             set_status_on_exception=False,

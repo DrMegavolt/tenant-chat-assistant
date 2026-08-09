@@ -309,6 +309,19 @@ def _render_trailing(
     return tuple(rendered)
 
 
+def render_template_segments(
+    template: TemplateVersion, values: Mapping[str, str]
+) -> tuple[tuple[PromptSegment, ...], tuple[PromptSegment, ...]]:
+    """Render one retained template from explicit, schema-validated bindings.
+
+    Normal assembly derives bindings from policy and workflow. Replay already
+    holds the historical values, so it uses this narrower entry point to vary
+    only template code while keeping tenant/workflow data constant.
+    """
+    template.schema.validate(values)
+    return _render(template, values), _render_trailing(template, values)
+
+
 def _history_split(
     history: Sequence[HistoryTurn],
 ) -> tuple[set[int], list[tuple[int, HistoryTurn]]]:

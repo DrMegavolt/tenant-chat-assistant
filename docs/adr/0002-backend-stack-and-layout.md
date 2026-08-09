@@ -35,8 +35,7 @@ replacement from drifting back.
 ```
 packages/core/      # Domain model. Zero runtime dependencies.
 services/api/       # FastAPI app: routers, schemas, adapters.
-services/ingestion/ # Knowledge ingestion worker.
-services/embedding/ # Embedding model server.
+services/embedding/ # Embedding model server; linted and type checked.
 tests/              # Cross-cutting tests, including architecture invariants.
 ```
 
@@ -45,7 +44,10 @@ dependencies**. Domain rules define `Protocol` ports; adapters live in the servi
 that owns the I/O. FastAPI, SQLAlchemy, and LangGraph are structurally unable to
 appear in a domain type.
 
-Services stay as separate deployables rather than collapsing into one process.
+The API image also runs the durable ingestion worker and one-shot release jobs;
+the embedding model remains separate because it has a different runtime and
+resource profile. The former prototype ingestion and financing services were
+removed after the governed path became authoritative.
 
 ## Consequences
 
@@ -59,10 +61,9 @@ route handler. For CRUD this is overhead. It pays for itself at the points where
 business rules and idempotency live, which is exactly where correctness matters
 here.
 
-**Cost of separate services.** Three deployables mean three Dockerfiles, a wider
-CI matrix, and network calls where a function call would do. The shared domain
-package is what keeps this from becoming three copies of drifting business logic
-— without it, separate services would be actively worse than a monolith.
+**Cost of separate services.** The API/worker, embedding server, and web gateway
+remain three images, with a network call on the embedding boundary. The shared
+domain package keeps worker and request-path rules from drifting.
 
 **Migration.** `server.py` stays runnable until `services/api` serves the same
 endpoints, then is deleted rather than kept as a fallback. No characterization

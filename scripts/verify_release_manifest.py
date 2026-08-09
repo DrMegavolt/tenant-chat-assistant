@@ -33,14 +33,19 @@ def _identity(document: str) -> tuple[str, str]:
     return (kind.group(1) if kind else "", name.group(1) if name else "")
 
 
-def validate_manifest(path: Path) -> list[str]:
+def validate_manifest(path: Path, *, require_workloads: bool = True) -> list[str]:
     """Return violations for image fields that are not immutable registry refs."""
     errors: list[str] = []
     text = path.read_text(encoding="utf-8")
+    image_count_total = 0
     for line_number, line in enumerate(text.splitlines(), start=1):
         match = IMAGE_FIELD.match(line)
-        if match and DIGEST.search(match.group(1)) is None:
-            errors.append(f"{path}:{line_number}: image is not pinned to a 64-hex sha256 digest")
+        if match:
+            image_count_total += 1
+            if DIGEST.search(match.group(1)) is None:
+                errors.append(
+                    f"{path}:{line_number}: image is not pinned to a 64-hex sha256 digest"
+                )
     documents = re.split(r"^---\s*$", text, flags=re.MULTILINE)
     found_workloads: set[tuple[str, str]] = set()
     for document in documents:
@@ -51,21 +56,25 @@ def validate_manifest(path: Path) -> list[str]:
         image_count = sum(IMAGE_FIELD.match(line) is not None for line in document.splitlines())
         if image_count != 1:
             errors.append(f"{path}: {identity[0]}/{identity[1]} must contain exactly one image")
-    for kind, name in sorted(REQUIRED_WORKLOADS - found_workloads):
-        errors.append(f"{path}: required release workload {kind}/{name} is missing")
+    if require_workloads:
+        for kind, name in sorted(REQUIRED_WORKLOADS - found_workloads):
+            errors.append(f"{path}: required release workload {kind}/{name} is missing")
+    elif image_count_total == 0:
+        errors.append(f"{path}: image-only release must contain at least one image")
     return errors
 
 
 def main(argv: list[str]) -> int:
     """Validate exactly one rendered manifest path."""
-    if len(argv) != 2:
-        sys.stderr.write(f"usage: {argv[0]} <rendered-manifest.yaml>\n")
+    images_only = len(argv) == 3 and argv[1] == "--images-only"
+    if len(argv) != 2 and not images_only:
+        sys.stderr.write(f"usage: {argv[0]} [--images-only] <rendered-manifest.yaml>\n")
         return 2
-    path = Path(argv[1])
+    path = Path(argv[2] if images_only else argv[1])
     if not path.is_file():
         sys.stderr.write(f"ERROR: rendered manifest not found: {path}\n")
         return 2
-    errors = validate_manifest(path)
+    errors = validate_manifest(path, require_workloads=not images_only)
     if errors:
         sys.stderr.write("".join(f"ERROR: {error}\n" for error in errors))
         return 1

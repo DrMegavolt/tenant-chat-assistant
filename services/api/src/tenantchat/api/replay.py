@@ -14,17 +14,13 @@ Three facilities serve the Gate B case walkthrough:
 evidence held constant, reported as an aggregate with an explicit stochastic
 label. This is what makes case 7 (model-behavior difference) demonstrable.
 
-② **Generation-availability check + prompt re-execution**
-(:func:`replay_with_retrieval`): checks that the stored index generation still
-exists, then re-executes the stored prompt. It does not rerun retrieval through
-the pinned retriever/index generation; genuine counterfactual retrieval replay
-needs a retained index snapshot (Gate C).
+② **Generation-pinned retrieval replay** (:func:`replay_with_retrieval`):
+reranks the exact retained index generation, rebuilds the evidence segments,
+then re-executes the resulting prompt. Gold evidence can replace that result.
 
-③ **Template-reference comparison + prompt re-execution**
-(:func:`replay_with_template`): compares the stored template reference against a
-pinned version, then re-executes the stored prompt. This isolates a template
-reference mismatch — not a prompt regression, which would require re-rendering
-the template with the held-constant data to produce a different prompt.
+③ **Template-version-pinned replay** (:func:`replay_with_template`): renders the
+selected retained template using the stored bindings while holding evidence and
+conversation history constant, then re-executes that counterfactual prompt.
 """
 
 from __future__ import annotations
@@ -55,6 +51,7 @@ from tenantchat.orchestration.model import (
     PromptSegment,
 )
 from tenantchat.orchestration.prompts import DEFAULT_REGISTRY, DISPATCH_SYSTEM_REF
+from tenantchat.orchestration.prompts.assembly import render_template_segments
 from tenantchat.orchestration.tools import TOOLS_VERSION
 from tenantchat.orchestration.trace import manifest_hash, reconstruct_prompt
 
@@ -258,6 +255,7 @@ async def replay_with_retrieval(
     model: ChatModel,
     retriever: Mapping[str, object] | None,
     generation_exists: bool,
+    retrieved_evidence: list[dict[str, str]] | None = None,
     gold_evidence: list[dict[str, str]] | None = None,
 ) -> TraceReplayRetrievalResponse:
     content = record.content
@@ -276,8 +274,10 @@ async def replay_with_retrieval(
     except ValueError as error:
         raise TraceReplayError(detail="stored prompt not reconstructible") from error
 
-    if gold_evidence:
-        rebuilt = _substitute_gold_evidence(rebuilt, gold_evidence)
+    replay_evidence = gold_evidence if gold_evidence is not None else retrieved_evidence
+    if replay_evidence is None:
+        raise TraceReplayError(detail="generation retrieval result absent")
+    rebuilt = _substitute_evidence(rebuilt, replay_evidence)
 
     stored_hash = str(prompt_section.get("content_hash", ""))
     response = await _complete(model, rebuilt)
@@ -329,7 +329,7 @@ async def replay_with_template(
     except ValueError as error:
         raise TraceReplayError(detail="stored prompt not reconstructible") from error
 
-    template_ref = _resolve_template_ref(rebuilt, template_version)
+    rebuilt, template_ref = _rerender_template(rebuilt, template_version)
     template_matches_current = template_ref == DISPATCH_SYSTEM_REF
 
     stored_hash = str(prompt_section.get("content_hash", ""))
@@ -383,57 +383,78 @@ def _stored_generation_id(content: Mapping[str, object]) -> str | None:
     return None
 
 
-def _resolve_template_ref(prompt: AssembledPrompt, version: int | None) -> str:
-    import logging
+def _rerender_template(prompt: AssembledPrompt, version: int | None) -> tuple[AssembledPrompt, str]:
+    selected_version = prompt.template_version if version is None else version
+    try:
+        template = DEFAULT_REGISTRY.resolve(prompt.template_id, selected_version)
+        values = {
+            slot.name: str(prompt.bindings.get(slot.name, "")) for slot in template.schema.slots
+        }
+        base, trailing = render_template_segments(template, values)
+    except (KeyError, TypeError, ValueError) as error:
+        raise TraceReplayError(detail="selected template cannot render stored bindings") from error
 
-    _logger = logging.getLogger(__name__)
-
-    if version is not None:
-        try:
-            template = DEFAULT_REGISTRY.resolve(prompt.template_id, version)
-            return template.ref
-        except Exception:
-            _logger.debug("template version %s not resolvable for %s", version, prompt.template_id)
-    return prompt.template_ref
-
-
-def _substitute_gold_evidence(
-    prompt: AssembledPrompt, gold_evidence: list[dict[str, str]]
-) -> AssembledPrompt:
-    gold_count = len(gold_evidence)
-    gold_index = 0
-    evidence_index = 0
-
-    new_messages: list[AssembledMessage] = []
+    messages: list[AssembledMessage] = []
+    replaced_system = False
     for message in prompt.messages:
-        new_segments: list[PromptSegment] = []
-        for segment in message.segments:
-            if segment.region == PromptRegion.UNTRUSTED and segment.segment_id.startswith(
-                "evidence-"
-            ):
-                if gold_index < gold_count:
-                    chunk = gold_evidence[gold_index]
-                    new_segments.append(
-                        PromptSegment(
-                            segment_id=f"gold-evidence-{gold_index}",
-                            region=PromptRegion.UNTRUSTED,
-                            text=chunk["text"],
-                        )
-                    )
-                    gold_index += 1
-                evidence_index += 1
-            else:
-                new_segments.append(segment)
-        while gold_index < gold_count:
-            chunk = gold_evidence[gold_index]
-            new_segments.append(
-                PromptSegment(
-                    segment_id=f"gold-evidence-{gold_index}",
-                    region=PromptRegion.UNTRUSTED,
-                    text=chunk["text"],
+        if message.role.value == "system" and not replaced_system:
+            evidence = tuple(
+                segment
+                for segment in message.segments
+                if segment.segment_id.startswith("evidence:")
+            )
+            messages.append(
+                AssembledMessage(
+                    role=message.role,
+                    segments=(*base, *evidence, *trailing),
+                    tool_calls=message.tool_calls,
+                    tool_call_id=message.tool_call_id,
                 )
             )
-            gold_index += 1
+            replaced_system = True
+        else:
+            messages.append(message)
+    if not replaced_system:
+        raise TraceReplayError(detail="stored prompt has no system message")
+    return (
+        AssembledPrompt(
+            template_id=template.template_id,
+            template_version=template.version,
+            bindings=values,
+            messages=tuple(messages),
+        ),
+        template.ref,
+    )
+
+
+def _substitute_evidence(
+    prompt: AssembledPrompt, evidence: list[dict[str, str]]
+) -> AssembledPrompt:
+    new_messages: list[AssembledMessage] = []
+    inserted = False
+    for message in prompt.messages:
+        new_segments: list[PromptSegment] = []
+        insertion_index: int | None = None
+        for segment in message.segments:
+            if segment.segment_id.startswith("evidence:"):
+                insertion_index = len(new_segments) if insertion_index is None else insertion_index
+                continue
+            new_segments.append(segment)
+        if message.role.value == "system" and not inserted:
+            at = len(new_segments) if insertion_index is None else insertion_index
+            replacements = [
+                PromptSegment(
+                    segment_id=f"evidence:{chunk['source_id']}",
+                    region=PromptRegion.UNTRUSTED,
+                    text=(
+                        f'<evidence source_id="{chunk["source_id"]}">\n'
+                        f'{chunk["text"]}\n</evidence>'
+                    ),
+                )
+                for chunk in evidence
+            ]
+            new_segments[at:at] = replacements
+            inserted = True
         new_messages.append(
             AssembledMessage(
                 role=message.role,

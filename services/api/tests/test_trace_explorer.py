@@ -15,12 +15,13 @@ import asyncio
 import json
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from services.api.tests.conftest import (
@@ -1386,6 +1387,49 @@ class TestReplayRetrieval:
         assert retrieval_audits[0].details["reason"] == READ_REASON
         assert retrieval_audits[0].details["generation_exists"] is False
 
+    def test_replay_retrieval_failure_is_still_audited(self) -> None:
+        client, turns, _grants, audit, _model = self._replay_client(
+            script=[ModelResponse(content="should never run", model_name="scripted")]
+        )
+        generation_id = uuid.uuid4()
+        original = _seeded_cases()[0]
+        retrieval_content = original.content["retrieval"]
+        assert isinstance(retrieval_content, dict)
+        retrieval = dict(retrieval_content)
+        retrieval["generation_id"] = str(generation_id)
+        case = replace(original, content={**original.content, "retrieval": retrieval})
+        _plant(turns, case)
+
+        class RetainedGeneration:
+            async def generation_chunks(self, **_kwargs: object) -> tuple[object, ...]:
+                return (object(),)
+
+        class FailedReplay:
+            retriever_manifest = None
+
+            async def replay_generation(self, **_kwargs: object) -> list[dict[str, str]]:
+                raise RuntimeError("retrieval backend failed")
+
+        app = cast(FastAPI, client.app)
+        app.state.search_index = RetainedGeneration()
+        app.state.evidence_source = FailedReplay()
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}/replay/retrieval",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json={"gold_evidence": None},
+            headers=headers,
+        )
+
+        assert response.status_code == 500
+        retrieval_audits = [
+            event for event in audit._events if event.action == "trace.replay_retrieval"
+        ]
+        assert len(retrieval_audits) == 1
+        assert retrieval_audits[0].details["generation_exists"] is True
+
     def test_replay_retrieval_no_tool_calls(self) -> None:
         """Replay with retrieval carries no tools, ensuring no domain effects."""
         client, turns, _grants, _audit, model = self._replay_client(
@@ -1448,8 +1492,8 @@ class TestReplayTemplate:
         assert body["stochastic"] is True
         assert body["template_ref"].startswith("dispatch-system@")
         assert body["template_matches_current"] is False
-        assert body["constant"] == "prompt_template_version"
-        assert body["variable"] == "model_output"
+        assert body["constant"] == "replay_model_evidence_history_and_bindings"
+        assert body["variable"] == "prompt_template_and_model_output"
 
         template_audits = [
             event for event in audit._events if event.action == "trace.replay_template"

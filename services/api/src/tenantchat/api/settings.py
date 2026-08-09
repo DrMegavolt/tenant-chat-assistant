@@ -242,6 +242,9 @@ class Settings:
     elasticsearch_password: str | None = None
     elasticsearch_index: str = "tenant-knowledge-chunks"
     embedding_url: str | None = None
+    # Separate caller credentials preserve least privilege: the API embeds
+    # visitor queries, while the worker embeds governed ingestion chunks.
+    chat_embedding_token: str | None = None
     embedding_token: str | None = None
     ingestion_storage_root: str | None = None
     elasticsearch_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
@@ -364,6 +367,7 @@ class Settings:
             elasticsearch_password=os.environ.get("ES_PASSWORD", "").strip() or None,
             elasticsearch_index=os.environ.get("KNOWLEDGE_INDEX", "tenant-knowledge-chunks"),
             embedding_url=os.environ.get("EMBEDDING_URL", "").strip() or None,
+            chat_embedding_token=(os.environ.get("CHAT_TO_EMBEDDING_TOKEN", "").strip() or None),
             embedding_token=os.environ.get("INGESTION_TO_EMBEDDING_TOKEN", "").strip() or None,
             ingestion_storage_root=os.environ.get("INGESTION_STORAGE_ROOT", "").strip() or None,
             elasticsearch_resilience=_dependency_resilience(

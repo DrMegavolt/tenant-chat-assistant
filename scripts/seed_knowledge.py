@@ -33,6 +33,9 @@ _TENANTS = (
     ("clearview", "docs/clearview/financing/financing-options.md", "Clearview financing options"),
 )
 
+_DRAFT_STATE = "draft"
+_JOB_SUCCEEDED = "succeeded"
+_JOB_TERMINAL_FAILURES = ("dead_lettered", "cancelled")
 _DOMAIN = "financing"
 _SOURCE_KIND = "upload"
 _SOURCE_DISPLAY = "Financing options"
@@ -195,7 +198,7 @@ def _register_source(tenant_id: str, csrf: str) -> uuid.UUID:
 
 def _upload_document(
     tenant_id: str, source_id: uuid.UUID, filepath: str, title: str, csrf: str
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     content = _read_document(filepath)
     body = _multipart_post(
         "/api/admin/knowledge/uploads",
@@ -214,7 +217,7 @@ def _upload_document(
     document_id = assert_str(body, "document_id")
     state = assert_str(body, "state")
     report(f"uploaded {filepath} -> version {version_id} (state={state})")
-    return version_id, document_id
+    return version_id, document_id, state
 
 
 def _approve(tenant_id: str, version_id: str, csrf: str) -> None:
@@ -240,18 +243,19 @@ def _publish(tenant_id: str, version_id: str, csrf: str) -> str | None:
     return job_id
 
 
-def _wait_for_job(job_id: str | None) -> None:
+def _wait_for_job(tenant_id: str, job_id: str | None) -> None:
     if job_id is None:
         report("no ingestion job to wait for (already indexed)")
         return
     headers = _admin_headers()
     for attempt in range(1, POLL_ATTEMPTS + 1):
-        body = _get(f"/api/admin/jobs/{job_id}", headers=headers)
-        status = body.get("status", "unknown")
-        if status in ("completed",):
-            report(f"job {job_id} completed after {attempt} poll(s)")
+        body = _get(f"/api/admin/jobs/{job_id}?tenant_id={tenant_id}", headers=headers)
+        job = body.get("job")
+        status = job.get("status", "unknown") if isinstance(job, dict) else "unknown"
+        if status == _JOB_SUCCEEDED:
+            report(f"job {job_id} succeeded after {attempt} poll(s)")
             return
-        if status in ("failed", "dead_lettered"):
+        if status in _JOB_TERMINAL_FAILURES:
             report(f"FATAL: job {job_id} entered status {status}: {body}")
             raise RuntimeError(f"ingestion job {job_id} failed: {status}")
         if attempt % 10 == 0:
@@ -303,10 +307,17 @@ def seed_tenant(tenant_id: str, filepath: str, title: str) -> None:
     csrf = _csrf_token()
 
     source_id = _register_source(tenant_id, csrf)
-    version_id, document_id = _upload_document(tenant_id, source_id, filepath, title, csrf)
-    _approve(tenant_id, version_id, csrf)
+    version_id, document_id, state = _upload_document(tenant_id, source_id, filepath, title, csrf)
+    # Upload deduplicates on external_key, so a re-run gets back the version an
+    # earlier run already advanced. Approval admits draft alone and answers 409
+    # for anything further along; publish accepts an already-published version
+    # and reindexes it, which is what makes the whole seed re-runnable.
+    if state == _DRAFT_STATE:
+        _approve(tenant_id, version_id, csrf)
+    else:
+        report(f"version {version_id} is already {state}; skipping approval")
     job_id = _publish(tenant_id, version_id, csrf)
-    _wait_for_job(job_id)
+    _wait_for_job(tenant_id, job_id)
     _verify_indexed(tenant_id, version_id)
     report(f"done seeding {tenant_id}: document={document_id} version={version_id}")
 

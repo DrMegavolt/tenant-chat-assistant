@@ -24,11 +24,10 @@ unauthenticated request: Kubernetes runs the services with `APP_ENV=production`
 so the demo exercises authenticated requests and fails closed.
 
 Generate each internal service token independently with `openssl rand -hex 32`.
-The four credentials are deliberately separate and are never the external LLM
-key: chat→financing, seed→ingestion, ingestion→embedding, and
-financing→embedding. Rotate one channel by updating its Secret and restarting
-only its caller/server pair. Production startup rejects missing, placeholder, or
-duplicate credentials before serving requests.
+The two credentials are deliberately separate and are never the external LLM
+key: chat→embedding and ingestion-worker→embedding. Rotate one channel by
+updating its Secret and restarting only its caller/server pair. Production
+startup rejects missing, placeholder, or duplicate credentials before serving.
 
 Provision these resources out of band.  The pipeline sends generated Secret
 manifests directly to `kubectl apply`; do not add `-v`, redirect the stream to a
@@ -36,7 +35,7 @@ file, or commit anything under `.local/`:
 
 ```bash
 kubectl create namespace llm-chat --dry-run=client -o yaml | kubectl apply -f -
-for name in elastic-credentials postgres-credentials postgres-migration-credentials privacy-database-credentials kibana-credentials llm-provider-credentials chat-to-financing-credentials seed-to-ingestion-credentials ingestion-to-embedding-credentials financing-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials visitor-credential-signing-key; do
+for name in elastic-credentials postgres-credentials postgres-migration-credentials privacy-database-credentials kibana-credentials llm-provider-credentials chat-to-embedding-credentials ingestion-to-embedding-credentials oidc-credentials admin-csrf-secret admin-gateway-credentials visitor-credential-signing-key; do
   kubectl -n llm-chat create secret generic "$name" \
     --from-env-file=".local/k8s/$name.env.example" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -52,20 +51,21 @@ kubectl -n llm-chat create configmap oidc-endpoints \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Run `make deployment-security image-contracts` before deployment. `app.yaml` is
-a release template: replace each `REPLACE_WITH_*_DIGEST` token with the 64-hex
-registry digest recorded for that service, without changing the repository
-template. Pass that rendered file to `k8s/deploy.sh`; the script refuses a
-missing file or any unresolved image contract. It repeats both static gates and
+Run `make deployment-security image-contracts` before deployment. `app.yaml` and
+`seed-knowledge-job.yaml` are release templates: replace each
+`REPLACE_WITH_*_DIGEST` token with the 64-hex registry digest recorded for that
+service, without changing the repository template. Pass both rendered files to
+`k8s/deploy.sh`; the script refuses a missing file or unresolved image contract.
+It repeats both static gates and
 checks every required Secret/ConfigMap key without displaying its value before
 it changes any workload. Kubernetes `secretKeyRef` and
 `configMapKeyRef` remain non-optional, and each Python service validates required
 production values during import, so missing or placeholder configuration stops
 startup with a message containing variable names only.
 
-Application code and Python dependencies are bundled into non-root images. The
-only application ConfigMap mount is `financing-docs`, which is runtime content,
-not executable source. The OpenTelemetry operator is a separately reviewed
+Application code and Python dependencies are bundled into non-root images; no
+application source or runtime content is mounted from a ConfigMap. The
+OpenTelemetry operator is a separately reviewed
 cluster prerequisite; deploy intentionally does not download its manifest.
 Build, smoke, digest-recording, and scan commands are documented in
 `docs/runbooks/container-images.md`.
@@ -120,16 +120,17 @@ helm upgrade --install keycloak k8s/helm/keycloak \
   --wait --timeout 15m
 ```
 
-After provisioning the Secrets and ConfigMaps above and rendering a release
-manifest with immutable image digests, the complete application setup is:
+After provisioning the Secrets and ConfigMaps above and rendering application
+and governed-seed manifests with immutable image digests, the complete setup is:
 
 ```bash
 make deployment-security image-contracts
-./k8s/deploy.sh /absolute/path/to/rendered-app.yaml
+./k8s/deploy.sh /absolute/path/to/rendered-app.yaml \
+  /absolute/path/to/rendered-seed-knowledge-job.yaml
 ```
 
 For repeat releases to an already-provisioned local MicroK8s cluster, build and
-publish all five `linux/amd64` application images, render their registry digests,
+publish all three `linux/amd64` application images, render their registry digests,
 take and verify a pre-migration database backup, run Alembic and the LangGraph
 checkpoint setup, refresh grants for separately provisioned runtime roles, and
 wait for the complete rollout with one command:

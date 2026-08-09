@@ -10,6 +10,7 @@ METADATA_DIR="$RELEASE_DIR/build-metadata"
 BACKUP_DIR="$RELEASE_DIR/backups"
 APP_RELEASE="$RELEASE_DIR/app.release.yaml"
 MIGRATION_RELEASE="$RELEASE_DIR/api-migration-job.release.yaml"
+SEED_RELEASE="$RELEASE_DIR/seed-knowledge-job.release.yaml"
 # Reviewed digest used by the existing local release for oauth2-proxy v7.8.2.
 OAUTH2_PROXY_DIGEST="${LOCAL_K8S_OAUTH2_PROXY_DIGEST:-sha256:6f01695a729a2f88d7bc6e1158797d3cbdc0381c358ba86e1aa5da739586b3e0}"
 ALL_IMAGES=(api embedding web)
@@ -118,7 +119,7 @@ kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=300s
 "$ROOT_DIR/scripts/verify_image_contracts.py"
 
 if [[ "${LOCAL_K8S_SKIP_BUILD:-false}" == "true" ]]; then
-  if [[ ! -f "$APP_RELEASE" || ! -f "$MIGRATION_RELEASE" ]]; then
+  if [[ ! -f "$APP_RELEASE" || ! -f "$MIGRATION_RELEASE" || ! -f "$SEED_RELEASE" ]]; then
     echo "LOCAL_K8S_SKIP_BUILD=true requires existing rendered release manifests in $RELEASE_DIR" >&2
     exit 1
   fi
@@ -150,13 +151,16 @@ else
     --metadata-dir "$METADATA_DIR" \
     --app-template "$ROOT_DIR/k8s/app.yaml" \
     --migration-template "$ROOT_DIR/k8s/api-migration-job.yaml" \
+    --seed-template "$ROOT_DIR/k8s/seed-knowledge-job.yaml" \
     --app-output "$APP_RELEASE" \
     --migration-output "$MIGRATION_RELEASE" \
+    --seed-output "$SEED_RELEASE" \
     --pull-repository "$PULL_REPOSITORY" \
     --oauth2-proxy-digest "$OAUTH2_PROXY_DIGEST"
 fi
 
 "$ROOT_DIR/scripts/verify_release_manifest.py" "$APP_RELEASE"
+"$ROOT_DIR/scripts/verify_release_manifest.py" --images-only "$SEED_RELEASE"
 kubectl apply --dry-run=client -f "$MIGRATION_RELEASE" >/dev/null
 kubectl apply --dry-run=client -f "$APP_RELEASE" >/dev/null
 
@@ -179,7 +183,7 @@ if ! kubectl -n "$NAMESPACE" wait \
 fi
 
 refresh_role_grants
-"$ROOT_DIR/k8s/deploy.sh" "$APP_RELEASE"
+"$ROOT_DIR/k8s/deploy.sh" "$APP_RELEASE" "$SEED_RELEASE"
 
 echo "local MicroK8s release deployed successfully"
 kubectl -n "$NAMESPACE" get deploy,pods -o wide

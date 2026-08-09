@@ -28,8 +28,7 @@ presenter can speak to what actually happened, not what was intended.
    of records under new sessions:
 
    ```bash
-   ADMIN_GATEWAY_TOKEN=$TOKEN ADMIN_CSRF_SECRET=$SECRET \
-     uv run --frozen python scripts/harness_live.py
+   CHAT_API_URL=http://localhost:8004 uv run --frozen python scripts/harness_live.py
    ```
 
    The script opens a fresh session per case, sends the visitor message, and

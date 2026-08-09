@@ -8,7 +8,12 @@ import pytest
 
 from tenantchat.orchestration.checkpoints import checkpoint_connection_string
 from tenantchat.orchestration.runtime import thread_id
-from tenantchat.orchestration.state import DispatchState, initial_state, next_turn
+from tenantchat.orchestration.state import (
+    DispatchState,
+    initial_state,
+    next_turn,
+    reduce_model_invocations,
+)
 
 
 def test_the_whole_state_round_trips_through_json() -> None:
@@ -40,6 +45,15 @@ def test_a_new_turn_advances_the_turn_index_by_one() -> None:
     it to the count instead of setting it, which is why no node returns it.
     """
     assert next_turn("hello")["turn_index"] == 1
+
+
+def test_a_new_turn_clears_prior_model_invocations_but_rounds_accumulate() -> None:
+    previous = [{"round": 1, "model_name": "primary"}]
+    assert reduce_model_invocations(previous, []) == []
+    assert reduce_model_invocations(previous, [{"round": 2}]) == [
+        *previous,
+        {"round": 2},
+    ]
 
 
 def test_a_transcript_entry_always_carries_both_optional_fields() -> None:

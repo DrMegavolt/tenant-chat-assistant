@@ -76,5 +76,10 @@ class Database:
                     {"tenant_id": tenant_id, "display_name": display_name},
                 )
 
+    async def ready(self) -> None:
+        """Prove the bounded pool can execute a trivial query."""
+        async with self.engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+
     async def dispose(self) -> None:
         await self.engine.dispose()

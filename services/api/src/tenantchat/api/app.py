@@ -505,17 +505,32 @@ def create_app(
             )
     effective_model = chat_model
     if owned_models:
-        effective_model = owned_models[0]
+        instrumented_models: list[ChatModel] = [
+            SpanRecordingChatModel(
+                owned_models[0],
+                gen_ai_system=_provider_name(resolved.llm_base_url or ""),
+                request_model=resolved.llm_model or "unknown",
+            )
+        ]
         if len(owned_models) > 1:
-            effective_model = FallbackChatModel(owned_models, metrics=METRICS)
-    # L8-OTEL: wrap the model chain in a content-free GenAI-convention span
-    # recorder *before* the metrics wrapper so both sit at the same observation
-    # level around the actual provider calls.
-    if effective_model is not None:
-        provider = _provider_name(resolved.llm_base_url or "")
+            instrumented_models.append(
+                SpanRecordingChatModel(
+                    owned_models[1],
+                    gen_ai_system=_provider_name(resolved.llm_fallback_base_url or ""),
+                    request_model=resolved.llm_fallback_model or "unknown",
+                )
+            )
+        effective_model = instrumented_models[0]
+        if len(instrumented_models) > 1:
+            effective_model = FallbackChatModel(instrumented_models, metrics=METRICS)
+    elif effective_model is not None:
+        # Injected models are used by tests and local compositions. They still
+        # get one logical model span, with an explicit unknown request model
+        # when no provider configuration exists.
         effective_model = SpanRecordingChatModel(
             effective_model,
-            gen_ai_system=provider,
+            gen_ai_system=_provider_name(resolved.llm_base_url or ""),
+            request_model=resolved.llm_model or "unknown",
         )
     # The metrics wrapper is observation only: it delegates every call and
     # records latency, outcome, and token counts around it (`OBS-002`). A
@@ -702,7 +717,10 @@ def create_app(
     ):
         owned_query_embedder = EmbeddingServiceClient(
             base_url=resolved.embedding_url,
-            token=resolved.embedding_token,
+            # Tests and older local compositions may still inject the worker
+            # credential through ``embedding_token``. Production declares the
+            # dedicated chat credential and never shares the worker's token.
+            token=resolved.chat_embedding_token or resolved.embedding_token,
             policy=resolved.embedding_resilience,
             metrics=METRICS,
         )
@@ -719,7 +737,7 @@ def create_app(
             "CHAT_RAG_REQUIRED is true but the evidence source cannot be composed: "
             "a search index, knowledge store, and embedding URL are all required."
         )
-        raise SystemExit(message)
+        raise RuntimeError(message)
 
     # SEC-002: the visitor credential signer. Production composition required
     # the key above, so every real deployment signs with a shared secret it
@@ -839,6 +857,7 @@ def create_app(
     )
 
     app.state.settings = resolved
+    app.state.database = database
     app.state.registry = resolved_registry
     app.state.budgets = resolved_budgets
     app.state.booking_store = booking_store

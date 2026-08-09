@@ -30,6 +30,7 @@ from tenantchat.api.store import (
 
 PUBLISHED_OPERATIONS = {
     ("get", "/healthz"),
+    ("get", "/readyz"),
     ("get", "/api/tenants"),
     ("get", "/api/tenants/{tenant_id}/availability"),
     ("post", "/api/book"),

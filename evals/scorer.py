@@ -159,10 +159,10 @@ class EvaluationReport:
             f"embedding_model: {self.embedding_model}",
             f"reranker: {self.reranker or 'none'}",
             f"abstain_threshold: {self.abstain_threshold}",
-            f"recall@{self.retriever.k}: {self.aggregate['recall_at_k']:.4f}",
-            f"citation_precision: {self.aggregate['citation_precision']:.4f}",
+            _score_line(self, f"recall@{self.retriever.k}", "recall_at_k"),
+            _score_line(self, "citation_precision", "citation_precision"),
             f"abstention_correctness: {self.aggregate['abstention_correctness']:.4f}",
-            f"grounding_correctness: {self.aggregate['grounding_correctness']:.4f}",
+            _score_line(self, "grounding_correctness", "grounding_correctness"),
             f"cross_tenant_leaks: {self.aggregate['cross_tenant_leaks']:.0f}",
         ]
         for case in self.cases:
@@ -178,6 +178,13 @@ class EvaluationReport:
                 f"({'correct' if case.abstain_correct else 'WRONG'}){scenario}"
             )
         return "\n".join(lines)
+
+
+def _score_line(report: EvaluationReport, label: str, metric: str) -> str:
+    """Render absent dimensions as such instead of a misleading numeric zero."""
+    if not report.scored.get(metric, True):
+        return f"{label}: n/a (unscored)"
+    return f"{label}: {report.aggregate[metric]:.4f}"
 
 
 def score_cases(

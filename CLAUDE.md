@@ -30,7 +30,7 @@ Dependency changes mean editing `pyproject.toml` and running `make lock`.
 ```
 packages/core/      Domain model. Zero runtime dependencies.
 packages/orchestration/ LangGraph agent runtime: graph, nodes, checkpoint adapter.
-services/           Deployable services: api, ingestion, embedding, financing-agent.
+services/           Deployable services: API/worker image and embedding server.
 frontend/           Self-contained npm project: React 19 + TypeScript, built by Vite.
 tests/              Cross-cutting tests, including architecture invariants.
 docs/adr/           Architecture decision records. Start at docs/adr/README.md.
@@ -90,8 +90,8 @@ orchestration code so this stays achievable.
 ## Context
 
 The legacy prototype services (`ingestion`, `financing-agent`) were removed in
-the `DEP-001` cutover. `services/embedding/app.py` is an embedding server the
-governed pipeline calls; it is excluded from lint and type checking. The
+the `DEP-001` cutover. `services/embedding/app.py` is the embedding server the
+governed pipeline calls and is included in lint and strict type checking. The
 original `server.py` prototype was also removed; do not reintroduce it. Build
 in `packages/core` and `services/api` instead.
 

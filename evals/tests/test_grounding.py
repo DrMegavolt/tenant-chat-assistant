@@ -92,6 +92,7 @@ class TestGroundingScores(unittest.TestCase):
         report = _run(golden, corpus_file=None)
         self.assertEqual(report.aggregate["grounding_correctness"], 0.0)
         self.assertTrue(report.passed, "an unscored dimension must not fail the run")
+        self.assertIn("grounding_correctness: n/a (unscored)", report.to_text())
 
     def test_grounding_scoring_is_deterministic(self) -> None:
         self.assertEqual(_run(self.cases).to_json(), _run(self.cases).to_json())

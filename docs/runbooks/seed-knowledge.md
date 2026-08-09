@@ -1,9 +1,8 @@
 # Seed Knowledge
 
 Drives the governed ingestion pipeline for both demo tenants: upload, approve,
-publish, and poll the durable ingestion job to completion. Replaces the legacy
-`k8s/seed-ingestion-job.yaml` for the governed path; the legacy seed still
-populates the financing side-agent's separate Elasticsearch index.
+publish, and poll the durable ingestion job to completion. It is the only seed
+path; the deleted prototype ingester and financing agent are not deployed.
 
 ## Usage
 
@@ -23,11 +22,12 @@ uv run --frozen python scripts/seed_knowledge.py
 
 ## k8s Job
 
-Apply after `api-migration-job.yaml` and before the chat-backend deployment is
-live. The job uses the same API image and talks to `chat-admin:8004`.
+Apply after the API migration and chat-backend rollout. The job uses the same
+immutable API image and talks to `chat-admin:8004` through its dedicated
+default-deny NetworkPolicy path.
 
 ```bash
-kubectl apply -f k8s/seed-knowledge-job.yaml
+kubectl apply -f /secure/release/seed-knowledge-job.yaml
 kubectl wait --for=condition=complete job/seed-knowledge -n llm-chat --timeout=120s
 ```
 

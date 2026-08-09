@@ -16,18 +16,21 @@ import io
 import json
 import logging
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 from starlette.testclient import TestClient as StarletteTestClient
+from starlette.types import Message, Receive, Scope, Send
 
 from tenantchat.api.app import create_app
 from tenantchat.api.correlation import (
     TRACE_ID_HEADER,
     CorrelationContext,
+    CorrelationMiddleware,
     bind,
     correlation_headers,
     current,
@@ -124,6 +127,61 @@ def _open_turn(client: StarletteTestClient, message: str) -> tuple[str, str, str
 
 
 class TestServerIssuedIds:
+    def test_outer_correlation_resolves_the_inner_otel_server_trace(
+        self, captured_logs: io.StringIO, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Operator auto-instrumentation starts its ASGI span inside our outer middleware."""
+        caplog.set_level(logging.INFO, logger="tenantchat.api.correlation")
+        expected_trace_id = int("1234567890abcdef1234567890abcdef", 16)
+        span = NonRecordingSpan(
+            SpanContext(
+                trace_id=expected_trace_id,
+                span_id=1,
+                is_remote=False,
+                trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                trace_state=TraceState(),
+            )
+        )
+        seen_inside: list[str | None] = []
+        messages: list[Message] = []
+
+        async def traced_app(
+            _scope: Scope,
+            _receive: Receive,
+            send: Send,
+        ) -> None:
+            with use_span(span, end_on_exit=False):
+                context = current()
+                seen_inside.append(context.trace_id if context else None)
+                await send({"type": "http.response.start", "status": 200, "headers": []})
+                await send({"type": "http.response.body", "body": b""})
+
+        async def receive() -> Message:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: Message) -> None:
+            messages.append(message)
+
+        middleware = CorrelationMiddleware(traced_app, log_access=True)
+        asyncio.run(
+            middleware(
+                cast(Scope, {"type": "http", "method": "GET", "path": "/", "state": {}}),
+                receive,
+                send,
+            )
+        )
+
+        expected = f"{expected_trace_id:032x}"
+        assert seen_inside == [expected]
+        response_headers = dict(messages[0]["headers"])
+        assert response_headers[TRACE_ID_HEADER.encode()] == expected.encode()
+        access_logs = [
+            record
+            for record in _json_lines(captured_logs)
+            if record["event"] == "request completed"
+        ]
+        assert access_logs[-1]["trace_id"] == expected
+
     def test_every_response_carries_distinct_request_and_trace_ids(
         self, build_app: Callable[..., FastAPI]
     ) -> None:

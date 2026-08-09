@@ -77,9 +77,7 @@ create_server chat-backend 8004
 kubectl -n "$target_ns" expose pod chat-backend \
   --name=chat-admin --port=8004 --target-port=8004 >/dev/null
 create_server oauth2-proxy 4180
-create_server financing-agent 8003
 create_server embedding-service 8001
-create_server ingestion-service 8002
 create_server postgres 5432
 create_server elasticsearch 9200
 create_server kibana 5601
@@ -87,10 +85,8 @@ create_server kibana 5601
 create_client "$target_ns" web-client web
 create_client "$target_ns" oauth2-client oauth2-proxy
 create_client "$target_ns" chat-client chat-backend
-create_client "$target_ns" financing-client financing-agent
-create_client "$target_ns" ingestion-client ingestion-service
 create_client "$target_ns" kibana-client kibana
-create_client "$target_ns" seed-client seed-financing-docs app.kubernetes.io/name=seed-financing-docs
+create_client "$target_ns" seed-client seed-knowledge app.kubernetes.io/name=seed-knowledge
 create_client "$target_ns" migration-client tenantchat-api-migrate app.kubernetes.io/name=tenantchat-api-migrate
 create_client "$target_ns" kibana-bootstrap-client configure-kibana-system-user
 create_client "$target_ns" random-client random-client
@@ -164,37 +160,27 @@ expect_allowed "$ingress_ns" traefik web 8080
 expect_allowed "$target_ns" web chat-admin 8004
 expect_allowed "$target_ns" web oauth2-proxy 4180
 expect_allowed "$observability_ns" prometheus embedding-service 8001
-expect_allowed "$observability_ns" prometheus ingestion-service 8002
-expect_allowed "$observability_ns" prometheus financing-agent 8003
 expect_allowed "$observability_ns" prometheus chat-backend 8004
 expect_allowed "$target_ns" chat-backend postgres 5432
-expect_allowed "$target_ns" financing-agent embedding-service 8001
-expect_allowed "$target_ns" financing-agent elasticsearch 9200
-expect_allowed "$target_ns" ingestion-service embedding-service 8001
-expect_allowed "$target_ns" ingestion-service elasticsearch 9200
-expect_allowed "$target_ns" seed-financing-docs ingestion-service 8002
+expect_allowed "$target_ns" chat-backend embedding-service 8001
+expect_allowed "$target_ns" chat-backend elasticsearch 9200
+expect_allowed "$target_ns" seed-knowledge chat-admin 8004
 expect_allowed "$target_ns" tenantchat-api-migrate postgres 5432
 expect_allowed "$target_ns" kibana elasticsearch 9200
 expect_allowed "$target_ns" configure-kibana-system-user elasticsearch 9200
 
 for service_port in \
-  web:8080 chat-backend:8004 financing-agent:8003 embedding-service:8001 \
-  ingestion-service:8002 postgres:5432 elasticsearch:9200 oauth2-proxy:4180; do
+  web:8080 chat-backend:8004 embedding-service:8001 postgres:5432 \
+  elasticsearch:9200 oauth2-proxy:4180; do
   expect_denied "$attacker_ns" attacker "${service_port%:*}" "${service_port#*:}"
   expect_denied "$target_ns" random-client "${service_port%:*}" "${service_port#*:}"
 done
 expect_denied "$ingress_ns" traefik chat-backend 8004
 expect_denied "$target_ns" web postgres 5432
-expect_denied "$target_ns" web financing-agent 8003
-expect_denied "$target_ns" chat-backend financing-agent 8003
-expect_denied "$target_ns" chat-backend ingestion-service 8002
-expect_denied "$target_ns" chat-backend embedding-service 8001
-expect_denied "$target_ns" chat-backend elasticsearch 9200
-expect_denied "$ingress_ns" traefik financing-agent 8003
+expect_denied "$target_ns" web embedding-service 8001
+expect_denied "$target_ns" web elasticsearch 9200
 expect_denied "$observability_ns" prometheus postgres 5432
 expect_denied_pod_port "$observability_ns" prometheus chat-backend 8000
 expect_denied_pod_port "$observability_ns" prometheus embedding-service 8002
-expect_denied_pod_port "$observability_ns" prometheus ingestion-service 8003
-expect_denied_pod_port "$observability_ns" prometheus financing-agent 8001
 
 echo "network-policy smoke test passed in disposable namespaces"

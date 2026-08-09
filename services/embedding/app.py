@@ -1,15 +1,14 @@
 import os
 import time
-from typing import List, Optional
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from sentence_transformers import SentenceTransformer
+from pydantic import BaseModel, Field
+from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
 
 from internal_auth import authenticate_internal_bearer, load_internal_credentials
-
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 MODEL_REVISION = os.environ.get(
@@ -19,13 +18,13 @@ DEVICE = os.environ.get("EMBEDDING_DEVICE", "cpu")
 BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "16"))
 INTERNAL_CREDENTIALS = load_internal_credentials(
     {
-        "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-service",
+        "INGESTION_TO_EMBEDDING_TOKEN": "job-worker",
         "CHAT_TO_EMBEDDING_TOKEN": "chat-backend",
     }
 )
 
 app = FastAPI(title="Qwen3 Embedding Service")
-MODEL = None
+MODEL: SentenceTransformer | None = None
 
 REQUESTS = Counter("embedding_requests_total", "Embedding requests", ["endpoint"])
 TEXTS = Counter("embedding_texts_total", "Embedded text count")
@@ -33,16 +32,16 @@ LATENCY = Histogram("embedding_request_seconds", "Embedding request latency")
 
 
 class EmbedRequest(BaseModel):
-    texts: List[str] = Field(min_length=1, max_length=128)
+    texts: list[str] = Field(min_length=1, max_length=128)
 
 
 class EmbedResponse(BaseModel):
     model: str
     dimensions: int
-    embeddings: List[List[float]]
+    embeddings: list[list[float]]
 
 
-def require_embedding_caller(authorization: Optional[str] = Header(default=None)) -> None:
+def require_embedding_caller(authorization: str | None = Header(default=None)) -> None:
     if authenticate_internal_bearer(authorization, INTERNAL_CREDENTIALS) is None:
         raise HTTPException(
             status_code=401,
@@ -64,7 +63,7 @@ def get_model() -> SentenceTransformer:
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, object]:
     return {
         "status": "ok",
         "modelLoaded": MODEL is not None,
@@ -73,18 +72,24 @@ def health():
     }
 
 
+@app.get("/ready")
+def ready() -> dict[str, object]:
+    get_model()
+    return {"status": "ready", "modelLoaded": True, "model": MODEL_NAME}
+
+
 @app.get("/metrics")
-def metrics():
+def metrics() -> PlainTextResponse:
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/embed", response_model=EmbedResponse, dependencies=[Depends(require_embedding_caller)])
-def embed(request: EmbedRequest):
+def embed(request: EmbedRequest) -> dict[str, Any]:
     started = time.time()
     REQUESTS.labels(endpoint="/embed").inc()
     TEXTS.inc(len(request.texts))
     model = get_model()
-    vectors = model.encode(
+    vectors: Any = model.encode(
         request.texts,
         batch_size=BATCH_SIZE,
         normalize_embeddings=True,

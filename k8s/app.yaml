@@ -300,6 +300,10 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: PYTHONPATH
+              value: /app/.venv/lib/python3.12/site-packages
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: APP_ENV
               value: production
             - name: EMBEDDING_MODEL
@@ -313,6 +317,11 @@ spec:
                 secretKeyRef:
                   name: ingestion-to-embedding-credentials
                   key: token
+            - name: CHAT_TO_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: chat-to-embedding-credentials
+                  key: token
           resources:
             requests:
               memory: 3Gi
@@ -322,10 +331,12 @@ spec:
               cpu: "4"
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 20
             periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 18
           volumeMounts:
             - name: model-cache
               mountPath: /home/tenantchat/.cache/huggingface
@@ -651,6 +662,22 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            # The operator rewrites PYTHONPATH to
+            # <auto-instrumentation bootstrap>:<this value>:<auto-instrumentation packages>,
+            # so naming the image's site-packages here is the only way to keep the
+            # injected bundle's older pinned dependencies from shadowing the locked
+            # ones. Without it the bundle's typing_extensions wins and langchain
+            # fails to import at startup.
+            - name: PYTHONPATH
+              value: /app/.venv/lib/python3.12/site-packages
+            # The Instrumentation resource asks for no log export, but the
+            # operator's Python injection overrides its spec.env with otlp;
+            # only container env survives. The gateway runs traces and metrics
+            # pipelines alone, so exported log records would 404 — and under
+            # ADR-0010 log records belong to the redacted plane, not to the
+            # trace plane this exporter feeds.
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: APP_ENV
               value: production
             - name: OTEL_SERVICE_NAME
@@ -732,20 +759,28 @@ spec:
               value: tenant-knowledge-chunks
             - name: EMBEDDING_URL
               value: http://embedding-service:8001
-            - name: INGESTION_TO_EMBEDDING_TOKEN
+            - name: CHAT_TO_EMBEDDING_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: ingestion-to-embedding-credentials
+                  name: chat-to-embedding-credentials
                   key: token
+            - name: CHAT_RAG_REQUIRED
+              value: "true"
           volumeMounts:
             - name: knowledge-storage
               mountPath: /data/knowledge
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
       volumes:
         - name: knowledge-storage
           persistentVolumeClaim:
@@ -792,6 +827,10 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            - name: PYTHONPATH
+              value: /app/.venv/lib/python3.12/site-packages
+            - name: OTEL_LOGS_EXPORTER
+              value: none
             - name: APP_ENV
               value: production
             - name: OTEL_SERVICE_NAME

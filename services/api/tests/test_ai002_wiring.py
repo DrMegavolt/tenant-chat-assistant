@@ -375,8 +375,13 @@ class TestFallbackComposition:
 
         model = app.state.chat_model
         assert isinstance(model, MetricRecordingChatModel)
-        assert isinstance(model._inner, SpanRecordingChatModel)
-        assert isinstance(model._inner._inner, FallbackChatModel)
+        assert isinstance(model._inner, FallbackChatModel)
+        assert all(isinstance(item, SpanRecordingChatModel) for item in model._inner._models)
+        primary_span, fallback_span = model._inner._models
+        assert isinstance(primary_span, SpanRecordingChatModel)
+        assert isinstance(fallback_span, SpanRecordingChatModel)
+        assert primary_span._request_model == "primary-model"
+        assert fallback_span._request_model == "secondary-model"
         assert settings.llm_fallback_base_url == "http://secondary/v1"
 
 
@@ -415,6 +420,24 @@ class TestResponseCacheComposition:
 
 
 class TestConfigurationSurface:
+    def test_required_rag_refuses_a_prompt_only_composition(self) -> None:
+        model = ScriptedModel([ModelResponse(content="should not run", model_name="scripted")])
+        with pytest.raises(RuntimeError, match="CHAT_RAG_REQUIRED"):
+            _app(model=model, settings=replace(_metrics_settings(), rag_required=True))
+
+    def test_settings_read_role_specific_embedding_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CHAT_TO_EMBEDDING_TOKEN", "chat-token")
+        monkeypatch.setenv("INGESTION_TO_EMBEDDING_TOKEN", "worker-token")
+        monkeypatch.setenv("CHAT_RAG_REQUIRED", "true")
+
+        settings = Settings.from_environment()
+
+        assert settings.chat_embedding_token == "chat-token"
+        assert settings.embedding_token == "worker-token"
+        assert settings.rag_required is True
+
     def test_settings_read_the_fallback_and_cache_environment(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -1,14 +1,14 @@
 # Container image build and release evidence
 
-The repository builds five application images. Four come from one hashed
-`uv.lock` — `api`, `embedding`, `ingestion`, and `financing` — and
-the API image is also the migration image, so a migration and its serving
+The repository builds three application images. Two come from one hashed
+`uv.lock` — `api` and `embedding` — and the API image is also the worker,
+migration, and governed seed image, so a migration and its serving
 release cannot acquire different Python dependencies. Build stages use
 digest-pinned Python and uv images; final stages contain the virtual environment
 and application only, run as numeric user/group `10001:10001`, and do not
 contain uv or pip build steps.
 
-The fifth, `web`, is the nginx gateway built from `frontend/Dockerfile`. It
+The third, `web`, is the nginx gateway built from `frontend/Dockerfile`. It
 carries no Python: a digest-pinned Node stage runs `npm ci` and `npm run build`
 against `frontend/package-lock.json`, and the runtime stage holds those bundles
 plus the configuration in `frontend/nginx/`. Its smoke asserts the two document
@@ -50,7 +50,7 @@ To verify one image while iterating:
 ./scripts/smoke_images.sh api
 ```
 
-CI performs the same build and smoke in a five-image matrix. It uploads the
+CI performs the same build and smoke in a three-image matrix. It uploads the
 metadata, inspect output, health response, and Trivy JSON for each image and
 fails on fixed HIGH or CRITICAL findings. A separate filesystem scan covers the
 locked dependencies and repository inputs.
@@ -59,8 +59,8 @@ locked dependencies and repository inputs.
 
 Publishing is not performed by these scripts. After release automation pushes
 an image, record the registry-reported `sha256:<64 hex>` digest alongside the
-build evidence. Render copies of `k8s/app.yaml` and
-`k8s/api-migration-job.yaml` by replacing only their corresponding
+build evidence. Render copies of `k8s/app.yaml`, `k8s/api-migration-job.yaml`,
+and `k8s/seed-knowledge-job.yaml` by replacing only their corresponding
 `REPLACE_WITH_*_DIGEST` token. Keep the repository templates unresolved so a tag
 cannot accidentally become the deployment contract.
 
@@ -70,7 +70,8 @@ digest, and pass the rendered application manifest explicitly:
 ```bash
 kubectl apply --dry-run=client -f /secure/release/api-migration-job.yaml
 kubectl apply --dry-run=client -f /secure/release/app.yaml
-k8s/deploy.sh /secure/release/app.yaml
+kubectl apply --dry-run=client -f /secure/release/seed-knowledge-job.yaml
+k8s/deploy.sh /secure/release/app.yaml /secure/release/seed-knowledge-job.yaml
 ```
 
 Do not commit rendered manifests if their environment configuration belongs

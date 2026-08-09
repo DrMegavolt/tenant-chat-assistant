@@ -39,7 +39,7 @@ from tenantchat.api.identity import (
     SUBJECT_HEADER,
 )
 from tenantchat.api.index_integrity import InMemoryIndexIntegrityStore
-from tenantchat.api.replay import replay_trials, replay_with_template
+from tenantchat.api.replay import replay_trials, replay_with_retrieval, replay_with_template
 from tenantchat.api.retrieval import HybridRetrieverConfig
 from tenantchat.api.search import (
     EmbeddingResult,
@@ -1075,6 +1075,58 @@ class TestCase6PromptRegression:
         assert any(
             component.name == "prompt_template" for component in replay.components
         ), "missing prompt_template component"
+
+        counterfactual_model = ScriptedModel(
+            [ModelResponse(content="Earlier-template answer", model_name="scripted-replay")]
+        )
+        counterfactual = asyncio.run(
+            replay_with_template(
+                record=record,
+                model=counterfactual_model,
+                retriever=None,
+                template_version=3,
+            )
+        )
+        assert counterfactual.template_ref == "dispatch-system@3"
+        assert counterfactual.template_matches_current is False
+        assert counterfactual.replayed.content_hash != counterfactual.original.content_hash
+        assert counterfactual_model.calls[0].template_version == 3
+
+    def test_retrieval_replay_replaces_real_evidence_segments(self) -> None:
+        knowledge = InMemoryKnowledgeStore()
+        index = InMemorySearchIndex()
+        message = asyncio.run(_plant_case_6(knowledge, index))
+        model = ScriptedModel([ModelResponse(content=_CASE_6_TEXT, model_name="scripted")])
+        client, _turns, _grants, _audit, _kn, _sx = _build_app(
+            model, knowledge=knowledge, search_index=index, with_evidence=True
+        )
+        with client:
+            record = asyncio.run(_run_turn(client, _HARNESS_TENANT, message))
+
+        replay_model = ScriptedModel(
+            [ModelResponse(content="Replay answer", model_name="scripted-replay")]
+        )
+        replay = asyncio.run(
+            replay_with_retrieval(
+                record=record,
+                model=replay_model,
+                retriever=None,
+                generation_exists=True,
+                retrieved_evidence=[
+                    {"source_id": "reranked-chunk", "text": "Reranked retained evidence"}
+                ],
+            )
+        )
+
+        replay_segments = [
+            segment
+            for message in replay_model.calls[0].messages
+            for segment in message.segments
+            if segment.segment_id.startswith("evidence:")
+        ]
+        assert [segment.segment_id for segment in replay_segments] == ["evidence:reranked-chunk"]
+        assert "Reranked retained evidence" in replay_segments[0].text
+        assert replay.replayed.content_hash != replay.original.content_hash
 
 
 class TestCase7ModelBehavior:

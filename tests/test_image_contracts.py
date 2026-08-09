@@ -142,6 +142,15 @@ def test_rendered_release_rejects_a_zero_image_noop(tmp_path: Path) -> None:
     assert len(errors) == len(REQUIRED_WORKLOADS)
 
 
+def test_image_only_release_rejects_a_zero_image_noop(tmp_path: Path) -> None:
+    manifest = tmp_path / "seed.yaml"
+    manifest.write_text(
+        "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: noop\n", encoding="utf-8"
+    )
+    errors = validate_manifest(manifest, require_workloads=False)
+    assert errors == [f"{manifest}: image-only release must contain at least one image"]
+
+
 def test_rendered_release_accepts_only_exact_registry_digests(tmp_path: Path) -> None:
     manifest = tmp_path / "release.yaml"
     documents = (

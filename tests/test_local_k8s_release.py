@@ -35,12 +35,15 @@ def test_local_release_renders_the_new_registry_digests(tmp_path: Path) -> None:
     expected = _metadata(metadata_dir)
     app_output = tmp_path / "app.release.yaml"
     migration_output = tmp_path / "migration.release.yaml"
+    seed_output = tmp_path / "seed.release.yaml"
 
     render_manifests(
         app_template=ROOT / "k8s/app.yaml",
         migration_template=ROOT / "k8s/api-migration-job.yaml",
+        seed_template=ROOT / "k8s/seed-knowledge-job.yaml",
         app_output=app_output,
         migration_output=migration_output,
+        seed_output=seed_output,
         pull_repository="localhost:32000/tenantchat",
         oauth2_proxy_digest=f"sha256:{'f' * 64}",
         digests=load_build_digests(metadata_dir),
@@ -48,12 +51,16 @@ def test_local_release_renders_the_new_registry_digests(tmp_path: Path) -> None:
 
     app = app_output.read_text(encoding="utf-8")
     migration = migration_output.read_text(encoding="utf-8")
+    seed = seed_output.read_text(encoding="utf-8")
     assert "REPLACE_WITH_" not in app
     assert "REPLACE_WITH_" not in migration
+    assert "REPLACE_WITH_" not in seed
     assert validate_manifest(app_output) == []
     for image, digest in expected.items():
         assert f"localhost:32000/tenantchat/{image}@{digest}" in app
     assert f"localhost:32000/tenantchat/api@{expected['api']}" in migration
+    assert f"localhost:32000/tenantchat/api@{expected['api']}" in seed
+    assert validate_manifest(seed_output, require_workloads=False) == []
 
 
 def test_local_release_rejects_invalid_buildx_metadata(tmp_path: Path) -> None:
@@ -73,7 +80,7 @@ def test_deploy_wrapper_runs_migration_before_application_rollout() -> None:
     backup = "elif ! backup_database; then"
     migration_apply = 'kubectl apply -f "$MIGRATION_RELEASE"'
     migration_wait = "job/tenantchat-api-migrate --timeout=900s"
-    deploy = '"$ROOT_DIR/k8s/deploy.sh" "$APP_RELEASE"'
+    deploy = '"$ROOT_DIR/k8s/deploy.sh" "$APP_RELEASE" "$SEED_RELEASE"'
 
     assert "--platform linux/amd64" in script
     assert '--metadata-file "$metadata"' in script
@@ -91,3 +98,28 @@ def test_make_exposes_the_one_line_local_release() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     assert "deploy-local: ## Build, migrate, and deploy" in makefile
     assert "\t./scripts/deploy_local_k8s.sh" in makefile
+
+
+def test_release_scripts_and_smoke_tests_name_only_current_workloads() -> None:
+    deploy = (ROOT / "k8s/deploy.sh").read_text(encoding="utf-8")
+    smoke = (ROOT / "k8s/tests/network-policy-smoke.sh").read_text(encoding="utf-8")
+    for retired in ("financing-agent", "ingestion-service", "seed-ingestion-job.yaml"):
+        assert retired not in deploy
+        assert retired not in smoke
+    assert "job/seed-knowledge" in deploy
+    assert '"$SEED_MANIFEST"' in deploy
+
+
+def test_deployed_chat_requires_rag_and_uses_its_own_embedding_credential() -> None:
+    manifest = (ROOT / "k8s/app.yaml").read_text(encoding="utf-8")
+    chat = manifest.split("kind: Deployment\nmetadata:\n  name: chat-backend", 1)[1].split(
+        "---", 1
+    )[0]
+    worker = manifest.split("kind: Deployment\nmetadata:\n  name: job-worker", 1)[1].split(
+        "---", 1
+    )[0]
+
+    assert 'name: CHAT_RAG_REQUIRED\n              value: "true"' in chat
+    assert "name: CHAT_TO_EMBEDDING_TOKEN" in chat
+    assert "name: INGESTION_TO_EMBEDDING_TOKEN" not in chat
+    assert "name: INGESTION_TO_EMBEDDING_TOKEN" in worker
