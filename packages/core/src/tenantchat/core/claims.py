@@ -54,8 +54,16 @@ _SENSITIVE_KEYWORDS = frozenset(
         "guaranteed",
         "liability",
         "bonded",
+        "serve",
+        "serves",
+        "served",
+        "serving",
     }
 )
+
+# Multi-word phrases that trigger a service-area claim independent of
+# single-word token matching. Checked against the raw sentence text.
+_SERVICE_AREA_PHRASE_RE = re.compile(r"\bservice area\b", re.IGNORECASE)
 
 # A keyword sentence counts as supported when at least this fraction of its
 # content words appear in one passage. The threshold is deliberately high: a
@@ -70,6 +78,7 @@ class ClaimKind(StrEnum):
     COVERAGE = "coverage"
     PERMIT = "permit"
     INSURANCE = "insurance"
+    SERVICE_AREA = "service_area"
 
     @classmethod
     def of_keyword(cls, keyword: str) -> ClaimKind:
@@ -78,6 +87,8 @@ class ClaimKind(StrEnum):
             return cls.PERMIT
         if keyword in {"insured", "insurance", "liability", "bonded"}:
             return cls.INSURANCE
+        if keyword in {"serve", "serves", "served", "serving"}:
+            return cls.SERVICE_AREA
         return cls.COVERAGE
 
 
@@ -125,6 +136,9 @@ def sensitive_claims(text: str) -> tuple[Claim, ...]:
     prices = tuple(Claim(ClaimKind.PRICE, amount) for amount in _PRICE_RE.findall(text))
     keyword_claims: list[Claim] = []
     for sentence in _SENTENCE_RE.split(text):
+        if _SERVICE_AREA_PHRASE_RE.search(sentence):
+            keyword_claims.append(Claim(ClaimKind.SERVICE_AREA, sentence.strip()))
+            continue
         kind = _earliest_keyword_kind(sentence)
         if kind is not None:
             keyword_claims.append(Claim(kind, sentence.strip()))
