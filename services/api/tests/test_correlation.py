@@ -357,7 +357,7 @@ class TestCorrelationPropagation:
 
         def handler(request: httpx.Request) -> httpx.Response:
             captured_headers.append(request.headers)
-            return httpx.Response(200, json={"count": 0})
+            return httpx.Response(200, json={"hits": {"total": 0}})
 
         bind(CorrelationContext(request_id="req-es", trace_id="trace-es"))
         try:

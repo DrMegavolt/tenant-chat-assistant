@@ -119,7 +119,7 @@ class TestElasticsearchFailures:
             attempts += 1
             if attempts < 3:
                 return httpx.Response(429)
-            return httpx.Response(200, json={"count": 3})
+            return httpx.Response(200, json={"hits": {"total": 3}})
 
         index = _index(httpx.MockTransport(handler), applied=policy())
         assert _count(index) == 3
@@ -145,7 +145,7 @@ class TestElasticsearchFailures:
             attempts += 1
             if attempts < 3:
                 return httpx.Response(503)
-            return httpx.Response(200, json={"count": 2})
+            return httpx.Response(200, json={"hits": {"total": 2}})
 
         index = _index(httpx.MockTransport(handler), applied=policy())
         assert _count(index) == 2
@@ -384,7 +384,7 @@ class TestSearchCircuitBreaking:
             attempts += 1
             if attempts <= 2:
                 return httpx.Response(503)
-            return httpx.Response(200, json={"count": 1})
+            return httpx.Response(200, json={"hits": {"total": 1}})
 
         index = _index(
             httpx.MockTransport(handler),
@@ -437,7 +437,7 @@ class TestSearchObservability:
             attempts += 1
             if attempts == 1:
                 return httpx.Response(429)
-            return httpx.Response(200, json={"count": 4})
+            return httpx.Response(200, json={"hits": {"total": 4}})
 
         recorded = ElasticsearchSearchIndex(
             base_url="http://search:9200",
