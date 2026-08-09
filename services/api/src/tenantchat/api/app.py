@@ -714,6 +714,13 @@ def create_app(
             metrics=METRICS,
         )
 
+    if resolved.rag_required and evidence_source is None:
+        message = (
+            "CHAT_RAG_REQUIRED is true but the evidence source cannot be composed: "
+            "a search index, knowledge store, and embedding URL are all required."
+        )
+        raise SystemExit(message)
+
     # SEC-002: the visitor credential signer. Production composition required
     # the key above, so every real deployment signs with a shared secret it
     # holds. A test composition without a key gets an ephemeral one: sessions

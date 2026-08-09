@@ -1,10 +1,6 @@
 # Release template. Runs `scripts/seed_knowledge.py` to seed governed knowledge
 # for both demo tenants through the real ingestion lifecycle — upload, approve,
 # publish, and poll the durable ingestion job to completion. Idempotent on re-run.
-#
-# This replaces the legacy `seed-ingestion-job.yaml` for the governed pipeline.
-# The legacy job still populates the financing side-agent's separate Elasticsearch
-# index and runs alongside this one.
 apiVersion: batch/v1
 kind: Job
 metadata:

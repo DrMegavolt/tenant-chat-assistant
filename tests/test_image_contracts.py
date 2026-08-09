@@ -24,7 +24,7 @@ from scripts.verify_release_manifest import REQUIRED_WORKLOADS, validate_manifes
 
 
 def test_every_deployable_image_is_covered() -> None:
-    assert len(DOCKERFILES) == 5
+    assert len(DOCKERFILES) == 3
     assert all(path.is_file() for path in DOCKERFILES)
     assert ROOT / "frontend/Dockerfile" in DOCKERFILES
 

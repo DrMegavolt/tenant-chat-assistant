@@ -119,48 +119,6 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-prometheus-ingestion-metrics
-  namespace: llm-chat
-spec:
-  podSelector:
-    matchLabels:
-      app: ingestion-service
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: observability
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: prometheus
-      ports:
-        - { protocol: TCP, port: 8002 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-prometheus-financing-metrics
-  namespace: llm-chat
-spec:
-  podSelector:
-    matchLabels:
-      app: financing-agent
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: observability
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: prometheus
-      ports:
-        - { protocol: TCP, port: 8003 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
   name: allow-prometheus-chat-metrics
   namespace: llm-chat
 spec:
@@ -215,12 +173,6 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        - podSelector:
-            matchLabels:
-              app: ingestion-service
-        - podSelector:
-            matchLabels:
-              app: financing-agent
         # The worker and the API hold matching egress rules, but a connection
         # needs both sides: without these the ingestion handler could not embed
         # a chunk and the answer path could not embed a query, while every
@@ -233,24 +185,6 @@ spec:
               app: chat-backend
       ports:
         - { protocol: TCP, port: 8001 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-seed-to-ingestion
-  namespace: llm-chat
-spec:
-  podSelector:
-    matchLabels:
-      app: ingestion-service
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels:
-              app: seed-financing-docs
-      ports:
-        - { protocol: TCP, port: 8002 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -288,12 +222,6 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from:
-        - podSelector:
-            matchLabels:
-              app: ingestion-service
-        - podSelector:
-            matchLabels:
-              app: financing-agent
         - podSelector:
             matchLabels:
               app: kibana
@@ -407,54 +335,6 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-financing-egress
-  namespace: llm-chat
-spec:
-  podSelector:
-    matchLabels:
-      app: financing-agent
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app: embedding-service
-      ports:
-        - { protocol: TCP, port: 8001 }
-    - to:
-        - podSelector:
-            matchLabels:
-              app: elasticsearch
-      ports:
-        - { protocol: TCP, port: 9200 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-ingestion-egress
-  namespace: llm-chat
-spec:
-  podSelector:
-    matchLabels:
-      app: ingestion-service
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app: embedding-service
-      ports:
-        - { protocol: TCP, port: 8001 }
-    - to:
-        - podSelector:
-            matchLabels:
-              app: elasticsearch
-      ports:
-        - { protocol: TCP, port: 9200 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
   name: allow-kibana-egress
   namespace: llm-chat
 spec:
@@ -491,24 +371,6 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-seed-egress
-  namespace: llm-chat
-spec:
-  podSelector:
-    matchLabels:
-      app: seed-financing-docs
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app: ingestion-service
-      ports:
-        - { protocol: TCP, port: 8002 }
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
   name: allow-migration-egress
   namespace: llm-chat
 spec:
@@ -534,7 +396,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: [chat-backend, job-worker, embedding-service, ingestion-service, financing-agent]
+        values: [chat-backend, job-worker, embedding-service]
   policyTypes: [Egress]
   egress:
     - to:
@@ -593,7 +455,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: [chat-backend, embedding-service, financing-agent]
+        values: [chat-backend, embedding-service]
   policyTypes: [Egress]
   egress:
     - to:

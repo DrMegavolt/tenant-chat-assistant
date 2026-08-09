@@ -1,7 +1,7 @@
 """Regression: the ingestion surface cannot read files or cross tenants.
 
-The prototype ingestion service took a caller-supplied filesystem path
-(``services/ingestion/app.py``) and read it, which made every container file a
+The prototype ingestion service (deleted in the `DEP-001` cutover) took a
+caller-supplied filesystem path and read it, which made every container file a
 document and every directory a source. `RAG-002` removed the path entirely:
 uploads are validated bytes stored under server-derived keys, and every
 identifier is tenant-qualified. These tests pin the exploit shapes that are

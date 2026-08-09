@@ -6,9 +6,6 @@ upload -> approve -> publish -> ingest -> poll-for-completion
 Idempotent: source registrations, uploads, and ingestion jobs deduplicate, so
 re-running against an already-seeded cluster is a no-op.
 
-The legacy ``k8s/seed-ingestion-job.yaml`` populates the financing side-agent's
-separate Elasticsearch index and still runs alongside this one.
-
 Environment:
     API_BASE_URL          admin API root (default http://chat-admin:8004)
     ADMIN_GATEWAY_TOKEN   shared gateway-to-API token for auth

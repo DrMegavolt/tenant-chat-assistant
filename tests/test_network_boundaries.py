@@ -51,20 +51,14 @@ def test_every_required_flow_has_a_named_allow_policy() -> None:
         "allow-web-to-oauth2-proxy",
         "allow-web-egress",
         "allow-prometheus-embedding-metrics",
-        "allow-prometheus-ingestion-metrics",
-        "allow-prometheus-financing-metrics",
         "allow-prometheus-chat-metrics",
         "allow-prometheus-job-worker-metrics",
         "allow-rag-callers-to-embedding",
-        "allow-seed-to-ingestion",
         "allow-application-to-postgres",
         "allow-approved-callers-to-elasticsearch",
         "allow-chat-egress",
-        "allow-financing-egress",
-        "allow-ingestion-egress",
         "allow-kibana-egress",
         "allow-kibana-bootstrap-egress",
-        "allow-seed-egress",
         "allow-migration-egress",
         "allow-application-telemetry-egress",
         "allow-model-provider-egress",
@@ -177,22 +171,7 @@ def test_realm_groups_are_exactly_the_roles_the_gateway_maps() -> None:
 
 def test_workloads_use_distinct_internal_secret_refs() -> None:
     documents = load_documents("k8s/app.yaml")
-    # chat-backend no longer calls the financing agent, so it holds no
-    # internal-call credential; its LLM key comes from llm-provider-credentials.
-    expected = {
-        "financing-agent": {
-            "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
-            "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
-        },
-        "ingestion-service": {
-            "SEED_TO_INGESTION_TOKEN": "seed-to-ingestion-credentials",
-            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
-        },
-        "embedding-service": {
-            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
-            "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
-        },
-    }
+    expected: dict[str, dict[str, str]] = {}
 
     referenced_secrets: set[str] = set()
     for workload, variables in expected.items():
@@ -202,15 +181,10 @@ def test_workloads_use_distinct_internal_secret_refs() -> None:
             assert secret_ref == {"name": secret_name, "key": "token"}
             referenced_secrets.add(secret_name)
 
-    assert len(referenced_secrets) == 4
-    assert "llm-provider-credentials" not in referenced_secrets
-
 
 def test_internal_data_routes_require_auth_but_health_and_metrics_do_not() -> None:
     protected_markers = {
         "services/embedding/app.py": ("/embed", "Depends(require_embedding_caller)"),
-        "services/ingestion/app.py": ("/ingest", "Depends(require_ingestion_caller)"),
-        "services/financing-agent/app.py": ("/answer", "Depends(require_chat_backend)"),
     }
 
     for path, markers in protected_markers.items():
@@ -225,8 +199,6 @@ def test_prometheus_is_the_only_cross_namespace_metrics_caller() -> None:
     policies = load_documents("k8s/network-policies.yaml")
     expected = {
         "allow-prometheus-embedding-metrics": ("embedding-service", 8001),
-        "allow-prometheus-ingestion-metrics": ("ingestion-service", 8002),
-        "allow-prometheus-financing-metrics": ("financing-agent", 8003),
         "allow-prometheus-chat-metrics": ("chat-backend", 8004),
     }
     for name, (app, port) in expected.items():

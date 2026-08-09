@@ -16,7 +16,7 @@ SMOKE_DB_USER="smoke_owner"
 SMOKE_DB_PASSWORD="image-smoke-test-only"
 SMOKE_DB_NAME="tenantchat_smoke"
 
-ALL_IMAGES=(api embedding ingestion financing web)
+ALL_IMAGES=(api embedding web)
 if (( $# )); then
   IMAGES=("$@")
 else
@@ -59,8 +59,6 @@ health_path() {
 container_port() {
   case "$1" in
     embedding) echo 8001 ;;
-    ingestion) echo 8002 ;;
-    financing) echo 8003 ;;
     api) echo 8004 ;;
     web) echo 8080 ;;
   esac
@@ -98,7 +96,7 @@ start_smoke_database() {
 
 mkdir -p "$OUTPUT_DIR"
 for image in "${IMAGES[@]}"; do
-  case "$image" in api|embedding|ingestion|financing|web) ;; *)
+  case "$image" in api|embedding|web) ;; *)
     echo "unknown image '$image'; choose: ${ALL_IMAGES[*]}" >&2
     exit 2
   esac
@@ -129,9 +127,6 @@ for image in "${IMAGES[@]}"; do
     embedding)
       docker run --rm --entrypoint python "$tag" -c \
         'import app; assert app.MODEL_REVISION == "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"'
-      ;;
-    ingestion|financing)
-      docker run --rm --entrypoint python "$tag" -c 'import app; assert app.app'
       ;;
     web)
       # The public document root is the boundary: an admin asset present here is

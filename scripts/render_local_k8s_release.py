@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-APPLICATION_IMAGES = ("api", "embedding", "ingestion", "financing", "web")
+APPLICATION_IMAGES = ("api", "embedding", "web")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 UNRESOLVED_DIGEST = re.compile(r"REPLACE_WITH_[A-Z0-9_]+_DIGEST")
 

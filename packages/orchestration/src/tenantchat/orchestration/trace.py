@@ -215,6 +215,7 @@ def build_turn_trace(
             "name": str(state.get("model_name", "")),
             "usage": _mapping(state.get("model_usage")),
         },
+        "model_invocations": list(_list_of_dicts(state.get("model_invocations"))),
         "output": {
             "answer": str(state.get("answer", "")),
             "raw": raw_output,

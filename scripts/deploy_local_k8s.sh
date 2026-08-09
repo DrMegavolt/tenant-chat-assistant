@@ -12,7 +12,7 @@ APP_RELEASE="$RELEASE_DIR/app.release.yaml"
 MIGRATION_RELEASE="$RELEASE_DIR/api-migration-job.release.yaml"
 # Reviewed digest used by the existing local release for oauth2-proxy v7.8.2.
 OAUTH2_PROXY_DIGEST="${LOCAL_K8S_OAUTH2_PROXY_DIGEST:-sha256:6f01695a729a2f88d7bc6e1158797d3cbdc0381c358ba86e1aa5da739586b3e0}"
-ALL_IMAGES=(api embedding ingestion financing web)
+ALL_IMAGES=(api embedding web)
 umask 077
 
 require_command() {
@@ -26,8 +26,6 @@ dockerfile_for() {
   case "$1" in
     api) echo "services/api/Dockerfile" ;;
     embedding) echo "services/embedding/Dockerfile" ;;
-    ingestion) echo "services/ingestion/Dockerfile" ;;
-    financing) echo "services/financing-agent/Dockerfile" ;;
     web) echo "frontend/Dockerfile" ;;
     *) echo "unknown image: $1" >&2; return 2 ;;
   esac

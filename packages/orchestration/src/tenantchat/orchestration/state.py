@@ -178,6 +178,12 @@ class DispatchState(TypedDict):
     routing_decision: dict[str, object]
     prompt_assembly: dict[str, object]
     model_usage: dict[str, int]
+    # Every model invocation this turn, one entry per round. Accumulated so a
+    # turn that spent four rounds on tool calls before answering records all
+    # four invocations rather than only the last. Each entry carries the
+    # round number, model name, usage block, prompt assembly, and whether the
+    # call produced content (`OBS-004`).
+    model_invocations: Annotated[list[dict[str, object]], operator.add]
     # The `OBS-006` executed-graph section of the turn's run, written by the
     # runtime from the captured debug events after the run finishes. It is
     # execution metadata, content-free by construction (see
@@ -236,6 +242,7 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "routing_decision": {},
         "prompt_assembly": {},
         "model_usage": {},
+        "model_invocations": [],
         "executed_graph": None,
     }
 
@@ -276,6 +283,7 @@ def next_turn(message: str) -> dict[str, object]:
         "routing_decision": {},
         "prompt_assembly": {},
         "model_usage": {},
+        "model_invocations": [],
         # The route node re-decides every turn; the previous turn's executed
         # graph must not leak into the next one.
         "executed_graph": None,

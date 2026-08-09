@@ -31,6 +31,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Final
 
+from opentelemetry import trace as otel_trace
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from tenantchat.api.problems import REQUEST_ID_HEADER
@@ -181,7 +182,12 @@ class CorrelationMiddleware:
             return
 
         request_id = uuid.uuid4().hex
-        trace_id = uuid.uuid4().hex
+        active_span = otel_trace.get_current_span()
+        span_context = active_span.get_span_context()
+        if span_context.is_valid:
+            trace_id = format(span_context.trace_id, "032x")
+        else:
+            trace_id = uuid.uuid4().hex
         state = scope.setdefault("state", {})
         state["request_id"] = request_id
         state["trace_id"] = trace_id

@@ -31,18 +31,6 @@ dev = [
 prototype-runtime = [
     "psycopg[binary]==3.2.3",
 ]
-ingestion-runtime = [
-    "fastapi==0.141.1",
-    "prometheus-client==0.21.1",
-    "requests==2.32.3",
-    "uvicorn[standard]==0.34.0",
-]
-financing-runtime = [
-    "fastapi==0.141.1",
-    "prometheus-client==0.21.1",
-    "requests==2.32.3",
-    "uvicorn[standard]==0.34.0",
-]
 embedding-runtime = [
     "fastapi==0.141.1",
     "prometheus-client==0.21.1",
@@ -62,9 +50,8 @@ package = false
 required-version = ">=0.9,<1.0"
 
 [tool.uv.workspace]
-# Listed one at a time rather than `services/*`: the remaining service
-# directories are side-service scripts with no manifest, and a glob would fail
-# the lock on them.
+# Listed one at a time: the embedding service directory is a side-service script
+# with no manifest, and a glob would fail the lock on it.
 members = ["packages/*", "services/api"]
 
 [tool.uv.sources]
@@ -116,11 +103,9 @@ line-length = 100
 extend-exclude = [
     "architecture/likec4/node_modules",
     "architecture/likec4/dist",
-    # Side-service entrypoints that predate the shared packages; each will be
+    # Side-service entrypoint that predates the shared packages; will be
     # rewritten to import from the packages once the RAG work lands.
     "services/embedding/app.py",
-    "services/ingestion/app.py",
-    "services/financing-agent/app.py",
 ]
 
 [tool.ruff.lint]

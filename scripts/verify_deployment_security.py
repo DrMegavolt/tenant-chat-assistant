@@ -187,14 +187,9 @@ def _check_trace_content_export(errors: list[str], documents: list[tuple[Path, s
 
 def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -> None:
     workload_documents: dict[str, str] = {}
-    # The side services read APP_ENV through the shared runtime_security module.
-    # The API does not: it fails closed through its own composition (admin
-    # credentials and database URL required, chat 503 without an LLM).
-    app_env_workloads = ("financing-agent", "ingestion-service", "embedding-service")
+    app_env_workloads = ("embedding-service",)
     for workload in (
         "chat-backend",
-        "financing-agent",
-        "ingestion-service",
         "embedding-service",
     ):
         found = _document_for(documents, "Deployment", workload)
@@ -260,30 +255,7 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "key",
         )
 
-    for workload in ("financing-agent", "ingestion-service"):
-        dependency_document = workload_documents.get(workload)
-        if dependency_document is None:
-            continue
-        _require_env_ref(
-            errors,
-            dependency_document,
-            workload,
-            "ES_USERNAME",
-            "secretKeyRef",
-            "elastic-credentials",
-            "username",
-        )
-        _require_env_ref(
-            errors,
-            dependency_document,
-            workload,
-            "ES_PASSWORD",
-            "secretKeyRef",
-            "elastic-credentials",
-            "password",
-        )
-
-    for workload in ("chat-backend", "financing-agent"):
+    for workload in ("chat-backend",):
         llm_document = workload_documents.get(workload)
         if llm_document is None:
             continue
@@ -324,20 +296,7 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "timeoutSeconds",
         )
 
-    internal_refs = {
-        "financing-agent": {
-            "CHAT_TO_FINANCING_TOKEN": "chat-to-financing-credentials",
-            "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
-        },
-        "ingestion-service": {
-            "SEED_TO_INGESTION_TOKEN": "seed-to-ingestion-credentials",
-            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
-        },
-        "embedding-service": {
-            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
-            "FINANCING_TO_EMBEDDING_TOKEN": "financing-to-embedding-credentials",
-        },
-    }
+    internal_refs: dict[str, dict[str, str]] = {}
     for workload, references in internal_refs.items():
         internal_document = workload_documents.get(workload)
         if internal_document is None:
@@ -352,20 +311,6 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
                 secret_name,
                 "token",
             )
-
-    seed = _document_for(documents, "Job", "seed-financing-docs")
-    if seed is None:
-        errors.append("Job/seed-financing-docs: missing from deployment input")
-    else:
-        _require_env_ref(
-            errors,
-            seed[1],
-            "seed-financing-docs",
-            "SEED_TO_INGESTION_TOKEN",
-            "secretKeyRef",
-            "seed-to-ingestion-credentials",
-            "token",
-        )
 
     governed_seed = _document_for(documents, "Job", "seed-knowledge")
     if governed_seed is None:
@@ -413,22 +358,12 @@ def _check_examples(errors: list[str]) -> None:
 
 
 def _check_client_authentication(errors: list[str]) -> None:
-    # The API's OpenAI-compatible client lives in the orchestration package;
-    # the financing agent still builds its request inline.
     if "Bearer {self._api_key}" not in (
         ROOT / "packages/orchestration/src/tenantchat/orchestration/providers/openai_compatible.py"
     ).read_text(encoding="utf-8"):
         errors.append("packages/orchestration: OpenAI-compatible request is not authenticated")
-    if "headers=openai_request_headers(LLM_API_KEY)" not in (
-        ROOT / "services/financing-agent/app.py"
-    ).read_text(encoding="utf-8"):
-        errors.append(
-            "services/financing-agent/app.py: OpenAI-compatible request is not authenticated"
-        )
 
     internal_markers = {
-        "services/ingestion/app.py": "internal_bearer_headers(EMBEDDING_TOKEN)",
-        "services/financing-agent/app.py": "internal_bearer_headers(EMBEDDING_TOKEN)",
         "services/embedding/app.py": "Depends(require_embedding_caller)",
     }
     for relative_path, marker in internal_markers.items():

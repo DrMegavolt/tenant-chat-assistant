@@ -246,6 +246,11 @@ class Settings:
     ingestion_storage_root: str | None = None
     elasticsearch_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
     embedding_resilience: ResiliencePolicy = field(default_factory=ResiliencePolicy)
+    # RAG-005: when true, the API refuses to start if the evidence source
+    # (search index, knowledge store, embedding URL) cannot be composed —
+    # deployed mode must fail closed rather than serving uncited prompt-only
+    # answers. Off by default for local development.
+    rag_required: bool = False
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -377,4 +382,5 @@ class Settings:
                 pool_timeout_default=10.0,
                 total_deadline_default=900.0,
             ),
+            rag_required=(os.environ.get("CHAT_RAG_REQUIRED", "").strip().lower() == "true"),
         )

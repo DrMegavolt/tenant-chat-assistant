@@ -49,6 +49,12 @@ TIMEOUT = int(_env("HARNESS_TIMEOUT", "60"))
 
 HARNESS_TENANTS = ("clearview", "apex")
 
+HEALTH_PATH = "/healthz"
+CSRF_PATH = "/api/admin/csrf-token"
+
+EXIT_SUCCESS = 0
+EXIT_FAILURE = 1
+
 GATEWAY_TOKEN_HEADER = "X-TenantChat-Gateway-Token"  # noqa: S105
 SUBJECT_HEADER = "X-Auth-Subject"
 EMAIL_HEADER = "X-Auth-Email"
@@ -149,14 +155,14 @@ def _admin_headers(*, csrf: str = "") -> dict[str, str]:
 def _csrf_token() -> str:
     conn = http.client.HTTPConnection(_host_port(ADMIN_API_URL), timeout=TIMEOUT)
     try:
-        conn.request("GET", "/api/admin/csrf", headers=_admin_headers())
+        conn.request("GET", CSRF_PATH, headers=_admin_headers())
         resp = conn.getresponse()
         body = json.loads(resp.read().decode())
         if resp.status != 200:
             raise RuntimeError(f"csrf token failed: {resp.status} {body}")
         token = str(body["csrf_token"])
         headers = _admin_headers(csrf=token)
-        conn.request("GET", "/api/admin/csrf", headers=headers)
+        conn.request("GET", CSRF_PATH, headers=headers)
         resp = conn.getresponse()
         body = json.loads(resp.read().decode())
         if resp.status != 200:
@@ -191,7 +197,7 @@ def _api_post(
     base: str = ADMIN_API_URL,
     headers_extra: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    csrf = _csrf_token() if base == ADMIN_API_URL else ""
+    csrf = _csrf_token() if path.startswith("/api/admin") else ""
     headers = _admin_headers(csrf=csrf)
     if headers_extra:
         headers.update(headers_extra)
@@ -220,7 +226,7 @@ def _verify_health() -> None:
     report("")
     try:
         conn = http.client.HTTPConnection(_host_port(CHAT_API_URL), timeout=TIMEOUT)
-        conn.request("GET", "/api/health")
+        conn.request("GET", HEALTH_PATH)
         resp = conn.getresponse()
         body = json.loads(resp.read().decode())
         if resp.status != 200:
@@ -256,8 +262,10 @@ def _send_message(credential: str, message: str) -> dict[str, Any]:
     )
 
 
-def run_cases() -> None:
+def run_cases() -> int:
     _verify_health()
+
+    errors = 0
 
     for tenant_id in HARNESS_TENANTS:
         report("─" * 60)
@@ -294,13 +302,16 @@ def run_cases() -> None:
                     report(f"  pending:  {pending.get('awaiting', 'unknown')}")
             except Exception as exc:
                 report(f"  ERROR: {exc}")
+                errors += 1
 
         report("")
 
+    total = len(HARNESS_TENANTS) * len(CASES)
     report("─" * 60)
-    report(f"Live run complete. {len(HARNESS_TENANTS)} x {len(CASES)} cases executed.")
+    report(f"Live run complete. {total} cases executed, {errors} errors.")
     report("─" * 60)
+    return EXIT_FAILURE if errors else EXIT_SUCCESS
 
 
 if __name__ == "__main__":
-    run_cases()
+    raise SystemExit(run_cases())

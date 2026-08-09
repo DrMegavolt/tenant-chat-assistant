@@ -15,8 +15,6 @@ REQUIRED_WORKLOADS = frozenset(
         ("Deployment", "kibana"),
         ("StatefulSet", "postgres"),
         ("Deployment", "embedding-service"),
-        ("Deployment", "ingestion-service"),
-        ("Deployment", "financing-agent"),
         ("Deployment", "chat-backend"),
         ("Deployment", "web"),
         ("Deployment", "oauth2-proxy"),

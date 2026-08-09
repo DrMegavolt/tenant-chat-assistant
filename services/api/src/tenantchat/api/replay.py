@@ -8,20 +8,23 @@ touched. The stored and current component manifests are then compared on their
 content-free versions, which is what lets the console show exactly which
 components changed between the turn and the replay.
 
-Three milestones serve the Gate B case walkthrough:
+Three facilities serve the Gate B case walkthrough:
 
 ① **Bounded repeated trials** (:func:`replay_trials`): N trials with prompt and
 evidence held constant, reported as an aggregate with an explicit stochastic
 label. This is what makes case 7 (model-behavior difference) demonstrable.
 
-② **Immutable-index retrieval replay + gold-evidence substitution**
+② **Generation-availability check + prompt re-execution**
 (:func:`replay_with_retrieval`): checks that the stored index generation still
-exists, substitutes gold evidence when supplied, and refuses the reproducibility
-claim when the generation is gone. Serves cases 2-5.
+exists, then re-executes the stored prompt. It does not rerun retrieval through
+the pinned retriever/index generation; genuine counterfactual retrieval replay
+needs a retained index snapshot (Gate C).
 
-③ **Template-version-pinned replay** (:func:`replay_with_template`): model and
-evidence constant, prompt template pinned to a specific version, isolating a
-prompt regression. Serves case 6.
+③ **Template-reference comparison + prompt re-execution**
+(:func:`replay_with_template`): compares the stored template reference against a
+pinned version, then re-executes the stored prompt. This isolates a template
+reference mismatch — not a prompt regression, which would require re-rendering
+the template with the held-constant data to produce a different prompt.
 """
 
 from __future__ import annotations

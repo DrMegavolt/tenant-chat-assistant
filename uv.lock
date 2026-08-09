@@ -1322,18 +1322,6 @@ embedding-runtime = [
     { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-financing-runtime = [
-    { name = "fastapi" },
-    { name = "prometheus-client" },
-    { name = "requests" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-ingestion-runtime = [
-    { name = "fastapi" },
-    { name = "prometheus-client" },
-    { name = "requests" },
-    { name = "uvicorn", extra = ["standard"] },
-]
 prototype-runtime = [
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -1360,18 +1348,6 @@ embedding-runtime = [
     { name = "sentence-transformers", specifier = "==5.6.1" },
     { name = "torch", specifier = "==2.13.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "transformers", specifier = "==5.14.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.34.0" },
-]
-financing-runtime = [
-    { name = "fastapi", specifier = "==0.141.1" },
-    { name = "prometheus-client", specifier = "==0.21.1" },
-    { name = "requests", specifier = "==2.32.3" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.34.0" },
-]
-ingestion-runtime = [
-    { name = "fastapi", specifier = "==0.141.1" },
-    { name = "prometheus-client", specifier = "==0.21.1" },
-    { name = "requests", specifier = "==2.32.3" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.34.0" },
 ]
 prototype-runtime = [{ name = "psycopg", extras = ["binary"], specifier = "==3.2.3" }]

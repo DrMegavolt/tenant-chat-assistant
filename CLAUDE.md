@@ -89,11 +89,11 @@ orchestration code so this stays achievable.
 
 ## Context
 
-The current `services/*/app.py` files are prototype code being replaced. They
-are excluded from lint and type checking and will be deleted, not refactored —
-several of their behaviors are bugs worth losing. The original `server.py`
-prototype was removed in the `DEP-001` cutover; do not reintroduce it. Build in
-`packages/core` and `services/api` instead.
+The legacy prototype services (`ingestion`, `financing-agent`) were removed in
+the `DEP-001` cutover. `services/embedding/app.py` is an embedding server the
+governed pipeline calls; it is excluded from lint and type checking. The
+original `server.py` prototype was also removed; do not reintroduce it. Build
+in `packages/core` and `services/api` instead.
 
 `BACKLOG.md` is the full productionization plan and is written for both humans and
 implementation agents. Task IDs referenced in comments (`SEC-003`, `RAG-004`) point

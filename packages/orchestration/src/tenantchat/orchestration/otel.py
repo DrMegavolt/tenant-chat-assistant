@@ -104,6 +104,8 @@ class SpanRecordingChatModel:
                 _GEN_AI_OPERATION: "chat",
                 _GEN_AI_REQUEST_MODEL: (prompt.bindings.get("model") or self._system),
             },
+            record_exception=False,
+            set_status_on_exception=False,
         ) as span:
             tenant_id = _tenant_id_var.get()
             session_id = _session_id_var.get()
@@ -115,7 +117,7 @@ class SpanRecordingChatModel:
                 response = await self._inner.complete(prompt, tools=tools)
             except Exception as exc:
                 span.set_attribute(_GEN_AI_ERROR_TYPE, type(exc).__name__)
-                span.set_status(StatusCode.ERROR, str(exc)[:256])
+                span.set_status(StatusCode.ERROR)
                 raise
             span.set_attribute(_GEN_AI_RESPONSE_MODEL, response.model_name)
             if response.content.strip() and not response.tool_calls:

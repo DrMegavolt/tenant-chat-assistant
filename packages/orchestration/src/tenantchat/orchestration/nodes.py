@@ -851,7 +851,16 @@ class DispatchNodes:
         # validates the published answer against the exact context it was
         # written from, so a later tool-only round must not replace it.
         update["prompt_assembly"] = _prompt_assembly_dict(outcome)
-        if response.content.strip():
+        produced_content = bool(response.content.strip())
+        invocation: dict[str, object] = {
+            "round": update["rounds"],
+            "model_name": response.model_name,
+            "usage": dict(response.usage),
+            "prompt_assembly": update["prompt_assembly"],
+            "produced_content": produced_content,
+        }
+        update["model_invocations"] = [invocation]
+        if produced_content:
             update.update(self._evidence_update(bundle, outcome, plan))
         return update
 

@@ -15,17 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DOCKERFILES = (
     ROOT / "services/api/Dockerfile",
     ROOT / "services/embedding/Dockerfile",
-    ROOT / "services/ingestion/Dockerfile",
-    ROOT / "services/financing-agent/Dockerfile",
 )
 WEB_DOCKERFILE = ROOT / "frontend/Dockerfile"
 DOCKERFILES = (*PYTHON_DOCKERFILES, WEB_DOCKERFILE)
-# Entrypoint modules copied as loose files rather than installed from the lock.
-# The API is absent on purpose: it ships as a built wheel in the image venv.
 RUNTIME_ENTRYPOINTS = {
     ROOT / "services/embedding/Dockerfile": ROOT / "services/embedding/app.py",
-    ROOT / "services/ingestion/Dockerfile": ROOT / "services/ingestion/app.py",
-    ROOT / "services/financing-agent/Dockerfile": ROOT / "services/financing-agent/app.py",
 }
 # The migration Job runs `alembic upgrade head` from the API image itself, so
 # the schema tooling has to be in the image the API serves traffic from.
@@ -40,7 +34,7 @@ K8S_FILES = tuple(sorted((ROOT / "k8s").glob("*.yaml")))
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 POSTGRES_IMAGE = re.compile(r"postgres:\d[\w.\-]*(?:@sha256:[0-9a-f]{64})?")
 RELEASE_CONTRACT = re.compile(
-    r"registry\.example\.invalid/tenantchat/(?:api|embedding|ingestion|financing|web)"
+    r"registry\.example\.invalid/tenantchat/(?:api|embedding|web)"
     r"@sha256:REPLACE_WITH_[A-Z]+_DIGEST$"
 )
 OAUTH2_PROXY_CONTRACT = re.compile(

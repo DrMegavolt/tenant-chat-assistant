@@ -108,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [api, embedding, ingestion, financing, web]
+        image: [api, embedding, web]
     steps:
       - uses: actions/checkout@v4
 

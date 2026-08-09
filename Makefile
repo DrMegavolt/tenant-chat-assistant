@@ -149,7 +149,7 @@ image-contracts: ## Verify immutable image and Kubernetes artifact contracts
 seed-knowledge: ## Seed governed knowledge for both demo tenants through the real lifecycle
 	$(UV_RUN) python scripts/seed_knowledge.py
 
-images-build: ## Build all five deployable images and record local metadata/digests
+images-build: ## Build all three deployable images and record local metadata/digests
 	./scripts/build_images.sh
 
 images-smoke: ## Smoke all previously built deployable images as their runtime user

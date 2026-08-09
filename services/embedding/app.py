@@ -20,7 +20,7 @@ BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "16"))
 INTERNAL_CREDENTIALS = load_internal_credentials(
     {
         "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-service",
-        "FINANCING_TO_EMBEDDING_TOKEN": "financing-agent",
+        "CHAT_TO_EMBEDDING_TOKEN": "chat-backend",
     }
 )
 

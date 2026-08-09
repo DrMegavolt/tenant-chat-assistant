@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${IMAGE_OUTPUT_DIR:-$ROOT_DIR/artifacts/images}"
 IMAGE_PREFIX="${IMAGE_PREFIX:-tenantchat-local}"
 
-ALL_IMAGES=(api embedding ingestion financing web)
+ALL_IMAGES=(api embedding web)
 if (( $# )); then
   IMAGES=("$@")
 else
@@ -20,8 +20,6 @@ for image in "${IMAGES[@]}"; do
   case "$image" in
     api) dockerfile="services/api/Dockerfile" ;;
     embedding) dockerfile="services/embedding/Dockerfile" ;;
-    ingestion) dockerfile="services/ingestion/Dockerfile" ;;
-    financing) dockerfile="services/financing-agent/Dockerfile" ;;
     web) dockerfile="frontend/Dockerfile" ;;
     *)
       echo "unknown image '$image'; choose: ${ALL_IMAGES[*]}" >&2
