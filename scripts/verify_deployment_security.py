@@ -357,6 +357,143 @@ def _check_examples(errors: list[str]) -> None:
             errors.append(f"{path.relative_to(ROOT)}: example endpoint must use .invalid")
 
 
+def _parse_selector(document: str) -> dict[str, str] | None:
+    """Parse a Kubernetes selector block into its label key-value pairs."""
+    match = re.search(
+        r"^(?P<indent>[ \t]*)selector:\s*\n((?P=indent)[ \t]+\S.*\n)*",
+        document,
+        re.MULTILINE,
+    )
+    if not match:
+        return None
+    block = match.group(0)
+    labels: dict[str, str] = {}
+    for label_match in re.finditer(
+        r"^[ \t]+([a-zA-Z0-9._/-]+):[ \t]*([^\s#]+)",
+        block,
+        re.MULTILINE,
+    ):
+        labels[label_match.group(1)] = label_match.group(2)
+    return labels or None
+
+
+def _parse_service_ports(document: str) -> list[tuple[int, str | int]]:
+    """Parse a Service's port definitions into (port, targetPort) pairs."""
+    ports: list[tuple[int, str | int]] = []
+    port_blocks = re.findall(
+        r"^[ \t]+- name:[^\n]*\n(?:(?:^[ \t]+(?!\s+- name:)[^\n]*\n)*)",
+        document,
+        re.MULTILINE,
+    )
+    for block in port_blocks:
+        port_match = re.search(r"^\s+port:\s*(\d+)", block, re.MULTILINE)
+        target_match = re.search(r"^\s+targetPort:\s*(\S+)", block, re.MULTILINE)
+        if port_match and target_match:
+            target = target_match.group(1)
+            try:
+                target_port: str | int = int(target)
+            except ValueError:
+                target_port = target
+            ports.append((int(port_match.group(1)), target_port))
+    return ports
+
+
+def _parse_container_ports(document: str) -> dict[str | int, int]:
+    """Parse a pod template's container port definitions.
+
+    Returns a mapping from port name (or number) to containerPort number.
+    """
+    result: dict[str | int, int] = {}
+    for port_match in re.finditer(
+        r"^\s+- containerPort:\s*(\d+)\s*\n(?:\s+[a-zA-Z]+:\s*\S+\n)*",
+        document,
+        re.MULTILINE,
+    ):
+        block = port_match.group(0)
+        port_num = int(port_match.group(1))
+        name_match = re.search(r"^\s+name:\s*(\S+)", block, re.MULTILINE)
+        result[port_num] = port_num
+        if name_match:
+            result[name_match.group(1)] = port_num
+    return result
+
+
+def _parse_pod_labels(document: str) -> dict[str, str] | None:
+    """Parse template metadata labels from a Deployment/StatefulSet."""
+    match = re.search(
+        r"^[ \t]+template:\s*\n[ \t]+metadata:\s*\n((?:[ \t]+\S.*\n)*)",
+        document,
+        re.MULTILINE,
+    )
+    if not match:
+        return None
+    block = match.group(1)
+    labels: dict[str, str] = {}
+    for label_match in re.finditer(
+        r"^[ \t]+([a-zA-Z0-9._/-]+):[ \t]*([^\s#]+)",
+        block,
+        re.MULTILINE,
+    ):
+        labels[label_match.group(1)] = label_match.group(2)
+    return labels or None
+
+
+def _check_service_port_drift(errors: list[str], documents: list[tuple[Path, str]]) -> None:
+    """Detect Services whose targetPorts do not match any containerPort.
+
+    A Service that selects backend pods but targets a port the pod does not
+    expose is either stale (orphaned from an older release) or misconfigured.
+    """
+    services: list[tuple[str, str, dict[str, str], list[tuple[int, str | int]]]] = []
+    workloads: dict[str, dict[str, str]] = {}
+    container_ports: dict[str, dict[str | int, int]] = {}
+    workload_kinds: dict[str, str] = {}
+
+    for path, document in documents:
+        kind, name = resource_identity(document)
+        label = f"{path.relative_to(ROOT)}:{kind}/{name}"
+
+        if kind == "Service":
+            selector = _parse_selector(document)
+            if selector is None:
+                continue
+            ports = _parse_service_ports(document)
+            services.append((label, name, selector, ports))
+
+        elif kind in ("Deployment", "StatefulSet"):
+            pod_labels = _parse_pod_labels(document)
+            if pod_labels:
+                workloads[name] = pod_labels
+                container_ports[name] = _parse_container_ports(document)
+                workload_kinds[name] = kind
+
+    for svc_label, _svc_name, svc_selector, svc_ports in services:
+        matching = [
+            wl_name
+            for wl_name, wl_labels in workloads.items()
+            if all(
+                wl_labels.get(k) == v
+                for k, v in svc_selector.items()
+                if k not in ("app.kubernetes.io/name",)
+            )
+        ]
+        if not matching:
+            continue
+
+        for wl_name in matching:
+            wl_ports = container_ports.get(wl_name, {})
+            if not wl_ports:
+                continue
+            for _svc_port, target_port in svc_ports:
+                if target_port not in wl_ports:
+                    wl_kind = workload_kinds.get(wl_name, "Deployment")
+                    errors.append(
+                        f"{svc_label}: targetPort {target_port} does not match any "
+                        f"containerPort in {wl_kind} {wl_name} "
+                        f"(available: {sorted(wl_ports.keys(), key=str)})"
+                    )
+
+
 def _check_client_authentication(errors: list[str]) -> None:
     if "Bearer {self._api_key}" not in (
         ROOT / "packages/orchestration/src/tenantchat/orchestration/providers/openai_compatible.py"
@@ -380,6 +517,7 @@ def verify() -> tuple[int, int]:
     _scan_source_documents(errors, documents)
     _check_workload_refs(errors, documents)
     _check_trace_content_export(errors, documents)
+    _check_service_port_drift(errors, documents)
     _check_examples(errors)
     _check_client_authentication(errors)
 

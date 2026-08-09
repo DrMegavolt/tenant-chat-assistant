@@ -203,6 +203,214 @@ spec:
     assert any("must be a literal in-cluster URL" in error for error in errors)
 
 
+class TestServicePortDrift:
+    def test_matching_port_passes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+        svc = tmp_path / "svc.yaml"
+        dep = tmp_path / "dep.yaml"
+        svc_doc = """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-admin
+spec:
+  selector:
+    app: chat-backend
+  ports:
+    - name: http
+      port: 8004
+      targetPort: 8004
+"""
+        dep_doc = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  selector:
+    matchLabels:
+      app: chat-backend
+  template:
+    metadata:
+      labels:
+        app: chat-backend
+    spec:
+      containers:
+        - name: chat-backend
+          ports:
+            - containerPort: 8004
+              name: http
+"""
+        errors: list[str] = []
+
+        security_gate._check_service_port_drift(errors, [(svc, svc_doc), (dep, dep_doc)])
+
+        assert not errors
+
+    def test_mismatched_target_port_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+        svc = tmp_path / "svc.yaml"
+        dep = tmp_path / "dep.yaml"
+        svc_doc = """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-backend
+spec:
+  selector:
+    app: chat-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+"""
+        dep_doc = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  selector:
+    matchLabels:
+      app: chat-backend
+  template:
+    metadata:
+      labels:
+        app: chat-backend
+    spec:
+      containers:
+        - name: chat-backend
+          ports:
+            - containerPort: 8004
+              name: http
+"""
+        errors: list[str] = []
+
+        security_gate._check_service_port_drift(errors, [(svc, svc_doc), (dep, dep_doc)])
+
+        assert len(errors) == 1
+        assert "targetPort 8000" in errors[0]
+        assert "containerPort in" in errors[0]
+
+    def test_named_target_port_matches_named_container_port(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+        svc = tmp_path / "svc.yaml"
+        dep = tmp_path / "dep.yaml"
+        svc_doc = """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-admin
+spec:
+  selector:
+    app: chat-backend
+  ports:
+    - name: http
+      port: 8004
+      targetPort: http
+"""
+        dep_doc = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-backend
+spec:
+  selector:
+    matchLabels:
+      app: chat-backend
+  template:
+    metadata:
+      labels:
+        app: chat-backend
+    spec:
+      containers:
+        - name: chat-backend
+          ports:
+            - containerPort: 8004
+              name: http
+"""
+        errors: list[str] = []
+
+        security_gate._check_service_port_drift(errors, [(svc, svc_doc), (dep, dep_doc)])
+
+        assert not errors
+
+    def test_service_matching_no_workload_produces_no_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+        svc = tmp_path / "svc.yaml"
+        svc_doc = """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-service
+spec:
+  selector:
+    app: external-workload
+  ports:
+    - name: http
+      port: 9999
+      targetPort: 9999
+"""
+        errors: list[str] = []
+
+        security_gate._check_service_port_drift(errors, [(svc, svc_doc)])
+
+        assert not errors
+
+    def test_statefulset_container_ports_are_checked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+        svc = tmp_path / "svc.yaml"
+        sts = tmp_path / "sts.yaml"
+        svc_doc = """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 9999
+"""
+        sts_doc = """\
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          ports:
+            - containerPort: 5432
+              name: postgres
+"""
+        errors: list[str] = []
+
+        security_gate._check_service_port_drift(errors, [(svc, svc_doc), (sts, sts_doc)])
+
+        assert len(errors) == 1
+        assert "targetPort 9999" in errors[0]
+
+
 def test_an_in_cluster_export_endpoint_literal_passes_the_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
