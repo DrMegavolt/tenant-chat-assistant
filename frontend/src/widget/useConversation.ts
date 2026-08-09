@@ -122,6 +122,7 @@ export function useConversation({
   );
 
   const seenServerMessageIds = useRef(new Set<string>());
+  const hydratedRef = useRef(false);
   const proactiveTimer = useRef<number | null>(null);
   const proactiveShown = useRef(false);
   const isSendingRef = useRef(false);
@@ -135,6 +136,53 @@ export function useConversation({
   }, []);
 
   useEffect(() => clearProactiveTimer, [clearProactiveTimer]);
+
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+
+    const stored = visitor.existingCredential();
+    if (!isValidCredential(stored)) return;
+
+    const hydrate = async () => {
+      const snapshot = await api.session(stored);
+      if (!snapshot) return;
+      if ((!snapshot.messages || snapshot.messages.length === 0) && !snapshot.pending) {
+        return;
+      }
+
+      credentialRef.current = snapshot.credential;
+      visitor.recordCredential(snapshot.credential);
+
+      const hydrated: TranscriptEntry[] = [];
+      for (const msg of snapshot.messages ?? []) {
+        seenServerMessageIds.current.add(msg.messageId);
+        if (msg.role === "system" || msg.role === "tool") continue;
+
+        hydrated.push({
+          kind: "message",
+          id: `hydrate-${msg.messageId}`,
+          role: msg.role === "visitor" ? "user" : "assistant",
+          source: msg.role === "staff" ? "admin" : msg.role === "visitor" ? "user" : "assistant",
+          text: msg.content
+        });
+      }
+
+      if (snapshot.pending) {
+        hydrated.push({
+          kind: "booking",
+          id: nextId("booking"),
+          pending: snapshot.pending
+        });
+      }
+
+      setEntries(() => hydrated);
+    };
+
+    hydrate().catch(() => {
+      /* Hydration failed; stay on the welcome entry. */
+    });
+  }, [api, setEntries, visitor]);
 
   const scheduleProactiveNudge = useCallback(() => {
     if (!config.proactiveLeadCapture || proactiveShown.current) return;
