@@ -163,6 +163,11 @@ class Settings:
     llm_model: str | None = None
     llm_api_key: str = ""
     llm_timeout_seconds: int = 120
+    # OBS-004: the end-to-end deadline for a safe replay of one stored turn.
+    # When the model is slow or unreachable a replay must stop within this
+    # budget so the console does not hang. The value is the same as the
+    # provider timeout because the replay has no tools to wait on.
+    replay_timeout_seconds: int = 120
     # REL-001: the resilience envelope each owned client runs under. The
     # defaults are tuned per dependency — the LLM gets a long read deadline for
     # generation, Elasticsearch a short one for queries, embedding a very long
@@ -265,6 +270,7 @@ class Settings:
         raw_origins = os.environ.get("CHAT_API_ALLOWED_ORIGINS", "")
         origins = tuple(item.strip() for item in raw_origins.split(",") if item.strip())
         llm_timeout = _int_env("LLM_TIMEOUT_SECONDS", 120)
+        replay_timeout = _int_env("CHAT_API_REPLAY_TIMEOUT_SECONDS", 120)
 
         return cls(
             allowed_origins=origins or _DEFAULT_ALLOWED_ORIGINS,
@@ -302,6 +308,7 @@ class Settings:
             llm_model=os.environ.get("LLM_MODEL", "").strip() or None,
             llm_api_key=os.environ.get("LLM_API_KEY", "").strip(),
             llm_timeout_seconds=llm_timeout,
+            replay_timeout_seconds=replay_timeout,
             llm_resilience=_dependency_resilience(
                 env_prefix="LLM",
                 read_timeout_default=float(llm_timeout),

@@ -77,6 +77,19 @@ export class AdminApi {
     return response;
   }
 
+  private async apiError(response: Response, fallback: string): Promise<Error> {
+    try {
+      const body = (await response.json()) as Record<string, unknown>;
+      const code = typeof body.code === "string" ? body.code : null;
+      const detail = typeof body.detail === "string" ? body.detail : "";
+      if (code && detail) return new Error(`${detail} (code: ${code})`);
+      if (code) return new Error(`${fallback} (code: ${code})`);
+    } catch {
+      // response body is not JSON or unreadable
+    }
+    return new Error(`${fallback} with ${response.status}`);
+  }
+
   /** @throws {UnauthorizedError} when the admin session has expired. */
   async tenants(): Promise<TenantSummary[]> {
     const response = await this.request("/api/admin/tenants");
@@ -192,7 +205,7 @@ export class AdminApi {
       `/api/admin/traces/${encodeURIComponent(turnId)}/replay?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
       { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
     );
-    if (!response.ok) throw new Error(`Replay failed with ${response.status}`);
+    if (!response.ok) throw await this.apiError(response, "Replay failed");
     return replayFromWire((await response.json()) as Record<string, unknown>);
   }
 
@@ -218,7 +231,7 @@ export class AdminApi {
         body: JSON.stringify({ trials })
       }
     );
-    if (!response.ok) throw new Error(`Replay trials failed with ${response.status}`);
+    if (!response.ok) throw await this.apiError(response, "Replay trials failed");
     return replayTrialsFromWire((await response.json()) as Record<string, unknown>);
   }
 
@@ -243,7 +256,7 @@ export class AdminApi {
         body: JSON.stringify({ gold_evidence: goldEvidence ?? null })
       }
     );
-    if (!response.ok) throw new Error(`Replay retrieval failed with ${response.status}`);
+    if (!response.ok) throw await this.apiError(response, "Replay retrieval failed");
     return replayRetrievalFromWire((await response.json()) as Record<string, unknown>);
   }
 
@@ -268,7 +281,7 @@ export class AdminApi {
         body: JSON.stringify({ template_version: templateVersion ?? null })
       }
     );
-    if (!response.ok) throw new Error(`Replay template failed with ${response.status}`);
+    if (!response.ok) throw await this.apiError(response, "Replay template failed");
     return replayTemplateFromWire((await response.json()) as Record<string, unknown>);
   }
 
@@ -987,7 +1000,8 @@ function replayFromWire(wire: Record<string, unknown>): ReplayResult {
       contentHash: str(replayed.content_hash),
       modelName: str(replayed.model_name),
       outputRaw: str(replayed.output_raw)
-    }
+    },
+    elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0
   };
 }
 
@@ -1016,7 +1030,8 @@ function replayTrialsFromWire(wire: Record<string, unknown>): ReplayTrialsResult
     })),
     trialCount: typeof wire.trial_count === "number" ? wire.trial_count : 0,
     constant: str(wire.constant),
-    variable: str(wire.variable)
+    variable: str(wire.variable),
+    elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0
   };
 }
 
@@ -1047,7 +1062,8 @@ function replayRetrievalFromWire(wire: Record<string, unknown>): ReplayRetrieval
     generationId: strOrNull(wire.generation_id),
     goldEvidenceCount: typeof wire.gold_evidence_count === "number" ? wire.gold_evidence_count : 0,
     constant: str(wire.constant),
-    variable: str(wire.variable)
+    variable: str(wire.variable),
+    elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0
   };
 }
 
@@ -1077,7 +1093,8 @@ function replayTemplateFromWire(wire: Record<string, unknown>): ReplayTemplateRe
     templateRef: str(wire.template_ref),
     templateMatchesCurrent: wire.template_matches_current === true,
     constant: str(wire.constant),
-    variable: str(wire.variable)
+    variable: str(wire.variable),
+    elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0
   };
 }
 

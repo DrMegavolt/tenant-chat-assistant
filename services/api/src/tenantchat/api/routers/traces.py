@@ -458,7 +458,13 @@ async def replay_turn_record(
         raise ChatUnavailableError
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
-    result = await replay_turn(record=record, model=model, retriever=retriever)
+    settings = get_settings(request)
+    result = await replay_turn(
+        record=record,
+        model=model,
+        retriever=retriever,
+        replay_timeout_seconds=settings.replay_timeout_seconds,
+    )
     await audit.record(
         AuditEvent(
             tenant_id=tenant_id,
@@ -520,8 +526,13 @@ async def replay_turn_trials(
         raise ChatUnavailableError
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+    settings = get_settings(request)
     result = await replay_trials(
-        record=record, model=model, retriever=retriever, trials=payload.trials
+        record=record,
+        model=model,
+        retriever=retriever,
+        trials=payload.trials,
+        replay_timeout_seconds=settings.replay_timeout_seconds,
     )
     await audit.record(
         AuditEvent(
@@ -585,6 +596,7 @@ async def replay_turn_retrieval(
         raise ChatUnavailableError
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+    settings = get_settings(request)
 
     content = record.content
     retrieval = content.get("retrieval")
@@ -633,6 +645,7 @@ async def replay_turn_retrieval(
             generation_exists=generation_exists,
             retrieved_evidence=retrieved_evidence,
             gold_evidence=gold_evidence,
+            replay_timeout_seconds=settings.replay_timeout_seconds,
         )
     finally:
         await audit.record(
@@ -694,11 +707,13 @@ async def replay_turn_template(
         raise ChatUnavailableError
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
+    settings = get_settings(request)
     result = await replay_with_template(
         record=record,
         model=model,
         retriever=retriever,
         template_version=payload.template_version,
+        replay_timeout_seconds=settings.replay_timeout_seconds,
     )
     await audit.record(
         AuditEvent(

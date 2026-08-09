@@ -68,8 +68,10 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
     setReplayError(null);
     try {
       setReplay(await api.replayTrace(record.turnId, tenantId));
-    } catch {
-      setReplayError("The replay did not run. The model may be unavailable.");
+    } catch (err) {
+      setReplayError(
+        err instanceof Error ? err.message : "The replay did not run. The model may be unavailable."
+      );
     } finally {
       setReplaying(false);
     }
@@ -80,8 +82,12 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
     setReplayError(null);
     try {
       setReplayTrials(await api.replayTrials(record.turnId, tenantId, 3));
-    } catch {
-      setReplayError("The replay trials did not run. The model may be unavailable.");
+    } catch (err) {
+      setReplayError(
+        err instanceof Error
+          ? err.message
+          : "The replay trials did not run. The model may be unavailable."
+      );
     } finally {
       setReplayingTrials(false);
     }

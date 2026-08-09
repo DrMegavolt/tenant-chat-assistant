@@ -1112,6 +1112,7 @@ class TraceReplayResponse(BaseModel):
     components: list[ComponentVersionSnapshot]
     original: ReplayOutput
     replayed: ReplayOutput
+    elapsed_seconds: float = 0.0
 
 
 class ReplayTrialsRequest(_Request):
@@ -1157,6 +1158,7 @@ class TraceReplayTrialsResponse(BaseModel):
     trial_count: int
     constant: str = "prompt_and_evidence"
     variable: str = "model_output"
+    elapsed_seconds: float = 0.0
 
 
 class GoldEvidenceSubstitution(BaseModel):
@@ -1201,6 +1203,7 @@ class TraceReplayRetrievalResponse(BaseModel):
     gold_evidence_count: int = 0
     constant: str = "query_retriever_and_index_generation"
     variable: str = "model_output"
+    elapsed_seconds: float = 0.0
 
 
 class ReplayTemplateRequest(_Request):
@@ -1236,6 +1239,7 @@ class TraceReplayTemplateResponse(BaseModel):
     template_matches_current: bool
     constant: str = "replay_model_evidence_history_and_bindings"
     variable: str = "prompt_template_and_model_output"
+    elapsed_seconds: float = 0.0
 
 
 class GoldEvidenceItem(BaseModel):

@@ -168,6 +168,32 @@ class TraceReplayError(DomainError):
     message = "This turn record cannot be replayed."
 
 
+class ReplayTimeoutError(TraceReplayError):
+    """A safe replay did not finish within the configured end-to-end deadline.
+
+    The prompt was reconstructible and the model endpoint was reachable,
+    but the model did not respond within the ``replay_timeout_seconds``
+    budget. ``detail`` carries the elapsed wall-clock time so the operator
+    log records how long the replay waited.
+    """
+
+    code = "replay_timeout"
+    message = "The replay timed out while waiting for the model."
+
+
+class ReplayModelUnavailableError(TraceReplayError):
+    """The model backend could not be reached or refused the replay request.
+
+    The prompt was reconstructible but the model endpoint returned an
+    error or could not be contacted. ``detail`` carries the exception
+    type and message so the operator log distinguishes a connection
+    refusal, a timeout at the transport layer, and a server error.
+    """
+
+    code = "replay_model_unavailable"
+    message = "The replay did not run because the model is currently unavailable."
+
+
 class GenerationUnavailableError(DomainError):
     """The index generation this turn was retrieved against is no longer available.
 
