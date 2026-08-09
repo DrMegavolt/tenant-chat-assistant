@@ -186,16 +186,6 @@ export function useConversation({
     const session = await api.openSession({ tenantId });
     visitor.recordCredential(session.credential);
     credentialRef.current = session.credential;
-    // A lead can be captured from the very first message the visitor sends, so
-    // the follow-up purpose is granted when the conversation opens; the booking
-    // purpose is granted separately at the confirmation, where the consent
-    // checkbox lives. Granting is best-effort: the server refuses the action if
-    // it is missing, and the refusal is the visitor's next signal.
-    try {
-      await api.consent({ credential: session.credential, purposes: ["follow_up"] });
-    } catch {
-      // The turn that follows surfaces the refusal; do not fail the session.
-    }
     return session.credential;
   }, [api, tenantId, visitor]);
 
