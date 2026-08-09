@@ -411,9 +411,9 @@ def _build_policy() -> RoutingPolicy:
             "callback",
             r"\b(?:call me|call back|callback|have someone call|someone call|reach me|follow ?up"
             r"|contact me|get back to me)\b",
-            4,
+            6,
         ),
-        _compile("quote-request", r"\b(?:need a callback|request a callback|call me back)\b", 4),
+        _compile("quote-request", r"\b(?:need a callback|request a callback|call me back)\b", 6),
         _compile("waiting", r"\b(?:waiting on|pending)\b", 2),
     )
     handoff = (

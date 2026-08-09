@@ -15,8 +15,8 @@ import json
 
 from tenantchat.core.routing import IntentName, RoutingOutcome, RoutingRule
 from tenantchat.orchestration.model import ModelResponse
-from tenantchat.orchestration.nodes import DispatchNodes
-from tenantchat.orchestration.state import initial_state
+from tenantchat.orchestration.nodes import DispatchNodes, _callback_promise_uncommitted
+from tenantchat.orchestration.state import CommittedAction, initial_state
 from tenantchat.orchestration.tools import ToolName
 from tests.agent_runtime.conftest import (
     BOOKING_TENANT,
@@ -562,5 +562,84 @@ def test_a_lead_workflow_completes_with_the_captured_lead() -> None:
         events = await harness.workflows.events(LEAD_TENANT, done.workflow_id)
         assert [event.kind for event in events] == ["start", "update", "complete"]
         assert len(await harness.leads.for_tenant(LEAD_TENANT)) == 1
+
+    asyncio.run(scenario())
+
+
+def test_a_callback_request_with_service_nouns_routes_to_lead() -> None:
+    """An explicit callback phrase wins over service-category words in routing.
+
+    BUG-003: a message like "have someone call me about electrical repair"
+    tied booking and lead scores because the service-category nouns ("electrical",
+    "repair") weighed as much as the callback phrase. With the fix, the callback
+    signal now outweighs the service nouns, so the message routes to lead and
+    the agent collects the required fields.
+    """
+    harness = build_harness(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=(
+                    tool_call(
+                        "create_lead",
+                        customer_name="QA Tester",
+                        customer_phone_or_email="qa-tester@example.invalid",
+                        service="Electrical panel repair",
+                        summary="Customer needs electrical panel repair and asked for a callback.",
+                        urgency="unknown",
+                    ),
+                ),
+                model_name="scripted",
+            ),
+            ModelResponse(content="Our team will contact you.", model_name="scripted"),
+        ]
+    )
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(
+            LEAD_TENANT,
+            "s-callback",
+            "Please have someone call QA Tester at qa-tester@example.invalid about "
+            "an electrical panel repair.",
+        )
+        routing = await harness.workflows.last_routing(LEAD_TENANT, "s-callback")
+        assert routing is not None
+        assert routing.chosen_intent == IntentName.LEAD.value
+        assert routing.rule == RoutingRule.MATCHED.value
+        assert len(await harness.leads.for_tenant(LEAD_TENANT)) == 1
+        assert [action["action"] for action in result.committed] == ["create_lead"]
+
+    asyncio.run(scenario())
+
+
+def test_callback_promise_without_committed_lead_is_refused() -> None:
+    """An answer that promises a callback is refused when no lead was committed.
+
+    BUG-003: the model can promise "our team will contact you" even when
+    create_lead was not called. The finalize node must detect the uncommitted
+    promise and replace the answer with a server-written refusal instead of
+    misleading the visitor.
+    """
+
+    async def check(answer: str, committed: list[dict[str, object]], expect: bool) -> None:
+        typed = [
+            CommittedAction(
+                action=str(c["action"]),
+                reference=str(c.get("reference", "")),
+                replayed=bool(c.get("replayed", False)),
+                key=str(c.get("key", "")),
+            )
+            for c in committed
+        ]
+        assert _callback_promise_uncommitted(answer, tuple(typed)) is expect
+
+    async def scenario() -> None:
+        await check("Our team will contact you shortly.", [], True)
+        await check("A team member will call you back.", [], True)
+        await check("Someone will reach out to discuss your repair.", [], True)
+        await check("Our team will contact you.", [{"action": "create_lead"}], False)
+        await check("Our team will contact you.", [{"action": "handoff_to_human"}], True)
+        await check("I can help with that.", [], False)
+        await check("What is your phone number?", [], False)
 
     asyncio.run(scenario())
