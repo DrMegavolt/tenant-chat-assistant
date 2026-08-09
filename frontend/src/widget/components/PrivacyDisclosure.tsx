@@ -42,12 +42,9 @@ export function PrivacyDisclosure({ onForget }: PrivacyDisclosureProps) {
         <h2 id="privacyTitle">How this chat uses your data</h2>
         <ul>
           <li>Your messages are stored so staff can read and answer them.</li>
-          <li>
-            Name, address, and contact details are sent only when you fill in a form and agree
-            first.
-          </li>
-          <li>This browser tab keeps a conversation id so replies from staff reach you.</li>
-          <li>Closing the tab ends the conversation id.</li>
+          <li>Anything you type into chat is transmitted and stored.</li>
+          <li>Your browser keeps a conversation credential so replies from staff reach you.</li>
+          <li>Closing the tab does not delete your conversation; the server keeps it.</li>
         </ul>
         <button ref={forgetRef} type="button" id="clearVisitorData" onClick={onForget}>
           Delete this conversation from my browser

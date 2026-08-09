@@ -78,7 +78,7 @@ describe("visitor data controls", () => {
 
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(requireInWidget("#privacyPanel").hidden).toBe(false);
-    expect(inWidget("#privacyPanel")?.textContent).toContain("conversation id");
+    expect(inWidget("#privacyPanel")?.textContent).toContain("server keeps it");
     expect(shadow().activeElement).toBe(inWidget("#clearVisitorData"));
   });
 
