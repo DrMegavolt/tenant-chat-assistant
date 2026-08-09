@@ -83,6 +83,7 @@ spec:
           - gen_ai.request.seed
           - gen_ai.response.model
           - gen_ai.response.finish_reason
+          - openinference.span.kind
           - gen_ai.usage.input_tokens
           - gen_ai.usage.output_tokens
           - gen_ai.usage.total_tokens

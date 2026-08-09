@@ -15,7 +15,30 @@ metrics not yet emitted are marked with their lane dependency.
 | **Exemplar → Trace → Explorer** | `tenantchat-exemplar-drillthrough` | Histogram bucket panels with trace_id exemplars, plus the drill-through workflow documentation. |
 | **Safety & Governance** | `tenantchat-safety-governance` | Policy blocks by reason, budget alerts, feedback, response cache, dependency retries, business action funnel, tool failures. |
 
-## Which UI answers which question
+## Supported observability backends (current release)
+
+Only the backends listed here are configured and expected to show application
+data. Backends not listed may receive raw telemetry through the collector for
+experimentation but are not part of the supported operator workflow.
+
+| Backend | Status | Expected view |
+|---|---|---|
+| **Grafana** | Supported | Custom chat metrics via Prometheus (turn outcomes, LLM ops, routing, safety). Tenant Chat dashboards provisioned from `k8s/grafana/`. Metrics use a closed label set — no per-tenant breakdown. |
+| **Tempo** | Supported | Trace search by trace ID, service name, or attribute. Every turn is one trace; drill from an exemplar in Grafana or a trace ID in the admin explorer. |
+| **Phoenix** | Supported | GenAI trace grouping (LLM spans only — database/health spans form the bulk of trace count). Sessions group by `session.id`. LLM spans carry `gen_ai.*` semantic attributes and `openinference.span.kind = "LLM"` for categorization. Token counts and model identity appear on LLM spans; cost is computed by Phoenix from model pricing. |
+| **Admin Explorer** | Supported | Turn record with prompt, evidence, output, verdicts, diagnosis. The inference plane is the authoritative content view per ADR-0010. |
+| **MLflow** | Experimental | Experiment tracking over evaluation datasets. The current release sends metrics to MLflow through the OTLP HTTP exporter but does not configure a dedicated experiment — the `Default` experiment collects raw trace data. |
+| **Pyroscope** | Not enabled | Application profiling is not configured. `observability/alloy` and `observability/pyroscope` system profiles appear, but the chat-backend process is not profiled. |
+
+### What the generic APM panels show
+
+The Generic Lightweight APM (Grafana's built-in HTTP/backend panels) expects
+standard `http_server_*` metrics with a `service_name` label. Tenant Chat does
+not emit these: it uses custom `tenantchat_*` metrics with a closed label set
+(see above). The generic APM panels are therefore not expected to show
+chat-backend data. Use the custom Grafana dashboards in `k8s/grafana/` instead.
+
+### Which UI answers which question
 
 The cluster runs five observability UIs. The split avoids turning the demo into
 a tour of dashboards:

@@ -78,7 +78,7 @@ def test_model_span_uses_configured_request_model_and_current_parent(
     asyncio.run(run())
 
     spans = exporter.get_finished_spans()
-    model_span = next(span for span in spans if span.name == "chat")
+    model_span = next(span for span in spans if span.name == "chat otel-test@1")
     parent_span = next(span for span in spans if span.name == "http-request")
     attributes = model_span.attributes or {}
     assert model_span.parent is not None
@@ -86,6 +86,7 @@ def test_model_span_uses_configured_request_model_and_current_parent(
     assert attributes["gen_ai.system"] == "openai"
     assert attributes["gen_ai.request.model"] == "gpt-test"
     assert attributes["gen_ai.response.model"] == "provider-response-model"
+    assert attributes["openinference.span.kind"] == "LLM"
 
 
 def test_model_failure_records_type_without_exception_content(
