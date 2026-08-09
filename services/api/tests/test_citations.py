@@ -562,9 +562,10 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
     ]
 
 
-def test_insufficient_evidence_abstains_without_calling_the_model() -> None:
-    """A question no approved material answers gets the server-written refusal,
-    and the model is never asked to improvise one."""
+def test_insufficient_evidence_answers_from_tenant_business_facts() -> None:
+    """A question with no approved evidence may still be answered from the
+    tenant's business facts (hours, phone, address), which are server-owned
+    truth bound into the prompt and do not require retrieved citations."""
     client, model, _, _ = _client(
         script=[ModelResponse(content="We are open daily.", model_name="scripted")]
     )
@@ -574,16 +575,15 @@ def test_insufficient_evidence_abstains_without_calling_the_model() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["reply"] == (
-        "I do not have approved material to answer that yet, so I will not guess. "
-        "Ask me about hours, services, or pricing — or call (555) 816-4420."
-    )
+    assert body["reply"] == "We are open daily."
     assert body["citations"] == []
-    assert model.calls == []
+    assert len(model.calls) == 1
 
 
-def test_a_retrieval_failure_abstains_instead_of_answering_from_nothing() -> None:
-    """An index outage is the same verdict as no evidence: refuse, never guess."""
+def test_a_retrieval_failure_answers_from_tenant_business_facts() -> None:
+    """An index outage does not stop the model from answering from the tenant's
+    own business facts (hours, phone, address) which are bound into the prompt
+    independently of retrieval."""
     client, model, _, _ = _client(
         script=[ModelResponse(content="We are open daily.", model_name="scripted")],
         evidence=_FailingEvidenceSource(),
@@ -593,14 +593,14 @@ def test_a_retrieval_failure_abstains_instead_of_answering_from_nothing() -> Non
     response = client.post("/api/chat", json={"message": HOURS_QUESTION}, headers=headers)
 
     assert response.status_code == 200
-    assert response.json()["reply"].startswith("I do not have approved material")
-    assert model.calls == []
+    assert response.json()["reply"] == "We are open daily."
+    assert len(model.calls) == 1
 
 
-def test_evidence_excluded_by_the_prompt_budget_still_abstains() -> None:
-    """The verdict passed, but the assembled prompt carried no passage — a
-    budget cut is the same verdict to the model: it must not guess from an
-    empty context."""
+def test_evidence_excluded_by_the_prompt_budget_answers_from_tenant_facts() -> None:
+    """The verdict passed but the prompt budget dropped all evidence passages.
+    The model may still answer from the tenant's own business facts, which are
+    bound into the prompt independently of retrieved evidence."""
     knowledge = InMemoryKnowledgeStore()
     version = _published_version(knowledge, title="Clearview hours")
     oversized = (
@@ -623,8 +623,8 @@ def test_evidence_excluded_by_the_prompt_budget_still_abstains() -> None:
     response = client.post("/api/chat", json={"message": HOURS_QUESTION}, headers=headers)
 
     assert response.status_code == 200
-    assert response.json()["reply"].startswith("I do not have approved material")
-    assert model.calls == []
+    assert response.json()["reply"] == "We are open daily."
+    assert len(model.calls) == 1
 
 
 def test_a_non_general_agent_keeps_answering_without_evidence() -> None:

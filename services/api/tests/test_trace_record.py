@@ -402,34 +402,25 @@ def test_an_escalation_is_recorded_without_a_model_call_or_a_diagnosis() -> None
     assert record.diagnosis_causes == ()
 
 
-def test_an_abstention_is_a_retrieval_miss_without_a_model_call() -> None:
-    """The refusal turn is still recorded: what was asked, and why nothing answered."""
+def test_an_insufficient_retrieval_answers_from_tenant_business_facts() -> None:
+    """When retrieval is insufficient, the model runs and may answer from the
+    tenant's own business facts (hours, phone, address) bound into the prompt.
+    The trace records the retrieval miss and the evidence-sufficiency verdict."""
     client, model, records = _client(
-        script=[ModelResponse(content="should never run", model_name="scripted")]
+        script=[ModelResponse(content="We are open daily.", model_name="scripted")]
     )
     headers = _open_session(client)
 
     response = client.post("/api/chat", json={"message": HOURS_QUESTION}, headers=headers)
 
     assert response.status_code == 200
-    assert model.calls == []
+    assert len(model.calls) == 1
     (record,) = _turn_records(records, response.json()["session_id"])
     content = record.content
-    assert _section(content, "outcome")["status"] == "abstained"
-    assert _section(content, "model")["name"] == ""
-    assert record.outcome == "abstained"
-    assert record.diagnosis_causes == ("retrieval_miss",)
-    assert content["diagnoses"] == [
-        {
-            "cause": "retrieval_miss",
-            "stage": "retrieval",
-            "role": "primary",
-            "status": "detected",
-            "confidence": "high",
-            "evidence": ["retrieval.sufficient:false"],
-            "detector_version": "diagnosis@1",
-        }
-    ]
+    assert _section(content, "outcome")["status"] == "answered"
+    assert _section(content, "model")["name"] == "scripted"
+    assert record.outcome == "answered"
+    assert _section(content, "retrieval")["sufficient"] is False
 
 
 def test_a_down_index_is_recorded_as_an_ingestion_or_index_error() -> None:
