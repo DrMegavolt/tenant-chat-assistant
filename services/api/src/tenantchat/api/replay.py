@@ -25,7 +25,9 @@ conversation history constant, then re-executes that counterfactual prompt.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import Callable, Mapping
 
 from tenantchat.api.schemas import (
@@ -38,7 +40,12 @@ from tenantchat.api.schemas import (
     TraceReplayTrialsResponse,
 )
 from tenantchat.api.store import TurnRecord
-from tenantchat.core.errors import GenerationUnavailableError, TraceReplayError
+from tenantchat.core.errors import (
+    GenerationUnavailableError,
+    ReplayModelUnavailableError,
+    ReplayTimeoutError,
+    TraceReplayError,
+)
 from tenantchat.core.routing import ROUTING_POLICY_VERSION
 from tenantchat.orchestration.agents import AGENTS_VERSION
 from tenantchat.orchestration.graph import GRAPH_VERSION
@@ -140,8 +147,35 @@ def current_manifest(model_name: str, retriever: Mapping[str, object] | None) ->
     }
 
 
-async def _complete(model: ChatModel, prompt: AssembledPrompt) -> ModelResponse:
-    return await model.complete(prompt, tools=())
+async def _complete(
+    model: ChatModel, prompt: AssembledPrompt, *, timeout_seconds: float
+) -> ModelResponse:
+    """Send one assembled prompt through the model inside an end-to-end deadline.
+
+    A long or unreachable model must not hang the replay console. The
+    ``timeout_seconds`` deadline is the outer budget: if the model client's
+    own resilience envelope (retries, the fallback chain, and the provider
+    read timeout) has not produced a result by then this function cancels and
+    maps the failure to a typed error the API and UI can distinguish.
+    """
+    started = time.monotonic()
+    try:
+        return await asyncio.wait_for(
+            model.complete(prompt, tools=()),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError as exc:
+        elapsed = time.monotonic() - started
+        raise ReplayTimeoutError(
+            detail=f"replay timed out after {elapsed:.1f}s (limit={timeout_seconds:.0f}s)"
+        ) from exc
+    except BaseException as exc:
+        if isinstance(exc, TraceReplayError | KeyboardInterrupt | SystemExit):
+            raise
+        elapsed = time.monotonic() - started
+        raise ReplayModelUnavailableError(
+            detail=f"model call failed after {elapsed:.1f}s: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 async def replay_turn(
@@ -149,6 +183,7 @@ async def replay_turn(
     record: TurnRecord,
     model: ChatModel,
     retriever: Mapping[str, object] | None,
+    replay_timeout_seconds: float = 120,
 ) -> TraceReplayResponse:
     content = record.content
     prompt_section = content.get("prompt")
@@ -160,7 +195,9 @@ async def replay_turn(
         raise TraceReplayError(detail="stored prompt not reconstructible") from error
 
     stored_hash = str(prompt_section.get("content_hash", ""))
-    response = await _complete(model, rebuilt)
+    started = time.monotonic()
+    response = await _complete(model, rebuilt, timeout_seconds=replay_timeout_seconds)
+    elapsed = time.monotonic() - started
     current = current_manifest(response.model_name, retriever)
     stored_manifest = content.get("component_manifest", {})
     if not isinstance(stored_manifest, Mapping):
@@ -187,6 +224,7 @@ async def replay_turn(
             model_name=response.model_name,
             output_raw=response.content,
         ),
+        elapsed_seconds=round(elapsed, 1),
     )
 
 
@@ -196,6 +234,7 @@ async def replay_trials(
     model: ChatModel,
     retriever: Mapping[str, object] | None,
     trials: int,
+    replay_timeout_seconds: float = 120,
 ) -> TraceReplayTrialsResponse:
     content = record.content
     prompt_section = content.get("prompt")
@@ -215,8 +254,9 @@ async def replay_trials(
 
     trial_results: list[ReplayTrialResult] = []
     representative_model_name = "unknown"
+    started = time.monotonic()
     for index in range(trials):
-        response = await _complete(model, rebuilt)
+        response = await _complete(model, rebuilt, timeout_seconds=replay_timeout_seconds)
         if index == 0:
             representative_model_name = response.model_name
         trial_results.append(
@@ -227,6 +267,7 @@ async def replay_trials(
                 output_raw=response.content,
             )
         )
+    elapsed = time.monotonic() - started
 
     current = current_manifest(representative_model_name, retriever)
     components, changed = compare_manifests(stored_manifest, current)
@@ -246,6 +287,7 @@ async def replay_trials(
         ),
         trials=trial_results,
         trial_count=trials,
+        elapsed_seconds=round(elapsed, 1),
     )
 
 
@@ -257,6 +299,7 @@ async def replay_with_retrieval(
     generation_exists: bool,
     retrieved_evidence: list[dict[str, str]] | None = None,
     gold_evidence: list[dict[str, str]] | None = None,
+    replay_timeout_seconds: float = 120,
 ) -> TraceReplayRetrievalResponse:
     content = record.content
     prompt_section = content.get("prompt")
@@ -280,7 +323,9 @@ async def replay_with_retrieval(
     rebuilt = _substitute_evidence(rebuilt, replay_evidence)
 
     stored_hash = str(prompt_section.get("content_hash", ""))
-    response = await _complete(model, rebuilt)
+    started = time.monotonic()
+    response = await _complete(model, rebuilt, timeout_seconds=replay_timeout_seconds)
+    elapsed = time.monotonic() - started
     current = current_manifest(response.model_name, retriever)
     stored_manifest = content.get("component_manifest", {})
     if not isinstance(stored_manifest, Mapping):
@@ -310,6 +355,7 @@ async def replay_with_retrieval(
         generation_available=True,
         generation_id=_stored_generation_id(content),
         gold_evidence_count=len(gold_evidence) if gold_evidence else 0,
+        elapsed_seconds=round(elapsed, 1),
     )
 
 
@@ -319,6 +365,7 @@ async def replay_with_template(
     model: ChatModel,
     retriever: Mapping[str, object] | None,
     template_version: int | None = None,
+    replay_timeout_seconds: float = 120,
 ) -> TraceReplayTemplateResponse:
     content = record.content
     prompt_section = content.get("prompt")
@@ -333,7 +380,9 @@ async def replay_with_template(
     template_matches_current = template_ref == DISPATCH_SYSTEM_REF
 
     stored_hash = str(prompt_section.get("content_hash", ""))
-    response = await _complete(model, rebuilt)
+    started = time.monotonic()
+    response = await _complete(model, rebuilt, timeout_seconds=replay_timeout_seconds)
+    elapsed = time.monotonic() - started
     current = current_manifest(response.model_name, retriever)
     stored_manifest = content.get("component_manifest", {})
     if not isinstance(stored_manifest, Mapping):
@@ -362,6 +411,7 @@ async def replay_with_template(
         ),
         template_ref=template_ref,
         template_matches_current=template_matches_current,
+        elapsed_seconds=round(elapsed, 1),
     )
 
 

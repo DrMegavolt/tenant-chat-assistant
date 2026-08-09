@@ -237,6 +237,7 @@ export interface ReplayResult {
   components: ComponentVersionSnapshot[];
   original: { contentHash: string; modelName: string; outputRaw: string };
   replayed: { contentHash: string; modelName: string; outputRaw: string };
+  elapsedSeconds: number;
 }
 
 export interface ReplayTrialResult {
@@ -259,6 +260,7 @@ export interface ReplayTrialsResult {
   trialCount: number;
   constant: string;
   variable: string;
+  elapsedSeconds: number;
 }
 
 export interface ReplayRetrievalResult {
@@ -276,6 +278,7 @@ export interface ReplayRetrievalResult {
   goldEvidenceCount: number;
   constant: string;
   variable: string;
+  elapsedSeconds: number;
 }
 
 export interface ReplayTemplateResult {
@@ -292,6 +295,7 @@ export interface ReplayTemplateResult {
   templateMatchesCurrent: boolean;
   constant: string;
   variable: string;
+  elapsedSeconds: number;
 }
 
 export interface GoldChunk {

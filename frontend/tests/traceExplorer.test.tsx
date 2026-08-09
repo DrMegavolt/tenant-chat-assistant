@@ -491,7 +491,7 @@ describe("gold evidence and replay", () => {
     await searchAndOpen();
 
     fireEvent.click(screen.getByRole("button", { name: "Run one safe replay" }));
-    await screen.findByText(/The replay did not run/i);
+    await screen.findByText(/Replay failed/i);
     expect(screen.getByRole("button", { name: "Run one safe replay" })).toBeTruthy();
   });
 });
