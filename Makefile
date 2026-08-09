@@ -13,10 +13,10 @@ NPM := npm --prefix frontend
 .PHONY: help setup lock lock-check lint format format-check typecheck test test-cov \
 	test-migrations test-repositories test-agent-runtime test-privacy test-database migrate migrate-checkpoints \
 	dev worker js-install js-lint js-format \
-	js-format-check js-typecheck js-build js-test js-test-cov deployment-security check api up up-all web down \
+	js-format-check js-typecheck js-build js-test js-test-cov 	deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate \
-	seed-knowledge dashboard-check harness-a harness-b harness-live
+	seed-knowledge dashboard-check grafana-smoke harness-a harness-b harness-live
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -207,6 +207,9 @@ clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage coverage.xml coverage htmlcov artifacts
 	rm -rf frontend/dist frontend/node_modules/.tmp
 	find . -type d -name __pycache__ -not -path './.venv/*' -prune -exec rm -rf {} +
+
+grafana-smoke: ## Verify deployed Grafana contains all five Tenant Chat dashboard UIDs
+	./scripts/verify_grafana_dashboards.sh
 
 harness-a: ## Run the L9a Gate B harness against the real graph (hermetic, no LLM)
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"

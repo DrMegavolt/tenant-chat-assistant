@@ -54,19 +54,28 @@ matching `DiagnosisCause` values (`stale_source`, `ingestion_or_index_error`,
 
 ## Provisioning
 
+Provisioning runs automatically as the final step of `make deploy-local`. The
+deployment calls `k8s/grafana/provision.sh --verify`, which creates ConfigMaps
+and then polls the Grafana API until all five dashboard UIDs are confirmed
+present. Re-running `deploy-local` or the script directly is safe — it replaces
+the ConfigMaps with the latest JSON and re-verifies.
+
+Provision manually (e.g. for a partial update without a full deployment):
+
 ```bash
-./k8s/grafana/provision.sh
+./k8s/grafana/provision.sh --verify
 ```
 
-The script creates one ConfigMap per dashboard JSON file in the `observability`
-namespace, labelled `grafana_dashboard: "1"`. The kube-prometheus-stack Grafana
-sidecar discovers and imports them within 2 minutes. The procedure is
-idempotent — re-running replaces the ConfigMaps with the latest JSON.
+Verify dashboards are present without re-provisioning:
+
+```bash
+make grafana-smoke
+```
 
 Set `GRAFANA_NAMESPACE` to override the namespace if Grafana runs elsewhere:
 
 ```bash
-GRAFANA_NAMESPACE=monitoring ./k8s/grafana/provision.sh
+GRAFANA_NAMESPACE=monitoring ./k8s/grafana/provision.sh --verify
 ```
 
 ## Modifying dashboards
