@@ -44,6 +44,16 @@ def test_an_unknown_tenant_opens_no_session(client: TestClient) -> None:
     assert response.json()["code"] == "not_found"
 
 
+def test_camel_case_tenant_id_is_accepted_as_old_bundle_compat(
+    client: TestClient,
+) -> None:
+    response = client.post("/api/chat/session", json={"tenantId": BOOKING_TENANT})
+
+    assert response.status_code == 201
+    assert response.json()["session"]["tenant_id"] == BOOKING_TENANT
+    assert response.json()["credential"].startswith("tc.v1.")
+
+
 def test_a_turn_is_answered_and_recorded(
     client: TestClient, visitor_session: Callable[..., VisitorSession]
 ) -> None:
