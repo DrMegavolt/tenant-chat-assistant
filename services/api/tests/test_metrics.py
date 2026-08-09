@@ -879,7 +879,7 @@ class TestBusinessFunnel:
         visitor = _open_session(client)
         response = client.post(
             "/api/chat",
-            json={"message": "callback on tuesday for a repair"},
+            json={"message": "book repair or callback"},
             headers=visitor.headers,
         )
 
@@ -930,7 +930,7 @@ class TestTheOutcomePartition:
         )
         clarified = client.post(
             "/api/chat",
-            json={"message": "callback on tuesday for a repair"},
+            json={"message": "book repair or callback"},
             headers=visitor.headers,
         )
 

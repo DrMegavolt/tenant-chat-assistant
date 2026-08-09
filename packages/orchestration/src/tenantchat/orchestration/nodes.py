@@ -112,6 +112,15 @@ MAX_TOOL_ROUNDS: Final = 4
 # charset as an Elasticsearch document id.
 _CITATION_RE = re.compile(r"\[evidence:([A-Za-z0-9][A-Za-z0-9._:-]{0,199})\]")
 
+# Phrases that promise a callback or follow-up without a committed lead.
+# Matched against the assistant's answer before publication; a match with
+# no committed create_lead action means the answer must be refused.
+_CALLBACK_PROMISE_RE = re.compile(
+    r"\b(?:our team|a team member|someone)\s+will\s+(?:call|contact|reach out|follow up"
+    r"|get back to|get in touch)",
+    re.IGNORECASE,
+)
+
 # The tool label for a call whose name resolved to nothing: the model wrote a
 # tool the graph does not know, and its free-text name must never become a
 # label value.
@@ -297,6 +306,27 @@ def _claim_refusal_reply(policy: TenantPolicy) -> str:
         "I cannot confirm some of the details in what I was about to say, so I "
         f"will not say it. The team can confirm it — call {policy.phone}."
     )
+
+
+def _uncommitted_promise_refusal(policy: TenantPolicy) -> str:
+    """The reply when a callback promise was made without a committed lead.
+
+    Server-written: the model promised someone would call, but the lead was
+    not committed — publishing the promise would mislead the visitor into
+    waiting for a call that will never come.
+    """
+    return (
+        "I am not able to promise a callback right now. The team can still help — "
+        f"please call {policy.phone}, or try again with your name and contact details "
+        "so I can submit your request."
+    )
+
+
+def _callback_promise_uncommitted(content: str, committed: Sequence[CommittedAction]) -> bool:
+    """Whether the answer promises a callback that was never committed."""
+    if _CALLBACK_PROMISE_RE.search(content) is None:
+        return False
+    return all(action["action"] != ToolName.CREATE_LEAD.value for action in committed)
 
 
 class DispatchNode(StrEnum):
@@ -1548,6 +1578,18 @@ class DispatchNodes:
                             {"kind": claim.kind.value, "value": claim.value}
                             for claim in validation.unsupported
                         ],
+                    }
+                if _callback_promise_uncommitted(entry["content"], state["committed"]):
+                    self._observe(
+                        MetricName.TURN_OUTCOMES,
+                        1,
+                        labels={"outcome": TurnOutcome.ANSWER_REFUSED.value},
+                    )
+                    return {
+                        "answer": _uncommitted_promise_refusal(policy),
+                        "turn_outcome": TurnStatus.REFUSED.value,
+                        "citations": [],
+                        "citation_invalid": [],
                     }
                 found = citation_ids(entry["content"])
                 context = frozenset(state["evidence_ids"])
