@@ -507,15 +507,28 @@ class ElasticsearchSearchIndex:
         self, *, tenant_id: str, version_id: uuid.UUID | None = None
     ) -> int:
         query: dict[str, Any] = {
+            "size": 0,
+            "track_total_hits": True,
             "query": {
                 "bool": {"must": [{"term": {"tenant_id": tenant_id}}, {"term": {"active": True}}]}
-            }
+            },
         }
         if version_id is not None:
             must = query["query"]["bool"]["must"]
             must.append({"term": {"version_id": str(version_id)}})
-        response = await self._request("POST", "_count", json.dumps(query), use_index=True)
-        return int(response.get("count", 0))
+        logger.debug(
+            "active_chunk_count querying index=%s tenant=%s version_id=%s",
+            self._index_name,
+            tenant_id,
+            str(version_id) if version_id is not None else "all",
+        )
+        response = await self._request("POST", "_search", json.dumps(query), use_index=True)
+        total = response.get("hits", {}).get("total", {})
+        if isinstance(total, Mapping):
+            return int(total.get("value", 0))
+        if isinstance(total, int):
+            return total
+        return 0
 
     async def active_embedding_models(
         self, *, tenant_id: str, version_id: uuid.UUID
