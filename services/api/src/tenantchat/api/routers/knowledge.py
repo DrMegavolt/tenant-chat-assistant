@@ -112,6 +112,38 @@ _ACCEPTED_MEDIA_TYPES = SUPPORTED_MEDIA_TYPES
 _MAX_UPLOAD_BYTES = MAX_DOCUMENT_BYTES
 
 
+def _check_brand_consistency(registry: Registry, tenant_id: str, field: str, value: str) -> None:
+    """Verify a source or document metadata value does not claim another tenant's brand.
+
+    A source's ``display_name`` or a document's ``title`` that contains another
+    registered tenant's name or slug is a content integrity defect: it points
+    retrieval at the wrong brand's policy, financing terms, or service area.
+
+    Raises:
+        ValidationError: ``value`` contains a known identifier of a different tenant.
+    """
+    all_tenants = registry.all()
+    own = all_tenants.get(tenant_id)
+    if own is None:
+        return
+
+    folded = value.casefold()
+
+    for other_id, record in all_tenants.items():
+        if other_id == tenant_id:
+            continue
+        other_labels = {record.policy.name.casefold(), record.policy.tenant_id.casefold()}
+        for label in other_labels:
+            if label in folded:
+                raise ValidationError(
+                    detail=(
+                        f"{field} {value!r} references brand {record.policy.name!r}"
+                        f" ({record.policy.tenant_id!r}), not the current tenant"
+                        f" {own.policy.name!r} ({own.policy.tenant_id!r})"
+                    )
+                )
+
+
 async def _authorize_mutation(
     request: Request,
     identity: AdminIdentity,
@@ -133,6 +165,7 @@ async def upload_knowledge(
     request: Request,
     identity: MutationIdentity,
     memberships: Memberships,
+    registry: Registry,
     knowledge: Knowledge,
     object_stores: ObjectStores,
     tenant_id: Annotated[str, Form(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")],
@@ -152,7 +185,8 @@ async def upload_knowledge(
 
     Raises:
         NotFoundError: the source is absent or belongs to another tenant.
-        ValidationError: the filename, media type, or content is rejected.
+        ValidationError: the filename, media type, content, or brand consistency
+            is rejected.
     """
     await _authorize_mutation(request, identity, memberships, tenant_id)
     validated_filename(file.filename or "")
@@ -165,6 +199,10 @@ async def upload_knowledge(
     content = await file.read(_MAX_UPLOAD_BYTES + 1)
     if len(content) > _MAX_UPLOAD_BYTES:
         raise ValidationError(detail="upload exceeds the size budget")
+
+    source = await knowledge.load_source(tenant_id, source_id)
+    _check_brand_consistency(registry, tenant_id, "title", title)
+    _check_brand_consistency(registry, tenant_id, "source display_name", source.display_name)
 
     checksum = ContentChecksum.of(content)
     key = StorageKey.build(
@@ -263,6 +301,7 @@ async def create_source(
     identity: MutationIdentity,
     memberships: Memberships,
     payload: KnowledgeSourceCreateRequest,
+    registry: Registry,
     knowledge: Knowledge,
     audit: Audit,
     request_id: RequestId,
@@ -275,8 +314,10 @@ async def create_source(
 
     Raises:
         NotFoundError: the tenant is absent or inactive.
+        ValidationError: the display_name references another tenant's brand.
     """
     await _authorize_mutation(request, identity, memberships, payload.tenant_id)
+    _check_brand_consistency(registry, payload.tenant_id, "display_name", payload.display_name)
     source = await knowledge.register_source(
         payload.tenant_id,
         domain=KnowledgeDomain.parse(payload.domain),

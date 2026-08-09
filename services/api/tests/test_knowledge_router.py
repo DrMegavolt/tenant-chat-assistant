@@ -457,3 +457,157 @@ def _seed_finding(client: TestClient) -> uuid.UUID:
         return staged.version_id
 
     return asyncio.run(arrange())
+
+
+def test_source_with_another_tenants_brand_name_is_refused(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+
+    response = client.post(
+        "/api/admin/knowledge/sources",
+        headers=headers,
+        json={
+            "tenant_id": "clearview",
+            "domain": "financing",
+            "kind": "upload",
+            "display_name": "Apex Service Policy",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_error"
+
+
+def test_source_display_name_with_own_brand_is_allowed(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+
+    response = client.post(
+        "/api/admin/knowledge/sources",
+        headers=headers,
+        json={
+            "tenant_id": "clearview",
+            "domain": "financing",
+            "kind": "upload",
+            "display_name": "Clearview financing options",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["display_name"] == "Clearview financing options"
+
+
+def test_source_with_another_tenants_slug_is_refused(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    _grant(client, membership_store, "apex")
+    headers = _mutation_headers(client, operator_headers)
+
+    response = client.post(
+        "/api/admin/knowledge/sources",
+        headers=headers,
+        json={
+            "tenant_id": "apex",
+            "domain": "financing",
+            "kind": "upload",
+            "display_name": "clearview service hours",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_error"
+
+
+def test_upload_to_source_with_foreign_brand_display_name_is_refused(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+
+    async def arrange_source() -> uuid.UUID:
+        source = await _knowledge(client).register_source(
+            "clearview",
+            domain=FINANCING,
+            kind=SourceKind.UPLOAD,
+            display_name="Apex Home Services Guide",
+        )
+        return source.source_id
+
+    foreign_source_id = asyncio.run(arrange_source())
+
+    response = client.post(
+        "/api/admin/knowledge/uploads",
+        headers=headers,
+        data={
+            "tenant_id": "clearview",
+            "source_id": str(foreign_source_id),
+            "external_key": "terms.md",
+            "title": "Service terms",
+        },
+        files={"file": ("terms.md", b"# Service terms", "text/markdown")},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_error"
+
+
+def test_upload_with_foreign_tenant_name_in_title_is_refused(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+    source_id = _register_source(client, tenant_id="clearview")
+
+    response = client.post(
+        "/api/admin/knowledge/uploads",
+        headers=headers,
+        data={
+            "tenant_id": "clearview",
+            "source_id": str(source_id),
+            "external_key": "apex-policy.md",
+            "title": "Apex Home Services policy",
+        },
+        files={"file": ("apex-policy.md", b"# Apex policy", "text/markdown")},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_error"
+
+
+def test_upload_with_own_brand_in_title_is_allowed(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+    source_id = _register_source(client, tenant_id="clearview")
+
+    response = client.post(
+        "/api/admin/knowledge/uploads",
+        headers=headers,
+        data={
+            "tenant_id": "clearview",
+            "source_id": str(source_id),
+            "external_key": "clearview-service-policy.md",
+            "title": "Clearview Property Care service policy",
+        },
+        files={"file": ("clearview-service-policy.md", b"# Clearview terms", "text/markdown")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "draft"
