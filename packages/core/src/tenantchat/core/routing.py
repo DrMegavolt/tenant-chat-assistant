@@ -152,6 +152,13 @@ _CALENDAR_WORDS = (
     "friday",
     "saturday",
     "sunday",
+    "mon",
+    "tue",
+    "wed",
+    "thu",
+    "fri",
+    "sat",
+    "sun",
     "tomorrow",
     "this week",
     "next week",
@@ -165,6 +172,27 @@ def _calendar_signals(prefix: str) -> tuple[IntentSignal, ...]:
     return tuple(
         _day(f"{prefix}-{signal_id}", word) for signal_id, word in enumerate(_CALENDAR_WORDS)
     )
+
+
+def _boost_workflow_continuation(
+    scored: list[IntentCandidate],
+    previous_intent: IntentName,
+    bonus: float,
+) -> list[IntentCandidate]:
+    """Add a continuation bonus to the active workflow's candidate."""
+    cancel = next((c for c in scored if c.intent is IntentName.CANCEL), None)
+    if cancel is not None and cancel.score >= 6:
+        return scored
+    return [
+        IntentCandidate(
+            intent=candidate.intent,
+            score=candidate.score + bonus,
+            matched_signals=candidate.matched_signals,
+        )
+        if candidate.intent is previous_intent and candidate.score > 0
+        else candidate
+        for candidate in scored
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +235,11 @@ class RoutingPolicy:
            -> ask which intent was meant.
         6. Nothing matched at all -> general, answered by the assistant.
 
+        An active workflow receives a continuation bonus against its own
+        intent's candidate so that a message supplying workflow fields (a
+        ZIP code during a booking, an address during lead capture) does not
+        displace the workflow to a different agent.
+
         ``clarification_pending`` records that the previous turn already asked;
         an answer that is still ambiguous becomes a handoff instead of a second
         question, so a customer cannot be asked forever.
@@ -224,14 +257,25 @@ class RoutingPolicy:
         """
         scored = [_score_candidate(message, profile) for profile in self.profiles]
         scored.sort(key=lambda candidate: (-candidate.score, _INTENT_ORDER[candidate.intent.value]))
+
+        if previous_intent is not None:
+            scored = _boost_workflow_continuation(scored, previous_intent, self.direct_threshold)
+            scored.sort(
+                key=lambda candidate: (-candidate.score, _INTENT_ORDER[candidate.intent.value])
+            )
+
         top, second = scored[0], scored[1]
         gap = top.score - second.score
 
         chosen: IntentName | None
         if top.score >= self.direct_threshold and gap >= self.conflict_gap:
-            rule = RoutingRule.MATCHED
             chosen = top.intent
             outcome = RoutingOutcome.DIRECT
+            rule = (
+                RoutingRule.CONTINUATION
+                if previous_intent is not None and top.intent is previous_intent
+                else RoutingRule.MATCHED
+            )
         elif previous_intent is not None and (
             top.intent is previous_intent or top.score < self.clarify_threshold
         ):
