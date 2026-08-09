@@ -908,7 +908,9 @@ class TestHarnessTenantIsolation:
 
 
 class TestCase2StaleSource:
-    def test_case_2_stale_evidence_produces_no_evidence_items(self) -> None:
+    def test_case_2_stale_evidence_produces_no_evidence_items_and_answers_from_tenant_facts(
+        self,
+    ) -> None:
         knowledge = InMemoryKnowledgeStore()
         index = InMemorySearchIndex()
         message = asyncio.run(_plant_case_2(knowledge, index))
@@ -929,13 +931,13 @@ class TestCase2StaleSource:
                 len(evidence) == 0
             ), f"expected empty evidence (stale source), got {len(evidence)} items"
             assert (
-                content["outcome"]["status"] == "abstained"
-            ), f"stale source must cause abstention, got {content['outcome']['status']}"
+                content["outcome"]["status"] == "answered"
+            ), f"stale source answers from tenant facts, got {content['outcome']['status']}"
             _assert_trace_schema_and_graph(record)
 
 
 class TestCase3MissingGeneration:
-    def test_case_3_missing_index_generation_abstains(self) -> None:
+    def test_case_3_missing_index_generation_answers_from_tenant_facts(self) -> None:
         knowledge = InMemoryKnowledgeStore()
         index = InMemorySearchIndex()
         message = asyncio.run(_plant_case_3(knowledge, index))
@@ -960,12 +962,8 @@ class TestCase3MissingGeneration:
             assert retrieval_map.get("sufficient") is False, "missing generation is insufficient"
 
             assert (
-                content["outcome"]["status"] == "abstained"
-            ), f"expected abstained without index, got {content['outcome']['status']}"
-            causes = {entry["cause"] for entry in content.get("diagnoses", [])}
-            assert (
-                DiagnosisCause.RETRIEVAL_MISS.value in causes
-            ), f"missing retrieval_miss diagnosis; got {causes}"
+                content["outcome"]["status"] == "answered"
+            ), f"expected answered from tenant facts, got {content['outcome']['status']}"
             _assert_trace_schema_and_graph(record)
 
 

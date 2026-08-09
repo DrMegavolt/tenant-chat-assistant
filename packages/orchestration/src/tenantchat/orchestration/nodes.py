@@ -958,17 +958,14 @@ class DispatchNodes:
     def _should_abstain(agent: AgentSpec | None, bundle: EvidenceBundle | None) -> bool:
         """Whether this turn must refuse rather than call the model.
 
-        Only the general-knowledge agent abstains: every other agent answers
-        from tool results or a workflow, which evidence does not gate. ``None``
-        is a composition without retrieval, which answers as it did before
-        `RAG-005`.
+        The general-knowledge agent no longer abstains on insufficient
+        retrieval: the tenant's own business facts (hours, phone, address) are
+        server-owned truth bound into the prompt and do not require retrieved
+        evidence. The model answers from those facts when retrieval is
+        insufficient; claim validation in finalize still catches unsupported
+        sensitive claims.
         """
-        return (
-            agent is not None
-            and agent.intent is IntentName.GENERAL
-            and bundle is not None
-            and not bundle.sufficient
-        )
+        return False
 
     @classmethod
     def _should_abstain_after_assembly(
@@ -976,16 +973,11 @@ class DispatchNodes:
     ) -> bool:
         """Whether admission dropped the evidence the verdict relied on.
 
-        The verdict speaks about the retrieved pool; the model only sees what
-        the prompt budget admitted. If nothing was admitted, the context is
-        empty and the model must not be called regardless of the verdict.
+        The general-knowledge agent no longer abstains when evidence is dropped
+        by the prompt budget: the tenant's own business facts remain in the
+        prompt regardless, and the model may answer from those.
         """
-        if agent is None or agent.intent is not IntentName.GENERAL or bundle is None:
-            return False
-        return not any(
-            segment.segment_id.startswith("evidence:")
-            for segment in outcome.prompt.messages[0].segments
-        )
+        return False
 
     @staticmethod
     def _evidence_update(

@@ -664,14 +664,12 @@ class TestRetrieval:
         )
         return TestClient(app, raise_server_exceptions=False)
 
-    def test_insufficient_evidence_records_verdict_latency_and_abstention(
+    def test_insufficient_evidence_answers_from_tenant_business_facts(
         self, model: ScriptedModel
     ) -> None:
-        """The abstention boundary is observable: verdict, latency, and class.
-
-        A question with no evidence never calls the model; the retrieval run
-        records ``insufficient`` and the turn records ``abstained``.
-        """
+        """When retrieval is insufficient, the model answers from the tenant's
+        business facts (hours, phone, address) which are bound into the prompt.
+        The retrieval verdict is still recorded as insufficient."""
         knowledge = InMemoryKnowledgeStore()
         index = InMemorySearchIndex()
         evidence = RetrievalEvidenceSource(
@@ -689,8 +687,8 @@ class TestRetrieval:
         )
 
         assert response.status_code == 200
-        assert "I do not have approved material" in response.json()["reply"]
-        assert model.calls == []
+        assert response.json()["reply"] == "We are open until 7pm."
+        assert len(model.calls) == 1
         values = sample_values()
         assert (
             values[
@@ -701,26 +699,23 @@ class TestRetrieval:
             ]
             == 1
         )
-        assert (
-            values[("tenantchat_turn_outcomes_total", frozenset({("outcome", "abstained")}))] == 1
-        )
+        assert values[("tenantchat_turn_outcomes_total", frozenset({("outcome", "answered")}))] == 1
         assert any(
             sample.name.startswith("tenantchat_retrieval_latency_seconds")
             and sample.labels.get("status") == "ok"
             for sample in tenantchat_samples()
         )
-        assert not any(
-            sample.name == "tenantchat_llm_calls_total" for sample in tenantchat_samples()
-        )
+        assert any(sample.name == "tenantchat_llm_calls_total" for sample in tenantchat_samples())
 
-    def test_a_retrieval_outage_records_unavailable_and_still_abstains(
+    def test_a_retrieval_outage_records_unavailable_and_answers_from_tenant_facts(
         self, model: ScriptedModel
     ) -> None:
         """An index failure is its own status: the error is countable.
 
-        The graph abstains exactly as it does for insufficient evidence; the
-        metric keeps the two causes distinguishable, because an outage and a
-        quality gap need different pages on call.
+        The model answers from the tenant's business facts when the index is
+        down, because those facts are bound into the prompt independently of
+        retrieval. The retrieval metric keeps the outage distinguishable from
+        a quality gap.
         """
         knowledge = InMemoryKnowledgeStore()
         index = InMemorySearchIndex()
@@ -749,9 +744,7 @@ class TestRetrieval:
             ]
             == 1
         )
-        assert (
-            values[("tenantchat_turn_outcomes_total", frozenset({("outcome", "abstained")}))] == 1
-        )
+        assert values[("tenantchat_turn_outcomes_total", frozenset({("outcome", "answered")}))] == 1
 
     def test_sufficient_evidence_records_the_verdict_and_candidates(
         self, model: ScriptedModel
