@@ -42,6 +42,8 @@ _GEN_AI_USAGE_OUTPUT = "gen_ai.usage.output_tokens"
 _GEN_AI_USAGE_TOTAL = "gen_ai.usage.total_tokens"
 _GEN_AI_ERROR_TYPE = "gen_ai.error.type"
 
+_OPENINFERENCE_SPAN_KIND = "openinference.span.kind"
+
 # Every attribute this module ever sets on a span. A test asserts that none of
 # these match content-bearing keys like ``gen_ai.prompt`` and that every one is
 # on the collector's allowlist.
@@ -55,6 +57,7 @@ EMITTED_ATTRIBUTES: Final[tuple[str, ...]] = (
     _GEN_AI_USAGE_OUTPUT,
     _GEN_AI_USAGE_TOTAL,
     _GEN_AI_ERROR_TYPE,
+    _OPENINFERENCE_SPAN_KIND,
     _TENANT_ID,
     _SESSION_ID,
 )
@@ -102,14 +105,16 @@ class SpanRecordingChatModel:
         *,
         tools: Sequence[ToolSpec],
     ) -> ModelResponse:
+        span_name = f"chat {prompt.template_ref}"
         tracer = _tracer()
         with tracer.start_as_current_span(
-            "chat",
+            span_name,
             kind=SpanKind.CLIENT,
             attributes={
                 _GEN_AI_SYSTEM: self._system,
                 _GEN_AI_OPERATION: "chat",
                 _GEN_AI_REQUEST_MODEL: self._request_model,
+                _OPENINFERENCE_SPAN_KIND: "LLM",
             },
             record_exception=False,
             set_status_on_exception=False,
