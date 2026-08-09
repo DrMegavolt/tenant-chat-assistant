@@ -116,3 +116,7 @@ kubectl -n "$NS" rollout status deploy/kibana --timeout=600s
 kubectl -n "$NS" delete job seed-knowledge --ignore-not-found=true
 kubectl apply -f "$SEED_MANIFEST"
 kubectl -n "$NS" wait --for=condition=complete job/seed-knowledge --timeout=900s
+
+echo ""
+echo "provisioning Grafana dashboards..."
+"$ROOT_DIR/k8s/grafana/provision.sh" --verify
