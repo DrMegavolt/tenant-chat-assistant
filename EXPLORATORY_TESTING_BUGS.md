@@ -6,7 +6,7 @@
 
 - Test date: **2026-08-09**
 - Deployment: local MicroK8s, latest deployed application version
-- Visitor app: `http://192.168.1.180`
+- Visitor app: `https://chat.192.168.1.170.nip.io/`
 - Admin console: `https://chat.192.168.1.170.nip.io/admin/`
 - Tenants exercised: **Apex** (`apex`) and **Clearview** (`clearview`)
 - Admin identity observed: `tenantchat-operator`
@@ -14,6 +14,119 @@
 - Do not put passwords, bearer credentials, cookies, or Kubernetes Secret values in source, logs, screenshots, test fixtures, or commits. Obtain demo credentials through the normal local operator/Secret workflow.
 
 The cluster was healthy during testing. Application pods had zero restarts and there were no current warning events. Elasticsearch and PostgreSQL showed five older restarts each, but no active failure was observed.
+
+## Post-fix revalidation — 2026-08-09
+
+This pass restarted from fresh HTTPS tabs and exercised both tenants, the admin console, tool-backed flows, consent gates, handoff, audit, knowledge, AI turn details, and the live Grafana deployment. The local Qwen model was allowed up to roughly 50 seconds per turn before treating a response as failed.
+
+| ID | Revalidation status | Fresh evidence |
+|---|---|---|
+| BUG-001 | **Pass** | Clearview handoff `HO-6F43D410E8FE46F3BAEEAAD019FE8D6D` was accepted, stopped AI invocation, delivered a staff reply to the visitor, and resolved cleanly on session `cd8d72e3-47a8-4303-8a3d-cbd9f38e8b7e`. |
+| BUG-002 | **Pass** | Clearview HVAC booking committed exactly once as `BK-48AB2F4EE2414B60AB2D1CD6C4F0D24E`; trace `8f382f827465221541af53db3f8cfc56` showed one committed `book_appointment` effect. |
+| BUG-003 | **Partial / fail** | The assistant no longer claimed a false success, but lead creation still failed after explicit consent and told the visitor to call instead. |
+| BUG-004 | **Blocked by BUG-016** | Every fresh service-area probe failed at the session boundary before a supported answer/citation could be validated. |
+| BUG-005 | **Fail** | Clearview documents still report `{indexed: 0}` while their chunks are retrievable in a live booking trace; running the integrity check did not reconcile the counts. |
+| BUG-006 | **Fail** | Clearview still lists and retrieves `Northline Service Policy`; a Clearview citation modal also labels its publication as Northline. |
+| BUG-007 | **Pass** | The disclosure now states that all typed messages are transmitted/stored, staff can read them, closing the tab does not delete them, and browser-local conversation credentials can be removed. |
+| BUG-008 | **Fail** | A settled Clearview→Apex switch worked, but a fresh Apex→Clearview switch followed by a turn repeatedly returned `session absent or outside tenant` and did not self-recover. |
+| BUG-009 | **Pass** | Apex correctly returned configured weekday and Saturday hours. |
+| BUG-010 | **Not deterministically revalidated** | Slow Qwen turns completed or surfaced a separate session failure; safe replay deadline behavior was not forced independently. |
+| BUG-011 | **Pass after deployment repair** | All five ConfigMaps and all five Grafana UIDs were verified live through authenticated in-pod API calls. |
+| BUG-012 | **Partial** | Tenant Chat dashboards are present; the wider Tempo/Phoenix/MLflow/Pyroscope quality gaps were not re-audited in this pass. |
+| BUG-013 | **Not revalidated** | No old-bundle/new-server deployment window was available during the pass. |
+| BUG-014 | **Fail** | Live cluster still has orphan `chat-backend` Service port 8000 while `chat-admin` correctly uses 8004. |
+| BUG-015 | **Pass** | Twenty booking slots rendered as distinct numbered lines at widget width. |
+
+New defects found in this pass are BUG-016 through BUG-019 below.
+
+## Post-fix revalidation — 2026-08-17
+
+Verified against the repository and the live MicroK8s cluster: the applied
+migration head, the Elasticsearch mapping and contents, the Postgres knowledge
+and audit tables, Prometheus target health, and a full `make harness-live` run
+across both tenants.
+
+| ID | Status | Evidence |
+|---|---|---|
+| BUG-003 | **Pass** | `confirm_lead`/`commit_lead` are registered graph nodes; the lead pauses for consent and commits through the idempotent service. Graph is `dispatch@3`. |
+| BUG-004 | **Pass** | Fresh probes on both tenants (`5118b2f2-46ad-44af-ab2e-937d7b86ba2e`, `f86dbac7-3217-4a60-bcdd-78f103c7b295`) completed without the delayed 404 and cited nothing at all, so no irrelevant financing passage supports a service-area claim. The probes did expose BUG-020 below. |
+| BUG-005 | **Pass** | Root cause was the index mapping, not the counter: `version_id` was `text`, so the integrity check's `term` query matched nothing and reported `indexed: 0`. After the index was recreated, per-version counts match the database (6/9/7) and the check reports no findings. |
+| BUG-006 | **Pass** | The source is renamed `Clearview Service Policy`, the Northline document is tombstoned, and the index returns zero hits for `northline` in either text or title. |
+| BUG-008 | **Pass** | A 404 on a stored credential now discards it, opens a fresh session, and delivers the message once. |
+| BUG-010 | **Not revalidated** | Forcing a model timeout deterministically still needs a fault-injection hook. |
+| BUG-012 | **Not revalidated** | Tenant Chat dashboards are provisioned; the wider Tempo/Phoenix/MLflow/Pyroscope audit was not repeated. |
+| BUG-013 | **Not revalidated** | No old-bundle/new-server deployment window was available. BUG-008's credential recovery may cover it; unconfirmed. |
+| BUG-014 | **Pass** | The orphan `chat-backend` Service is gone. `scripts/reconcile_local_k8s.py` now fails the release if an orphaned Service or monitor survives. |
+| BUG-016 | **Pass** | Migration `0019` admits `refused` and `failed`; the store no longer relabels a non-foreign-key `IntegrityError` as a session 404. Both outcomes are present in `turn_records`. |
+| BUG-017 | **Pass** | Handoff lifecycle notices carry a system author and render as System. |
+| BUG-018 | **Pass** | The action taxonomy has one home in `tenantchat.api.store.AUDIT_ACTIONS`; `tests/test_audit_taxonomy.py` fails if a router emits outside it or the console omits any of it. |
+| BUG-019 | **Pass** | Booking and availability leave the routing candidate set when the tenant has booking disabled. |
+
+### Found in this pass
+
+- **Retrieval was failing on every live turn.** `active_chunks` sorted on
+  `chunk_id`, which is the Elasticsearch `_id` and not a stored field, so
+  Elasticsearch rejected the whole search and each turn recorded
+  `retriever_version: "unavailable"` with no evidence and no citations. A
+  long-lived index carried a stale dynamically-mapped `chunk_id`, so the fault
+  only appeared once the index was recreated from the adapter's own mapping —
+  the BUG-005 repair is what exposed it. Fixed; ordering moved into Python.
+- **The job worker exposed no `/metrics`** while a Service and ServiceMonitor
+  scraped port 8005, leaving a permanently down Prometheus target and no
+  durable-job metrics. Fixed.
+- **Financing questions could not be routed.** The demo's only governed
+  knowledge is financing policy, and the router had no financing vocabulary, so
+  "what financing options are available" scored highest as `availability`
+  picking up "available" and clarified instead of retrieving. Fixed.
+- **BUG-020**, below: a service-area claim confirmed by its own tool is refused.
+
+After these fixes `make harness-live` runs **20 checks, 0 failures** across both
+tenants, with case 1 returning a grounded answer and two citations.
+
+---
+
+## BUG-020 — Medium: a tool-confirmed service-area claim is refused as unsupported
+
+### Impact
+
+"Do you serve my ZIP?" — a core home-services question — always ends in the
+server-written refusal, on both tenants. The system is safe but wrong: it
+withholds a true answer its own deterministic tool just produced.
+
+### Observed evidence
+
+Turn `5118b2f2-46ad-44af-ab2e-937d7b86ba2e` (`clearview`, "Do you serve ZIP
+97205?"):
+
+- routed `service_area`; `retriever_version: v1`
+- `check_service_area(zip=97205)` returned `{"served": true, "zip": "97205", ...}`
+- the model answered "Yes, we serve ZIP code 97205."
+- `verdicts.claims_invalid`: `[{"kind": "service_area", "value": "Yes, we serve ZIP code 97205."}]`
+- outcome `refused`
+
+`f86dbac7-3217-4a60-bcdd-78f103c7b295` (`apex`, ZIP 98103) is identical.
+
+### Working theory
+
+`nodes.py` calls `validate_sensitive_claims` with `evidence_texts` drawn only
+from admitted retrieval evidence. Tool results are never offered as grounding,
+so a claim that only a tool can support has nothing to match and fails
+`_sentence_supported`'s 0.7 token-overlap threshold. A deterministic tool result
+is stronger grounding than retrieved prose, and the validator cannot see it.
+
+Note that simply appending the tool-result JSON to `evidence_texts` does **not**
+fix it: the claim sentence and the JSON share too few tokens to clear the
+threshold, and it would let unrelated claims borrow support from any tool
+output. The service area needs an authoritative channel of its own, in the
+shape of the existing `trusted_prices` argument.
+
+### Acceptance criteria
+
+- A service-area claim whose ZIP the service-area tool confirmed is supported,
+  and the answer is published.
+- A service-area claim the tool contradicted, or one naming a ZIP the tool was
+  never asked about, is still refused.
+- Tool results do not become general-purpose grounding for other claim kinds.
 
 ## How implementation agents should use this document
 
@@ -44,6 +157,11 @@ The cluster was healthy during testing. Application pods had zero restarts and t
 | BUG-013 | Low | Deployment compatibility | An already-open widget sent the old session payload to the new API and received 422 until reload | Confirmed once |
 | BUG-014 | Low | Kubernetes hygiene | A stale live `chat-backend` Service targets port 8000 while the current pod listens on 8004 | Confirmed in cluster; source manifest no longer creates it |
 | BUG-015 | Low | Widget UX | Availability choices render as a dense run-on list | Confirmed visually |
+| BUG-016 | High | Service area/session | Service-area turns end in a delayed session-ownership 404 | Confirmed across tenants and sessions |
+| BUG-017 | Medium | Admin transcript | Handoff system notices are attributed to Visitor | Confirmed |
+| BUG-018 | Low | Admin audit | Action filter omits event types present in the table | Confirmed |
+| BUG-019 | Medium | Policy/config | Apex offers booking even though booking is disabled | Confirmed after injection refusal |
+| BUG-020 | Medium | Claim validation | A service-area claim its own tool confirmed is refused as unsupported | Confirmed on both tenants |
 
 ---
 
@@ -610,6 +728,23 @@ Relevant assets:
 
 The runbook requires a separate execution of `./k8s/grafana/provision.sh`; the latest application release did not leave these dashboards available.
 
+### Post-fix root cause and verification
+
+Two independent problems produced the timeout:
+
+- The dashboard sidecar could not watch Kubernetes ConfigMaps because its TLS client rejects the local MicroK8s API CA: `CA cert does not include key usage extension`.
+- The verifier queried Grafana's authenticated search API without credentials and received HTTP 401.
+
+The local deployment now keeps the labeled ConfigMaps as desired state, stages their JSON into Grafana's shared dashboard volume, requests a provisioning reload through the authenticated localhost API using credentials already injected into the sidecar, and verifies the five expected UIDs through the same local authenticated path. It does not disable TLS or decode credentials in the deployment process.
+
+Live verification passed:
+
+```text
+All dashboards provisioned and Grafana reload requested.
+All 5 dashboards verified in Grafana.
+PASS: all 5 expected Grafana dashboards are present.
+```
+
 ### Fix hints
 
 - Make provisioning an idempotent, verified release step or package the dashboards through the cluster's normal Grafana sidecar/ConfigMap mechanism.
@@ -758,6 +893,87 @@ The 20 returned appointment slots appear as dense, run-on `*` text rather than a
 
 ---
 
+## BUG-016 — High: service-area turns end in a delayed session-ownership 404
+
+### Impact
+
+Visitors cannot reliably check whether either tenant serves a ZIP code. The widget waits for a full model turn, then shows a generic connectivity failure even though the backend reports an authoritative session/tenant mismatch. In at least one case the admin transcript retained the visitor message and an abstention that the visitor never received.
+
+### Reproduction and evidence
+
+1. Start a fresh Apex or Clearview HTTPS session, or complete one successful turn first.
+2. Ask `Do you serve 98103?` for Apex or `Do you serve ZIP 97205?` for Clearview.
+3. Wait for the local model.
+
+Observed repeatedly:
+
+- Visitor: `I could not reach the chat service...`
+- Backend: HTTP 404, `session absent or outside tenant`
+- Example traces: `f14ed6ce...`, `7a2a998b...`, `1b6d5aed...`, `9de40dade...`
+- Retrying the same turn did not recover.
+- The selected admin projection showed no current `check_service_area` call for one failed turn.
+
+### Acceptance criteria
+
+- A valid current visitor credential resolves to exactly one authoritative tenant/session before orchestration starts.
+- Service-area questions for both tenants either return the tool-backed answer or a truthful bounded tool failure, never a delayed session-ownership 404.
+- Tenant switching creates or selects a compatible server session atomically and retries do not remain poisoned.
+- If a turn is rejected, no hidden assistant response is persisted only in the admin projection.
+
+---
+
+## BUG-017 — Medium: admin transcript attributes handoff system notices to Visitor
+
+### Impact
+
+Operators see system-generated handoff lifecycle messages as visitor speech, which can mislead transcript review and auditing.
+
+### Observed evidence
+
+In the successful Clearview handoff session `cd8d72e3-47a8-4303-8a3d-cbd9f38e8b7e`, both `A member of the team has joined...` and `A member of the team is now with you...` appeared with the **Visitor** label. The actual staff reply was correctly labeled **Staff**.
+
+### Acceptance criteria
+
+- System, visitor, assistant, and staff messages retain distinct author types from persistence through every admin projection.
+- Handoff lifecycle notices are visually and semantically identified as system events.
+
+---
+
+## BUG-018 — Low: audit Action filter omits event types already present in the table
+
+### Impact
+
+The audit trail records events that an operator cannot select in the advertised Action filter, making incident review unnecessarily manual.
+
+### Observed evidence
+
+The Clearview audit table contained `handoff.accepted`, `handoff.resolved`, `knowledge.version_published`, and `knowledge.version_approved`, but those values were absent from the Action dropdown. Filtering for the available `staff_reply_sent` value worked and returned the expected handoff session.
+
+### Acceptance criteria
+
+- Every filterable action present in the current result set or action taxonomy is available in the Action control.
+- Newly added action types cannot silently diverge from the filter options.
+
+---
+
+## BUG-019 — Medium: Apex offers booking even though tenant booking is disabled
+
+### Impact
+
+The assistant can invite a visitor into an unavailable workflow, creating a false expectation and potentially collecting unnecessary contact/address data.
+
+### Observed evidence
+
+After correctly refusing a prompt-injection request to reveal system instructions/passwords or bypass consent, Apex said it could schedule an appointment if the visitor supplied service, slot, name, contact details, and address. The Apex admin configuration has Booking disabled. No booking tool or domain action was invoked in this probe.
+
+### Acceptance criteria
+
+- Tenant capability flags constrain both tool availability and assistant claims.
+- A tenant with booking disabled never solicits booking-only fields or promises scheduling.
+- Prompt-injection refusal tests also assert that the safe continuation respects tenant capabilities.
+
+---
+
 ## Verify before fixing
 
 These observations were not proven enough to assign as independent defects. Confirm them before changing behavior.
@@ -807,21 +1023,22 @@ Exploratory testing intentionally changed demo data. Agents should account for t
 - Review `efa888f5-1f35-4d62-b475-dd843e7abde0` is `Awaiting fix` / `Amended`.
 - Integrity findings were persisted for Apex and Clearview.
 - Handoff `HO-BC3D91E616D34B928F1AF13320B3007E` was resolved; the queue was clean at test completion.
+- Handoff `HO-6F43D410E8FE46F3BAEEAAD019FE8D6D` was accepted, received one QA staff reply, and was resolved; the queue was clean at test completion.
+- Clearview booking `BK-48AB2F4EE2414B60AB2D1CD6C4F0D24E` was committed once using fake QA contact/address data.
 - Several QA sessions were created by isolation probes.
-- Demo chat data contains `qa-tester@example.invalid`, `qa-tester-clearview@example.invalid`, and `480 Test Avenue`.
-- No source-code or cluster-configuration changes were made during exploratory testing.
+- Demo chat data contains `qa-tester@example.invalid`, `qa-tester-clearview@example.invalid`, `exploratory-qa@example.invalid`, `booking-qa@example.invalid`, and `480 Test Avenue`.
+- Browser exploration did not modify source. The dashboard deployment scripts and their focused regression test were changed separately to repair BUG-011.
 - A temporary Kibana port-forward was stopped.
 - Destructive knowledge actions and privacy-delete operations were intentionally not executed.
 
 ## Suggested implementation order
 
-1. **BUG-001** — restore the handoff safety invariant first.
-2. **BUG-003** — prevent false durable-action promises.
-3. **BUG-002** — stabilize booking workflow ownership.
-4. **BUG-004** and **BUG-009** — repair grounding and trusted-fact contracts together only if they share a clearly bounded finalization change.
-5. **BUG-005** and **BUG-006** — verify index truth, then clean contaminated demo content.
-6. **BUG-007** and **BUG-008** — align visitor UX with actual session/data behavior.
-7. **BUG-010** through **BUG-015** — observability, deployment, and UX hardening.
+1. **BUG-016** and **BUG-008** — repair session identity and tenant switching, then unblock service-area citation retesting.
+2. **BUG-003** — make the consented lead flow complete durably, retaining the new truthful failure behavior.
+3. **BUG-005** and **BUG-006** — reconcile index truth and remove contaminated Clearview/Northline demo content.
+4. **BUG-014** — remove or source-manage the orphan Service after checking dependencies.
+5. **BUG-017** through **BUG-019** — correct admin attribution/filter taxonomy and capability-aware assistant behavior.
+6. Re-run **BUG-004**, **BUG-010**, **BUG-012**, and **BUG-013** once their prerequisites can be exercised deterministically.
 
 ## Definition of done for each assigned bug
 
