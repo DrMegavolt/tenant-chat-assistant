@@ -2,6 +2,7 @@ import os
 import time
 from typing import Any
 
+import torch  # type: ignore[import-not-found]
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -53,11 +54,16 @@ def require_embedding_caller(authorization: str | None = Header(default=None)) -
 def get_model() -> SentenceTransformer:
     global MODEL
     if MODEL is None:
+        # Qwen3-Embedding's weights are published in bfloat16; on a CPU
+        # deployment the matmul then fails ("expected m1 and m2 to have the
+        # same dtype, but got: float != c10::BFloat16") because the inputs
+        # stay fp32. Load fp32 so weights and inputs agree.
         MODEL = SentenceTransformer(
             MODEL_NAME,
             device=DEVICE,
             revision=MODEL_REVISION,
             trust_remote_code=False,
+            model_kwargs={"torch_dtype": torch.float32},
         )
     return MODEL
 
