@@ -49,8 +49,9 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 export const VISITOR_CREDENTIAL_HEADER = "X-Visitor-Credential";
 
 /**
- * The backend rejected the presented credential — missing, forged, or expired.
- * The caller can recover by opening a fresh session.
+ * The backend rejected the presented credential — missing, forged, expired, or
+ * naming a conversation that no longer exists. The caller can recover by
+ * opening a fresh session.
  */
 export class CredentialRejectedError extends Error {
   readonly status: number;
@@ -256,7 +257,12 @@ export class ChatApi {
 
   private static async unwrap(response: Response, label: string): Promise<unknown> {
     if (!response.ok) {
-      if (response.status === 401) throw new CredentialRejectedError(response.status);
+      // 401 is a credential the server no longer accepts; 404 is a credential
+      // whose conversation no longer resolves (deleted or moved). Both mean the
+      // stored token is useless and the caller must open a fresh session.
+      if (response.status === 401 || response.status === 404) {
+        throw new CredentialRejectedError(response.status);
+      }
       throw new Error(`${label} failed with ${response.status}`);
     }
     return response.json();

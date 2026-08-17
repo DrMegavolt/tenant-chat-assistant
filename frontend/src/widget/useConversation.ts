@@ -377,17 +377,28 @@ export function useConversation({
         // card before showing what the answer produced.
         setEntries((previous) => previous.filter((entry) => entry.kind !== "booking"));
         applyTurn(payload);
-      } catch {
-        setEntries((previous) => [
-          ...previous,
-          {
-            kind: "message",
-            id: nextId("assistant"),
-            role: "assistant",
-            source: "assistant",
-            text: CHAT_FAILURE
-          }
-        ]);
+      } catch (error) {
+        if (error instanceof CredentialRejectedError) {
+          // The conversation the stored credential names is gone; the pending
+          // booking cannot be answered on a fresh session. Announce the reset
+          // and drop the confirmation card so the visitor is not left facing a
+          // decision nothing will ever answer.
+          visitor.clear();
+          credentialRef.current = null;
+          setStatus(RESET_STATUS);
+          setEntries((previous) => previous.filter((entry) => entry.kind !== "booking"));
+        } else {
+          setEntries((previous) => [
+            ...previous,
+            {
+              kind: "message",
+              id: nextId("assistant"),
+              role: "assistant",
+              source: "assistant",
+              text: CHAT_FAILURE
+            }
+          ]);
+        }
       } finally {
         setSending(false);
       }

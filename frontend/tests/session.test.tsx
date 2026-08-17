@@ -280,6 +280,52 @@ describe("a stored credential the API would reject", () => {
     const chatCalls = fetchMock.mock.calls.filter(([url]) => url.endsWith("/api/chat"));
     expect(requestCredential(chatCalls[1]?.[1])).toBe(CREDENTIAL);
   });
+
+  test("a credential whose conversation is gone is discarded and the message delivered once again", async () => {
+    // A 404 means the server no longer has the session the stored credential
+    // names (BUG-008/BUG-016): a stored conversation erased server-side, or a
+    // switch back to a tenant whose session was discarded. The widget must
+    // recover the same way it recovers from an expired token instead of
+    // leaving the visitor stuck on a generic failure.
+    window.sessionStorage.setItem("tenant-chat-credential:apex", "tc.v1.stale.stale");
+    const fetchMock = stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        return jsonResponse({
+          session: { session_id: SESSION_ID },
+          credential: CREDENTIAL
+        });
+      }
+      if (url.endsWith("/api/chat")) {
+        const rejected =
+          fetchMock.mock.calls.filter(([chatUrl]) => chatUrl.endsWith("/api/chat")).length === 1;
+        if (rejected) {
+          return jsonResponse({ code: "not_found" }, { ok: false, status: 404 });
+        }
+        return jsonResponse({
+          session_id: SESSION_ID,
+          reply: "Delivered on a fresh session.",
+          pending: null,
+          committed: [],
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
+        });
+      }
+      return null;
+    });
+    await renderDemo();
+
+    submitChat("Still here?");
+
+    await waitFor(() =>
+      expect(inWidget("#messages")?.textContent).toContain("Delivered on a fresh session.")
+    );
+    expect(inWidget("#assistantStatus")?.textContent).toContain("new one has started");
+    expect(window.sessionStorage.getItem("tenant-chat-credential:apex")).toBe(CREDENTIAL);
+    const chatBodies = requestBodies(fetchMock, "/api/chat") as { message: string }[];
+    expect(chatBodies).toHaveLength(2);
+    expect(chatBodies.every((body) => body?.message === "Still here?")).toBe(true);
+  });
 });
 
 describe("browsers that refuse storage", () => {
