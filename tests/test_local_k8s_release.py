@@ -124,6 +124,22 @@ def test_release_scripts_and_smoke_tests_name_only_current_workloads() -> None:
     assert '"$SEED_MANIFEST"' in deploy
 
 
+def test_the_local_release_reconciles_orphaned_networking_objects() -> None:
+    """BUG-014: apply deletes nothing, so a release must fail on stale drift.
+
+    The one-time cleanup deleted the orphan chat-backend Service and the
+    monitors for the removed services; the reconciliation step is what stops a
+    fresh cluster from accumulating the same objects again.
+    """
+    deploy = (ROOT / "scripts/deploy_local_k8s.sh").read_text(encoding="utf-8")
+    reconcile = (ROOT / "scripts/reconcile_local_k8s.py").read_text(encoding="utf-8")
+
+    assert "scripts/reconcile_local_k8s.py" in deploy
+    assert "no ready endpoints" in reconcile
+    assert "selects no" in reconcile
+    assert "namespace" in reconcile
+
+
 def test_deployed_chat_requires_rag_and_uses_its_own_embedding_credential() -> None:
     manifest = (ROOT / "k8s/app.yaml").read_text(encoding="utf-8")
     chat = manifest.split("kind: Deployment\nmetadata:\n  name: chat-backend", 1)[1].split(
