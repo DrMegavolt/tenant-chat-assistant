@@ -115,41 +115,50 @@ one citation whose source id resolves in the admin explorer.
 ## Case 2 — Stale source detection
 
 **What it proves.** The retrieval pipeline detects that the only retrieved
-evidence has expired and drops it rather than answering from stale content.
-Whether the turn then abstains or answers is decided by what else is available:
-a question the tenant's trusted configuration can answer (BUG-009) is answered
-from those facts, never from the stale passage.
+evidence has expired, drops it, and — when nothing else can answer — refuses
+rather than answering from stale content.
 
-**Harness query.** "What are your hours on weekends?"
+### Hermetic scenario — the proof
 
-**Harness case id.** `case-2-stale-source`.
+**Query.** "What is included in the Care Plan membership?"
 
-**Expected outcome.** `answered` — from trusted tenant configuration, with no
-evidence items: the seeded cluster holds no indexed hours document, so
-retrieval contributes nothing and the config answers instead.
+The query deliberately is *not* an hours question. Hours, phone, address, and
+approved prices are server-owned tenant configuration bound into every prompt,
+so the general agent answers those without any retrieval at all (`BUG-009`) and
+a stale hours document would be invisible. Only the expired Care Plan document
+can answer this one, which is what makes the expiry observable.
 
-**Walkthrough.**
+**Expected outcome.** `abstained`, empty evidence array, `retrieval_miss`
+diagnosis, no model call.
 
-1. Find the case 2 turn record in the admin explorer.
+1. Show:
+   - **`outcome.status: "abstained"`** — the graph refused to answer.
+   - **`retrieval.evidence: []`** and **`retrieval.candidates: []`** — the
+     freshness check dropped the expired chunk before the verdict was taken, and
+     the trace records the admitted set, so both are empty.
+   - **`diagnoses`** includes a `retrieval_miss` entry with status `detected`.
+   - **`retrieval.sufficient: false`** — the stale results were not enough.
+   - **`model.name: ""`** — the model was never called. The refusal is
+     server-written, so the model cannot improvise around the abstention.
 
-2. Show:
-   - **`outcome.status: "answered"`** — the graph reached a terminal answer.
-   - No cited hours passage — nothing indexed states the hours (the seed is
-     financing-only), so the answer cites nothing and came from the tenant's
-     own facts.
-   - The prompt's trusted business-facts section carried the hours; the model
-     answered from that server-owned configuration.
+2. Contrast with case 1: an hours question is answered from tenant
+   configuration even with an empty index, while a question only a document can
+   answer is refused once that document expires. The pipeline's freshness check
+   is what defends against stale knowledge — not a separate cron job or flag.
 
-3. **Hermetic counterpart.** The stale-evidence verdict itself — a planted
-   document expired at `BASE + timedelta(hours=1)` and the freshness check
-   drops it at retrieval time — is covered by
-   `test_case_2_stale_evidence_produces_no_evidence_items_and_answers_from_tenant_facts`.
-   The live cluster cannot reproduce a deliberately expired document without
-   reseeding; the hermetic test is what proves the freshness check operates at
-   retrieval time, not at publish time.
-
-**Test reference.** `test_case_2_stale_evidence_produces_no_evidence_items_and_answers_from_tenant_facts`
+**Test reference.** `test_case_2_stale_evidence_abstains_with_a_retrieval_miss`
 in `services/api/tests/test_harness_cases.py`.
+
+### Live counterpart
+
+**Harness case id.** `case-2-stale-source`. **Query.** "What are your hours on
+weekends?" **Outcome.** `answered` from trusted tenant configuration, with no
+evidence items — the seeded cluster holds no indexed hours document.
+
+The live cluster cannot reproduce a deliberately expired document without
+reseeding, so the live record demonstrates the BUG-009 configuration path
+rather than the freshness check. The hermetic scenario above is what proves
+the expiry behavior.
 
 ---
 
@@ -160,33 +169,41 @@ approve → publish → record_indexed) but whose chunks were never written into
 search index is detected: the pipeline never silently answers from nothing, and
 the turn is attributed correctly.
 
-**Harness query.** "What financing options are available?"
+### Hermetic scenario — the proof
 
-**Harness case id.** `case-3-missing-generation`.
+**Query.** "Does the Care Plan include an annual filter change?"
 
-**Expected outcome.** `answered` with evidence from the seeded financing
-document when it is indexed — the point is that the recorded turn shows exactly
-which generation supplied the evidence. The missing-generation failure itself is
-planted content, not live cluster state.
+Like case 2, the query names something only the unindexed document could
+answer. The published-but-unindexed document here is the Care Plan coverage
+document.
 
-**Walkthrough.**
+**Expected outcome.** `abstained`, `retrieval_miss` diagnosis, no model call.
 
-1. Find the case 3 record in the admin explorer.
-
-2. Show the audience how the record names its evidence: `retrieval.evidence`
+1. Show the audience how the record names its evidence: `retrieval.evidence`
    with the generation id and the embedding model that produced each chunk.
-   That is what makes "this turn was grounded in generation X" answerable.
+   That is what makes "this turn was grounded in generation X" answerable —
+   and here it is empty, because the generation that should exist does not.
 
-3. **Hermetic counterpart.** The planted scenario — a published version whose
-   ingestion worker never wrote chunks, so retrieval returns nothing and the
-   verdict records `retrieval.sufficient: false` with the `retrieval_miss`
-   diagnosis — is covered by
-   `test_case_3_missing_index_generation_answers_from_tenant_facts`. The
-   diagnosis is "the generation that should exist does not" — an ingestion-side
-   quality signal, surfaced by the retrieval verdict, not a crash.
+2. Emphasize the diagnosis: `retrieval_miss` is not "the index was down" — it is
+   "the generation that should exist does not." This is an ingestion-side
+   quality signal, surfaced by the retrieval verdict, not a crash. An index that
+   is genuinely unreachable is the separate `ingestion_or_index_error` cause,
+   raised from `retrieval.retriever_version: "unavailable"`.
 
-**Test reference.** `test_case_3_missing_index_generation_answers_from_tenant_facts`
-in `services/api/tests/test_harness_cases.py`.
+**Test reference.**
+`test_case_3_missing_index_generation_abstains_with_a_retrieval_miss` in
+`services/api/tests/test_harness_cases.py`.
+
+### Live counterpart
+
+**Harness case id.** `case-3-missing-generation`. **Query.** "What financing
+options are available?" **Outcome.** `answered` with evidence from the seeded
+financing document — the recorded turn shows exactly which generation supplied
+it.
+
+The missing-generation failure is planted content, not live cluster state: the
+seed indexes every version it publishes, so the live record demonstrates
+generation attribution rather than its absence.
 
 ---
 
@@ -233,7 +250,7 @@ for it. The cutoff mechanics are proven by the hermetic case.
 that would fit the ranking cutoff but exceed the token budget. The trace
 records the budget applied and which chunks survived.
 
-**Harness query.** "What are your hours and pricing for HVAC?"
+**Harness query.** "What are your hours and pricing?"
 
 **Harness case id.** `case-5-context-budget`.
 
@@ -243,13 +260,11 @@ Two chunks are seeded; the second exceeds the token budget.
 **Walkthrough.**
 
 1. Find the case 5 record. Show:
-   - **`retrieval.evidence`** has fewer entries than the planted chunks — at
-     least one was dropped by the budget.
-   - **`retrieval.budget.max_context_tokens: 10`** — the budget value is
-     recorded alongside the results.
-   - The `retrieval.budget` section also carries `consumed_before_cutoff` and
-     `total_budget_tokens` — the full accounting of what stayed and what was
-     cut.
+   - **`retrieval.evidence`** has one entry against two planted chunks — the
+     second was dropped by the budget.
+   - **`retrieval.budget: {"max_sources": 3, "max_context_tokens": 10}`** — the
+     budget that was applied is recorded alongside the results, so what stayed
+     and what was cut are readable together.
 
 2. This case pairs with case 4: case 4 drops by rank; case 5 drops by budget.
    The trace lets a team distinguish "we ranked it but couldn't afford it" from

@@ -250,13 +250,10 @@ def test_a_deictic_follow_up_resolves_against_the_prior_turn() -> None:
     assert body["reply"] == "The Care Plan covers two tune-ups per year."
     assert [citation["source_id"] for citation in body["citations"]] == ["cv-care-plan"]
 
-    # The same deictic message with no conversation to resolve against answers
-    # from the tenant's business facts: its own words match nothing in the
-    # retrieval pool, so the model answers from what it has (tenant facts).
+    # The same deictic message with no conversation to resolve against abstains:
+    # its own words match nothing, so nothing untrusted was laundered in.
     fresh_client, fresh_model = _client(
-        script=[
-            ModelResponse(content="I don't know what you're referring to.", model_name="scripted")
-        ],
+        script=[ModelResponse(content="should never run", model_name="scripted")],
         chunks=chunks,
     )
     fresh_headers = _open_session(fresh_client)
@@ -264,8 +261,8 @@ def test_a_deictic_follow_up_resolves_against_the_prior_turn() -> None:
         "/api/chat", json={"message": "What about it?"}, headers=fresh_headers
     )
     assert control.status_code == 200
-    assert control.json()["reply"] == "I don't know what you're referring to."
-    assert len(fresh_model.calls) == 1
+    assert control.json()["reply"].startswith("I do not have approved material")
+    assert fresh_model.calls == []
 
 
 def test_a_topic_switch_drops_the_carried_context() -> None:

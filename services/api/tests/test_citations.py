@@ -627,6 +627,61 @@ def test_evidence_excluded_by_the_prompt_budget_answers_from_tenant_facts() -> N
     assert len(model.calls) == 1
 
 
+def test_a_question_outside_the_tenant_facts_abstains_without_calling_the_model() -> None:
+    """The `BUG-009` carve-out is scoped to the questions the tenant's own
+    configuration answers. A question the router matched nothing for has no
+    server-owned fact behind it, so an empty evidence pool leaves the model
+    with nothing to answer from and it must not be asked to try.
+    """
+    client, model, _, _ = _client(
+        script=[ModelResponse(content="should never run", model_name="scripted")]
+    )
+    headers = _open_session(client)
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "What is included in the Care Plan membership?"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"].startswith("I do not have approved material")
+    assert model.calls == []
+
+
+def test_a_question_outside_the_tenant_facts_abstains_when_the_budget_drops_its_evidence() -> None:
+    """The retrieval verdict passed but the prompt budget admitted no passage.
+    A turn with no tenant fact to fall back on must not answer from the empty
+    context the model would actually receive.
+    """
+    knowledge = InMemoryKnowledgeStore()
+    version = _published_version(knowledge, title="Clearview Care Plan")
+    oversized = "The Care Plan membership includes an annual tune-up. " * 400
+    client, model, _, _ = _client(
+        script=[ModelResponse(content="should never run", model_name="scripted")],
+        chunks=(
+            _chunk(
+                "clearview-care-plan-1",
+                oversized,
+                document_id=version.document_id,
+                version_id=version.version_id,
+            ),
+        ),
+        knowledge=knowledge,
+    )
+    headers = _open_session(client)
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "What is included in the Care Plan membership?"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"].startswith("I do not have approved material")
+    assert model.calls == []
+
+
 def test_a_non_general_agent_keeps_answering_without_evidence() -> None:
     """Only the general-knowledge agent is gated by evidence: a booking turn
     answers from tool results and the workflow, exactly as before RAG-005."""

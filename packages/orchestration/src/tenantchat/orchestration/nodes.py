@@ -72,11 +72,12 @@ from tenantchat.core.routing import (
     IntentName,
     RoutingDecision,
     RoutingOutcome,
+    RoutingRule,
     clarify_question,
 )
 from tenantchat.core.tenant import TenantPolicy
 from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
-from tenantchat.orchestration.agents import AGENTS_VERSION, AgentSpec
+from tenantchat.orchestration.agents import AGENTS_VERSION, AgentSpec, AnswerBasis
 from tenantchat.orchestration.dependencies import DispatchDependencies
 from tenantchat.orchestration.model import MessageRole, ToolCall
 from tenantchat.orchestration.otel import set_tenant_identity
@@ -485,6 +486,40 @@ def _agent_for(deps: DispatchDependencies, state: DispatchState) -> AgentSpec | 
     return deps.agents.for_intent(intent)
 
 
+def _route_rule(state: DispatchState) -> RoutingRule | None:
+    """The rule the router recorded for this turn, or ``None`` when it did not run.
+
+    Unreadable is treated as "no rule" for the reason :func:`_agent_for` treats
+    an unrecognized intent as no agent: the safe failure is an answer the graph
+    can still defend, not a crash.
+    """
+    try:
+        return RoutingRule(state["route_rule"])
+    except ValueError:
+        return None
+
+
+def _requires_retrieved_evidence(agent: AgentSpec | None, rule: RoutingRule | None) -> bool:
+    """Whether this turn's answer has to be grounded in retrieved passages.
+
+    An agent that answers from tool results is never gated by retrieval: a
+    booking is carried by its tools and its workflow record, and an empty
+    knowledge base does not make it unbookable.
+
+    A tenant-knowledge agent has two sources, and the routing rule says which
+    one the message reached. ``MATCHED`` means the message carried evidence for
+    the agent's own intent, and for the general agent that evidence set *is* the
+    tenant's business facts — hours, opening times, pricing, phone, address,
+    services — which are server-owned truth already bound into the prompt, so
+    retrieval only enriches them (`BUG-009`). Any other rule placed the turn
+    here without that evidence, which leaves approved documents as the only
+    thing that can answer it.
+    """
+    if agent is None or agent.answers_from is not AnswerBasis.TENANT_KNOWLEDGE:
+        return False
+    return rule is not RoutingRule.MATCHED
+
+
 def unanswered_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
     """Tool calls the model made that nothing has replied to yet.
 
@@ -810,8 +845,9 @@ class DispatchNodes:
             if not preflight.allowed:
                 return self._policy_blocked_update(state, policy, preflight.block_reason)
         agent = _agent_for(self._deps, state)
+        rule = _route_rule(state)
         bundle, plan = await self._retrieve_evidence(state, policy)
-        if self._should_abstain(agent, bundle):
+        if self._should_abstain(agent, bundle, rule):
             self._observe(
                 MetricName.TURN_OUTCOMES,
                 1,
@@ -829,7 +865,7 @@ class DispatchNodes:
                 1,
                 labels={"kind": TruncationKind(excluded.kind.value).value},
             )
-        if self._should_abstain_after_assembly(agent, bundle, outcome):
+        if self._should_abstain_after_assembly(agent, bundle, outcome, rule):
             # The retrieval verdict passed, but the assembled prompt carried no
             # evidence segment — a budget cut, not a retriever failure. The
             # model must still not guess from an empty context.
@@ -1003,29 +1039,44 @@ class DispatchNodes:
         return bundle, plan
 
     @staticmethod
-    def _should_abstain(agent: AgentSpec | None, bundle: EvidenceBundle | None) -> bool:
+    def _should_abstain(
+        agent: AgentSpec | None, bundle: EvidenceBundle | None, rule: RoutingRule | None
+    ) -> bool:
         """Whether this turn must refuse rather than call the model.
 
-        The general-knowledge agent no longer abstains on insufficient
-        retrieval: the tenant's own business facts (hours, phone, address) are
-        server-owned truth bound into the prompt and do not require retrieved
-        evidence. The model answers from those facts when retrieval is
-        insufficient; claim validation in finalize still catches unsupported
-        sensitive claims.
+        A turn that needs retrieved grounding and whose verdict says the pool
+        holds nothing worth answering from gets the server-written refusal,
+        never a model call over an empty context. A ``None`` bundle is a
+        composition without retrieval, which answers as it did before
+        `RAG-005`.
         """
-        return False
+        return (
+            bundle is not None
+            and not bundle.sufficient
+            and _requires_retrieved_evidence(agent, rule)
+        )
 
     @classmethod
     def _should_abstain_after_assembly(
-        cls, agent: AgentSpec | None, bundle: EvidenceBundle | None, outcome: AssemblyOutcome
+        cls,
+        agent: AgentSpec | None,
+        bundle: EvidenceBundle | None,
+        outcome: AssemblyOutcome,
+        rule: RoutingRule | None,
     ) -> bool:
         """Whether admission dropped the evidence the verdict relied on.
 
-        The general-knowledge agent no longer abstains when evidence is dropped
-        by the prompt budget: the tenant's own business facts remain in the
-        prompt regardless, and the model may answer from those.
+        The verdict speaks about the retrieved pool; the model only sees what
+        the prompt budget admitted. If nothing was admitted, the context is
+        empty, and a turn that needs retrieved grounding must not be answered
+        from it regardless of the verdict.
         """
-        return False
+        if bundle is None or not _requires_retrieved_evidence(agent, rule):
+            return False
+        return not any(
+            segment.segment_id.startswith("evidence:")
+            for segment in outcome.prompt.messages[0].segments
+        )
 
     @staticmethod
     def _evidence_update(

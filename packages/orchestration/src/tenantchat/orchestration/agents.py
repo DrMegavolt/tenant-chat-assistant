@@ -34,6 +34,25 @@ class AgentName(StrEnum):
     CANCEL = "cancel"
 
 
+class AnswerBasis(StrEnum):
+    """What an agent's answers rest on, and so what thin retrieval costs it.
+
+    ``TENANT_KNOWLEDGE`` is the tenant's own material, which has two sources:
+    the server-owned business facts bound into the prompt — hours, phone,
+    address, approved prices — and the approved documents retrieval supplies.
+    An agent declaring it answers from those two and nothing else, so a
+    question that neither covers is one it must refuse rather than improvise
+    (`BUG-009`, `RAG-005`).
+
+    ``TOOL_RESULTS`` is an agent carried by its tools and its durable workflow
+    record. The knowledge base is beside the point for it: an appointment does
+    not become unbookable because the index is empty.
+    """
+
+    TENANT_KNOWLEDGE = "tenant_knowledge"
+    TOOL_RESULTS = "tool_results"
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowField:
     """One field a workflow agent collects across turns.
@@ -57,6 +76,7 @@ class AgentSpec:
     input_fields: tuple[WorkflowField, ...]
     output: str
     tools: tuple[ToolName, ...]
+    answers_from: AnswerBasis
     # Whether the agent holds multi-turn state: only collection workflows do.
     workflow: bool
 
@@ -150,6 +170,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=(),
         output="A direct answer from tenant policy, with no tool effect.",
         tools=(),
+        answers_from=AnswerBasis.TENANT_KNOWLEDGE,
         workflow=False,
     )
 )
@@ -161,6 +182,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=(),
         output="A served or not-served verdict for one ZIP code.",
         tools=(ToolName.CHECK_SERVICE_AREA,),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=False,
     )
 )
@@ -172,6 +194,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=(),
         output="The offered slots for one service, or a policy refusal.",
         tools=(ToolName.GET_AVAILABILITY,),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=False,
     )
 )
@@ -186,6 +209,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=BOOKING_FIELDS,
         output="A confirmed booking, or a declined booking reported back.",
         tools=(ToolName.GET_AVAILABILITY, ToolName.BOOK_APPOINTMENT),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=True,
     )
 )
@@ -200,6 +224,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=LEAD_FIELDS,
         output="A captured lead with a reference, or a missing-fields question.",
         tools=(ToolName.CREATE_LEAD,),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=True,
     )
 )
@@ -211,6 +236,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=(),
         output="A handoff ticket and the phone number to call meanwhile.",
         tools=(ToolName.HANDOFF_TO_HUMAN,),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=False,
     )
 )
@@ -222,6 +248,7 @@ DEFAULT_AGENT_REGISTRY.register(
         input_fields=(),
         output="A cancelled workflow, or nothing when no workflow was active.",
         tools=(),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=False,
     )
 )

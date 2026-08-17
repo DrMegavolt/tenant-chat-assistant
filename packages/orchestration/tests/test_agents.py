@@ -19,6 +19,7 @@ from tenantchat.orchestration.agents import (
     AgentRegistry,
     AgentRegistryError,
     AgentSpec,
+    AnswerBasis,
 )
 from tenantchat.orchestration.tools import ToolName
 
@@ -50,6 +51,20 @@ def test_the_specialized_agents_carry_only_their_own_tools() -> None:
     assert allowlists[AgentName.CANCEL] == frozenset()
 
 
+def test_only_the_general_agent_answers_from_tenant_knowledge() -> None:
+    """The evidence gate is declared per agent, and it gates only one of them.
+
+    Every other agent is carried by its tools and its workflow record, so a
+    thin retrieval pool must not stop it: an appointment does not become
+    unbookable because the knowledge index is empty.
+    """
+    bases = {spec.intent: spec.answers_from for spec in DEFAULT_AGENT_REGISTRY.all()}
+    expected = {intent: AnswerBasis.TOOL_RESULTS for intent in IntentName}
+    expected[IntentName.GENERAL] = AnswerBasis.TENANT_KNOWLEDGE
+
+    assert bases == expected
+
+
 def test_only_the_collection_agents_hold_multi_turn_workflows() -> None:
     workflow_agents = {spec.intent for spec in DEFAULT_AGENT_REGISTRY.all() if spec.workflow}
 
@@ -74,6 +89,7 @@ def test_a_registration_duplicating_an_intent_is_refused() -> None:
         input_fields=(),
         output="prose",
         tools=(),
+        answers_from=AnswerBasis.TENANT_KNOWLEDGE,
         workflow=False,
     )
     registry.register(base)
@@ -84,6 +100,7 @@ def test_a_registration_duplicating_an_intent_is_refused() -> None:
         input_fields=(),
         output="prose",
         tools=(),
+        answers_from=AnswerBasis.TOOL_RESULTS,
         workflow=False,
     )
 
@@ -111,6 +128,7 @@ def test_a_registration_naming_an_unknown_tool_is_refused() -> None:
                     ToolName.CHECK_SERVICE_AREA,
                     cast(ToolName, "cancel_everything"),
                 ),
+                answers_from=AnswerBasis.TOOL_RESULTS,
                 workflow=False,
             )
         )
