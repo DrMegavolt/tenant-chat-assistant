@@ -574,9 +574,12 @@ class ElasticsearchSearchIndex:
     async def active_chunks(self, *, tenant_id: str) -> tuple[IndexedChunk, ...]:
         # Bounded by the cluster's search window: a tenant beyond it is an
         # operator problem, not something retrieval should silently truncate.
+        # Ordering is applied after parsing, never as an index sort: `chunk_id`
+        # is the document `_id` and `to_document` does not repeat it as a
+        # field, so sorting on it in the query makes Elasticsearch reject the
+        # whole search and retrieval report itself unavailable.
         query = {
             "size": 10000,
-            "sort": [{"chunk_id": "asc"}],
             "query": {
                 "bool": {
                     "must": [
@@ -603,7 +606,7 @@ class ElasticsearchSearchIndex:
                     "skipped an unreadable chunk in the retrieval pool",
                     extra={"chunk_id": hit.get("_id"), "index": self._index_name},
                 )
-        return tuple(chunks)
+        return tuple(sorted(chunks, key=lambda chunk: chunk.chunk_id))
 
     async def chunk_by_id(self, *, tenant_id: str, chunk_id: str) -> IndexedChunk | None:
         query = {
@@ -650,9 +653,10 @@ class ElasticsearchSearchIndex:
     async def generation_chunks(
         self, *, tenant_id: str, generation_id: uuid.UUID
     ) -> tuple[IndexedChunk, ...]:
+        # Ordered after parsing for the same reason as `active_chunks`: the
+        # index holds no `chunk_id` field to sort on.
         query = {
             "size": 10000,
-            "sort": [{"chunk_id": "asc"}],
             "query": {
                 "bool": {
                     "must": [
@@ -672,7 +676,7 @@ class ElasticsearchSearchIndex:
                     "skipped an unreadable chunk in a replay generation",
                     extra={"chunk_id": hit.get("_id"), "index": self._index_name},
                 )
-        return tuple(chunks)
+        return tuple(sorted(chunks, key=lambda chunk: chunk.chunk_id))
 
     async def ensure_mapping(self, dimensions: int) -> None:
         """Create the index with the chunk mapping when it does not exist yet."""
