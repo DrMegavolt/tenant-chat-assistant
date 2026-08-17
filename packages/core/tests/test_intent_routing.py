@@ -233,3 +233,27 @@ def test_the_candidate_scores_explain_a_lost_intent() -> None:
     assert booking_score > 0
     assert decision.confidence == booking_score
     assert decision.confidence > decision.clarify_threshold
+
+
+def test_a_financing_question_reaches_the_knowledge_agent() -> None:
+    """The seeded demo knowledge is financing policy; nothing else can serve it.
+
+    Without a financing signal the strongest reading of "what financing options
+    are available" is `availability` picking up "available", which clarifies
+    instead of retrieving — leaving the only governed documents in the demo
+    unreachable and every grounded answer citation-free.
+    """
+    decision = route("What financing options are available for a major HVAC replacement?")
+
+    assert decision.chosen is IntentName.GENERAL
+    assert decision.outcome is RoutingOutcome.DIRECT
+    assert decision.rule is RoutingRule.MATCHED
+    assert _candidate(decision, IntentName.AVAILABILITY) < decision.confidence
+
+
+def test_financing_does_not_capture_a_real_availability_question() -> None:
+    """The financing weight must not swamp the workflow intents beside it."""
+    decision = route("Do you have any availability tomorrow?")
+
+    assert decision.chosen is IntentName.AVAILABILITY
+    assert decision.outcome is RoutingOutcome.DIRECT

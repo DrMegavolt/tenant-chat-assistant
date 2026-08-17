@@ -392,6 +392,16 @@ def _build_policy() -> RoutingPolicy:
         _compile("call", r"\bcall\b", 1),
         _compile("address", r"\b(?:address|located|location|directions|where are you)\b", 2),
         _compile("services", r"\b(?:services|offer|do you do|what do you do)\b", 2),
+        # Financing is approved-document territory, not a workflow. It carries a
+        # direct-threshold weight because the competing reading is almost always
+        # `availability` picking up "available", and a question the knowledge
+        # base is there to answer must not become a clarification.
+        _compile(
+            "financing",
+            r"\b(?:financ(?:e|ing)|loan|lender|credit|installments?|"
+            r"payment plans?|pay over time|monthly payments?)\b",
+            4,
+        ),
         _compile("help", r"\b(?:help|question)\b", 1),
     )
     service_area = (
