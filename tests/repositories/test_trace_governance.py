@@ -313,6 +313,44 @@ def test_record_refuses_a_session_outside_the_tenant(
         asyncio.run(store.record("tenant-b", session_id, content={"prompt": "hi"}))
 
 
+def test_refused_and_failed_outcomes_are_recorded(
+    database: Database, repository_database_url: str
+) -> None:
+    """A `RAG-007` refusal or an `OBS-006` crash is a legitimate terminal outcome.
+
+    BUG-016: the outcome CHECK constraint was frozen before the graph learned
+    to record these two statuses, so a refused or failed turn failed its own
+    insert and the IntegrityError was misreported as "session absent or outside
+    tenant" after the model had already answered.
+    """
+    _seed_tenants(repository_database_url, "tenant-a")
+    session_id = uuid.uuid4()
+    _seed_session(repository_database_url, "tenant-a", session_id)
+    store = PostgresTurnRecordStore(database.engine)
+
+    refused = asyncio.run(
+        store.record(
+            "tenant-a",
+            session_id,
+            content={"outcome": {"status": "refused"}},
+            outcome="refused",
+            component_manifest_hash="a" * 64,
+        )
+    )
+    failed = asyncio.run(
+        store.record(
+            "tenant-a",
+            session_id,
+            content={"outcome": {"status": "failed"}},
+            outcome="failed",
+            component_manifest_hash="b" * 64,
+        )
+    )
+
+    assert asyncio.run(store.get("tenant-a", refused.turn_id)).outcome == "refused"
+    assert asyncio.run(store.get("tenant-a", failed.turn_id)).outcome == "failed"
+
+
 def test_a_projection_cascades_off_its_turn_record(
     database: Database, repository_database_url: str
 ) -> None:

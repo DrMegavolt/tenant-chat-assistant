@@ -155,9 +155,15 @@ class PostgresTurnRecordStore:
                 )
                 return _turn_record(result.one())
         except IntegrityError as exc:
-            # A session that belongs to another tenant is indistinguishable
-            # from one that never existed, and the SQL DETAIL must not become
-            # an exception message anyone logs.
+            # Only the session foreign key is an authorization boundary: a
+            # session that belongs to another tenant is indistinguishable from
+            # one that never existed, and the SQL DETAIL must not become an
+            # exception message anyone logs. Any other integrity failure (a
+            # CHECK this build drifted from, for example) is a server bug and
+            # must surface as such instead of being relabelled a session 404.
+            diag = getattr(exc.orig, "diag", None) if exc.orig is not None else None
+            if getattr(diag, "constraint_name", None) != "fk_turn_records_session":
+                raise
             raise NotFoundError(detail="session absent or outside tenant") from exc
 
     async def get(self, tenant_id: str, turn_id: uuid.UUID) -> TurnRecord:

@@ -84,7 +84,7 @@ def test_zero_to_head_and_rerun_are_safe(migration_database_url: str) -> None:
         enum_names = set(
             connection.execute(sa.text("SELECT typname FROM pg_type WHERE typtype = 'e'")).scalars()
         )
-    assert revision == "0018_handoff_ownership"
+    assert revision == "0019_turn_record_outcomes"
     assert {
         "tenant_status",
         "chat_session_status",
