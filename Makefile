@@ -214,8 +214,11 @@ grafana-smoke: ## Verify deployed Grafana contains all five Tenant Chat dashboar
 harness-a: ## Run the L9a Gate B harness against the real graph (hermetic, no LLM)
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
 
-harness-b: ## Run the full L9a+L9b Gate B harness (hermetic, no LLM, all 10 cases)
-	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
+harness-b: ## Run the full L9a+L9b Gate B harness: all 10 cases plus the trace-plane suites
+	$(UV_RUN) pytest services/api/tests/test_harness_cases.py \
+		services/api/tests/test_trace_explorer.py \
+		services/api/tests/test_trace_record.py \
+		-v -m "not integration"
 
 harness-live: ## Run L9b live mode against the cluster's LM-Studio endpoint (demo seed)
 	$(UV_RUN) python scripts/harness_live.py

@@ -13,7 +13,6 @@ def test_live_case_accepts_the_expected_grounded_shape() -> None:
     _validate_turn(
         CASE,
         {
-            "outcome": "answered",
             "reply": "Financing may be available.",
             "turn_id": "turn-1",
             "citations": [{"source_id": "chunk-1"}],
@@ -21,13 +20,27 @@ def test_live_case_accepts_the_expected_grounded_shape() -> None:
     )
 
 
+def test_live_case_accepts_a_pending_confirmation_instead_of_a_reply() -> None:
+    """A booking or lead pause still earns a turn record for the explorer."""
+    _validate_turn(
+        CASE,
+        {
+            "reply": "",
+            "turn_id": "turn-1",
+            "citations": [],
+            "pending": {"awaiting": "booking_confirmation", "slot": "Tomorrow 09:00"},
+        },
+    )
+
+
 @pytest.mark.parametrize(
     "turn",
     [
-        {"outcome": "abstained", "reply": "No", "turn_id": "turn-1", "citations": []},
-        {"outcome": "answered", "reply": "", "turn_id": "turn-1", "citations": [{}]},
-        {"outcome": "answered", "reply": "Yes", "turn_id": "", "citations": [{}]},
-        {"outcome": "answered", "reply": "Yes", "turn_id": "turn-1", "citations": []},
+        {"reply": "No", "turn_id": "turn-1", "citations": []},
+        {"reply": "", "turn_id": "turn-1", "citations": [{}]},
+        {"reply": "Yes", "turn_id": "", "citations": [{}]},
+        {"reply": "Yes", "turn_id": "turn-1", "citations": []},
+        {"reply": "Yes", "turn_id": "turn-1", "citations": [{}], "pending": {}},
     ],
 )
 def test_live_case_rejects_semantic_false_positives(turn: dict[str, object]) -> None:
