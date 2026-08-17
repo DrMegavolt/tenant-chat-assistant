@@ -526,6 +526,49 @@ def test_a_customer_requested_handoff_marks_the_workflow_handed_off() -> None:
 # --- leads -------------------------------------------------------------------
 
 
+def test_a_booking_disabled_tenant_never_dispatches_the_booking_agent() -> None:
+    """Capability flags constrain the assistant, not just its tools.
+
+    BUG-019: Apex does not offer booking. A booking-routed message must not
+    dispatch the booking agent — whose context would present its scheduling plan
+    and tool list as available — so the model is offered the general agent's
+    empty tool set, no booking workflow starts, and the policy rule in the
+    prompt is the only place booking is discussed.
+    """
+    harness = build_harness(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=(tool_call("get_availability", service="HVAC"),),
+                model_name="scripted",
+            ),
+            ModelResponse(
+                content="I cannot book appointments, but the team can help on the phone.",
+                model_name="scripted",
+            ),
+        ]
+    )
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(LEAD_TENANT, "s-no-booking", "book HVAC on Monday")
+
+        assert result.answer == "I cannot book appointments, but the team can help on the phone."
+        assert result.committed == ()
+        assert harness.model.offered_tools and all(
+            tools == () for tools in harness.model.offered_tools
+        )
+        assert await harness.workflows.workflows(LEAD_TENANT, "s-no-booking") == ()
+        routing = await harness.workflows.last_routing(LEAD_TENANT, "s-no-booking")
+        assert routing is not None
+        assert routing.chosen_intent == IntentName.GENERAL.value
+        assert all(
+            candidate.intent not in (IntentName.BOOKING, IntentName.AVAILABILITY)
+            for candidate in routing.candidates
+        )
+
+    asyncio.run(scenario())
+
+
 def test_a_lead_workflow_completes_with_the_captured_lead() -> None:
     harness = build_harness(
         [

@@ -23,6 +23,7 @@ would misroute identically on replay — so no model call happens here.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -216,6 +217,7 @@ class RoutingPolicy:
         *,
         previous_intent: IntentName | None = None,
         clarification_pending: bool = False,
+        disabled_intents: Collection[IntentName] = (),
     ) -> RoutingDecision:
         """Score the message against every intent and decide.
 
@@ -240,6 +242,12 @@ class RoutingPolicy:
         ZIP code during a booking, an address during lead capture) does not
         displace the workflow to a different agent.
 
+        ``disabled_intents`` names intents the tenant does not offer — booking
+        (and its availability precursor) for a tenant with booking disabled.
+        Their profiles are not scored at all: a capability the tenant lacks is
+        not a candidate that lost, so the recorded decision simply does not
+        contain it, and it can never be chosen or continued.
+
         ``clarification_pending`` records that the previous turn already asked;
         an answer that is still ambiguous becomes a handoff instead of a second
         question, so a customer cannot be asked forever.
@@ -250,12 +258,18 @@ class RoutingPolicy:
                 any. Makes the same message route differently across workflow
                 state by design, and deterministically.
             clarification_pending: whether the previous turn was a clarification.
+            disabled_intents: intents the tenant's capability policy forbids;
+                these are never scored, chosen, or continued.
 
         Returns:
             The full decision: every candidate, the chosen intent, the
             confidence, and the thresholds that were applied.
         """
-        scored = [_score_candidate(message, profile) for profile in self.profiles]
+        scored = [
+            _score_candidate(message, profile)
+            for profile in self.profiles
+            if profile.intent not in disabled_intents
+        ]
         scored.sort(key=lambda candidate: (-candidate.score, _INTENT_ORDER[candidate.intent.value]))
 
         if previous_intent is not None:
@@ -276,8 +290,10 @@ class RoutingPolicy:
                 if previous_intent is not None and top.intent is previous_intent
                 else RoutingRule.MATCHED
             )
-        elif previous_intent is not None and (
-            top.intent is previous_intent or top.score < self.clarify_threshold
+        elif (
+            previous_intent is not None
+            and previous_intent not in disabled_intents
+            and (top.intent is previous_intent or top.score < self.clarify_threshold)
         ):
             rule = RoutingRule.CONTINUATION
             chosen = previous_intent
@@ -286,7 +302,11 @@ class RoutingPolicy:
             rule = RoutingRule.MATCHED
             chosen = IntentName.GENERAL
             outcome = RoutingOutcome.DIRECT
-        elif previous_intent is not None and top.intent is IntentName.GENERAL:
+        elif (
+            previous_intent is not None
+            and previous_intent not in disabled_intents
+            and top.intent is IntentName.GENERAL
+        ):
             rule = RoutingRule.CONTINUATION
             chosen = previous_intent
             outcome = RoutingOutcome.DIRECT

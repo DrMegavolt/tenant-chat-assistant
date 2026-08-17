@@ -69,6 +69,37 @@ def test_every_intent_is_a_scored_candidate_not_just_the_winner() -> None:
     assert _candidate(decision, IntentName.SERVICE_AREA) > _candidate(decision, IntentName.BOOKING)
 
 
+def test_a_disabled_intent_is_not_a_candidate_and_cannot_be_chosen() -> None:
+    """A tenant without a capability is not offered it, on any message.
+
+    BUG-019: booking routing for a booking-disabled tenant would hand the
+    assistant the booking agent's context — "you may schedule once you collect
+    these fields" — contradicting the tenant's policy. Removing the intent from
+    the candidate set means the recorded decision honestly shows it never
+    competed, and a continuation cannot revive it.
+    """
+    disabled = (IntentName.BOOKING, IntentName.AVAILABILITY)
+
+    decision = route("book HVAC on Monday", disabled_intents=disabled)
+
+    assert decision.chosen is IntentName.GENERAL
+    assert all(candidate.intent not in disabled for candidate in decision.candidates)
+    assert decision.outcome is RoutingOutcome.DIRECT
+    assert decision.rule is RoutingRule.FALLBACK
+
+
+def test_a_disabled_intent_cannot_be_continued_from_a_prior_workflow() -> None:
+    """Even a suspended booking workflow cannot pull the turn back to booking."""
+    disabled = (IntentName.BOOKING, IntentName.AVAILABILITY)
+
+    decision = route(
+        "what about Tuesday?", previous_intent=IntentName.BOOKING, disabled_intents=disabled
+    )
+
+    assert decision.chosen is not IntentName.BOOKING
+    assert all(candidate.intent not in disabled for candidate in decision.candidates)
+
+
 def test_a_general_question_routes_to_general_chat() -> None:
     for message in (
         "what are your hours?",

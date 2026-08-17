@@ -658,10 +658,19 @@ class DispatchNodes:
             and last.turn_index == turn - 1
             and last.outcome is RoutingOutcome.CLARIFY
         )
+        # A tenant without booking does not offer it: booking and its
+        # availability precursor leave the candidate set entirely, so the
+        # recorded decision never shows them and the assistant is never put in
+        # a position to solicit booking-only fields (`BUG-019`).
+        policy = await self._deps.policies.policy(tenant_id)
+        disabled_intents = (
+            (IntentName.BOOKING, IntentName.AVAILABILITY) if not policy.booking_enabled else ()
+        )
         decision = self._deps.routing.route(
             latest_visitor_message(state),
             previous_intent=previous,
             clarification_pending=clarification_pending,
+            disabled_intents=disabled_intents,
         )
         self._observe(
             MetricName.ROUTING_DECISIONS,
