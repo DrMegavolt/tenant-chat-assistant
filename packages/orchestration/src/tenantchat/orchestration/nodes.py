@@ -41,7 +41,11 @@ from tenantchat.core.budgets import (
     check_input,
     check_output,
 )
-from tenantchat.core.claims import ClaimVerdict, validate_sensitive_claims
+from tenantchat.core.claims import (
+    ClaimVerdict,
+    answer_rests_only_on_tool_verdicts,
+    validate_sensitive_claims,
+)
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
 from tenantchat.core.errors import (
     BookingNotPermittedError,
@@ -1893,11 +1897,18 @@ class DispatchNodes:
                 found = citation_ids(entry["content"])
                 context = frozenset(state["evidence_ids"])
                 by_id = {str(item["source_id"]): item for item in state["evidence"]}
-                citations = [
-                    _citation_dict(by_id[source_id])
-                    for source_id in found
-                    if source_id in context and source_id in by_id
-                ]
+                tool_grounded = answer_rests_only_on_tool_verdicts(
+                    entry["content"], _confirmed_service_areas(state["transcript"])
+                )
+                citations = (
+                    []
+                    if tool_grounded
+                    else [
+                        _citation_dict(by_id[source_id])
+                        for source_id in found
+                        if source_id in context and source_id in by_id
+                    ]
+                )
                 published: dict[str, Any] = {
                     "answer": strip_citation_markers(entry["content"]),
                     "citations": citations,

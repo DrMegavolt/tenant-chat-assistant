@@ -746,3 +746,53 @@ def test_a_service_area_answer_contradicting_its_tool_is_still_refused() -> None
 
     assert replied.status_code == 200, replied.text
     assert "Yes, we serve ZIP code 98999." not in replied.json()["reply"]
+
+
+def test_a_tool_answered_service_area_reply_cites_no_document() -> None:
+    """BUG-004: the answer's truth came from the tool, so no document earned a citation.
+
+    The financing document's lead-capture paragraph mentions "ZIP code", which
+    is enough for the model to cite it beside "yes, we serve 97205" — and enough
+    to pass a relevance score, since that pairing outscores citations that are
+    genuinely earned. Provenance has to name the tool that decided it.
+    """
+    knowledge = InMemoryKnowledgeStore()
+    version = _published_version(knowledge, title="Clearview financing options")
+    # The live chunk the model reached for: it mentions "ZIP code" only to say
+    # which details a lead-capture form collects.
+    chunk = _chunk(
+        "clearview-financing-5",
+        "If a customer wants to discuss financing, collect their name, contact "
+        "information, service type, address or ZIP code, and a short project summary.",
+        document_id=version.document_id,
+        version_id=version.version_id,
+    )
+    client, _model, _knowledge, _turns = _client(
+        script=[
+            ModelResponse(
+                content="",
+                model_name="scripted",
+                tool_calls=(
+                    ToolCall(
+                        call_id="call-area-2",
+                        name="check_service_area",
+                        arguments={"zip": "97205"},
+                    ),
+                ),
+            ),
+            ModelResponse(
+                content=f"Yes, we serve ZIP code 97205. [evidence:{chunk.chunk_id}]",
+                model_name="scripted",
+            ),
+        ],
+        chunks=(chunk,),
+        knowledge=knowledge,
+    )
+    with client:
+        headers = _open_session(client)
+        replied = client.post("/api/chat", json={"message": "Do you serve 97205?"}, headers=headers)
+
+    assert replied.status_code == 200, replied.text
+    body = replied.json()
+    assert "97205" in body["reply"], "the true answer must still be published"
+    assert body["citations"] == [], f"a tool-answered reply cited {body['citations']}"

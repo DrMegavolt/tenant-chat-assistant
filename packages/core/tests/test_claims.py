@@ -15,6 +15,7 @@ from tenantchat.core.claims import (
     Claim,
     ClaimKind,
     ClaimVerdict,
+    answer_rests_only_on_tool_verdicts,
     sensitive_claims,
     validate_sensitive_claims,
 )
@@ -210,3 +211,26 @@ class TestServiceAreaClaims:
             ClaimKind.PRICE,
             ClaimKind.COVERAGE,
         }
+
+
+class TestToolGroundedProvenance:
+    """Which answers earned a document citation and which were decided by a tool."""
+
+    def test_a_tool_answered_service_area_reply_rests_on_the_tool(self) -> None:
+        assert answer_rests_only_on_tool_verdicts("Yes, we serve ZIP code 97205.", {"97205": True})
+
+    def test_an_answer_making_another_claim_keeps_its_documents(self) -> None:
+        """Over-dropping would strip provenance from the half a passage did support."""
+        assert not answer_rests_only_on_tool_verdicts(
+            "Yes, we serve ZIP code 97205. HVAC diagnostics cost $120.",
+            {"97205": True},
+        )
+
+    def test_an_unconfirmed_service_area_claim_does_not_rest_on_the_tool(self) -> None:
+        assert not answer_rests_only_on_tool_verdicts("Yes, we serve ZIP code 97205.", {})
+
+    def test_an_answer_with_no_sensitive_claim_keeps_its_documents(self) -> None:
+        """An ordinary grounded answer is untouched by this rule."""
+        assert not answer_rests_only_on_tool_verdicts(
+            "We are open daily from 7 AM to 7 PM.", {"97205": True}
+        )

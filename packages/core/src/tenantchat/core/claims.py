@@ -212,6 +212,35 @@ def validate_sensitive_claims(
     return ClaimValidation(ClaimVerdict.SUPPORTED)
 
 
+def answer_rests_only_on_tool_verdicts(
+    answer: str, confirmed_service_areas: Mapping[str, bool]
+) -> bool:
+    """Whether every sensitive claim in ``answer`` came from a tool, not a passage.
+
+    Provenance has to name what actually decided the answer. "Do you serve
+    97205?" is answered by the service-area tool, so a retrieved passage that
+    happens to share a word with it — the financing document's lead-capture
+    paragraph mentions "ZIP code" — is not support, and publishing it as a
+    citation attributes the answer to a document that had no part in it
+    (`BUG-004`).
+
+    Relevance scoring cannot make this call: that passage scores 0.40 against
+    the answer's content words, above legitimate citations at 0.38 and 0.14.
+    The distinction is structural, not lexical — which is what this reads.
+
+    ``False`` when the answer makes no sensitive claim at all, so an ordinary
+    grounded answer keeps its citations.
+    """
+    claims = sensitive_claims(answer)
+    if not claims:
+        return False
+    return all(
+        claim.kind is ClaimKind.SERVICE_AREA
+        and _service_area_confirmed(claim.value, confirmed_service_areas)
+        for claim in claims
+    )
+
+
 def _service_area_confirmed(sentence: str, confirmed: Mapping[str, bool]) -> bool:
     """Whether the service-area tool already decided exactly what this sentence says.
 
