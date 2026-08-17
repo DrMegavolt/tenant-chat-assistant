@@ -49,7 +49,7 @@ across both tenants.
 | ID | Status | Evidence |
 |---|---|---|
 | BUG-003 | **Pass** | `confirm_lead`/`commit_lead` are registered graph nodes; the lead pauses for consent and commits through the idempotent service. Graph is `dispatch@3`. |
-| BUG-004 | **Pass** | Fresh probes on both tenants (`5118b2f2-46ad-44af-ab2e-937d7b86ba2e`, `f86dbac7-3217-4a60-bcdd-78f103c7b295`) completed without the delayed 404 and cited nothing at all, so no irrelevant financing passage supports a service-area claim. The probes did expose BUG-020 below. |
+| BUG-004 | **Pass** | Regressed and re-fixed during this pass — see below. Final live probes `877d32e0-f756-451f-848f-f3067a797454` (clearview) and `da8b8938-6375-41c7-b68e-c8896ba4e8fe` (apex) publish the true answer with zero citations. |
 | BUG-005 | **Pass** | Root cause was the index mapping, not the counter: `version_id` was `text`, so the integrity check's `term` query matched nothing and reported `indexed: 0`. After the index was recreated, per-version counts match the database (6/9/7) and the check reports no findings. |
 | BUG-006 | **Pass** | The source is renamed `Clearview Service Policy`, the Northline document is tombstoned, and the index returns zero hits for `northline` in either text or title. |
 | BUG-008 | **Pass** | A 404 on a stored credential now discards it, opens a fresh session, and delivers the message once. |
@@ -82,6 +82,11 @@ across both tenants.
 
 After these fixes `make harness-live` runs **20 checks, 0 failures** across both
 tenants, with case 1 returning a grounded answer and two citations.
+
+Both faults now fail the build rather than only the cluster: every query the
+search adapter issues is held to the adapter's own index mapping, and each
+document the seed loads must route to the general agent, which is the only one
+that retrieves.
 
 ---
 
@@ -127,6 +132,26 @@ shape of the existing `trusted_prices` argument.
 - A service-area claim the tool contradicted, or one naming a ZIP the tool was
   never asked about, is still refused.
 - Tool results do not become general-purpose grounding for other claim kinds.
+
+### Resolution
+
+Fixed. Claim validation now takes the turn's service-area verdicts, keyed by
+ZIP, and a claim must name a ZIP the tool actually checked and agree with its
+answer. Verified live on both tenants.
+
+**Fixing it re-opened BUG-004**, which the over-refusal had been hiding: once
+the answer became publishable, the model cited the financing document's
+lead-capture paragraph beside "yes, we serve 97205", because that paragraph
+mentions "ZIP code". Citation validation only ever checked that a cited source
+was in the prompt context, never that it supported anything.
+
+Relevance scoring cannot separate these. Measured over live turns, the bad
+pairing scores **0.40** against the answer's content words while citations that
+are genuinely earned score **0.38** and **0.14** — a threshold that drops the
+first drops real ones too. The usable distinction is structural: when every
+sensitive claim in an answer was decided by a tool verdict, no document earned
+a citation. An answer that also makes a claim a passage supported keeps its
+citations, so an ordinary grounded answer is untouched.
 
 ## How implementation agents should use this document
 
