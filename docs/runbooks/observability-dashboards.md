@@ -79,9 +79,17 @@ matching `DiagnosisCause` values (`stale_source`, `ingestion_or_index_error`,
 
 Provisioning runs automatically as the final step of `make deploy-local`. The
 deployment calls `k8s/grafana/provision.sh --verify`, which creates ConfigMaps
-and then polls the Grafana API until all five dashboard UIDs are confirmed
-present. Re-running `deploy-local` or the script directly is safe — it replaces
-the ConfigMaps with the latest JSON and re-verifies.
+and stages the JSON in Grafana's shared provisioning volume. It then requests a
+reload and polls Grafana's localhost API until all five dashboard UIDs are
+confirmed present. The API calls use credentials already injected into the
+dashboard sidecar; the script does not decode credentials locally or weaken
+Kubernetes TLS verification.
+
+This direct reload path is intentional for local MicroK8s installations whose
+legacy API CA is rejected by newer dashboard-sidecar TLS clients. The labeled
+ConfigMaps remain the declarative desired state. Re-running `deploy-local` or
+the script directly is safe — it replaces the ConfigMaps with the latest JSON,
+reloads the provisioner, and re-verifies.
 
 Provision manually (e.g. for a partial update without a full deployment):
 

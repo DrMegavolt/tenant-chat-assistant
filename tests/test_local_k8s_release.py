@@ -100,6 +100,20 @@ def test_make_exposes_the_one_line_local_release() -> None:
     assert "\t./scripts/deploy_local_k8s.sh" in makefile
 
 
+def test_grafana_deploy_uses_authenticated_local_provisioning_without_disabling_tls() -> None:
+    provision = (ROOT / "k8s/grafana/provision.sh").read_text(encoding="utf-8")
+    verify = (ROOT / "scripts/verify_grafana_dashboards.sh").read_text(encoding="utf-8")
+
+    assert "SKIP_TLS_VERIFY" not in provision
+    assert "grafana-sc-dashboard" in provision
+    assert "REQ_USERNAME" in provision
+    assert "REQ_PASSWORD" in provision
+    assert "REQ_URL" in provision
+    assert "grafana-sc-dashboard" in verify
+    assert "REQ_USERNAME" in verify
+    assert "REQ_PASSWORD" in verify
+
+
 def test_release_scripts_and_smoke_tests_name_only_current_workloads() -> None:
     deploy = (ROOT / "k8s/deploy.sh").read_text(encoding="utf-8")
     smoke = (ROOT / "k8s/tests/network-policy-smoke.sh").read_text(encoding="utf-8")

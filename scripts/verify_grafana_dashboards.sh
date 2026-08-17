@@ -39,9 +39,8 @@ if [[ -z "$grafana_pod" ]]; then
 fi
 echo "Grafana pod: $grafana_pod"
 
-grafana_url="http://localhost:3000"
-found_uids="$(kubectl -n "$NAMESPACE" exec "$grafana_pod" -- \
-    wget -q -O - "${grafana_url}/api/search?type=dash-db" 2>/dev/null \
+found_uids="$(kubectl -n "$NAMESPACE" exec "$grafana_pod" -c grafana-sc-dashboard -- \
+    python -c 'import base64, os, urllib.request; token = base64.b64encode((os.environ["REQ_USERNAME"] + ":" + os.environ["REQ_PASSWORD"]).encode()).decode(); request = urllib.request.Request("http://localhost:3000/api/search?type=dash-db", headers={"Authorization": "Basic " + token}); print(urllib.request.urlopen(request).read().decode())' 2>/dev/null \
     | python3 -c "import json,sys; [print(d['uid']) for d in json.load(sys.stdin)]" 2>/dev/null)" || {
     echo "FAIL: could not query Grafana API in pod $grafana_pod" >&2
     exit 1
