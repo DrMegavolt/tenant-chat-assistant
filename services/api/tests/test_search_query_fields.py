@@ -73,23 +73,69 @@ def _index(handler: Any) -> ElasticsearchSearchIndex:
     )
 
 
+# Every read or bulk-mutation this adapter issues against a tenant's chunks.
+# A new one belongs here: the mapping contract below is only as wide as this
+# list, and a query nobody exercises is exactly how BUG-020's sibling shipped.
+_QUERY_CALLS = (
+    "active_chunk_count",
+    "active_embedding_models",
+    "active_version_ids",
+    "active_chunks",
+    "chunk_by_id",
+    "has_active_chunks_for_generation",
+    "generation_chunks",
+    "deactivate_stale_chunks",
+    "delete_generation_chunks",
+)
+
+
+async def _invoke(index: ElasticsearchSearchIndex, call: str) -> None:
+    generation_id, version_id, document_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    if call == "active_chunk_count":
+        await index.active_chunk_count(tenant_id="t1", version_id=version_id)
+    elif call == "active_embedding_models":
+        await index.active_embedding_models(tenant_id="t1", version_id=version_id)
+    elif call == "active_version_ids":
+        await index.active_version_ids(tenant_id="t1", document_id=document_id)
+    elif call == "active_chunks":
+        await index.active_chunks(tenant_id="t1")
+    elif call == "chunk_by_id":
+        await index.chunk_by_id(tenant_id="t1", chunk_id="c-1")
+    elif call == "has_active_chunks_for_generation":
+        await index.has_active_chunks_for_generation(tenant_id="t1", generation_id=generation_id)
+    elif call == "generation_chunks":
+        await index.generation_chunks(tenant_id="t1", generation_id=generation_id)
+    elif call == "deactivate_stale_chunks":
+        await index.deactivate_stale_chunks(
+            tenant_id="t1", document_id=document_id, keep_generation_id=generation_id
+        )
+    else:
+        await index.delete_generation_chunks(tenant_id="t1", generation_id=generation_id)
+
+
 def _captured_search(call: str) -> dict[str, Any]:
-    """The search body one read method sends."""
+    """The request body one read or bulk-mutation sends."""
     sent: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/_search"):
+        path = request.url.path
+        if path.endswith(("/_search", "/_update_by_query", "/_delete_by_query")):
             sent.update(json.loads(request.content))
-        return httpx.Response(200, json={"hits": {"hits": [], "total": {"value": 0}}})
+        return httpx.Response(
+            200,
+            json={
+                "hits": {"hits": [], "total": {"value": 0}},
+                "aggregations": {"models": {"buckets": []}, "versions": {"buckets": []}},
+                "updated": 0,
+                "deleted": 0,
+            },
+        )
 
     index = _index(handler)
 
     async def invoke() -> None:
         try:
-            if call == "active_chunks":
-                await index.active_chunks(tenant_id="t1")
-            else:
-                await index.generation_chunks(tenant_id="t1", generation_id=uuid.uuid4())
+            await _invoke(index, call)
         finally:
             await index.close()
 
@@ -97,32 +143,65 @@ def _captured_search(call: str) -> dict[str, Any]:
     return sent
 
 
+def _referenced_fields(body: Any) -> set[str]:
+    """Every index field a query body names, wherever it names it.
+
+    Walks the whole body rather than the clauses one method happens to use, so
+    a filter moved into `filter`, `should`, or a new aggregation is still held
+    to the mapping.
+    """
+    found: set[str] = set()
+    if isinstance(body, dict):
+        for key, value in body.items():
+            if key in {"term", "terms", "match", "range"} and isinstance(value, dict):
+                # `{"terms": {"field": "x", "size": 10}}` is an aggregation and
+                # names its field by value; `{"terms": {"x": [...]}}` is a query
+                # clause and names it by key.
+                if "field" in value:
+                    found |= _referenced_fields(value)
+                else:
+                    found.update(name for name in value if name != "boost")
+            elif key == "field" and isinstance(value, str):
+                found.add(value)
+            elif key == "sort":
+                for clause in value if isinstance(value, list) else []:
+                    if isinstance(clause, dict):
+                        found.update(clause)
+                    elif isinstance(clause, str):
+                        found.add(clause)
+            else:
+                found |= _referenced_fields(value)
+    elif isinstance(body, list):
+        for item in body:
+            found |= _referenced_fields(item)
+    return found
+
+
 def test_the_stored_document_does_not_repeat_the_chunk_id() -> None:
     """The premise the query shape depends on: chunk_id is the _id, not a field."""
     assert "chunk_id" not in _CHUNK.to_document()
 
 
-@pytest.mark.parametrize("call", ["active_chunks", "generation_chunks"])
-def test_pool_reads_do_not_sort_on_an_unmapped_field(call: str) -> None:
-    """A sort on a field the mapping lacks fails the whole search, not the sort."""
-    body = _captured_search(call)
-    mapped = _mapped_fields()
-    for clause in body.get("sort", []):
-        field = next(iter(clause)) if isinstance(clause, dict) else str(clause)
-        assert field in mapped or field.startswith("_"), (
-            f"{call} sorts on {field!r}, which the index mapping does not declare. "
-            "Elasticsearch rejects the entire search and retrieval reports itself unavailable."
-        )
+@pytest.mark.parametrize("call", _QUERY_CALLS)
+def test_every_query_names_only_mapped_fields(call: str) -> None:
+    """A field the mapping lacks fails the whole request, not just that clause.
 
-
-@pytest.mark.parametrize("call", ["active_chunks", "generation_chunks"])
-def test_pool_reads_query_only_mapped_fields(call: str) -> None:
-    """Same failure mode through a term clause instead of a sort."""
-    body = _captured_search(call)
+    Sorting on the unmapped `chunk_id` took retrieval down completely: every
+    turn recorded `retriever_version: "unavailable"` with no evidence and no
+    citations, which reads exactly like a genuine no-match. Holding each query
+    to the adapter's own mapping is what makes that a build failure instead of
+    an outage a long-lived index happens to mask.
+    """
     mapped = _mapped_fields()
-    for clause in body["query"]["bool"]["must"]:
-        field = next(iter(clause["term"]))
-        assert field in mapped, f"{call} filters on unmapped field {field!r}"
+    unmapped = {
+        field
+        for field in _referenced_fields(_captured_search(call))
+        if field not in mapped and not field.startswith("_")
+    }
+    assert not unmapped, (
+        f"{call} references {sorted(unmapped)}, which the index mapping does not declare. "
+        "Elasticsearch rejects the entire request."
+    )
 
 
 def test_the_retrieval_pool_is_ordered_by_chunk_id() -> None:

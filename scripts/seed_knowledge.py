@@ -50,6 +50,10 @@ _ROLE_HEADER = "X-Auth-Role"
 _CSRF_HEADER = "X-CSRF-Token"
 
 
+def report(line: str) -> None:
+    print(line, flush=True)  # noqa: T201
+
+
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -63,20 +67,14 @@ def _require(name: str) -> str:
 
 
 BASE_URL = _env("API_BASE_URL", "http://chat-admin:8004")
-GATEWAY_TOKEN = _require("ADMIN_GATEWAY_TOKEN")
-CSRF_SECRET = _require("ADMIN_CSRF_SECRET")
 TIMEOUT = int(_env("SEED_API_TIMEOUT", "30"))
 POLL_INTERVAL = float(_env("SEED_POLL_INTERVAL", "2"))
 POLL_ATTEMPTS = int(_env("SEED_POLL_ATTEMPTS", "60"))
 
 
-def report(line: str) -> None:
-    print(line, flush=True)  # noqa: T201
-
-
 def _admin_headers(*, csrf: str = "") -> dict[str, str]:
     headers = {
-        _GATEWAY_TOKEN_HEADER: GATEWAY_TOKEN,
+        _GATEWAY_TOKEN_HEADER: _require("ADMIN_GATEWAY_TOKEN"),
         _SUBJECT_HEADER: _OPERATOR_SUBJECT,
         _EMAIL_HEADER: _OPERATOR_EMAIL,
         _ROLE_HEADER: _OPERATOR_ROLE,
@@ -87,7 +85,8 @@ def _admin_headers(*, csrf: str = "") -> dict[str, str]:
 
 
 def _csrf_token() -> str:
-    return hmac.new(CSRF_SECRET.encode(), _OPERATOR_SUBJECT.encode(), hashlib.sha256).hexdigest()
+    secret = _require("ADMIN_CSRF_SECRET")
+    return hmac.new(secret.encode(), _OPERATOR_SUBJECT.encode(), hashlib.sha256).hexdigest()
 
 
 def _request(
