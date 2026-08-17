@@ -120,6 +120,7 @@ async def _seed_knowledge(
     chunk_ids: tuple[str, ...],
     texts: tuple[str, ...],
     prefix: str = "hours-and-pricing",
+    title: str = "Hours and Pricing",
 ) -> tuple[uuid.UUID, uuid.UUID]:
     source = await knowledge.register_source(
         tenant_id,
@@ -131,7 +132,7 @@ async def _seed_knowledge(
         tenant_id,
         source_id=source.source_id,
         external_key=prefix,
-        title="Hours and Pricing",
+        title=title,
         checksum=ContentChecksum(f"sha256:{prefix}-abc123"),
         byte_size=1024,
         media_type="text/plain",
@@ -157,7 +158,7 @@ async def _seed_knowledge(
             document_id=doc.document_id,
             version_id=version_id,
             generation_id=gen_id,
-            title="Hours and Pricing",
+            title=title,
             section=str(i + 1),
             text=text,
             embedding_model="scripted-embedder.v1",
@@ -394,9 +395,18 @@ async def _plant_multicase_knowledge(
 
 # ── L9b Case planters ──────────────────────────────────────────────────────
 
-_CASE_2_TEXT = "Clearview is open daily from 7 AM to 7 PM, as stated in our documentation."
-_CASE_2_CHUNK_IDS = ("stale-hours-1",)
-_CASE_2_CHUNK_TEXTS = ("Hours: 7 AM to 7 PM, every day including weekends and holidays.",)
+# Cases 2 and 3 ask about the Care Plan rather than about hours. The tenant's
+# hours are server-owned configuration bound into every prompt, so an hours
+# question is answerable with no retrieval at all (`BUG-009`) and would keep
+# answering whether the source was stale or the generation missing — proving
+# neither. Only the document each case plants, and neither case leaves
+# retrievable, can answer these.
+_CASE_2_UNREACHED_ANSWER = "The Care Plan includes two tune-ups a year."
+_CASE_2_CHUNK_IDS = ("stale-care-plan-1",)
+_CASE_2_CHUNK_TEXTS = (
+    "Care Plan membership includes two tune-ups a year, priority scheduling, "
+    "and a 15% discount on parts.",
+)
 
 
 async def _plant_case_2(knowledge: InMemoryKnowledgeStore, index: InMemorySearchIndex) -> str:
@@ -407,19 +417,18 @@ async def _plant_case_2(knowledge: InMemoryKnowledgeStore, index: InMemorySearch
         tenant_id=_HARNESS_TENANT,
         chunk_ids=_CASE_2_CHUNK_IDS,
         texts=_CASE_2_CHUNK_TEXTS,
-        prefix="stale-hours",
+        prefix="stale-care-plan",
+        title="Care Plan Coverage",
     )
     version = doc_id
     for document_id in (doc_id,):
         doc = await knowledge.load_document(_HARNESS_TENANT, document_id)
         version = doc.versions[-1].version_id
     await knowledge.expire(_HARNESS_TENANT, version, at=BASE + timedelta(hours=1))
-    return "What are your hours?"
+    return "What is included in the Care Plan membership?"
 
 
-_CASE_3_TEXT = "Clearview is open daily."
-_CASE_3_CHUNK_IDS = ("missing-gen-1",)
-_CASE_3_CHUNK_TEXTS = ("Hours: 7 AM to 7 PM, every day including weekends and holidays.",)
+_CASE_3_UNREACHED_ANSWER = "The Care Plan includes an annual filter change."
 
 
 async def _plant_case_3(knowledge: InMemoryKnowledgeStore, index: InMemorySearchIndex) -> str:
@@ -438,7 +447,7 @@ async def _plant_case_3(knowledge: InMemoryKnowledgeStore, index: InMemorySearch
         _HARNESS_TENANT,
         source_id=source.source_id,
         external_key="missing-generation",
-        title="Hours and Pricing",
+        title="Care Plan Coverage",
         checksum=ContentChecksum("sha256:missing-gen-abc123"),
         byte_size=1024,
         media_type="text/plain",
@@ -454,7 +463,7 @@ async def _plant_case_3(knowledge: InMemoryKnowledgeStore, index: InMemorySearch
         expires_at=BASE + timedelta(days=365),
     )
     await knowledge.record_indexed(_HARNESS_TENANT, version_id, at=BASE)
-    return "What are your hours?"
+    return "Does the Care Plan include an annual filter change?"
 
 
 _CASE_4_CHUNK_IDS = ("rank-c4-1", "rank-c4-2", "rank-c4-3")
@@ -908,13 +917,17 @@ class TestHarnessTenantIsolation:
 
 
 class TestCase2StaleSource:
-    def test_case_2_stale_evidence_produces_no_evidence_items_and_answers_from_tenant_facts(
-        self,
-    ) -> None:
+    def test_case_2_stale_evidence_abstains_with_a_retrieval_miss(self) -> None:
+        """The expired document is the only source for this question, so the
+        freshness check leaving nothing behind must end the turn — an answer
+        here would be an answer from content the check already rejected.
+        """
         knowledge = InMemoryKnowledgeStore()
         index = InMemorySearchIndex()
         message = asyncio.run(_plant_case_2(knowledge, index))
-        model = ScriptedModel([ModelResponse(content=_CASE_2_TEXT, model_name="scripted")])
+        model = ScriptedModel(
+            [ModelResponse(content=_CASE_2_UNREACHED_ANSWER, model_name="scripted")]
+        )
         client, turns, _grants, _audit, _kn, _sx = _build_app(
             model, knowledge=knowledge, search_index=index, with_evidence=True
         )
@@ -930,18 +943,26 @@ class TestCase2StaleSource:
             assert (
                 len(evidence) == 0
             ), f"expected empty evidence (stale source), got {len(evidence)} items"
+            assert retrieval_map.get("sufficient") is False, "stale evidence is insufficient"
             assert (
-                content["outcome"]["status"] == "answered"
-            ), f"stale source answers from tenant facts, got {content['outcome']['status']}"
+                content["outcome"]["status"] == "abstained"
+            ), f"stale source must abstain, got {content['outcome']['status']}"
+            causes = {entry["cause"] for entry in content["diagnoses"]}
+            assert (
+                DiagnosisCause.RETRIEVAL_MISS.value in causes
+            ), f"missing retrieval_miss diagnosis; got {causes}"
+            assert model.calls == [], "the model must not be asked to improvise the refusal"
             _assert_trace_schema_and_graph(record)
 
 
 class TestCase3MissingGeneration:
-    def test_case_3_missing_index_generation_answers_from_tenant_facts(self) -> None:
+    def test_case_3_missing_index_generation_abstains_with_a_retrieval_miss(self) -> None:
         knowledge = InMemoryKnowledgeStore()
         index = InMemorySearchIndex()
         message = asyncio.run(_plant_case_3(knowledge, index))
-        model = ScriptedModel([ModelResponse(content=_CASE_3_TEXT, model_name="scripted")])
+        model = ScriptedModel(
+            [ModelResponse(content=_CASE_3_UNREACHED_ANSWER, model_name="scripted")]
+        )
         client, turns, _grants, _audit, _kn, _sx = _build_app(
             model, knowledge=knowledge, search_index=index, with_evidence=True
         )
@@ -962,8 +983,13 @@ class TestCase3MissingGeneration:
             assert retrieval_map.get("sufficient") is False, "missing generation is insufficient"
 
             assert (
-                content["outcome"]["status"] == "answered"
-            ), f"expected answered from tenant facts, got {content['outcome']['status']}"
+                content["outcome"]["status"] == "abstained"
+            ), f"expected abstained without index, got {content['outcome']['status']}"
+            causes = {entry["cause"] for entry in content["diagnoses"]}
+            assert (
+                DiagnosisCause.RETRIEVAL_MISS.value in causes
+            ), f"missing retrieval_miss diagnosis; got {causes}"
+            assert model.calls == [], "the model must not be asked to improvise the refusal"
             _assert_trace_schema_and_graph(record)
 
 
