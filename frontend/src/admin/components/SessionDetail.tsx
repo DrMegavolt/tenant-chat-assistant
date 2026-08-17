@@ -6,6 +6,7 @@ import { outcomeOf, type AdminMessage, type SessionDetail as Session } from "src
 
 function speaker(message: AdminMessage): string {
   if (message.source === "admin") return "Staff";
+  if (message.source === "system" || message.role === "system") return "System";
   return message.role === "user" ? "Visitor" : "Assistant";
 }
 

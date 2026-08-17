@@ -44,6 +44,18 @@ const WIRE_MESSAGES = [
     role: "assistant",
     content: "I can help.",
     created_at: "2025-10-09T07:34:20.000Z"
+  },
+  {
+    message_id: "3c8f2b01-6d45-4e92-a033-9f1b2d4c5e66",
+    role: "system",
+    content: "A member of the team has joined this conversation.",
+    created_at: "2025-10-09T07:35:20.000Z"
+  },
+  {
+    message_id: "4d903c12-7e56-4fa3-b144-0a2c3e5d6f77",
+    role: "staff",
+    content: "On my way to help.",
+    created_at: "2025-10-09T07:36:20.000Z"
   }
 ];
 
@@ -97,6 +109,26 @@ describe("the chat queue", () => {
     expect(transcript.textContent).toContain("I can help.");
     // `visitor` on the wire is the customer side of the conversation.
     expect(transcript.textContent).toContain("Visitor");
+  });
+
+  test("handoff lifecycle notices are attributed to the system, not the visitor", async () => {
+    // BUG-017: a system notice collapsed to the customer side of the
+    // conversation, so operators read "a member of the team joined" as visitor
+    // speech. Each author type keeps its own label.
+    stubAdminBackend();
+    await renderConsole();
+
+    const transcript = screen.getByRole("log", { name: "Transcript" });
+    const messages = within(transcript).getAllByRole("article");
+    const labelled = (label: string) =>
+      messages
+        .filter((message) => message.textContent?.includes(label))
+        .map((message) => message.textContent);
+    expect(labelled("My boiler is out.")).toEqual([expect.stringContaining("Visitor")]);
+    expect(labelled("On my way to help.")).toEqual([expect.stringContaining("Staff")]);
+    expect(labelled("A member of the team has joined this conversation.")).toEqual([
+      expect.stringContaining("System")
+    ]);
   });
 
   test("filtering by text narrows the queue without touching the polled data", async () => {

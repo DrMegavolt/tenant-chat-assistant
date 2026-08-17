@@ -446,6 +446,15 @@ body {
   background: light-dark(#fdf6e8, #2a2113);
 }
 
+.admin-message.system {
+  /* System lifecycle notices are not conversation turns: muted and unaligned,
+     unlike visitor bubbles and staff replies. */
+  border-color: var(--hairline);
+  background: var(--surface-muted);
+  align-self: center;
+  text-align: center;
+}
+
 .admin-message > span {
   display: block;
   margin-bottom: 3px;

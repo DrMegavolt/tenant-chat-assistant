@@ -708,16 +708,18 @@ function tenantSummaryFromWire(wire: Record<string, unknown>): TenantSummary {
 }
 
 /**
- * The store's role vocabulary is wider than the transcript's: `visitor` and
- * `staff` are both rendered as the customer-facing side of the conversation,
- * and `source` is what tells a staff reply apart from a visitor's own words.
+ * The store's role vocabulary is wider than the transcript's: `visitor`
+ * renders as the customer, `staff` as the operator, and `system` as the
+ * server's handoff lifecycle notices — never as visitor speech (BUG-017).
  */
 function adminMessageFromWire(wire: Record<string, unknown>): AdminMessage {
   const role = str(wire.role);
+  const isSystem = role === "system";
   return {
     id: str(wire.message_id),
-    role: role === "assistant" ? "assistant" : "user",
+    role: role === "assistant" ? "assistant" : isSystem ? "system" : "user",
     ...(role === "staff" ? { source: "admin" as const } : {}),
+    ...(isSystem ? { source: "system" as const } : {}),
     content: str(wire.content),
     createdAt: epochSeconds(wire.created_at)
   };

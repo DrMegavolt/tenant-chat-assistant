@@ -22,8 +22,8 @@ export type Outcome = (typeof OUTCOMES)[number];
 
 export interface AdminMessage {
   id: string;
-  role: "user" | "assistant";
-  source?: "admin" | "user" | "assistant" | "proactive";
+  role: "user" | "assistant" | "system";
+  source?: "admin" | "user" | "assistant" | "proactive" | "system";
   content: string;
   /** Unix seconds. */
   createdAt: number;
