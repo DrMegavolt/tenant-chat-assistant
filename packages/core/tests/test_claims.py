@@ -136,3 +136,77 @@ def test_claim_order_is_stable_across_python_hash_seeds() -> None:
 def test_plain_answer_without_sensitive_claims_is_supported() -> None:
     validation = validate_sensitive_claims("We will arrive on Tuesday morning.", evidence_texts=())
     assert validation.verdict is ClaimVerdict.SUPPORTED
+
+
+class TestServiceAreaClaims:
+    """Whether a ZIP is served is decided by tenant policy, never by a document.
+
+    BUG-020: the service-area tool answered `served: true`, the model said so,
+    and the validator refused the whole answer because no retrieved passage
+    repeated it. Retrieval cannot ground these claims, so the tool's own
+    verdict has to.
+    """
+
+    def test_a_confirmed_zip_supports_the_claim_that_names_it(self) -> None:
+        validation = validate_sensitive_claims(
+            "Yes, we serve ZIP code 97205.",
+            evidence_texts=(),
+            confirmed_service_areas={"97205": True},
+        )
+        assert validation.verdict is ClaimVerdict.SUPPORTED
+
+    def test_a_yes_about_a_zip_the_tool_refused_is_unsupported(self) -> None:
+        """The failure that must never become publishable: contradicting the tool."""
+        validation = validate_sensitive_claims(
+            "Yes, we serve ZIP code 97205.",
+            evidence_texts=(),
+            confirmed_service_areas={"97205": False},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_a_zip_the_tool_never_checked_is_unsupported(self) -> None:
+        """A verdict for one ZIP must not vouch for a different one."""
+        validation = validate_sensitive_claims(
+            "Yes, we serve ZIP code 98103.",
+            evidence_texts=(),
+            confirmed_service_areas={"97205": True},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_a_truthful_negative_is_supported(self) -> None:
+        validation = validate_sensitive_claims(
+            "We do not serve 98999.",
+            evidence_texts=(),
+            confirmed_service_areas={"98999": False},
+        )
+        assert validation.verdict is ClaimVerdict.SUPPORTED
+
+    def test_a_negative_contradicting_the_tool_is_unsupported(self) -> None:
+        validation = validate_sensitive_claims(
+            "We do not serve 98999.",
+            evidence_texts=(),
+            confirmed_service_areas={"98999": True},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_a_claim_naming_no_zip_still_needs_evidence(self) -> None:
+        """ "We serve your area" names nothing the tool decided."""
+        validation = validate_sensitive_claims(
+            "Yes, we serve your area.",
+            evidence_texts=(),
+            confirmed_service_areas={"97205": True},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_tool_verdicts_do_not_ground_other_claim_kinds(self) -> None:
+        """A service-area verdict must not license a price or coverage claim."""
+        validation = validate_sensitive_claims(
+            "Repairs in 97205 are covered by your warranty and cost $250.",
+            evidence_texts=(),
+            confirmed_service_areas={"97205": True},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+        assert {claim.kind for claim in validation.unsupported} == {
+            ClaimKind.PRICE,
+            ClaimKind.COVERAGE,
+        }

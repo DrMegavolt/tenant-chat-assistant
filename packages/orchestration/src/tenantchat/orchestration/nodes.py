@@ -30,6 +30,7 @@ import logging
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from enum import StrEnum
 from typing import Any, Final
 
@@ -94,6 +95,7 @@ from tenantchat.orchestration.state import (
     CommittedAction,
     DispatchState,
     StoredToolCall,
+    TranscriptEntry,
     assistant_entry,
     tool_entry,
 )
@@ -518,6 +520,44 @@ def _requires_retrieved_evidence(agent: AgentSpec | None, rule: RoutingRule | No
     if agent is None or agent.answers_from is not AnswerBasis.TENANT_KNOWLEDGE:
         return False
     return rule is not RoutingRule.MATCHED
+
+
+def _confirmed_service_areas(transcript: Sequence[TranscriptEntry]) -> dict[str, bool]:
+    """Every ZIP the service-area tool decided during the current turn.
+
+    Scoped to the turn so a verdict cannot outlive the question it answered: a
+    ZIP checked three turns ago must not silently ground a claim in this one.
+    A call whose arguments or result will not parse is skipped, leaving the
+    claim to fail rather than be admitted on a guess.
+    """
+    confirmed: dict[str, bool] = {}
+    zip_by_call: dict[str, str] = {}
+    for entry in _current_turn(transcript):
+        for call in entry["tool_calls"]:
+            if call["name"] != ToolName.CHECK_SERVICE_AREA.value:
+                continue
+            with suppress(json.JSONDecodeError, TypeError):
+                arguments = json.loads(call["arguments_json"])
+                if isinstance(arguments, Mapping):
+                    zip_by_call[call["call_id"]] = str(arguments.get("zip", ""))
+        if entry["role"] != "tool":
+            continue
+        zip_code = zip_by_call.get(entry["tool_call_id"])
+        if not zip_code:
+            continue
+        with suppress(json.JSONDecodeError, TypeError):
+            result = json.loads(entry["content"])
+            if isinstance(result, Mapping) and isinstance(result.get("served"), bool):
+                confirmed[zip_code] = bool(result["served"])
+    return confirmed
+
+
+def _current_turn(transcript: Sequence[TranscriptEntry]) -> list[TranscriptEntry]:
+    """The entries written since the visitor's most recent message."""
+    for index in range(len(transcript) - 1, -1, -1):
+        if transcript[index]["role"] == "user":
+            return list(transcript[index + 1 :])
+    return list(transcript)
 
 
 def unanswered_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
@@ -1797,6 +1837,11 @@ class DispatchNodes:
         substantially supported by an admitted passage. An answer that fails is
         refused whole — the model's prose is replaced with a server-written
         reply and the failing claims are recorded by kind and value only.
+
+        Service-area claims are grounded on this turn's tool verdicts instead.
+        No approved document states which ZIPs a tenant serves — the tenant's
+        policy does, through ``check_service_area`` — so without them a true
+        answer the tool had just produced was refused as unsupported.
         """
         for entry in reversed(state["transcript"]):
             if entry["role"] == "user":
@@ -1811,6 +1856,7 @@ class DispatchNodes:
                         for price in (policy.price_for(slug) for slug, _ in policy.approved_prices)
                         if price is not None
                     ],
+                    confirmed_service_areas=_confirmed_service_areas(state["transcript"]),
                 )
                 if validation.verdict is ClaimVerdict.UNSUPPORTED:
                     # A refusal is its own quality class. Recording it here is

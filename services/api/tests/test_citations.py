@@ -47,7 +47,7 @@ from tenantchat.core.knowledge import (
 )
 from tenantchat.core.ports import EvidenceBundle, EvidenceUnavailableError
 from tenantchat.orchestration.checkpoints import InMemorySaver
-from tenantchat.orchestration.model import ModelResponse
+from tenantchat.orchestration.model import ModelResponse, ToolCall
 
 HOURS_QUESTION = "What are your hours of operation?"
 HOURS_ANSWER = "We are open daily from 7 AM to 7 PM."
@@ -696,3 +696,53 @@ def test_a_non_general_agent_keeps_answering_without_evidence() -> None:
     assert response.status_code == 200
     assert response.json()["reply"] == "Let me check availability."
     assert len(model.calls) == 1
+
+
+def _service_area_script(zip_code: str, answer: str) -> list[ModelResponse]:
+    """The model checks a ZIP with the tool, then states the result."""
+    return [
+        ModelResponse(
+            content="",
+            model_name="scripted",
+            tool_calls=(
+                ToolCall(
+                    call_id="call-area-1",
+                    name="check_service_area",
+                    arguments={"zip": zip_code},
+                ),
+            ),
+        ),
+        ModelResponse(content=answer, model_name="scripted"),
+    ]
+
+
+def test_a_service_area_answer_its_own_tool_confirmed_is_published() -> None:
+    """BUG-020: the tool said served, and the answer was refused anyway.
+
+    No approved document records which ZIPs a tenant serves, so claim
+    validation had nothing to match and withheld a true answer the graph had
+    just computed. `97205` is in the clearview tenant's served set.
+    """
+    client, _model, _knowledge, _turns = _client(
+        script=_service_area_script("97205", "Yes, we serve ZIP code 97205.")
+    )
+    with client:
+        headers = _open_session(client)
+        replied = client.post("/api/chat", json={"message": "Do you serve 97205?"}, headers=headers)
+
+    assert replied.status_code == 200, replied.text
+    assert "97205" in replied.json()["reply"]
+    assert "cannot confirm" not in replied.json()["reply"]
+
+
+def test_a_service_area_answer_contradicting_its_tool_is_still_refused() -> None:
+    """The tool is the authority, not the model: `98999` is not served."""
+    client, _model, _knowledge, _turns = _client(
+        script=_service_area_script("98999", "Yes, we serve ZIP code 98999.")
+    )
+    with client:
+        headers = _open_session(client)
+        replied = client.post("/api/chat", json={"message": "Do you serve 98999?"}, headers=headers)
+
+    assert replied.status_code == 200, replied.text
+    assert "Yes, we serve ZIP code 98999." not in replied.json()["reply"]

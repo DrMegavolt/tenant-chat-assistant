@@ -17,6 +17,13 @@ Two families are recognized:
   one evidence passage (most of its content words present in one passage);
   unsupported sentences fail the answer.
 
+Service-area claims are the one family retrieval cannot ground: whether a ZIP
+is served is decided by the tenant's own policy through a deterministic tool,
+not written down in an approved document. They are checked against that tool's
+verdict for the exact ZIP the sentence names, which is stronger evidence than
+any passage — a claim about a ZIP the tool was not asked about, or one whose
+polarity disagrees with the tool, still fails.
+
 The verdict is applied to the whole answer: an unsupported price means the
 published answer must not carry it, and the graph refuses the answer rather
 than trying to surgically remove one sentence from a model's prose.
@@ -25,14 +32,30 @@ than trying to surgically remove one sentence from a model's prose.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 
 from tenantchat.core.text import query_words, tokenize
 
 _PRICE_RE = re.compile(r"\$[0-9]+(?:\.[0-9]{2})?")
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+_ZIP_RE = re.compile(r"\b\d{5}\b")
+
+# Negation anywhere in the sentence flips the polarity the tool must agree
+# with. An unrecognized negation makes the claim disagree with a `served: true`
+# verdict and fail, which is the safe direction: the answer is withheld rather
+# than published unverified. Model output uses both apostrophes.
+_APOSTROPHE = "['\u2019]?"
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|cannot|outside|beyond|unfortunately|unable"
+    rf"|do(?:es)?n{_APOSTROPHE}t|can{_APOSTROPHE}t|is\s?n{_APOSTROPHE}t"
+    rf"|are\s?n{_APOSTROPHE}t|wo\s?n{_APOSTROPHE}t)\b",
+    re.IGNORECASE,
+)
+
+_EMPTY_SERVICE_AREAS: Mapping[str, bool] = MappingProxyType({})
 
 # A sentence asserting one of these facts is business-sensitive: getting it
 # wrong costs the customer money or an expectation the company must honor.
@@ -150,6 +173,7 @@ def validate_sensitive_claims(
     *,
     evidence_texts: Sequence[str],
     trusted_prices: Sequence[str] = (),
+    confirmed_service_areas: Mapping[str, bool] = _EMPTY_SERVICE_AREAS,
 ) -> ClaimValidation:
     """Verify every sensitive claim in ``answer`` against the admitted evidence.
 
@@ -159,6 +183,10 @@ def validate_sensitive_claims(
             the answer's prompt context.
         trusted_prices: Server-owned approved price lines (from the tenant
             policy), which may ground a price claim without retrieval.
+        confirmed_service_areas: ZIP to served verdict, as the service-area
+            tool answered it during this turn. Only ZIPs the tool was actually
+            asked about appear; a claim naming any other ZIP falls back to
+            evidence and normally fails.
 
     Returns:
         :attr:`ClaimVerdict.UNSUPPORTED` when any claim fails, with the
@@ -171,6 +199,10 @@ def validate_sensitive_claims(
             grounded = any(claim.value in passage for passage in evidence_texts) or any(
                 claim.value in line for line in trusted_prices
             )
+        elif claim.kind is ClaimKind.SERVICE_AREA:
+            grounded = _service_area_confirmed(
+                claim.value, confirmed_service_areas
+            ) or _sentence_supported(claim.value, evidence_texts)
         else:
             grounded = _sentence_supported(claim.value, evidence_texts)
         if not grounded:
@@ -178,6 +210,21 @@ def validate_sensitive_claims(
     if unsupported:
         return ClaimValidation(ClaimVerdict.UNSUPPORTED, tuple(unsupported))
     return ClaimValidation(ClaimVerdict.SUPPORTED)
+
+
+def _service_area_confirmed(sentence: str, confirmed: Mapping[str, bool]) -> bool:
+    """Whether the service-area tool already decided exactly what this sentence says.
+
+    Requires a ZIP: "we serve your area" names nothing checkable and is left to
+    evidence. Every ZIP the sentence names must have been checked this turn,
+    and the sentence's polarity must match every verdict — so a "yes" about an
+    unserved ZIP, or a claim mixing a served and an unserved ZIP, still fails.
+    """
+    zips = _ZIP_RE.findall(sentence)
+    if not zips:
+        return False
+    expected = not _NEGATION_RE.search(sentence)
+    return all(zip_code in confirmed and confirmed[zip_code] is expected for zip_code in zips)
 
 
 def _keyword_tokens(sentence: str) -> frozenset[str]:
