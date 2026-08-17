@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Final, Protocol
 
 from tenantchat.core.commands import (
     BookingCommand,
@@ -188,6 +188,56 @@ class TenantMembership:
     role: str
     created_at: datetime
     updated_at: datetime
+
+
+AUDIT_ACTIONS: Final = frozenset(
+    {
+        "audit.read",
+        "handoff.accepted",
+        "handoff.released",
+        "handoff.resolved",
+        "knowledge.document_deleted",
+        "knowledge.quarantine",
+        "knowledge.quarantine_review",
+        "knowledge.source_created",
+        "knowledge.source_enabled",
+        "knowledge.version_approved",
+        "knowledge.version_expired",
+        "knowledge.version_published",
+        "knowledge.version_reindexed",
+        "membership_assigned",
+        "membership_revoked",
+        "permissions.read",
+        "privacy.deletion_requested",
+        "privacy.erased",
+        "privacy.export",
+        "privacy.retention_purged",
+        "review.decided",
+        "review.promoted",
+        "review.read",
+        "review.search",
+        "review.taken",
+        "staff_reply_sent",
+        "trace.gold_read",
+        "trace.read",
+        "trace.read_refused",
+        "trace.replay",
+        "trace.replay_retrieval",
+        "trace.replay_template",
+        "trace.replay_trials",
+        "trace.search",
+        "trace_access.granted",
+        "trace_access.revoked",
+    }
+)
+"""Every action an audit record may carry.
+
+The operator's action filter offers exactly this set, so an event type that
+reaches the table but not the filter — `BUG-018` — is a test failure rather
+than something an operator discovers mid-incident. `tests/test_audit_taxonomy.py`
+holds both ends to it: the routers may emit nothing outside it, and the admin
+console's `AUDIT_ACTIONS` must list all of it.
+"""
 
 
 @dataclass(frozen=True, slots=True)

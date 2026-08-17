@@ -62,13 +62,23 @@ export const ROLE_LABELS: Record<string, string> = {
   platform_admin: "Platform admin"
 };
 
-/** The action names the trail may be filtered by, newest-surface first. */
+/**
+ * Every action the trail may be filtered by.
+ *
+ * Must equal `AUDIT_ACTIONS` in `services/api/src/tenantchat/api/store.py`;
+ * `tests/test_audit_taxonomy.py` fails when the two drift, because an action
+ * that reaches the table but not this filter is invisible to an operator
+ * working an incident (`BUG-018`).
+ */
 export const AUDIT_ACTIONS = [
   "audit.read",
   "permissions.read",
   "staff_reply_sent",
   "membership_assigned",
   "membership_revoked",
+  "handoff.accepted",
+  "handoff.released",
+  "handoff.resolved",
   "trace_access.granted",
   "trace_access.revoked",
   "trace.read",
@@ -82,9 +92,19 @@ export const AUDIT_ACTIONS = [
   "review.taken",
   "review.decided",
   "review.promoted",
+  "review.read",
+  "review.search",
   "knowledge.source_created",
   "knowledge.source_enabled",
   "knowledge.document_deleted",
+  "knowledge.quarantine",
+  "knowledge.quarantine_review",
+  "knowledge.version_approved",
+  "knowledge.version_published",
+  "knowledge.version_reindexed",
+  "knowledge.version_expired",
   "privacy.export",
-  "privacy.deletion_requested"
+  "privacy.deletion_requested",
+  "privacy.erased",
+  "privacy.retention_purged"
 ] as const;
