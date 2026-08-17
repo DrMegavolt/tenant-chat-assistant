@@ -41,7 +41,7 @@ from tenantchat.api.jobs import (
     JobStore,
 )
 from tenantchat.api.logging_setup import configure_logging, resolve_service
-from tenantchat.api.metrics import METRICS
+from tenantchat.api.metrics import METRICS, serve_metrics
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
@@ -74,10 +74,15 @@ class WorkerSettings:
     # The shared key tenant pseudonyms derive from; must match the API's, or a
     # job line and the request that enqueued it name the tenant differently.
     log_pseudonym_key: str | None = None
+    # Must match the containerPort the deployment's ServiceMonitor scrapes, or
+    # the worker's metrics exist but nothing collects them.
+    metrics_port: int = 8005
 
     def __post_init__(self) -> None:
         if not self.worker_id or len(self.worker_id) > 200:
             raise ValueError("JOB_WORKER_ID must be between 1 and 200 characters")
+        if not 1 <= self.metrics_port <= 65535:
+            raise ValueError("JOB_METRICS_PORT must be a valid TCP port")
         if self.poll_interval <= 0:
             raise ValueError("JOB_POLL_SECONDS must be positive")
         if self.lease_duration <= timedelta(0):
@@ -100,6 +105,7 @@ class WorkerSettings:
             backoff_base=timedelta(seconds=float(os.environ.get("JOB_BACKOFF_SECONDS", "5"))),
             backoff_cap=timedelta(seconds=float(os.environ.get("JOB_BACKOFF_CAP_SECONDS", "3600"))),
             log_pseudonym_key=os.environ.get("CHAT_API_LOG_PSEUDONYM_KEY", "").strip() or None,
+            metrics_port=int(os.environ.get("JOB_METRICS_PORT", "8005")),
         )
 
 
@@ -326,6 +332,7 @@ async def _serve(app_settings: Settings, worker_settings: WorkerSettings) -> Non
     loop = asyncio.get_running_loop()
     for caught in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(caught, stop.set)
+    serve_metrics(worker_settings.metrics_port)
     try:
         privacy = PostgresPrivacyStore(read.engine, erasure.engine)
         handlers: dict[JobKind, JobHandler] = {

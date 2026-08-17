@@ -26,6 +26,7 @@ from prometheus_client import (
     Gauge,
     Histogram,
     generate_latest,
+    start_http_server,
 )
 from prometheus_client.openmetrics.exposition import (
     CONTENT_TYPE_LATEST as OPENMETRICS_CONTENT_TYPE,
@@ -265,3 +266,18 @@ METRICS = PrometheusMetrics()
 def render_metrics(*, openmetrics: bool) -> tuple[bytes, str]:
     """The body and media type of the ``/metrics`` response."""
     return METRICS.render(openmetrics=openmetrics)
+
+
+def serve_metrics(port: int) -> None:
+    """Expose this process's metric plane on ``/metrics`` until it exits.
+
+    The worker records the same `OBS-002` counters as the API but serves no
+    application traffic, so without its own scrape endpoint every job, retry,
+    and ingestion metric it produces stays in a registry nothing reads. Returns
+    once the listener thread is running; the thread is a daemon, so a worker
+    shutdown is never held open by a scraper.
+
+    Content negotiation matches the API's route: a scraper that accepts
+    OpenMetrics gets the trace-ID exemplars, everything else gets classic text.
+    """
+    start_http_server(port, registry=METRICS.registry)
