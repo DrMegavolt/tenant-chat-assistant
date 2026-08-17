@@ -123,12 +123,19 @@ def test_a_lead_is_captured_through_the_domain_service() -> None:
     )
 
     async def scenario() -> None:
-        result = await harness.runtime.send(LEAD_TENANT, "s-lead", "have someone call me")
+        paused = await harness.runtime.send(LEAD_TENANT, "s-lead", "have someone call me")
+        assert paused.is_paused
+        assert paused.pending is not None
+        assert paused.pending["awaiting"] == "lead_confirmation"
+        assert await harness.leads.for_tenant(LEAD_TENANT) == ()
 
+        resumed = await harness.runtime.resume(LEAD_TENANT, "s-lead", "approved")
+
+        assert not resumed.is_paused
         captured = await harness.leads.for_tenant(LEAD_TENANT)
         assert len(captured) == 1
         assert captured[0].contact.value == "dana@example.com"
-        assert [action["action"] for action in result.committed] == ["create_lead"]
+        assert [action["action"] for action in resumed.committed] == ["create_lead"]
 
     asyncio.run(scenario())
 
@@ -338,6 +345,104 @@ def test_an_abandoned_turn_leaves_no_tool_call_unanswered() -> None:
         assert any(
             entry["role"] == "tool" and "turn_abandoned" in entry["content"]
             for entry in state["transcript"]
+        )
+
+    asyncio.run(scenario())
+
+
+def _lead_call() -> ToolCall:
+    return tool_call(
+        "create_lead",
+        customer_name="Dana Ruiz",
+        customer_phone_or_email="dana@example.com",
+        service="HVAC",
+        summary="Furnace is making a grinding noise.",
+        urgency="today",
+    )
+
+
+def test_a_second_lead_in_one_response_is_refused_rather_than_ignored() -> None:
+    """Only one lead can await consent; the other call still needs an answer.
+
+    BUG-003: capturing a second lead after the customer answered about the
+    first would store contact data nobody agreed to, and skipping the call
+    would leave it dangling for the next turn.
+    """
+    harness = build_harness(
+        [
+            calling(
+                _lead_call(),
+                ToolCall(
+                    call_id="call-second-lead", name="create_lead", arguments={"service": "HVAC"}
+                ),
+            ),
+            ANSWER,
+        ]
+    )
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(
+            LEAD_TENANT, "s-two-leads", "please have someone call me about two things"
+        )
+        state = await harness.checkpointed_state(LEAD_TENANT, "s-two-leads")
+
+        assert result.is_paused
+        assert [
+            json.loads(entry["content"]) for entry in state["transcript"] if entry["role"] == "tool"
+        ] == [
+            {
+                "error": "lead_already_proposed",
+                "message": "Only one callback request can be confirmed at a time.",
+            }
+        ]
+        assert await harness.leads.for_tenant(LEAD_TENANT) == ()
+        assert unanswered_tool_calls(state) == (state["transcript"][1]["tool_calls"][0],)
+
+    asyncio.run(scenario())
+
+
+def test_a_declined_lead_captures_nothing() -> None:
+    harness = build_harness([calling(_lead_call()), ANSWER])
+
+    async def scenario() -> None:
+        paused = await harness.runtime.send(LEAD_TENANT, "s-declined-lead", "please call me")
+        assert paused.is_paused
+
+        resumed = await harness.runtime.resume(LEAD_TENANT, "s-declined-lead", "declined")
+
+        assert not resumed.is_paused
+        assert resumed.committed == ()
+        assert await harness.leads.for_tenant(LEAD_TENANT) == ()
+
+    asyncio.run(scenario())
+
+
+def test_a_lead_is_never_captured_without_a_recorded_consent_grant() -> None:
+    """The consent gate lives in the domain service, not in the graph.
+
+    BUG-003: even with the confirmation answered, an approval alone must not
+    capture a lead when the session holds no grant — the recorded grant is the
+    only thing `PRIV-001` accepts as consent, and the refusal surfaces as a
+    tool result the assistant can tell the visitor about.
+    """
+    from tenantchat.api.store import InMemoryConsentStore
+
+    harness = build_harness([calling(_lead_call()), ANSWER], consent=InMemoryConsentStore())
+
+    async def scenario() -> None:
+        paused = await harness.runtime.send(LEAD_TENANT, "s-no-consent", "please call me")
+        assert paused.is_paused
+
+        resumed = await harness.runtime.resume(LEAD_TENANT, "s-no-consent", "approved")
+
+        assert not resumed.is_paused
+        assert resumed.committed == ()
+        assert await harness.leads.for_tenant(LEAD_TENANT) == ()
+        assert any(
+            "consent_required" in entry["content"]
+            for entry in (await harness.checkpointed_state(LEAD_TENANT, "s-no-consent"))[
+                "transcript"
+            ]
         )
 
     asyncio.run(scenario())

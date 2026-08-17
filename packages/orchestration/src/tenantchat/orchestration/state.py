@@ -132,6 +132,13 @@ class DispatchState(TypedDict):
     pending_booking: StoredToolCall | None
     # The customer's answer to that question, carried across the interrupt.
     booking_approved: bool
+    # The lead the customer is being asked to consent to, or ``None``. A lead
+    # stores contact data, so `PRIV-001` gates it on an explicit grant; the
+    # graph pauses until the widget records one, exactly like a booking pauses
+    # for confirmation.
+    pending_lead: StoredToolCall | None
+    # The customer's answer to that question, carried across the interrupt.
+    lead_approved: bool
     # Set when the turn cannot continue on its own: the run escalates instead of
     # retrying, because `REL-001` owns retry policy for dependency clients and a
     # graph that retries as well would multiply it.
@@ -232,6 +239,8 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "committed": [],
         "pending_booking": None,
         "booking_approved": False,
+        "pending_lead": None,
+        "lead_approved": False,
         "failure": "",
         "turn_outcome": "",
         "model_name": "",
@@ -270,6 +279,8 @@ def next_turn(message: str) -> dict[str, object]:
         "answer": "",
         "pending_booking": None,
         "booking_approved": False,
+        "pending_lead": None,
+        "lead_approved": False,
         "failure": "",
         "turn_outcome": "",
         # The route node re-decides every turn; the previous turn's decision

@@ -83,6 +83,8 @@ interface WireTurn {
     slot: string;
     customer_name?: string;
     address?: string;
+    contact?: string;
+    summary?: string;
   } | null;
   committed: Array<{ action: string; reference: string; replayed: boolean }>;
   citations?: Array<{
@@ -142,7 +144,9 @@ function normalizeTurn(wire: WireTurn): ChatTurnResponse {
         service: wire.pending.service,
         slot: wire.pending.slot,
         customerName: wire.pending.customer_name ?? "",
-        address: wire.pending.address ?? ""
+        address: wire.pending.address ?? "",
+        contact: wire.pending.contact ?? "",
+        summary: wire.pending.summary ?? ""
       }
     : null;
   const provenance: TurnProvenance = {
@@ -313,7 +317,9 @@ export class ChatApi {
             service: wire.pending.service,
             slot: wire.pending.slot,
             customerName: wire.pending.customer_name ?? "",
-            address: wire.pending.address ?? ""
+            address: wire.pending.address ?? "",
+            contact: wire.pending.contact ?? "",
+            summary: wire.pending.summary ?? ""
           }
         : null;
       return {

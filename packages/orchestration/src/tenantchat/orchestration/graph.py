@@ -24,13 +24,14 @@ from tenantchat.orchestration.nodes import (
     DispatchNode,
     DispatchNodes,
     route_after_confirmation,
+    route_after_lead_confirmation,
     route_after_model,
     route_after_routing,
     route_after_tools,
 )
 from tenantchat.orchestration.state import DispatchState
 
-GRAPH_VERSION: Final = "dispatch@2"
+GRAPH_VERSION: Final = "dispatch@3"
 
 
 DispatchGraph = StateGraph[DispatchState, None, DispatchState, DispatchState]
@@ -52,6 +53,8 @@ def build_dispatch_graph(dependencies: DispatchDependencies) -> DispatchGraph:
     builder.add_node(DispatchNode.TOOLS.value, nodes.run_tools)
     builder.add_node(DispatchNode.CONFIRM_BOOKING.value, nodes.confirm_booking)
     builder.add_node(DispatchNode.COMMIT_BOOKING.value, nodes.commit_booking)
+    builder.add_node(DispatchNode.CONFIRM_LEAD.value, nodes.confirm_lead)
+    builder.add_node(DispatchNode.COMMIT_LEAD.value, nodes.commit_lead)
     builder.add_node(DispatchNode.ESCALATE.value, nodes.escalate)
     builder.add_node(DispatchNode.FINALIZE.value, nodes.finalize)
 
@@ -67,6 +70,7 @@ def build_dispatch_graph(dependencies: DispatchDependencies) -> DispatchGraph:
         [
             DispatchNode.TOOLS.value,
             DispatchNode.CONFIRM_BOOKING.value,
+            DispatchNode.CONFIRM_LEAD.value,
             DispatchNode.ESCALATE.value,
             DispatchNode.FINALIZE.value,
         ],
@@ -74,14 +78,24 @@ def build_dispatch_graph(dependencies: DispatchDependencies) -> DispatchGraph:
     builder.add_conditional_edges(
         DispatchNode.TOOLS.value,
         route_after_tools,
-        [DispatchNode.MODEL.value, DispatchNode.CONFIRM_BOOKING.value],
+        [
+            DispatchNode.MODEL.value,
+            DispatchNode.CONFIRM_BOOKING.value,
+            DispatchNode.CONFIRM_LEAD.value,
+        ],
     )
     builder.add_conditional_edges(
         DispatchNode.CONFIRM_BOOKING.value,
         route_after_confirmation,
         [DispatchNode.MODEL.value, DispatchNode.COMMIT_BOOKING.value],
     )
+    builder.add_conditional_edges(
+        DispatchNode.CONFIRM_LEAD.value,
+        route_after_lead_confirmation,
+        [DispatchNode.MODEL.value, DispatchNode.COMMIT_LEAD.value],
+    )
     builder.add_edge(DispatchNode.COMMIT_BOOKING.value, DispatchNode.MODEL.value)
+    builder.add_edge(DispatchNode.COMMIT_LEAD.value, DispatchNode.MODEL.value)
     builder.add_edge(DispatchNode.ESCALATE.value, END)
     builder.add_edge(DispatchNode.FINALIZE.value, END)
 

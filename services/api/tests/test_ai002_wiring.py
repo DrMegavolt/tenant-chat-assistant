@@ -236,12 +236,22 @@ class TestActionBudget:
         )
         with TestClient(app, raise_server_exceptions=False) as client:
             visitor = _open_session(client, tenant_id=LEAD_TENANT)
-            response = client.post(
+            proposed = client.post(
                 "/api/chat", json={"message": "Call me back about HVAC"}, headers=visitor.headers
             )
+            # The consent question pauses before the budget is consulted: the
+            # quota is checked when the action is about to commit, not before
+            # the visitor was asked.
+            assert proposed.status_code == 200
+            assert proposed.json()["pending"] is not None
+            confirmed = client.post(
+                "/api/chat/confirmation",
+                json={"decision": "approved"},
+                headers=visitor.headers,
+            )
 
-        assert response.status_code == 200
-        assert "call you back" in response.json()["reply"]
+        assert confirmed.status_code == 200
+        assert "call you back" in confirmed.json()["reply"]
         assert ledger.snapshot(LEAD_TENANT).actions_committed == 1
         assert _sample_value("tenantchat_policy_blocks_total", reason="action_limit") == 1
         # No partial action: the refused lead created no row, and the refusal

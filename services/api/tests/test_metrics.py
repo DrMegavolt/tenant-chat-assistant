@@ -616,11 +616,19 @@ class TestErrorPaths:
             ModelResponse(content="The team will call you back.", model_name="scripted"),
         ]
         headers = _open_unconsented(client, tenant_id="apex")
-        response = client.post(
+        proposed = client.post(
             "/api/chat", json={"message": "Call me back about HVAC"}, headers=headers
         )
 
-        assert response.status_code == 200
+        assert proposed.status_code == 200
+        assert proposed.json()["pending"] is not None
+        # An approval alone is not consent: the grant is checked when the lead
+        # is about to be stored, and the refusal is the refused-tool event.
+        confirmed = client.post(
+            "/api/chat/confirmation", json={"decision": "approved"}, headers=headers
+        )
+
+        assert confirmed.status_code == 200
         values = sample_values()
         assert (
             values[

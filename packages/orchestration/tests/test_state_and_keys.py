@@ -34,6 +34,8 @@ def test_a_new_turn_clears_the_previous_turn_without_erasing_history() -> None:
     assert update["rounds"] == 0
     assert update["pending_booking"] is None
     assert update["booking_approved"] is False
+    assert update["pending_lead"] is None
+    assert update["lead_approved"] is False
     assert update["failure"] == ""
     assert "committed" not in update
 

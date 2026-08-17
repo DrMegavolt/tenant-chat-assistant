@@ -546,7 +546,7 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
         "failure": None,
     }
     manifest = _section(content, "component_manifest")
-    assert manifest["graph"] == "dispatch@2"
+    assert manifest["graph"] == "dispatch@3"
     assert manifest["prompt_template"] == {"ref": "dispatch-system@4"}
     assert manifest["routing_policy"] == "intent-routing@1"
     assert _list(content, "diagnoses") == [

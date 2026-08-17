@@ -337,6 +337,8 @@ class DispatchNode(StrEnum):
     TOOLS = "tools"
     CONFIRM_BOOKING = "confirm_booking"
     COMMIT_BOOKING = "commit_booking"
+    CONFIRM_LEAD = "confirm_lead"
+    COMMIT_LEAD = "commit_lead"
     ESCALATE = "escalate"
     FINALIZE = "finalize"
 
@@ -565,6 +567,24 @@ class DispatchNodes:
             MetricName.TOOL_LATENCY,
             duration,
             labels={"tool": ToolName.BOOK_APPOINTMENT.value, "outcome": outcome.value},
+        )
+
+    def _observe_lead_commit(self, outcome: ToolOutcome, duration: float) -> None:
+        """The lead capture as a tool execution, with its latency.
+
+        The capture runs here rather than through the tools node, so the tool
+        series for ``create_lead`` is completed here: a committed attempt
+        records ``succeeded`` and a refused one records ``refused``.
+        """
+        self._observe(
+            MetricName.TOOL_CALLS,
+            1,
+            labels={"tool": ToolName.CREATE_LEAD.value, "outcome": outcome.value},
+        )
+        self._observe(
+            MetricName.TOOL_LATENCY,
+            duration,
+            labels={"tool": ToolName.CREATE_LEAD.value, "outcome": outcome.value},
         )
 
     @staticmethod
@@ -863,12 +883,31 @@ class DispatchNodes:
         if not calls and not response.content.strip():
             return {"failure": HandoffReason.UNRESOLVED.value, "rounds": state["rounds"] + 1}
 
-        booking = next((call for call in calls if call.name == ToolName.BOOK_APPOINTMENT), None)
+        # An action is held for the customer's confirmation only when the
+        # routed agent is allowed to perform it. A held call never passes
+        # through the tools node, so allowing a hold for a tool outside the
+        # agent's allowlist would let an injected call pause for (and commit)
+        # an action the guard was meant to refuse.
+        allowed_names = {spec.name for spec in allowed}
+        booking = (
+            next((call for call in calls if call.name == ToolName.BOOK_APPOINTMENT), None)
+            if ToolName.BOOK_APPOINTMENT.value in allowed_names
+            else None
+        )
+        # Only one action can await confirmation at a time, and the booking wins:
+        # the tools node refuses a second lead in that response, so no consent
+        # question is ever asked for a call that cannot be answered.
+        lead = (
+            next((call for call in calls if call.name == ToolName.CREATE_LEAD), None)
+            if booking is None and ToolName.CREATE_LEAD.value in allowed_names
+            else None
+        )
         update: dict[str, Any] = {
             "transcript": [assistant_entry(response.content, [_store(call) for call in calls])],
             "rounds": state["rounds"] + 1,
             "model_name": response.model_name,
             "pending_booking": _store(booking) if booking is not None else None,
+            "pending_lead": _store(lead) if lead is not None else None,
             "model_usage": dict(response.usage),
         }
         # The prompt of every model call is recorded, not only of the call that
@@ -1024,19 +1063,25 @@ class DispatchNodes:
         refusal code is recorded on the turn so enforcement is attributable.
         """
         policy = await self._deps.policies.policy(state["tenant_id"])
-        budget = policy.budgets or DEFAULT_TENANT_BUDGET
-        pending = state["pending_booking"]
-        awaiting = pending["call_id"] if pending is not None else None
+        pending_booking = state["pending_booking"]
+        pending_lead = state["pending_lead"]
+        awaiting = {
+            call_id
+            for call_id in (
+                pending_booking["call_id"] if pending_booking is not None else None,
+                pending_lead["call_id"] if pending_lead is not None else None,
+            )
+            if call_id is not None
+        }
         agent = _agent_for(self._deps, state)
         entries = []
         committed: list[CommittedAction] = []
         results: list[ToolResult] = []
         fields: dict[str, str] = {}
         refused: list[str] = []
-        completed_lead = False
 
         for call in unanswered_tool_calls(state):
-            if call["call_id"] == awaiting:
+            if call["call_id"] in awaiting:
                 continue
             tool = ToolName.resolve(call["name"])
             if tool is None:
@@ -1072,26 +1117,6 @@ class DispatchNodes:
                     )
                 )
                 continue
-            # `AI-002`: the tenant's action budget is another guard beside the
-            # permission allowlist. A refused action is a tool result — the
-            # model can tell the visitor to call — never a silent commit.
-            if tool is ToolName.CREATE_LEAD and self._deps.budgets is not None:
-                action_verdict = await self._deps.budgets.check_action(
-                    state["tenant_id"], budget, turn_index=state["turn_index"]
-                )
-                if not action_verdict.allowed:
-                    refused.append("action_quota_exceeded")
-                    self._observe_policy_block(action_verdict.block_reason)
-                    entries.append(
-                        tool_entry(
-                            call["call_id"],
-                            _payload(
-                                error="action_quota_exceeded",
-                                message="The tenant has reached its action limit.",
-                            ),
-                        )
-                    )
-                    continue
             if agent is None:
                 # An agent-less composition gets an empty allowlist, so the
                 # guard refused every tool above; nothing can reach here.
@@ -1134,8 +1159,6 @@ class DispatchNodes:
                     await self._deps.budgets.record_action(
                         state["tenant_id"], turn_index=state["turn_index"]
                     )
-                if action["action"] == ToolName.CREATE_LEAD.value:
-                    completed_lead = True
 
         update: dict[str, Any] = {
             "transcript": entries,
@@ -1155,15 +1178,6 @@ class DispatchNodes:
                 idempotency_key=self._workflow_key(state, "update", "tools"),
             )
             update["collected_fields"] = dict(merged.collected_fields)
-            if completed_lead:
-                await self._deps.workflows.transition(
-                    tenant_id=state["tenant_id"],
-                    session_id=state["session_id"],
-                    workflow_id=state["workflow_id"],
-                    transition=WorkflowTransition.COMPLETE,
-                    payload={},
-                    idempotency_key=self._workflow_key(state, "complete", "lead"),
-                )
         return update
 
     async def confirm_booking(self, state: DispatchState) -> dict[str, Any]:
@@ -1392,6 +1406,193 @@ class DispatchNodes:
                     )
                 ],
                 "pending_booking": None,
+            },
+            merged,
+        )
+
+    async def confirm_lead(self, state: DispatchState) -> dict[str, Any]:
+        """Validate the proposed lead, then pause for the customer's consent.
+
+        A lead stores contact data, so `PRIV-001` gates it on a recorded grant
+        and the pause is the consent question — the same shape as the booking
+        confirmation, and the validation runs before the interrupt for the same
+        reason: a lead that cannot be captured never reaches the customer as a
+        question. The pause transition is keyed by the lead call ID so a replay
+        is a no-op.
+        """
+        pending = state["pending_lead"]
+        if pending is None:
+            return {}
+
+        arguments = _arguments(pending)
+        policy = await self._deps.policies.policy(state["tenant_id"])
+        try:
+            LeadCommand.parse(
+                policy,
+                customer_name=text_argument(arguments, "customer_name"),
+                contact=text_argument(arguments, "customer_phone_or_email"),
+                service=text_argument(arguments, "service"),
+                summary=text_argument(arguments, "summary"),
+                address_or_zip=text_argument(arguments, "address_or_zip"),
+                urgency=text_argument(arguments, "urgency"),
+            )
+        except DomainError as error:
+            # The lead path never passes through the tools node, so the
+            # permission guard cannot record its refusals; the domain's refusal
+            # is the same enforcement event and belongs in the same record
+            # (`RAG-007`).
+            return {
+                "transcript": [tool_entry(pending["call_id"], _error_payload(error))],
+                "pending_lead": None,
+                "refused_tools": [error.code],
+            }
+
+        confirmation = {
+            "awaiting": "lead_confirmation",
+            "service": str(arguments.get("service", "")),
+            "customer_name": str(arguments.get("customer_name", "")),
+            "contact": str(arguments.get("customer_phone_or_email", "")),
+            "summary": str(arguments.get("summary", "")),
+        }
+        if state["workflow_id"]:
+            await self._deps.workflows.transition(
+                tenant_id=state["tenant_id"],
+                session_id=state["session_id"],
+                workflow_id=state["workflow_id"],
+                transition=WorkflowTransition.PAUSE,
+                payload=confirmation,
+                idempotency_key=self._workflow_key(state, "pause", pending["call_id"]),
+            )
+        decision = BookingDecision.of(interrupt(confirmation))
+        return {"lead_approved": decision is BookingDecision.APPROVED}
+
+    async def commit_lead(self, state: DispatchState) -> dict[str, Any]:
+        """Capture the consented lead, exactly once."""
+        pending = state["pending_lead"]
+        if pending is None:
+            return {}
+        call_id = pending["call_id"]
+        tenant_id = state["tenant_id"]
+        session_id = state["session_id"]
+        workflow_id = state["workflow_id"]
+        agent = _agent_for(self._deps, state)
+
+        if workflow_id and agent is not None and agent.workflow:
+            merged = await self._deps.workflows.update(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                workflow_id=workflow_id,
+                collected_fields=self._collected(agent, _arguments(pending)),
+                allowed_field_names=tuple(field.name for field in agent.input_fields),
+                tool_results=(),
+                next_allowed_actions=agent.tool_names,
+                turn_index=state["turn_index"],
+                idempotency_key=self._workflow_key(state, "update", call_id),
+            )
+        else:
+            merged = None
+
+        if not state["lead_approved"]:
+            # Declining is a normal turn, not an error: the workflow resumes and
+            # the conversation keeps going.
+            if workflow_id:
+                await self._deps.workflows.transition(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    workflow_id=workflow_id,
+                    transition=WorkflowTransition.RESUME,
+                    payload={"decision": "declined"},
+                    idempotency_key=self._workflow_key(state, "resume", call_id),
+                )
+            self._observe(
+                MetricName.BUSINESS_ACTIONS,
+                1,
+                labels={
+                    "operation": Operation.LEAD.value,
+                    "status": ActionStatus.DECLINED.value,
+                },
+            )
+            return self._with_collected(
+                {
+                    "transcript": [tool_entry(call_id, _payload(status="declined_by_customer"))],
+                    "pending_lead": None,
+                },
+                merged,
+            )
+
+        started = time.monotonic()
+        try:
+            policy = await self._deps.policies.policy(tenant_id)
+            if self._deps.budgets is not None:
+                # `AI-002`: a consented lead must not capture once the tenant's
+                # action budget is spent. The refusal resumes the workflow
+                # exactly like a booking would.
+                action_verdict = await self._deps.budgets.check_action(
+                    tenant_id,
+                    policy.budgets or DEFAULT_TENANT_BUDGET,
+                    turn_index=state["turn_index"],
+                )
+                if not action_verdict.allowed:
+                    self._observe_lead_commit(ToolOutcome.REFUSED, time.monotonic() - started)
+                    self._observe_policy_block(action_verdict.block_reason)
+                    if workflow_id:
+                        await self._deps.workflows.transition(
+                            tenant_id=tenant_id,
+                            session_id=session_id,
+                            workflow_id=workflow_id,
+                            transition=WorkflowTransition.RESUME,
+                            payload={"error": "action_quota_exceeded"},
+                            idempotency_key=self._workflow_key(state, "resume", call_id),
+                        )
+                    return self._with_collected(
+                        {
+                            "transcript": [
+                                tool_entry(
+                                    call_id,
+                                    _payload(
+                                        error="action_quota_exceeded",
+                                        message="The tenant has reached its action limit.",
+                                    ),
+                                )
+                            ],
+                            "pending_lead": None,
+                        },
+                        merged,
+                    )
+            content, action, outcome = await self._create_lead(
+                state, policy, pending, _arguments(pending)
+            )
+        except DomainError as error:
+            # Reachable when consent was withdrawn while the visitor was
+            # deciding, or the contact was taken while deciding.
+            self._observe_lead_commit(ToolOutcome.REFUSED, time.monotonic() - started)
+            if workflow_id:
+                await self._deps.workflows.transition(
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    workflow_id=workflow_id,
+                    transition=WorkflowTransition.RESUME,
+                    payload={"error": error.code},
+                    idempotency_key=self._workflow_key(state, "resume", call_id),
+                )
+            return self._with_collected(
+                {
+                    "transcript": [tool_entry(call_id, _error_payload(error))],
+                    "pending_lead": None,
+                },
+                merged,
+            )
+
+        self._observe_lead_commit(outcome, time.monotonic() - started)
+        if self._deps.budgets is not None:
+            await self._deps.budgets.record_action(tenant_id, turn_index=state["turn_index"])
+        if workflow_id:
+            await self._resume_and_complete(state, call_id, "approved")
+        return self._with_collected(
+            {
+                "transcript": [tool_entry(call_id, content)],
+                "committed": [action],
+                "pending_lead": None,
             },
             merged,
         )
@@ -1642,7 +1843,17 @@ class DispatchNodes:
             if tool is ToolName.GET_AVAILABILITY:
                 return await self._get_availability(policy, arguments), None, ToolOutcome.SUCCEEDED
             if tool is ToolName.CREATE_LEAD:
-                return await self._create_lead(state, policy, call, arguments)
+                # A second lead in one response. Only one can await consent, and
+                # capturing this one after the customer answered about the other
+                # would store contact data nobody agreed to.
+                return (
+                    _payload(
+                        error="lead_already_proposed",
+                        message="Only one callback request can be confirmed at a time.",
+                    ),
+                    None,
+                    ToolOutcome.REFUSED,
+                )
             if tool is ToolName.HANDOFF_TO_HUMAN:
                 return await self._handoff(state, policy, call, arguments)
             if tool is ToolName.BOOK_APPOINTMENT:
@@ -1857,21 +2068,33 @@ def route_after_model(state: DispatchState) -> DispatchNode:
     if state["rounds"] >= MAX_TOOL_ROUNDS:
         return DispatchNode.ESCALATE
 
-    # Everything except the one booking awaiting confirmation runs first, so no
-    # call is left without a result across an interrupt the customer may take
-    # minutes to answer. Compared by call ID rather than tool name, because a
-    # second booking in the same response is one of the calls that has to run.
-    pending = state["pending_booking"]
-    awaiting = pending["call_id"] if pending is not None else None
-    if any(call["call_id"] != awaiting for call in calls):
+    # Everything except the actions awaiting confirmation runs first, so no call
+    # is left without a result across an interrupt the customer may take minutes
+    # to answer. Compared by call ID rather than tool name, because a second
+    # booking or lead in the same response is one of the calls that has to run.
+    pending_booking = state["pending_booking"]
+    pending_lead = state["pending_lead"]
+    awaiting = {
+        call_id
+        for call_id in (
+            pending_booking["call_id"] if pending_booking is not None else None,
+            pending_lead["call_id"] if pending_lead is not None else None,
+        )
+        if call_id is not None
+    }
+    if any(call["call_id"] not in awaiting for call in calls):
         return DispatchNode.TOOLS
-    return DispatchNode.CONFIRM_BOOKING
+    if pending_booking is not None:
+        return DispatchNode.CONFIRM_BOOKING
+    return DispatchNode.CONFIRM_LEAD
 
 
 def route_after_tools(state: DispatchState) -> DispatchNode:
-    """Confirm a proposed booking before returning to the model."""
+    """Confirm any proposed action before returning to the model."""
     if state["pending_booking"] is not None:
         return DispatchNode.CONFIRM_BOOKING
+    if state["pending_lead"] is not None:
+        return DispatchNode.CONFIRM_LEAD
     return DispatchNode.MODEL
 
 
@@ -1880,3 +2103,10 @@ def route_after_confirmation(state: DispatchState) -> DispatchNode:
     if state["pending_booking"] is None:
         return DispatchNode.MODEL
     return DispatchNode.COMMIT_BOOKING
+
+
+def route_after_lead_confirmation(state: DispatchState) -> DispatchNode:
+    """A cleared ``pending_lead`` means validation refused it before asking."""
+    if state["pending_lead"] is None:
+        return DispatchNode.MODEL
+    return DispatchNode.COMMIT_LEAD

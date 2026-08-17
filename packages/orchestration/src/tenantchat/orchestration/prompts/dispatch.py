@@ -236,7 +236,7 @@ def _agent_bindings(workflow: Mapping[str, object]) -> Mapping[str, str]:
         collected = ""
     status = (
         "Waiting on the customer's confirmation."
-        if workflow.get("pending_booking")
+        if workflow.get("pending_booking") or workflow.get("pending_lead")
         else "No pending confirmation."
     )
     return {

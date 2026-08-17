@@ -255,14 +255,18 @@ class PendingConfirmation(BaseModel):
     """A question the assistant stopped to ask before committing anything.
 
     Echoes the details back so the customer confirms what will actually be
-    booked rather than what they believe they said.
+    booked or captured rather than what they believe they said. A booking
+    confirmation carries the booked slot and address; a lead confirmation
+    carries the contact and summary instead.
     """
 
     awaiting: str
     service: str
-    slot: str
+    slot: str = ""
     customer_name: str
-    address: str
+    address: str = ""
+    contact: str = ""
+    summary: str = ""
 
     @classmethod
     def of(cls, pending: Mapping[str, object]) -> PendingConfirmation:
@@ -277,6 +281,8 @@ class PendingConfirmation(BaseModel):
             slot=str(pending.get("slot", "")),
             customer_name=str(pending.get("customer_name", "")),
             address=str(pending.get("address", "")),
+            contact=str(pending.get("contact", "")),
+            summary=str(pending.get("summary", "")),
         )
 
 

@@ -85,7 +85,7 @@ def _csrf(client: TestClient, headers: dict[str, str]) -> str:
 
 def _manifest(**overrides: object) -> dict[str, object]:
     return {
-        "graph": "dispatch@2",
+        "graph": "dispatch@3",
         "prompt_template": {"ref": DISPATCH_SYSTEM_REF},
         "routing_policy": "intent-routing@1",
         "agents": "agents@1",

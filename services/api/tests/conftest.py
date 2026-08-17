@@ -101,6 +101,21 @@ def booking_call() -> ToolCall:
     )
 
 
+def lead_call() -> ToolCall:
+    """A complete, valid lead proposal against the lead-enabled tenant."""
+    return ToolCall(
+        call_id="call-lead",
+        name="create_lead",
+        arguments={
+            "customer_name": "Dana Ruiz",
+            "customer_phone_or_email": "dana@example.com",
+            "service": "HVAC",
+            "summary": "Furnace is making a grinding noise.",
+            "urgency": "today",
+        },
+    )
+
+
 @pytest.fixture
 def settings() -> Settings:
     return Settings(

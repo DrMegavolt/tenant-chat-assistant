@@ -4,7 +4,10 @@ import { describe, expect, test } from "vitest";
 import { mountWidget } from "src/widget/mount";
 import {
   AVAILABILITY_REPLY,
+  CONSENT_GRANTED,
   CREDENTIAL,
+  LEAD_CAPTURED,
+  LEAD_PENDING,
   TENANTS,
   jsonResponse,
   requestBodies,
@@ -214,6 +217,54 @@ describe("chat and booking contracts", () => {
     );
     expect(requestCredential(confirmCall?.[1])).toBe(CREDENTIAL);
     expect(inWidget("#messages")?.textContent).toContain("Your appointment is booked.");
+  });
+
+  test("renders a lead confirmation and captures it only after consent", async () => {
+    const fetchMock = stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        return jsonResponse({
+          session: { session_id: "session-apex" },
+          messages: [],
+          pending: null,
+          credential: CREDENTIAL
+        });
+      }
+      if (url.endsWith("/api/chat/session")) {
+        return jsonResponse({
+          session: { session_id: "session-apex" },
+          messages: [],
+          credential: CREDENTIAL
+        });
+      }
+      if (url.endsWith("/api/chat/consent")) return jsonResponse(CONSENT_GRANTED);
+      if (url.endsWith("/api/chat/confirmation")) return jsonResponse(LEAD_CAPTURED);
+      if (url.endsWith("/api/chat") && init?.method === "POST") return jsonResponse(LEAD_PENDING);
+      return null;
+    });
+    await renderDemo();
+
+    // Apex is the lead-capturing tenant: a callback request pauses on consent.
+    selectTenant("Apex Home Services");
+    submitChat("I would like a callback about my furnace.");
+    await waitFor(() => expect(inWidget(".booking-confirmation-card")).not.toBeNull());
+    const confirmationCard = requireInWidget(".booking-confirmation-card");
+    expect(confirmationCard.textContent).toContain("Confirm your callback request");
+    expect(confirmationCard.textContent).toContain("dana@example.com");
+
+    const approve = [...confirmationCard.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Confirm callback request")
+    )!;
+    const consent = confirmationCard.querySelector<HTMLInputElement>("#bookingConfirmConsent")!;
+    fireEvent.click(consent);
+    fireEvent.click(approve);
+
+    await waitFor(() => expect(inWidget(".booking-confirmation-card")).toBeNull());
+    expect(inWidget("#messages")?.textContent).toContain("The team will call you back.");
+    const [confirmationBody] = requestBodies(fetchMock, "/api/chat/confirmation") as {
+      decision: string;
+    }[];
+    expect(confirmationBody?.decision).toBe("approved");
   });
 
   test("a failed chat turn tells the visitor instead of leaving the composer stuck", async () => {

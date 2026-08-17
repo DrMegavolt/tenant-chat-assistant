@@ -548,7 +548,12 @@ def test_a_lead_workflow_completes_with_the_captured_lead() -> None:
     )
 
     async def scenario() -> None:
-        result = await harness.runtime.send(LEAD_TENANT, "s-lead", "have someone call me")
+        paused = await harness.runtime.send(LEAD_TENANT, "s-lead", "have someone call me")
+        assert paused.is_paused
+        assert paused.pending is not None
+        assert paused.pending["awaiting"] == "lead_confirmation"
+
+        result = await harness.runtime.resume(LEAD_TENANT, "s-lead", "approved")
 
         assert [action["action"] for action in result.committed] == ["create_lead"]
         workflows = await harness.workflows.workflows(LEAD_TENANT, "s-lead")
@@ -558,9 +563,14 @@ def test_a_lead_workflow_completes_with_the_captured_lead() -> None:
         assert done.intent is IntentName.LEAD
         assert done.collected_fields["customer_name"] == "Dana Ruiz"
         assert done.collected_fields["summary"] == "Furnace is making a grinding noise."
-        assert len(done.tool_results) == 1
         events = await harness.workflows.events(LEAD_TENANT, done.workflow_id)
-        assert [event.kind for event in events] == ["start", "update", "complete"]
+        assert [event.kind for event in events] == [
+            "start",
+            "pause",
+            "update",
+            "resume",
+            "complete",
+        ]
         assert len(await harness.leads.for_tenant(LEAD_TENANT)) == 1
 
     asyncio.run(scenario())
@@ -596,12 +606,18 @@ def test_a_callback_request_with_service_nouns_routes_to_lead() -> None:
     )
 
     async def scenario() -> None:
-        result = await harness.runtime.send(
+        paused = await harness.runtime.send(
             LEAD_TENANT,
             "s-callback",
             "Please have someone call QA Tester at qa-tester@example.invalid about "
             "an electrical panel repair.",
         )
+        assert paused.is_paused
+        assert paused.pending is not None
+        assert paused.pending["awaiting"] == "lead_confirmation"
+
+        result = await harness.runtime.resume(LEAD_TENANT, "s-callback", "approved")
+
         routing = await harness.workflows.last_routing(LEAD_TENANT, "s-callback")
         assert routing is not None
         assert routing.chosen_intent == IntentName.LEAD.value

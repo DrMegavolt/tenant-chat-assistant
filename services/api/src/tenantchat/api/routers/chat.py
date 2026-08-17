@@ -1,7 +1,7 @@
 """The visitor conversation surface.
 
 Three things happen here and nowhere else in this package: a conversation is
-opened, a turn is run, and a proposed booking is answered. The assistant's
+opened, a turn is run, and a pending confirmation is answered. The assistant's
 behavior — which tools it may call, when it stops to ask, what it commits — lives
 in the agent runtime behind
 :class:`~tenantchat.core.ports.ConversationRuntime`, and every effect it causes
@@ -652,7 +652,11 @@ async def confirm_booking(
     clock: VisitorClock,
     settings: Configuration,
 ) -> ChatTurnResponse:
-    """Answer the booking the assistant proposed, and finish the turn.
+    """Answer the confirmation the assistant paused on, and finish the turn.
+
+    The pause may be a booking awaiting approval or a lead awaiting consent;
+    either way the resume value is the visitor's decision and the graph runs
+    forward from the checkpoint.
 
     Refusing when nothing is pending is the point of the check: resuming a
     conversation that already finished would run the graph forward again and

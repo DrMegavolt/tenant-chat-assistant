@@ -280,7 +280,7 @@ def test_the_turn_record_pins_every_component_and_a_content_free_hash() -> None:
     assert _section(content, "output")["claims"] == ["clearview-hvac-2"]
     assert re.fullmatch(r"[0-9a-f]{64}", str(content["manifest_hash"]))
     manifest = _section(content, "component_manifest")
-    assert manifest["graph"] == "dispatch@2"
+    assert manifest["graph"] == "dispatch@3"
     assert manifest["prompt_template"] == {"ref": "dispatch-system@4"}
     assert manifest["routing_policy"] == "intent-routing@1"
     assert manifest["tools"] == "tools@1"

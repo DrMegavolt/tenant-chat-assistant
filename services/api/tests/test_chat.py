@@ -15,10 +15,12 @@ from fastapi.testclient import TestClient
 
 from services.api.tests.conftest import (
     BOOKING_TENANT,
+    LEAD_TENANT,
     OFFERED_SLOT,
     ScriptedModel,
     VisitorSession,
     booking_call,
+    lead_call,
 )
 from tenantchat.orchestration.model import ModelResponse
 
@@ -67,7 +69,7 @@ def test_a_turn_is_answered_and_recorded(
     assert body["pending"] is None
     assert body["provenance"] == {
         "model_name": "scripted",
-        "graph_version": "dispatch@2",
+        "graph_version": "dispatch@3",
         "prompt_version": "dispatch-system@4",
     }
 
@@ -122,6 +124,8 @@ def test_a_proposed_booking_pauses_before_it_commits(
         "slot": OFFERED_SLOT,
         "customer_name": "Dana Ruiz",
         "address": "12 Alder Court, Portland, OR 97205",
+        "contact": "",
+        "summary": "",
     }
 
 
@@ -186,6 +190,40 @@ def test_a_declined_booking_commits_nothing(
 
     assert response.status_code == 200
     assert response.json()["committed"] == []
+
+
+def test_a_consented_lead_confirmation_captures_once(
+    client: TestClient,
+    model: ScriptedModel,
+    visitor_session: Callable[..., VisitorSession],
+) -> None:
+    """A lead pauses for the visitor's consent and captures only after approval.
+
+    BUG-003: the assistant must never promise a callback without a committed
+    lead, and an approval alone is not consent — the recorded grant is what the
+    domain service accepts before storing contact data.
+    """
+    model.script = [
+        ModelResponse(content="", tool_calls=(lead_call(),), model_name="scripted"),
+        ModelResponse(content="The team will call you back.", model_name="scripted"),
+    ]
+    visitor = visitor_session(tenant_id=LEAD_TENANT)
+
+    pending = client.post("/api/chat", json={"message": "Please call me"}, headers=visitor.headers)
+
+    assert pending.status_code == 200
+    assert pending.json()["pending"]["awaiting"] == "lead_confirmation"
+    assert pending.json()["pending"]["contact"] == "dana@example.com"
+
+    response = client.post(
+        "/api/chat/confirmation", json={"decision": "approved"}, headers=visitor.headers
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reply"] == "The team will call you back."
+    assert body["pending"] is None
+    assert [action["action"] for action in body["committed"]] == ["create_lead"]
 
 
 def test_confirming_when_nothing_is_pending_is_refused(

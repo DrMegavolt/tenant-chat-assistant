@@ -15,6 +15,7 @@ from tenantchat.orchestration.nodes import (
     BookingDecision,
     DispatchNode,
     route_after_confirmation,
+    route_after_lead_confirmation,
     route_after_model,
     route_after_routing,
     route_after_tools,
@@ -34,16 +35,17 @@ def stored(name: str, call_id: str = "call-1") -> StoredToolCall:
 def state_after(*calls: StoredToolCall, **overrides: object) -> DispatchState:
     """The state the model node would have produced from these tool calls.
 
-    ``pending_booking`` is filled in the way ``call_model`` fills it, so a
-    routing test is answering the question the graph actually asks rather than
-    one about a state the graph never reaches.
+    ``pending_booking`` and ``pending_lead`` are filled the way ``call_model``
+    fills them, so a routing test is answering the question the graph actually
+    asks rather than one about a state the graph never reaches.
     """
     base = initial_state("clearview", "session-1", "hello")
     base["transcript"] = [*base["transcript"], assistant_entry("", list(calls))]
     base["rounds"] = 1
-    base["pending_booking"] = next(
-        (call for call in calls if call["name"] == "book_appointment"), None
-    )
+    booking = next((call for call in calls if call["name"] == "book_appointment"), None)
+    base["pending_booking"] = booking
+    if booking is None:
+        base["pending_lead"] = next((call for call in calls if call["name"] == "create_lead"), None)
     return base | overrides  # type: ignore[return-value]
 
 
@@ -106,6 +108,12 @@ def test_tools_hand_over_to_the_confirmation_when_a_booking_is_pending() -> None
     assert route_after_tools(pending) is DispatchNode.CONFIRM_BOOKING
 
 
+def test_tools_hand_over_to_the_lead_confirmation_when_a_lead_is_pending() -> None:
+    pending = state_after(stored("get_availability"), pending_lead=stored("create_lead"))
+
+    assert route_after_tools(pending) is DispatchNode.CONFIRM_LEAD
+
+
 def test_tools_return_to_the_model_when_nothing_is_pending() -> None:
     assert route_after_tools(state_after(stored("get_availability"))) is DispatchNode.MODEL
 
@@ -119,6 +127,53 @@ def test_a_surviving_pending_booking_reaches_the_commit_node() -> None:
     pending = state_after(pending_booking=stored("book_appointment"))
 
     assert route_after_confirmation(pending) is DispatchNode.COMMIT_BOOKING
+
+
+def test_a_lead_alone_goes_straight_to_the_confirmation() -> None:
+    """Nothing to run first, so the consent question is asked immediately."""
+    route = route_after_model(state_after(stored("create_lead")))
+
+    assert route is DispatchNode.CONFIRM_LEAD
+
+
+def test_a_lead_alongside_another_tool_runs_that_tool_first() -> None:
+    """The consent pause must never leave another call unanswered across it."""
+    route = route_after_model(
+        state_after(stored("check_service_area"), stored("create_lead", "call-2"))
+    )
+
+    assert route is DispatchNode.TOOLS
+
+
+def test_a_lead_alongside_a_booking_runs_the_second_lead_as_a_tool() -> None:
+    """Only one action can await confirmation, and the booking wins.
+
+    With the lead not held, the tools node answers it — which refuses it as a
+    duplicate proposal, so no contact data is captured without consent.
+    """
+    state = state_after(stored("book_appointment"), stored("create_lead", "call-2"))
+
+    assert route_after_model(state) is DispatchNode.TOOLS
+    booking = state["pending_booking"]
+    assert booking is not None and booking["call_id"] == stored("book_appointment")["call_id"]
+    assert state["pending_lead"] is None
+
+
+def test_a_second_lead_counts_as_a_tool_to_run() -> None:
+    """Only one lead is awaiting consent; the other still needs a result."""
+    route = route_after_model(state_after(stored("create_lead"), stored("create_lead", "call-2")))
+
+    assert route is DispatchNode.TOOLS
+
+
+def test_a_confirmation_that_cleared_the_lead_returns_to_the_model() -> None:
+    assert route_after_lead_confirmation(state_after(pending_lead=None)) is DispatchNode.MODEL
+
+
+def test_a_surviving_pending_lead_reaches_the_commit_node() -> None:
+    pending = state_after(pending_lead=stored("create_lead"))
+
+    assert route_after_lead_confirmation(pending) is DispatchNode.COMMIT_LEAD
 
 
 @pytest.mark.parametrize(

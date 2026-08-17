@@ -100,9 +100,10 @@ export type TranscriptEntry =
   | { kind: "booking"; id: string; pending: PendingBooking };
 
 /**
- * A booking the assistant proposed that the customer still has to approve.
- * Mirrors the API's `PendingConfirmation` so the widget can render a review
- * before deciding.
+ * A proposed booking (or lead) the customer still has to approve. Mirrors the
+ * API's `PendingConfirmation` so the widget can render a review before
+ * deciding. A booking carries the slot and address; a lead (`awaiting ===
+ * "lead_confirmation"`) carries the contact and summary instead.
  */
 export interface PendingBooking {
   awaiting: string;
@@ -110,6 +111,8 @@ export interface PendingBooking {
   slot: string;
   customerName: string;
   address: string;
+  contact?: string;
+  summary?: string;
 }
 
 /** One thing the conversation caused, as `CommittedActionSummary` reports it. */

@@ -100,6 +100,41 @@ export const CONSENT_GRANTED = {
   granted_at: "2026-08-04T00:00:00Z"
 };
 
+/** A turn that pauses on a lead awaiting the visitor's consent. */
+export const LEAD_PENDING = {
+  session_id: "session-1",
+  turn_id: "turn-lead",
+  reply: "",
+  pending: {
+    awaiting: "lead_confirmation",
+    service: "HVAC",
+    customer_name: "Dana Ruiz",
+    contact: "dana@example.com",
+    summary: "Furnace is making a grinding noise."
+  },
+  committed: [],
+  provenance: {
+    model_name: "scripted",
+    graph_version: "dispatch@1",
+    prompt_version: "dispatch-system@1"
+  },
+  credential: CREDENTIAL
+};
+
+export const LEAD_CAPTURED = {
+  session_id: "session-1",
+  turn_id: "turn-lead-done",
+  reply: "The team will call you back.",
+  pending: null,
+  committed: [{ action: "create_lead", reference: "lead-1", replayed: false }],
+  provenance: {
+    model_name: "scripted",
+    graph_version: "dispatch@1",
+    prompt_version: "dispatch-system@1"
+  },
+  credential: CREDENTIAL
+};
+
 /** One curated citation, shaped exactly as `CitationSummary` publishes it. */
 export const CITED_REPLY = {
   session_id: "session-1",
