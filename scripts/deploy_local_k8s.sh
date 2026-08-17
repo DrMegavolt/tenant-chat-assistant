@@ -185,5 +185,10 @@ fi
 refresh_role_grants
 "$ROOT_DIR/k8s/deploy.sh" "$APP_RELEASE" "$SEED_RELEASE"
 
+# `kubectl apply` deletes nothing, so objects an older release created (BUG-014's
+# orphan chat-backend Service, monitors for the removed financing/ingestion
+# services) would otherwise survive every release. Fail loudly instead.
+python3 "$ROOT_DIR/scripts/reconcile_local_k8s.py"
+
 echo "local MicroK8s release deployed successfully"
 kubectl -n "$NAMESPACE" get deploy,pods -o wide
