@@ -44,7 +44,7 @@ from tenantchat.core.knowledge import (
     KnowledgeDocument,
     KnowledgeSource,
 )
-from tenantchat.core.ports import AssistantTurn, BookingConfirmation
+from tenantchat.core.ports import AssistantTurn
 from tenantchat.core.tenant import PublicTenantView
 
 # Generous outer bounds. The domain applies the meaningful limits.
@@ -52,15 +52,6 @@ _TENANT_ID = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
 # A citation's source identifier is an index chunk id: bounded like an
 # Elasticsearch document id, which is what it is.
 _SOURCE_ID = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-# A correlation label, never an identity. It is client-supplied, so it must not
-# be used to authorize a read or to bind a record to a visitor. DATA-002 uses it
-# only to group write-only action records inside one tenant; it never
-# authorizes a read or selects a transcript, which keeps the weak value from
-# becoming an identity boundary. The chat routes no longer accept one at all:
-# their identity is the `X-Visitor-Credential` header (SEC-002).
-_SESSION_ID = Field(default="", max_length=128)
-_SHORT_TEXT = Field(default="", max_length=512)
-_LONG_TEXT = Field(default="", max_length=4096)
 # A single chat turn. Required and non-blank, because an empty turn is a request
 # the assistant cannot answer and a checkpoint the runtime should not write.
 _MESSAGE = Field(min_length=1, max_length=4000)
@@ -68,93 +59,6 @@ _MESSAGE = Field(min_length=1, max_length=4000)
 
 class _Request(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class BookingRequest(_Request):
-    tenant_id: str = _TENANT_ID
-    session_id: str = _SESSION_ID
-    service: str = _SHORT_TEXT
-    slot: str = _SHORT_TEXT
-    customer_name: str = _SHORT_TEXT
-    address: str = _SHORT_TEXT
-    # Named for what the customer may supply, since either kind is accepted and
-    # the domain decides which it is.
-    contact: str = _SHORT_TEXT
-
-
-class LeadRequest(_Request):
-    tenant_id: str = _TENANT_ID
-    session_id: str = _SESSION_ID
-    customer_name: str = _SHORT_TEXT
-    contact: str = _SHORT_TEXT
-    service: str = _SHORT_TEXT
-    summary: str = _LONG_TEXT
-    address_or_zip: str = _SHORT_TEXT
-    urgency: str = _SHORT_TEXT
-
-
-class BookingResponse(BaseModel):
-    """Confirmation of an accepted booking.
-
-    The contact is echoed in its canonical form rather than as typed, so the
-    customer sees the number the business will actually dial.
-    """
-
-    booking_id: str
-    service: str
-    slot: str
-    customer_name: str
-    contact: str
-    address: str
-    created_at: datetime
-
-    @classmethod
-    def of(cls, record: BookingRecord) -> BookingResponse:
-        return cls(
-            booking_id=record.booking_id,
-            service=record.service_name,
-            slot=record.slot,
-            customer_name=record.customer_name,
-            contact=record.contact.display,
-            address=record.address,
-            created_at=record.created_at,
-        )
-
-    @classmethod
-    def build(cls, confirmation: BookingConfirmation) -> BookingResponse:
-        """Project a confirmation back to the caller.
-
-        Reads the echo fields off the confirmation so a replay presents the
-        booking exactly as it was committed, not as the repeated request typed
-        it (the contact in canonical form, the service's real name).
-        """
-        return cls(
-            booking_id=confirmation.reference,
-            service=confirmation.service_name,
-            slot=confirmation.slot,
-            customer_name=confirmation.customer_name,
-            contact=confirmation.contact,
-            address=confirmation.address,
-            created_at=confirmation.created_at,
-        )
-
-
-class LeadResponse(BaseModel):
-    lead_id: str
-    service: str
-    summary: str
-    urgency: str
-    created_at: datetime
-
-    @classmethod
-    def of(cls, record: LeadRecord) -> LeadResponse:
-        return cls(
-            lead_id=record.lead_id,
-            service=record.service,
-            summary=record.summary,
-            urgency=record.urgency.value,
-            created_at=record.created_at,
-        )
 
 
 class TenantSummary(BaseModel):
@@ -177,6 +81,10 @@ class TenantSummary(BaseModel):
     booking_enabled: bool
     lead_capture_enabled: bool
     proactive_lead_capture: bool
+    # The exact sentence the consent grant is recorded under. The widget must
+    # render this value rather than composing its own, so the statement shown
+    # and the statement persisted cannot diverge on a tenant override.
+    contact_consent_statement: str
     site_headline: str
     site_description: str
 
@@ -195,6 +103,7 @@ class TenantSummary(BaseModel):
             booking_enabled=view.booking_enabled,
             lead_capture_enabled=view.lead_capture_enabled,
             proactive_lead_capture=view.proactive_lead_capture,
+            contact_consent_statement=view.contact_consent_statement,
             site_headline=view.site_headline,
             site_description=view.site_description,
         )

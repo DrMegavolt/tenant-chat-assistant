@@ -24,6 +24,9 @@ realm:
 bootstrapUser:
   enabled: true
   group: platform_admin
+  # Keep the first-login password change in the public example. A private,
+  # resettable demo may override this to false in .local/k8s/ values.
+  temporaryPassword: true
 
 ingress:
   enabled: true

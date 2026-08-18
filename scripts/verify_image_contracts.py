@@ -67,8 +67,6 @@ PUBLIC_PROXY_PATHS = frozenset(
         "/api/chat/confirmation",
         # FEAT-008: the visitor's rating of one turn record.
         "/api/chat/feedback",
-        "/api/book",
-        "/api/leads",
     }
     | set(API_PATH_TO_GATEWAY.values())
 )

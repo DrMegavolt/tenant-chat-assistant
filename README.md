@@ -39,18 +39,22 @@ and answers turns, and a deployment with no model configured reports the chat
 routes unavailable rather than guessing. The `DEP-001` cutover is shipped:
 the deployed `api` image is `services/api`, the prototype `server.py` and its
 image are gone, and the gateway forwards exactly the API's visitor routes. Claim
-3 above is designed and specified, not yet built; the planning artifacts below
-are where that work is defined.
+3's turn-record and explorer path is implemented: routing,
+retrieval, assembled prompts, model/tool rounds, validator verdicts, diagnoses,
+and the executed graph are stored and inspectable. Current release blockers and
+unverified defects are tracked in the dossier below; a green historical demo
+harness is not treated as a current release sign-off.
 
 ## Planning and architecture artifacts
 
 | Artifact | What it is |
 | --- | --- |
 | [`BACKLOG.md`](BACKLOG.md) | Every task with acceptance criteria and verification. Gate B is the target; Gate C is documented, not committed. |
+| [`EXPLORATORY_TESTING_BUGS.md`](EXPLORATORY_TESTING_BUGS.md) | Authoritative current defect status, historical reproductions, and BUG-004/BUG-020 lineage. |
 | [`docs/adr/`](docs/adr/README.md) | Decision records — what was chosen, what it cost, what was rejected and why. |
 | [`architecture/likec4/`](architecture/likec4/README.md) | Architecture-as-code for the target end state, with generated diagrams. |
 | [`CLAUDE.md`](CLAUDE.md) | Working agreements and the invariants enforced by tests. |
-| [`docs/runbooks/`](docs/runbooks/) | Operational procedures for migrations and container images. |
+| [`docs/runbooks/`](docs/runbooks/) | Operational procedures, including the current demo walkthrough. |
 
 Decisions worth reading first: [ADR-0001](docs/adr/0001-agent-runtime.md)
 (LangGraph as the single agent runtime over a framework-free domain) and
@@ -59,73 +63,75 @@ turn record — not a vendor — as the system of record for answer provenance).
 
 ## Running it
 
+The quality gate is hermetic and needs no live services:
+
 ```bash
-make api      # services/api on http://127.0.0.1:8080
-make dev      # frontend with hot reload on http://127.0.0.1:5173
-make setup    # install locked Python and frontend development dependencies
-make check    # complete Python + JavaScript quality gate with coverage
-make test-database # isolated PostgreSQL migrations, repositories, durable workflows
+make setup
+make check
+make test-database  # optional integration gate; starts disposable Postgres
 ```
 
-`make check` runs without live services. Frontend tests use a DOM environment
-and deterministic fake API responses; Python unit and API contract tests use
-in-memory stores and fakes. Coverage reports are written below `coverage/`, and
-JUnit test results below `artifacts/test-results/`.
+`make check` includes the deterministic evaluation gate. Its current baseline
+has two explicit, manifest-bound recall waivers in `evals/exceptions.json`
+(`apex-hvac-heating-repair` and `clearview-hvac-current-pricing`, each 0.5
+recall@5). A green gate therefore means no unreviewed regression against that
+declared baseline, not perfect recall on every golden case.
 
-Run the API locally:
+For a clean-checkout local demo, first run `make setup`, edit `.env`, and
+replace every `REPLACE_WITH_*` value. Also set `LLM_MODEL` to a model your
+OpenAI-compatible server actually serves and enable loopback-only admin auth:
+
+```dotenv
+CHAT_API_DEV_AUTH=true
+LLM_BASE_URL=http://localhost:1234/v1
+LLM_MODEL=your-loaded-model
+```
+
+The Make recipes do **not** auto-load `.env` into the host shell. Source it in
+each terminal that runs the API, worker, migrations, or seed:
+
+```bash
+set -a
+source .env
+set +a
+make up-all
+make migrate
+make migrate-checkpoints
+```
+
+Start the local OpenAI-compatible model server separately. Then run the worker,
+API, and frontend in separate sourced terminals:
+
+```bash
+make worker
+```
 
 ```bash
 make api
 ```
 
-Then serve the frontend against it. For frontend work, use the dev server: it
-hot-reloads `frontend/src/` and proxies `/api` to the API on port 8080, so the
-browser stays same-origin exactly as it is behind nginx.
-
 ```bash
 make dev
 ```
 
-```text
-http://127.0.0.1:5173        the demo site
-http://127.0.0.1:5173/admin/ the operator console
-```
-
-Point the proxy somewhere else — a port-forwarded cluster, or a second API — with
-`CHAT_DEV_BACKEND_ORIGIN`:
+After the API and worker are ready, seed the governed demo documents:
 
 ```bash
-CHAT_DEV_BACKEND_ORIGIN=http://127.0.0.1:8080 make dev
+API_BASE_URL=http://127.0.0.1:8080 make seed-knowledge
 ```
 
-To exercise the deployed shape instead — the nginx image, its cache and security
-headers, and its public route allowlist — run the gateway from docker compose
-against the same backend:
+Open `http://127.0.0.1:5173` for the visitor demo and
+`http://127.0.0.1:5173/admin/` for the operator console. Vite proxies both to
+the API so this path is same-origin. Set
+`CHAT_DEV_BACKEND_ORIGIN=http://127.0.0.1:PORT` to use another backend.
 
-```bash
-make web
-```
+To exercise the deployed nginx shape, build/run `make web` against an API on a
+different host port (the default web and API ports are both 8080, so one must be
+changed). See ADR-0007 and ADR-0009 for the gateway/build contracts.
 
-```text
-http://127.0.0.1:8080        the demo site
-http://127.0.0.1:8080/admin/ the operator console, behind the gateway's auth
-```
-
-`make web` serves the built frontend from the `web` image and proxies the API
-back to the chat backend. See
-[ADR-0007](docs/adr/0007-single-origin-gateway.md) and
-[ADR-0009](docs/adr/0009-react-frontend-build.md). In a deployment the same image
-serves both document roots and the operator console sits behind the gateway's
-auth.
-
-Chat archives are saved as JSON files locally in:
-
-```text
-chats/
-```
-
-When `DATABASE_URL` is set, sessions are persisted in Postgres `chat_sessions.payload`
-as JSONB instead.
+Normal application state is stored in the normalized PostgreSQL tables.
+Process-memory stores are explicit test doubles only; there is no current
+`chats/` JSON persistence mode.
 
 By default, the backend calls an OpenAI-compatible local API at:
 
@@ -162,27 +168,26 @@ The backend owns the tenant policy and tool calls:
 - Tools: `check_service_area`, `get_availability`, `book_appointment`, `create_lead`, `handoff_to_human`.
 - Guardrails: no pricing unless policy allows it, no booking unless policy allows it, human handoff for uncertainty or risky requests.
 - Admin: live chat list, transcript view, lead/tool panels, and manual staff replies into a visitor chat.
-- Booking form endpoint: `POST /api/book` validates the structured form and records the booking in the chat archive.
-- Persistence: each local session is saved to `chats/<session-id>.json`; deployed sessions use Postgres JSONB when `DATABASE_URL` is configured.
+- Persistence: normalized Postgres repositories are authoritative; process-memory adapters are test doubles.
 - Outcomes: admin marks chats as active, abandoned, booked, lead, handoff, completed, or empty.
 
 ## The production API (`services/api`)
 
-FastAPI, with every booking and lead rule in `packages/core` so the same checks
-apply whether a request arrives from the booking form, a model tool call, or an
-operator action.
+FastAPI, with booking and lead validation rules in `packages/core`. Every
+booking and lead commits through the graph's transactional, idempotent services
+under a signed visitor credential — there is no direct action route, because the
+two that took identity from a request body were retired (BUG-021, BUG-024).
 
 | Route | Purpose |
 | --- | --- |
 | `GET /healthz` | Liveness. Dependency-aware readiness ships with each dependency, per the backlog's definition of done. |
 | `GET /api/tenants` | Public tenant configuration, projected from `PublicTenantView`. |
 | `GET /api/tenants/{id}/availability?service=` | Slots currently offered, and the list booking validates against. |
-| `POST /api/book` | Books an offered slot. |
-| `POST /api/leads` | Captures a callback request. |
 | `POST /api/chat/session` | Opens a conversation and returns its signed visitor credential. |
 | `GET /api/chat/session` | The transcript the `X-Visitor-Credential` header names, and anything it is waiting on. |
 | `POST /api/chat` | Answers one visitor turn through the agent runtime. |
 | `POST /api/chat/confirmation` | Approves or declines a booking the assistant proposed. |
+| `POST /api/chat/consent` | Records the signed visitor's action-consent grant. |
 | `GET /api/admin/chats?tenant_id=` | Operator console: conversations with a transcript, newest first. |
 | `GET /api/admin/chats/{id}?tenant_id=` | One conversation in full. |
 | `POST /api/admin/chats/{id}/messages` | A staff reply, stored as a person speaking. |
@@ -192,15 +197,16 @@ A booking proposed by the assistant is not committed when it is proposed. The
 turn pauses, `POST /api/chat` returns `pending` instead of a reply, and nothing
 is written until `POST /api/chat/confirmation` carries the customer's answer.
 
-The visitor surface authenticates with a signed `X-Visitor-Credential` header
+The credentialed chat surface authenticates with a signed `X-Visitor-Credential` header
 minted by `POST /api/chat/session` (SEC-002). The token names exactly one tenant
-and session; requests carry no `tenant_id` or `session_id`, so a body field
+and session; those requests carry no `tenant_id` or `session_id`, so a body field
 cannot move a conversation and a leaked session UUID authorizes nothing. Every
 credentialed response reissues the credential, so an active conversation never
 expires. The credential is a bearer secret: it travels in a header, never a
 query string or a log line. Deployment must provide the
 `CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY` secret or visitor routes fail closed
-at startup, like the admin credentials below.
+at startup, like the admin credentials below. Every visitor route enforces this
+boundary, because the two that did not were removed rather than repaired.
 
 Admin routes require the identity headers the gateway injects plus the shared
 `ADMIN_GATEWAY_TOKEN`, and staff replies additionally require the CSRF token.

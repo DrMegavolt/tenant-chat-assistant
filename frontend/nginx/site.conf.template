@@ -195,7 +195,7 @@ server {
             add_header Vary Origin always;
             add_header Access-Control-Allow-Origin $widget_cors_origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
+            add_header Access-Control-Allow-Headers "Content-Type, X-Visitor-Credential" always;
             add_header Access-Control-Max-Age 86400 always;
             return 204;
         }
@@ -229,38 +229,6 @@ server {
             add_header Access-Control-Allow-Origin $widget_cors_origin always;
             add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, X-Visitor-Credential" always;
-            add_header Access-Control-Max-Age 86400 always;
-            return 204;
-        }
-        add_header Access-Control-Allow-Origin $widget_cors_origin always;
-        add_header Vary Origin always;
-        proxy_pass ${CHAT_BACKEND_ORIGIN};
-    }
-
-    location = /api/book {
-        if ($request_method = OPTIONS) {
-            add_header Vary Origin always;
-            add_header Access-Control-Allow-Origin $widget_cors_origin always;
-            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
-            add_header Access-Control-Max-Age 86400 always;
-            return 204;
-        }
-        add_header Access-Control-Allow-Origin $widget_cors_origin always;
-        add_header Vary Origin always;
-        proxy_pass ${CHAT_BACKEND_ORIGIN};
-    }
-
-    # Visitor lead capture.  The prototype's authenticated admin read of
-    # captured leads is gone; the API's POST /api/leads is a write side for
-    # visitors, so it belongs to the public listener.  ("/api/admin/..." reads
-    # back captured leads once SEC-001 RBAC lands.)
-    location = /api/leads {
-        if ($request_method = OPTIONS) {
-            add_header Vary Origin always;
-            add_header Access-Control-Allow-Origin $widget_cors_origin always;
-            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type" always;
             add_header Access-Control-Max-Age 86400 always;
             return 204;
         }

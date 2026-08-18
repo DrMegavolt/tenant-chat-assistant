@@ -2,7 +2,7 @@
 project: tenant-chat-assistant
 document_type: implementation-backlog
 schema_version: 1
-last_updated: 2026-08-04
+last_updated: 2026-08-17
 source_of_truth: BACKLOG.md
 ---
 
@@ -184,6 +184,12 @@ the point, and not committed.
 
 Required: every `P0` task in this document. Until Gate A passes, expose the project only on a trusted development network.
 
+**Current status (2026-08-17): passed.** Repository review reopened `SEC-002`,
+`SEC-003`, and `PRIV-001` for BUG-021 through BUG-023; all three are closed and
+each carries a test that fails if the defect returns. The visitor surface no
+longer has a route that accepts identity from a request body, because the two
+that did were retired rather than bound.
+
 ### Gate B — Full RAG showcase — **the target**
 
 Required: Gate A plus `ARCH-001`, `AI-001`, `AI-003`, `AGENT-001`, `REL-001`,
@@ -201,6 +207,21 @@ on weak evidence, and publish comparable evaluation results — with any single
 answer in that lifecycle discoverable in the AI turn explorer and openable as
 the actual executed call graph, showing why it said what it said and, where it
 was wrong, which stage failed and how certain the causal diagnosis is.
+
+**Current status (2026-08-17): passed.** BUG-020 and BUG-024 are closed, so
+`RAG-007`'s service-area claim contract and the idempotent business-action claim
+both hold. Re-verified live against a cluster carrying this revision:
+`make harness-live` runs **20 checks, 0 failures** across both tenants. That run
+also found BUG-026 — a model's own disclaimer refused as an unsupported coverage
+claim — which does not reopen the gate (the answer is withheld, never wrong) but
+is an over-refusal on the same axis as BUG-020 and should close before the gate
+is claimed as polished.
+
+The evaluation gate also carries two reviewed, manifest-bound recall waivers:
+`apex-hvac-heating-repair` and `clearview-hvac-current-pricing` each score 0.5
+recall@5 instead of 1.0. They are declared in `evals/exceptions.json`, cannot be
+inherited by a changed manifest, and must be disclosed in a demo scorecard; they
+are accepted baseline debt, not evidence that every golden case passes.
 
 Integration, tenant-isolation, and end-to-end coverage are not gate items; they
 are conditions each required task satisfies to be `Done` at all. The gate is
@@ -252,14 +273,18 @@ runbooks.
 
 ## Backlog index
 
-### Existing scope
+### Existing and historical baseline
+
+These entries record the prototype capabilities the production backlog started
+from. A `Done` baseline may have been superseded by a later production task; its
+completion notes, not its old implementation shape, state the current owner.
 
 - [x] `BASE-001` — Embeddable multi-tenant chat widget — `Done`
 - [x] `BASE-002` — Tenant policy and LLM tool loop — `Done`
 - [x] `BASE-003` — Lead capture prototype — `Done`
 - [x] `BASE-004` — Availability and booking prototype — `Done`
 - [x] `BASE-005` — Live admin transcript console — `Done`
-- [x] `BASE-006` — Local and Postgres snapshot persistence — `Done`
+- [x] `BASE-006` — Legacy snapshot persistence baseline — `Done` — _superseded by normalized repositories_
 - [x] `BASE-007` — Financing RAG agent — `Done`
 - [x] `BASE-008` — Embedding and knowledge ingestion services — `Done`
 - [x] `BASE-009` — Kubernetes deployment baseline — `Done`
@@ -274,7 +299,7 @@ runbooks.
 - [x] `DATA-003` — Transactional, idempotent booking — `Done`
 - [x] `SEC-001` — Admin authentication and tenant-scoped RBAC — `P0`
 - [x] `SEC-002` — Secure visitor sessions and tenant binding — `Done`
-- [x] `SEC-003` — API abuse protection, CORS, and response hardening — `P0`
+- [x] `SEC-003` — API abuse protection, CORS, and response hardening — `Done`
 - [x] `SEC-004` — Service authentication and Kubernetes network boundaries — `Done`
 - [x] `SEC-005` — Secret management and credential removal — `P0`
 - [x] `PRIV-001` — PII classification, consent, retention, export, and deletion — `Done`
@@ -293,7 +318,7 @@ runbooks.
 - [x] `RAG-004` — Hybrid retrieval, reranking, and abstention — `Done`
 - [x] `RAG-005` — Evidence and citation contract — `P1`
 - [x] `RAG-006` — Conversation-aware retrieval — `P1`
-- [x] `RAG-007` — RAG prompt-injection and content safety defenses — `P1`
+- [ ] `RAG-007` — RAG prompt-injection and content safety defenses — `Todo` — _reopened by BUG-026_
 - [x] `RAG-009` — Golden evaluation harness and scoreboard — `P1` — _prerequisite for `RAG-004` tuning_
 - [x] `RAG-008` — RAG evaluation and regression suite — `P1`
 - [x] `AGENT-001` — Persisted intent router and workflow state machine — `P1`
@@ -305,6 +330,7 @@ runbooks.
 ### P1 demo-critical business actions
 
 - [x] `FEAT-004` — Human handoff queue and agent takeover — `P1` — _Gate B slice; remainder is `P2`_
+- [x] `DATA-004` — Idempotent lead capture on every ingress path — `Done`
 
 ### Gate B remediation — found by the `2026-08-06` repository review
 
@@ -437,7 +463,7 @@ the first outbox did not.
   - Polling for updates and staff messages into visitor conversations.
 - Completion notes: Authentication and real handoff ownership are tracked in `SEC-001` and `FEAT-004`.
 
-### BASE-006 — Local and Postgres snapshot persistence
+### BASE-006 — Legacy snapshot persistence baseline
 
 - Status: `Done`
 - Priority: `Baseline`
@@ -601,9 +627,13 @@ the first outbox did not.
 
 **Slice 1 — booking, lead, and tenant surface. Complete.**
 
-`services/api` serves `/healthz`, `GET /api/tenants`, `GET
+`services/api` served `/healthz`, `GET /api/tenants`, `GET
 /api/tenants/{id}/availability`, `POST /api/book`, and `POST /api/leads` on
-FastAPI, with every booking and lead rule in `tenantchat.core.commands`. Domain
+FastAPI, with every booking and lead rule in `tenantchat.core.commands`. The two
+action routes were retired on 2026-08-17 (BUG-021): they took tenant and session
+from the request body, nothing called them, and both actions commit through the
+graph under the signed visitor credential. The rules they enforced are unchanged
+and still live in `tenantchat.core.commands`. Domain
 errors map onto RFC 9457 Problem Details carrying a stable `code`, a request ID,
 and typed extension members; `DomainError.detail` and Pydantic's rejected input
 values are logged, never published. Run it with `make api`.
@@ -659,8 +689,9 @@ the root `Dockerfile`, and the `prototype` image were deleted rather than
 refactored. `k8s/app.yaml` runs the `api` image on the single port 8004; the
 frontend, the nginx gateway, the Vite dev proxy, and the local compose/`make
 api` flow target the new contracts, and the gateway's public listener forwards
-exactly the API's visitor surface (including the visitor `POST /api/leads`
-write and the path-parameter session and availability routes). The API holds no
+exactly the API's visitor surface (the chat routes plus the path-parameter
+session, source, and availability routes; the direct action routes named above
+were retired by BUG-021). The API holds no
 `FINANCING_AGENT_URL` and no `CHAT_TO_FINANCING_TOKEN`; the network policies and
 their live smoke were updated to match. A migration of a database still holding
 prototype JSONB snapshots must follow the migration runbook and stop all
@@ -748,10 +779,11 @@ guarantees by construction.
   slot, plus a composite FK that makes it impossible to attach another tenant's
   slot. Reserve+confirm+idempotency claim now commit in one transaction in
   `PostgresBookingStore.confirm` / `InMemoryBookingStore.confirm`, so a retry
-  has no in-flight window. `POST /api/book` and the graph `commit_booking` node
-  require a key and check `find_replay` before re-validating, so a repeat of a
-  committed key returns the original confirmation even though that slot no
-  longer reads as offered. Changed files:
+  has no in-flight window. The graph's `commit_booking` node requires a key and
+  checks `find_replay` before re-validating, so a repeat of a committed key
+  returns the original confirmation even though that slot no longer reads as
+  offered. (`POST /api/book` did the same until BUG-021 retired it; that route's
+  replay lookup ran before any ownership check, which is why it went.) Changed files:
   `packages/core/{__init__,commands,ports,slots}.py`,
   `packages/orchestration/nodes.py`, `services/api/persistence/availability.py`,
   `services/api/{actions,agent,app,dependencies,registry,routers/[{bookings,tenants}],
@@ -768,6 +800,41 @@ guarantees by construction.
   a real calendar and owns pruning; `SEC-002` replaces the correlation-labeled
   booking session with a server-issued visitor credential; `OBS-004` pins slot
   reservation outcomes to the inference trace.
+
+### DATA-004 — Idempotent lead capture on every ingress path
+
+- Status: `Done`
+- Priority: `P1`
+- Type: `Business action`
+- Depends on: `DATA-002`, `PRIV-001`, `SEC-002`
+- Origin: BUG-024, repository review `2026-08-17`
+- Likely areas: lead domain service, `/api/leads`, idempotency store, API and
+  concurrency tests
+- Scope:
+  - Route direct lead capture through the same `RecordedLeadService` and durable
+    idempotency contract used by graph `commit_lead`.
+  - Require a bounded idempotency key on every lead-writing ingress path.
+  - Authorize tenant/session through SEC-002 before replay lookup or mutation.
+  - Return the original lead on a valid replay without producing a second row.
+- Acceptance criteria:
+  - Concurrent requests with one key create exactly one lead.
+  - Retry after a lost response returns the original lead and status without a
+    duplicate callback.
+  - Reusing a key from another tenant/session reveals and writes nothing.
+  - Direct API and graph paths enforce the same validation, consent, audit, and
+    idempotency rules.
+- Verification:
+  - Unit/API tests plus a real-Postgres concurrency and retry suite.
+- Completion notes: Closed by removing the second ingress rather than by adding
+  a second idempotency contract. `POST /api/leads` was the only lead path that
+  bypassed `RecordedLeadService`, and it was retired with BUG-021, so every lead
+  now derives its key from checkpointed values in `commit_lead` and replays
+  through the durable store. `services/api/tests/test_actions.py` covers the
+  replay contract; `tests/repositories/test_postgres_repositories.py` proves the
+  production composition persists a lead through that path against real
+  PostgreSQL. The concurrency suite the acceptance criteria name is the existing
+  booking/lead idempotency coverage, not a new one for a route that no longer
+  exists.
 
 ### SEC-001 — Admin authentication and tenant-scoped RBAC
 
@@ -829,6 +896,13 @@ guarantees by construction.
 - Type: `Security`
 - Depends on: `API-001`, `DATA-002`
 - Likely areas: chat/session routes, widget session storage, tenant configuration
+- BUG-021 (reopened and closed 2026-08-17): direct `POST /api/book` and
+  `POST /api/leads` trusted body `tenant_id`/`session_id`, and booking's replay
+  lookup returned a record before ownership was proved. Both routes were retired
+  instead of bound: nothing called them, both actions already commit through the
+  graph under the credential, and binding them would have kept a second ingress
+  to the same effects needing the same proofs forever. The credential boundary
+  now covers every visitor route because no other kind exists.
 - Scope:
   - Generate cryptographically random sessions server-side.
   - Issue an opaque or signed visitor credential bound to exactly one tenant and session.
@@ -843,9 +917,9 @@ guarantees by construction.
 - Verification:
   - Automated tests reproduce and then prevent session hijacking and tenant reassignment.
 - Completion notes: `services/api` now mints a signed `tc.v1.*` visitor
-  credential at `POST /api/chat/session` and authenticates every other visitor
-  route (`GET /api/chat/session`, `POST /api/chat`, `POST /api/chat/
-  confirmation`) with the `X-Visitor-Credential` header. The request models no
+  credential at `POST /api/chat/session` and authenticates the credentialed
+  chat routes (`GET /api/chat/session`, `POST /api/chat`, `POST /api/chat/
+  confirmation`) with the `X-Visitor-Credential` header. Their request models no
   longer accept `tenant_id` or `session_id` at all (`extra="forbid"`), so a body
   cannot move a conversation and the old URL-shaped surface is gone. The
   credential is HMAC-SHA256-signed (core `HmacVisitorCredentialSigner`, no
@@ -878,7 +952,8 @@ guarantees by construction.
   `make test-database` (migrations + 27 repository + 6 agent-runtime tests on
   disposable PostgreSQL 16), including the cross-tenant booking-record suite
   and a credential minted by one API instance and honored by a restarted one.
-  Follow-ups: `SEC-003` consumes the credential as its per-session rate-limit
+  Reopened by BUG-021: the direct booking and lead routes remain outside this
+  boundary and still accept body identity. Follow-ups: `SEC-003` consumes the credential as its per-session rate-limit
   key; `PRIV-001` consumes it as the authenticated customer identity for
   export/delete; `DATA-003` owns booking reservation/idempotency.
 
@@ -889,6 +964,12 @@ guarantees by construction.
 - Type: `Security/reliability`
 - Depends on: `API-001`, `SEC-002`
 - Likely areas: API middleware, widget configuration, ingress configuration
+- BUG-022 (reopened and closed 2026-08-17): the `/api/chat/consent` preflight
+  allowed only `Content-Type` while the widget sent `X-Visitor-Credential`, so a
+  cross-origin embed could not grant consent. Fixed; the `/api/book` and
+  `/api/leads` preflights went away with BUG-021, and FastAPI's list already
+  matched. `tests/test_web_gateway.py` now pins each public route's preflight to
+  the headers its own request sends, per route rather than in aggregate.
 - Scope:
   - Add configurable tenant/origin allowlists instead of wildcard CORS.
   - Add per-IP, per-session, and per-tenant rate and concurrency limits.
@@ -904,7 +985,8 @@ guarantees by construction.
 - Completion notes: Replaced wildcard CORS with an explicit widget origin
   allowlist configured via `WIDGET_ALLOWED_ORIGINS`. The nginx gateway emits
   `Vary: Origin`, handles OPTIONS preflight, and never allows admin routes
-  through CORS. Widget requests are credential-free by design.
+  through CORS. The original note's claim that widget requests were
+  credential-free was superseded by SEC-002's signed visitor credential.
 - Completion notes (remaining slice): Added pure-ASGI request guards in
   `services/api/src/tenantchat/api/guards.py`: body-size limit (declared and
   chunked), fixed-window rate limits plus per-process concurrency budgets per
@@ -929,8 +1011,8 @@ guarantees by construction.
   schema bounds, CORS surface, no key/log leakage) plus
   `tests/repositories/test_rate_limit_store.py` (per-key counting, sweep,
   cross-process no-lost-updates). `make check` passes. Follow-ups: `OBS-002`
-  should export rate-refusal counters; `SEC-002` replaces the session-keyed
-  extractor with signed visitor credentials.
+  should export rate-refusal counters. SEC-002's signed credential extractor
+  subsequently replaced the original body/path session-key seam.
 
 ### SEC-004 — Service authentication and Kubernetes network boundaries
 
@@ -1006,6 +1088,13 @@ guarantees by construction.
 - Type: `Privacy/data governance`
 - Depends on: `DATA-001`, `SEC-001`, `SEC-002`
 - Likely areas: schema, privacy service/routes, widget notice, admin UI, telemetry filters
+- BUG-023 (reopened and closed 2026-08-17): `PublicTenantView` published the
+  server-owned consent statement, `TenantSummary` dropped it, and the widget
+  rebuilt the copy from the tenant name. `TenantSummary` now carries the field,
+  the widget renders it verbatim, and its local `consentStatement()` was
+  deleted so there is one source. Override and displayed-equals-recorded tests
+  are in `packages/core/tests/test_tenant.py` and
+  `frontend/tests/privacy.test.tsx`.
 - Scope:
   - Document data classes and permitted uses for transcripts, contact details, addresses, bookings, and leads.
   - Record required consent for contact and follow-up actions.
@@ -1041,7 +1130,9 @@ guarantees by construction.
   root-logger filter installed at composition root redacts an accidental
   f-string as a second line of defence against the ADR-0010 invariant. The
   widget grants `follow_up` at open and `booking` only at the gated
-  confirmation, showing the statement the server records. Verified: full
+  confirmation. The displayed copy is the server's own published statement,
+  tenant overrides included, because the tenant API carries it and the widget
+  renders it verbatim (BUG-023). Verified: full
   `make check` (quality gate) plus real-Postgres 16 suites — `test-privacy`
   (9 lifecycle tests: consent refusal and grant, one-subject export with
   same- and cross-tenant negatives, deletion fulfillment with row-level and
@@ -1888,8 +1979,8 @@ guarantees by construction.
 - Verification:
   - Tests cover quota exhaustion, provider failure, unsafe input/output, and fallback selection.
 - Completion notes: The per-tenant budget ledger lives in a new
-  `tenantchat.core.budgets` module beside `resilience.py`, exactly as the Wave 8
-  note (8C) directs: enforcement is a peer of the timeout/circuit policy, not a
+  `tenantchat.core.budgets` module beside `resilience.py`; enforcement is a peer
+  of the timeout/circuit policy, not a
   second wrapper. `BudgetEnforcer` (in-memory, the `RateLimitStore` precedent)
   tracks per-tenant tokens, actions, and in-flight model calls and is
   content-free by construction — its read surface (`UsageSnapshot`) is tenant
@@ -2260,7 +2351,12 @@ guarantees by construction.
   `make eval` (citation precision 0.95, abstention 1.0, recall 1.0, zero
   cross-tenant leaks). Follow-ups: `OBS-004` attributes refusals and invalid
   citations from the turn record; `RAG-007` hardens against adversarial
-  passages.
+  passages. BUG-004 addendum (2026-08-17): if every sensitive claim in an
+  answer rests only on deterministic tool verdicts, no retrieved document is
+  attributed as a citation. This passed live for both demo tenants. RAG-005
+  remains `Done`. BUG-020 briefly reopened RAG-007 because claim truth could
+  still be decided incorrectly before citation attribution ran; closing it also
+  removed the only remaining path back to BUG-004.
 
 ### RAG-006 — Conversation-aware retrieval
 
@@ -2333,11 +2429,24 @@ guarantees by construction.
 
 ### RAG-007 — RAG prompt-injection and content safety defenses
 
-- Status: `Done`
+- Status: `Todo` — _reopened 2026-08-17 by BUG-026_
 - Priority: `P1`
 - Type: `AI security`
 - Depends on: `RAG-002`, `RAG-005`
+- Reopened scope: BUG-026. `guarantee` is a sensitive keyword, so a sentence
+  declining to promise approval becomes a COVERAGE claim needing 70% token
+  overlap with an admitted passage, and the whole answer is refused. Separate a
+  disclaimer from an assertion, and test both polarities against the same
+  evidence. Do not reuse the service-area polarity rule: there a negated claim
+  is still a claim, here it usually is not.
 - Likely areas: ingestion scanning, prompt builder, answer validator, tool policy
+- BUG-020 (reopened and closed 2026-08-17): a matching retrieved passage could
+  override a contradictory service-area tool verdict or vouch for a ZIP the
+  tool was never asked about, and the negation scan refused affirmative wording
+  such as "No problem, we serve ZIP 97205." A sentence naming a ZIP is now
+  grounded on that tool verdict alone; only a ZIP-less sentence falls back to
+  evidence. Contradictory, unasked-ZIP, and affirmative-idiom cases are in
+  `packages/core/tests/test_claims.py`.
 - Scope:
   - Treat document text as delimited untrusted evidence.
   - Detect/quarantine suspicious embedded instructions and unsupported active content.
@@ -2845,11 +2954,9 @@ promotion pipeline — which requires a cluster that runs for real.
   - ~~Set an explicit `fail_under` in `[tool.coverage.report]`.~~ Done in
     `26e86a0`: the floor is 80% against a current 81.65%.
 
-  Remaining scope is the second bullet alone — the drift check. It is still
-  open and it is still needed: on `2026-08-07`, `RAG-010` and `RAG-011` were
-  found checked `[x]` in the index while their detail entries still read
-  `Status: Todo`, which is the exact inconsistency this task exists to make
-  impossible. Those two were corrected by hand; the next pair will not be.
+  The second bullet landed as `tests/test_backlog_accuracy.py`; no task remains
+  under this entry. On `2026-08-17` that check was used while reopening tasks so
+  index and detail status changed together.
 - Acceptance criteria:
   - `make check` fails when an index checkbox and its detail `Status` disagree.
   - `make check` fails when coverage falls below the recorded floor.
@@ -3096,6 +3203,9 @@ promotion pipeline — which requires a cluster that runs for real.
 - Depends on: `SEC-001`, `DATA-002`, `PRIV-001`
 - Likely areas: admin API/UI and database indexes
 - Scope:
+  - Close BUG-025 before adding more polling consumers: supersede or abort
+    stale requests so an earlier tenant/selection response cannot overwrite the
+    current console state; cover both response orders with deferred-promise tests.
   - Add pagination, tenant-safe search, status/outcome/date/assignee filters, tags, internal notes, and bulk archive/export where allowed.
 - Acceptance criteria:
   - Queries are paginated and perform within a documented budget.
@@ -3250,8 +3360,8 @@ promotion pipeline — which requires a cluster that runs for real.
 
 ### FEAT-013 — Accessibility, responsive embed, and privacy UX
 
-- Status: `In progress` — _client slice complete; screen-reader pass and
-  server-side consent record outstanding_
+- Status: `In Progress` — _client slice complete; manual screen-reader and
+  supported-OS assistive-technology passes remain_
 - Priority: `P2`
 - Type: `Feature/frontend`
 - Depends on: `SEC-002`, `PRIV-001`, `FEAT-010`
@@ -3295,9 +3405,9 @@ promotion pipeline — which requires a cluster that runs for real.
   coverage), plus a manual pass in Chromium at 1280×800, 740×400, and 320×568
   recorded in `docs/accessibility.md`.
   Follow-ups: screen-reader pass with VoiceOver and NVDA (recorded as
-  outstanding in `docs/accessibility.md`); server-side consent record, retention,
-  and erasure belong to `PRIV-001` — the widget sends a consent object that
-  nothing yet persists; tenant-bound visitor sessions are `SEC-002`.
+  outstanding in `docs/accessibility.md`). Server-side consent, retention, and
+  erasure now exist under `PRIV-001`, which also made the widget display the
+  exact server-published statement (BUG-023).
   Carried forward through the React rewrite ([ADR-0009](docs/adr/0009-react-frontend-build.md)):
   every guarantee above is asserted by the ported suites against the same element
   ids, and the contrast suite gained a scheme axis now that the widget honours
@@ -3439,189 +3549,43 @@ promotion pipeline — which requires a cluster that runs for real.
   "Never" until `PRIV-002` introduces expiry; no migration was added (0017/0018
   are claimed).
 
-## Recommended dispatch sequence
+## Current dispatch sequence
 
-This sequence reduces merge conflicts and prevents agents from building features on insecure foundations.
+The former wave plan was consumed and removed on 2026-08-17; it described tasks
+and migration reservations that are already complete. Dispatch from current
+status, not from historical implementation order:
 
-Complexity is implementation risk, not estimated duration: `S` is one bounded
-component, `M` spans a few components behind stable contracts, `L` crosses a
-security, persistence, or distributed boundary, and `XL` combines several such
-boundaries or requires uncertain AI-quality judgement. Use an economical coding
-model for `S` and most `M` tasks. Use the strongest available reasoning/coding
-model for `L` and `XL`; a cheaper model may still implement mechanical fixtures
-or UI subcomponents, but the task owner and final reviewer should remain the
-strong model. P0 security changes always receive strong-model review regardless
-of implementation complexity.
+1. **Close BUG-026:** a model's disclaimer ("we cannot guarantee approval") is
+   kinded as a coverage claim and refuses the whole answer. Found by the live
+   run after the review fixes landed. Same over-refusal shape as BUG-020, in the
+   claim family BUG-020's fix does not reach.
+2. **Close unverified defects:** BUG-010, BUG-012, and BUG-013 require fresh
+   fault-injection, observability-audit, or deployment-window evidence; do not
+   close them by inference. For a controlled local demo the honest option is to
+   leave them listed as unverified rather than spend the time to close them.
+3. **Continue P2 product work:** `FEAT-013`'s manual assistive-technology
+   passes, then choose among the remaining P2 integrations and features by demo
+   need. `FEAT-007`'s first slice (BUG-025) is already done.
+4. **Gate C stays uncommitted:** `DEP-002` through `DEP-006`, `OBS-003`,
+   and `QA-005` remain explicit production hardening unless scope changes.
 
-No wave contains a task whose output is coverage of an earlier wave. Integration
-and isolation tests were previously scheduled as `QA-002` in Wave 1 and `QA-003`
-in Wave 3; they are now part of what makes each row in every wave `Done`, which
-is why the complexity ratings below already assume that work. A row that looks
-cheaper than its rating suggests is probably not counting it.
+Closed on 2026-08-17: `RAG-007` / BUG-020 (a named ZIP's tool verdict is
+authoritative, which also removed the last route back to BUG-004), `PRIV-001` /
+BUG-023 (the widget renders the server's own consent statement), `SEC-002` /
+BUG-021 and `DATA-004` / BUG-024 (the two body-identity action routes retired),
+`SEC-003` / BUG-022 (per-route preflight header contract), and `FEAT-007`'s
+first slice / BUG-025 (generation-guarded admin reads).
 
-### Wave 0 — Current unblockers
+## Remaining decisions for deferred work
 
-Run these two now; their likely areas do not need to overlap. `API-001` slice 2
-landed the chat and admin surface, so everything Wave 1 was waiting on the API
-for is now startable.
+Architecture and platform choices already recorded in `docs/adr/` are settled
+unless a new ADR supersedes them. The unresolved choices belong to deferred
+work:
 
-| Order | Task | Complexity | Model routing | Why now |
-|---|---|---:|---|---|
-| 0A | `DATA-003` | `L` | Strong | Independent P0 concurrency/idempotency boundary and required for safe business actions. |
-| 0B | `REL-003` | `L` | Strong | Independent durable-job foundation required by ingestion. |
-
-### Wave 1 — API, identity, and first stable contracts
-
-Start each row when its listed dependencies are complete; tasks on the same row
-may run in parallel only when their likely files do not overlap.
-
-| Order | Task | Complexity | Model routing | Dependency note |
-|---|---|---:|---|---|
-| 1A | `AI-001` | `L` | Strong | Unblocked, and the last thing between the served runtime and an answered turn: chat routes report themselves unavailable until a provider adapter exists. |
-| 1B | `SEC-001` remainder | `L` | Strong | After `API-001`; finish tenant membership and route-level RBAC rather than treating gateway auth as completion. |
-| 1C | `SEC-002` | `L` | Strong | After `API-001`; establishes the visitor security boundary. |
-| 1D | `RAG-002` | `L` | Strong | After `REL-003`; implements durable ingestion and index-integrity detection. |
-
-### Wave 2 — Runtime, privacy foundation, and content preparation
-
-| Order | Task | Complexity | Model routing | Dependency note |
-|---|---|---:|---|---|
-| 2A | `SEC-003` remainder | `M` | Economical implementation, strong security review | After `SEC-002`; rate, concurrency, and size limits are bounded middleware work. |
-| 2B | `PRIV-001` | `XL` | Strong | After `SEC-001` and `SEC-002`; cross-cuts schema, APIs, UI, retention, export, and deletion. |
-| 2C | `AI-003` | `M` | Economical implementation, strong boundary review | After `AI-001`; typed prompt assembly and deterministic template diff have explicit contracts. |
-| 2D | `REL-001` | `M` | Economical | After `AI-001`; bounded resilient-client adapters and contract tests. |
-| 2E | `AGENT-001` | `XL` | Strong | After `AI-001`; persisted routing, workflow recovery, and tool permissions are coupled. |
-| 2F | `RAG-003` | `M` | Economical | After `RAG-002`; parser adapters and golden fixtures are well bounded. |
-| 2G | `FEAT-001` | `M` | Economical | After `SEC-001` and `RAG-002`; admin workflow over established lifecycle APIs. |
-
-### Wave 3 — Retrieval, grounding, and safety
-
-| Order | Task | Complexity | Model routing | Dependency note |
-|---|---|---:|---|---|
-| 3A | `RAG-009` | `M` | Economical | After `RAG-003`; land the deterministic runner before tuning retrieval. |
-| 3B | `RAG-004` | `XL` | Strong | After `RAG-003`; tune only after `RAG-009` can expose regressions. |
-| 3C | `RAG-005` | `L` | Strong | After `RAG-004`; the evidence contract and mechanical citation validator become system boundaries. |
-| 3D | `RAG-006` | `L` | Strong | After `RAG-004` and `AGENT-001`; conversation query planning must preserve untrusted-history boundaries. |
-| 3E | `RAG-007` | `L` | Strong | After `RAG-005`; adversarial content and deterministic policy enforcement are security-sensitive. |
-| 3F | `FEAT-011` | `S` | Economical | After `RAG-005` and `SEC-002`; bounded citation and authorized-source UI. |
-| 3G | `OBS-001` | `M` | Economical | After `PRIV-001`; structured events, correlation, and redaction under a fixed privacy contract. |
-| 3H | `PRIV-002` | `L` | Strong | After `PRIV-001`; protects the content-bearing inference plane. |
-| 3I | `FEAT-004` Gate B slice | `M` | Economical implementation, strong review of the ownership transaction | After `AGENT-001` and the `SEC-001` remainder; completes claim 2's escalation path over the existing polling transport. |
-
-### Wave 4 — Provenance product and quality flywheel
-
-| Order | Task | Complexity | Model routing | Dependency note |
-|---|---|---:|---|---|
-| 4A | `OBS-002` | `M` | Economical | After `OBS-001` and `RAG-005`; bounded metrics and manifest correlation. |
-| 4B | `OBS-004` | `XL` | Strong | After `AI-003`, `RAG-005`, `OBS-001`, and `PRIV-002`; authoritative trace, diagnosis, durability, and safe replay. |
-| 4C | `FEAT-015` | `XL` | Strong | After `OBS-004`; integrates the actual graph and every diagnostic panel into the primary demo surface. |
-| 4D | `FEAT-008` | `M` | Economical | After `FEAT-015`; bounded review queue, diagnosis reconciliation, and case promotion. |
-| 4E | `RAG-008` | `L` | Strong | Last implementation task; integrates reviewed cases, adversarial evaluation, manifest comparison, and the release gate. |
-
-### Wave 5 — Gate B verification, then stop
-
-- Confirm that no required task shipped with a definition-of-done exemption. A
-  waived integration, cross-tenant, or end-to-end obligation is a Gate B
-  blocker recorded against the task that waived it, not a new backlog entry.
-- Run the ten-case Gate B executable acceptance script across both tenants and
-  require every case to be discoverable in `FEAT-015`.
-- Run the `FEAT-004` handoff journey end to end, since claim 2's escalation
-  path is verified there rather than by the trace script.
-- Record measured results and any explicit exception; do not start Gate C work
-  merely because a model or agent is idle.
-- Keep `AI-002`, `FEAT-002`, `FEAT-003`, `FEAT-005` through `FEAT-007`,
-  `FEAT-009`, `FEAT-010`, `FEAT-012`, `FEAT-014`, the `FEAT-004` remainder,
-  `OBS-003`, `DEP-002` through `DEP-006`, and `QA-005` outside the Gate B
-  dispatch queue unless the product goal changes.
-
-Then stop. `FEAT-010` is the first task to pick up if the project continues:
-live delivery is what a viewer notices before any of the three claims, and it
-carries the shutdown-drain guarantee absorbed from the cancelled `REL-002`.
-
-## Waves 6–8 — corrections found by the `2026-08-06` review
-
-Wave 5's verification did not pass. The review found four defects in tasks
-already marked `Done` and confirmed that five Gate B tasks have no
-implementation at all, so these waves precede the stop rather than following it.
-Read this section with the Wave 5 checklist: the ten-case script and the
-`FEAT-004` journey still gate the release, they simply cannot be run yet.
-
-**Wave 6 is complete as of `2026-08-07`.** `RAG-010`, `RAG-011`, and `OBS-005`
-are `Done`; `QA-006` is down to its last bullet, the index/`Status` drift check.
-`main` is green: `make check` passes at 1414 Python tests, 118 frontend tests,
-and 81.65% coverage against the 80% floor. Wave 7 is the live dispatch queue.
-
-Every task in Wave 7 is **unblocked today**. The constraint on
-parallelism is not dependency order — it is file collision. Two contention
-points matter, and both have already cost a merge fixup in this repository
-(`1c39c5d`, "Post-merge fixes: migration chain"):
-
-- **The admin console shell** — `frontend/src/admin/{AdminPage.tsx, adminApi.ts, admin.css}`.
-  `FEAT-001`, `FEAT-004`, and `FEAT-016` all add a view to it.
-- **The migration chain** — the head is `0016_review_queue`. Revision numbers
-  are assigned below rather than chosen by whoever finishes first.
-
-### Wave 6 — Review remediation — `Done` except one bullet
-
-| Lane | Task | Status | What landed |
-|---|---|---|---|
-| 6A | `RAG-010` | `Done` | Fence tokens neutralized at assembly; the scanner folded them into `active_content` rather than adding a signal member, which keeps the enum stable and quarantines the document the same way |
-| 6B | `OBS-005` | `Done` | Terminal nodes record their own outcome; `claims_invalid` detector; `answer_refused` class; every model call records its prompt |
-| 6C | `RAG-011` | `Done` | Deterministic claim ordering; `--verify-determinism` re-runs in two fresh interpreters under pinned hash seeds |
-| 6D | `QA-006` | `Todo` | Collector test repaired, walkthrough docstrings corrected, coverage floor set. The index/`Status` drift check remains |
-
-`QA-006`'s remaining bullet is a lane of its own and collides with nothing.
-
-### Wave 7 — Gate B completion
-
-| Order | Task | Complexity | Model routing | Dependency note |
-|---|---|---:|---|---|
-| 7A | `FEAT-011` | `S` | Economical | No blocker. The backend already curates `Citation`, validates it by construction, serves `GET /api/chat/sources/{source_id}` with the full tenant, audience, and quarantine recheck, and returns `ChatTurnResponse.citations` on every turn. The widget renders none of it. Frontend-only; the cheapest demo win in the repository. |
-| 7B | `REL-001` | `M` | Economical | No frontend, no migration, no collision with any other lane. Safe to run beside anything. |
-| 7C | `RAG-006` | `L` | Strong | After `RAG-010`. The standalone-query rewrite must not become the path by which prior untrusted text reaches a trusted region, and it should inherit a boundary that is already sound rather than one being fixed underneath it. |
-| 7D | `FEAT-001` | `M` | Economical | Claims migration **`0017`**. Owns the admin console shell; `FEAT-004` and `FEAT-016` rebase onto it. |
-| 7E | `FEAT-004` Gate B slice | `M` | Economical implementation, strong review of the ownership transaction | Claims migration **`0018`**. After `OBS-005` — staff takeover introduces a terminal state the outcome vocabulary must already model correctly — and after `FEAT-001` for the console shell. |
-
-### Wave 8 — Demonstration amplifiers
-
-| Order | Task | Complexity | Model routing | Dependency note |
-|---|---|---:|---|---|
-| 8A | `OBS-006` | `L` | Strong | After `OBS-005`. The largest available upgrade to claim 3: replaces a derived stage list with the graph that actually ran. |
-| 8B | `FEAT-016` | `M` | Economical implementation, strong review of the tenant-scoping | After `FEAT-001`. Audit rows are already written; only the read surface and the permissions view are missing. |
-| 8C | `AI-002` | `M` | Economical | After `REL-001` — both own the model-client boundary, and per-tenant budget enforcement belongs beside the timeout and circuit-breaker policy rather than in a second wrapper. |
-| 8D | `OBS-003` | `M` | Economical | After `OBS-005`. A dashboard built on a turn-outcome metric that does not sum to turns teaches the wrong thing. Still Gate C: build it only if the demonstration needs a dashboard. |
-
-`FEAT-010` remains the first task after these if the project continues.
-
-### Parallel dispatch batches
-
-Batch A is spent. Two batches remain, each safe to run concurrently as written:
-
-- **Batch B** — `FEAT-011` ‖ `FEAT-001` (migration `0017`) ‖ `REL-001` ‖
-  `RAG-006` ‖ `QA-006`. Five lanes, no shared file: `FEAT-011` is
-  `frontend/src/widget/**`, `FEAT-001` owns the admin shell, `REL-001` is
-  clients only, `RAG-006` is retrieval, `QA-006` is one test.
-- **Batch C** — `FEAT-004` (migration `0018`) ‖ `OBS-006` ‖ `AI-002`, with
-  `FEAT-016` following `FEAT-001`'s merge.
-
-An agent assigned a lane owns the files listed for it. Rule 3 of the agent
-dispatch contract applies with force here: an agent that needs a file another
-lane owns must coordinate rather than edit, and an agent that needs a migration
-revision must take the number assigned above rather than the next one free.
-
-## Decision log required before implementation
-
-Record these decisions as ADRs before or during their first dependent task:
-
-- Authentication provider and development-auth strategy.
-- ASGI framework and backend package structure.
-- Migration tool and database tenancy strategy.
-- Background job/outbox implementation.
-- Object storage and supported document types.
-- LLM and embedding provider contract.
-- Agent runtime boundary and LangGraph adoption (`ADR-001` is accepted; record implementation consequences and future amendments).
 - Calendar/field-service and CRM demonstration providers.
-- Secret-management approach for local, staging, and production environments.
+- Production secret-controller integration and credential-rotation procedure.
 - Public hosting domain, ingress, certificate, and widget asset strategy.
-- Privacy retention defaults and target compliance posture.
-- Telemetry plane split and inference-trace ownership (`ADR-0010` is accepted; the first-party store and `FEAT-015` remain authoritative. If an optional third-party operational trace projection is adopted, record its licence terms, content-export setting, and retention here without making it the system of record).
+- Target compliance posture and any changes to privacy retention defaults.
+- Optional third-party operational trace projections, including licence,
+  content-export, and retention constraints. The first-party turn store and
+  `FEAT-015` remain authoritative.

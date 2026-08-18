@@ -50,6 +50,14 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/** The OIDC session is valid, but Keycloak supplied no TenantChat role. */
+export class AccessDeniedError extends Error {
+  constructor() {
+    super("This account has no TenantChat admin role.");
+    this.name = "AccessDeniedError";
+  }
+}
+
 function resolveAdminApiBaseUrl(): string {
   const configured =
     window.CHAT_API_BASE_URL ??
@@ -93,6 +101,7 @@ export class AdminApi {
   /** @throws {UnauthorizedError} when the admin session has expired. */
   async tenants(): Promise<TenantSummary[]> {
     const response = await this.request("/api/admin/tenants");
+    if (response.status === 403) throw new AccessDeniedError();
     if (!response.ok) throw new Error(`Tenant list failed with ${response.status}`);
     const payload = (await response.json()) as { tenants?: unknown[] };
     const rows = (payload.tenants ?? []).map((wire) =>

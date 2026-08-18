@@ -61,8 +61,7 @@ dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated ou
 	@for f in k8s/grafana/*.json; do \
 		$(UV_RUN) python -c "import json; json.load(open('$$f'))" && echo "  OK: $$f" || exit 1; \
 	done
-	@$(UV_RUN) python k8s/grafana/_generate_dashboards.py
-	@git diff --exit-code -- k8s/grafana/*.json || { echo "Generated dashboards differ from committed JSON. Regenerate with: uv run python k8s/grafana/_generate_dashboards.py"; exit 1; }
+	@$(UV_RUN) python k8s/grafana/_generate_dashboards.py --check
 
 test-cov: ## Run tests with a coverage report
 	$(UV_RUN) pytest -m "not integration and not chart" --cov --cov-report=term-missing \
@@ -211,14 +210,14 @@ clean: ## Remove caches and build artifacts
 grafana-smoke: ## Verify deployed Grafana contains all five Tenant Chat dashboard UIDs
 	./scripts/verify_grafana_dashboards.sh
 
-harness-a: ## Run the L9a Gate B harness against the real graph (hermetic, no LLM)
+harness-a: ## Run the core Gate B harness against the real graph (hermetic, no LLM)
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"
 
-harness-b: ## Run the full L9a+L9b Gate B harness: all 10 cases plus the trace-plane suites
+harness-b: ## Run the full hermetic Gate B harness: all 10 cases plus trace-plane suites
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py \
 		services/api/tests/test_trace_explorer.py \
 		services/api/tests/test_trace_record.py \
 		-v -m "not integration"
 
-harness-live: ## Run L9b live mode against the cluster's LM-Studio endpoint (demo seed)
+harness-live: ## Run live Gate B checks against the cluster's configured model (demo seed)
 	$(UV_RUN) python scripts/harness_live.py

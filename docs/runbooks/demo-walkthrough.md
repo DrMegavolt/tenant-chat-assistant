@@ -1,4 +1,4 @@
-# L10 — Demo walkthrough runbook
+# Demo walkthrough runbook
 
 This document is the live-demo operator's manual. It covers every Gate B case,
 the FEAT-004 handoff journey, and the Grafana → exemplar → explorer drill-through
@@ -6,6 +6,22 @@ beat. Each step names what to click, what it proves, and where to look in the
 observability stack. The queries and expectations below are exactly what
 `scripts/harness_live.py` runs; run it against the cluster to produce the turn
 records the walkthrough steps reference, then speak to what the run printed.
+
+## Readiness status
+
+This runbook is the operator path for a **controlled local** demonstration.
+Every defect the 2026-08-17 repository review found is closed; the hermetic gate
+and the real-PostgreSQL suites are green; and `make harness-live` runs 20 checks
+with 0 failures against a cluster carrying this revision.
+
+Three things still qualify what you can claim. BUG-010, BUG-012, and BUG-013 are
+unverified rather than fixed. BUG-026 is open: a model that hedges with "we
+cannot guarantee approval" has that answer refused, so a financing question can
+occasionally return the refusal text instead — safe, but not the answer you
+wanted on stage; re-ask if it happens. And a live harness run is evidence only
+about the revision it ran against, so check that the run you cite matches what
+you are showing. Confirm current status in [BACKLOG.md](../../BACKLOG.md) and
+the [defect dossier](../../EXPLORATORY_TESTING_BUGS.md) before presenting.
 
 Some Gate B scenarios are inherently hermetic — they need planted stale content,
 a controlled retriever config, or a scripted model. Those are covered by
@@ -20,8 +36,13 @@ click.
    collector), and the admin console must be running. Verify with:
 
    ```bash
-   curl http://$CHAT_API_URL/readyz
+   curl "$CHAT_API_URL/readyz"
    ```
+
+   `k8s/deploy.sh` rolls `chat-backend` to ready before `web`, because the
+   widget renders fields the API publishes and a new bundle served by an older
+   API renders them empty (see BUG-013 in the defect dossier). Keep that order
+   if you ever restart the deployments by hand.
 
 2. **Seed knowledge.** The retrieval pipeline needs governed knowledge for both
    demo tenants. The `make seed-knowledge` target loads the financing options
@@ -45,6 +66,12 @@ click.
    makes the harness also fetch each turn's recorded outcome from the admin
    trace store and validate it against the case's expected classes.
 
+   A `timed out` line is a statement about the clock, not the build. The local
+   model regularly needs more than a minute for a retrieval turn; the default
+   `HARNESS_TIMEOUT` is 180 seconds for that reason. If turns still time out,
+   raise it and re-run before treating anything as a failure — a 2026-08-17 run
+   went from 7 failures to 0 on that change alone.
+
 4. **Provision Grafana dashboards** (if not already provisioned):
 
    ```bash
@@ -56,15 +83,19 @@ click.
 
 5. **Open the UIs.** These are the surfaces the walkthrough visits:
 
+   Generate the local, mode-0600 credential bundle and follow recovery steps in
+   [Local demo access and credential recovery](demo-access.md) before opening
+   authenticated surfaces.
+
    | UI | URL / access |
    |---|---|
-   | Chat widget (visitor) | `http://$CHAT_API_URL` — embeddable widget, or use curl |
-   | Admin console | `http://$ADMIN_API_URL` — the FEAT-001 console shell |
-   | Admin explorer | `http://$ADMIN_API_URL` → traces tab, or direct API |
-   | Grafana | Your cluster's Grafana LB (e.g. `http://192.168.1.170:3000`) |
-   | Tempo | Your cluster's Tempo LB (e.g. `http://192.168.1.170:3200`) |
-   | Phoenix | Your cluster's Phoenix LB |
-   | MLflow | Your cluster's MLflow LB |
+   | Chat widget (visitor) | `$CHAT_API_URL` — embeddable widget, or use curl |
+   | Admin console | `$ADMIN_API_URL` — the FEAT-001 console shell |
+   | Admin explorer | `$ADMIN_API_URL` → traces tab, or direct API |
+   | Grafana | `$GRAFANA_URL` (discover with `kubectl -n observability get svc`) |
+   | Tempo | `$TEMPO_URL` (API endpoint; verify before the demo) |
+   | Phoenix | `$PHOENIX_URL` (verify before the demo) |
+   | MLflow | `$MLFLOW_URL` (verify before the demo) |
 
 ---
 

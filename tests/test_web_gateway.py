@@ -8,6 +8,7 @@ against a running container.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -52,10 +53,10 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
     surface is derived from the API's routers so neither list can drift, and
     path-parameter routes are mapped to the regex locations that publish them.
     """
-    from tenantchat.api.routers import bookings, chat, leads, tenants
+    from tenantchat.api.routers import chat, tenants
 
     visitor_paths: set[str] = set()
-    for module in (chat, tenants, bookings, leads):
+    for module in (chat, tenants):
         for route in module.router.routes:
             for method in getattr(route, "methods", set()):  # noqa: B007
                 if route.path.startswith("/api/") and not route.path.startswith("/api/admin/"):
@@ -69,8 +70,6 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
         "/api/chat/confirmation",
         "/api/chat/feedback",
         "/api/chat/sources/{source_id}",
-        "/api/book",
-        "/api/leads",
     }
 
     gateway_keys = {API_PATH_TO_GATEWAY.get(path, path) for path in visitor_paths}
@@ -79,6 +78,77 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
     all_proxy = proxied_locations(web_server_blocks()[8080])
     assert gateway_keys <= all_proxy
     assert all_proxy >= set(PUBLIC_PROXY_PATHS) | set(ADMIN_PROXY_PATHS)
+
+
+CREDENTIAL_HEADER = "X-Visitor-Credential"
+
+# What each public route's own frontend request carries, which is what its
+# preflight has to allow. A browser fails the actual request when the preflight
+# omits a header it sends, so an under-permissive entry here is an outage for
+# every cross-origin embed and a same-origin demo never sees it (`BUG-022`:
+# `/api/chat/consent` allowed only `Content-Type` while the widget sent the
+# credential, so consent could not be granted from a customer site).
+PUBLIC_PREFLIGHT_HEADERS = {
+    # Unauthenticated reads: the widget attaches no credential.
+    "/api/tenants": {"Content-Type"},
+    r"^/api/tenants/[a-z0-9][a-z0-9-]{0,63}/availability$": {"Content-Type"},
+    # `POST` mints a credential and carries none; `GET` reads the snapshot back
+    # with one, and both share this location.
+    "/api/chat/session": {"Content-Type", CREDENTIAL_HEADER},
+    "/api/chat": {"Content-Type", CREDENTIAL_HEADER},
+    "/api/chat/consent": {"Content-Type", CREDENTIAL_HEADER},
+    "/api/chat/confirmation": {"Content-Type", CREDENTIAL_HEADER},
+    "/api/chat/feedback": {"Content-Type", CREDENTIAL_HEADER},
+    r"^/api/chat/sources/[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$": {
+        "Content-Type",
+        CREDENTIAL_HEADER,
+    },
+}
+
+
+def _preflight_allowed_headers(body: str) -> set[str]:
+    """The `Access-Control-Allow-Headers` an `OPTIONS` on this location returns."""
+    match = re.search(
+        r"if\s*\(\$request_method\s*=\s*OPTIONS\s*\).*?"
+        r'add_header\s+Access-Control-Allow-Headers\s+"([^"]*)"',
+        body,
+        re.DOTALL,
+    )
+    assert match is not None, "location has no OPTIONS Access-Control-Allow-Headers"
+    return {header.strip() for header in match.group(1).split(",") if header.strip()}
+
+
+def test_every_public_route_preflights_the_headers_its_request_sends() -> None:
+    """A preflight narrower than the request it guards is a cross-origin outage.
+
+    Checked per route rather than in aggregate: the defect was one location out
+    of eight, and an aggregate union would have passed while consent stayed
+    broken.
+    """
+    bodies = location_bodies(web_server_blocks()[8080])
+
+    assert set(PUBLIC_PREFLIGHT_HEADERS) == set(
+        PUBLIC_PROXY_PATHS
+    ), "this table and the public proxy allowlist must name the same routes"
+    mismatches = {
+        path: (_preflight_allowed_headers(bodies[path]), expected)
+        for path, expected in PUBLIC_PREFLIGHT_HEADERS.items()
+        if _preflight_allowed_headers(bodies[path]) != expected
+    }
+    assert not mismatches, f"preflight header drift: {mismatches}"
+
+
+def test_the_api_cors_policy_admits_every_header_the_gateway_publishes() -> None:
+    """Two allowlists guard one request, so the inner one cannot be narrower.
+
+    The gateway answers the preflight, but the API answers it too when it is
+    reached directly, and a request the edge admits must not then fail inside.
+    """
+    from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
+
+    published = set().union(*PUBLIC_PREFLIGHT_HEADERS.values())
+
+    assert published <= {"Content-Type", VISITOR_CREDENTIAL_HEADER}
 
 
 def test_each_document_root_holds_exactly_one_build() -> None:

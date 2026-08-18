@@ -39,10 +39,15 @@ from tenantchat.api.persistence import (
     PostgresTurnRecordStore,
 )
 from tenantchat.api.privacy_worker import run_pass
-from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.registry import TenantRegistry, demo_offered_slots
 from tenantchat.api.settings import Settings
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
-from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolSpec
+from tenantchat.orchestration.model import (
+    AssembledPrompt,
+    ModelResponse,
+    ToolCall,
+    ToolSpec,
+)
 
 BOOKING_TENANT = "clearview"
 OTHER_TENANT = "apex"
@@ -52,12 +57,24 @@ TEST_POOL = DatabasePoolSettings(size=2, max_overflow=1, timeout_seconds=5)
 GATEWAY_TOKEN = "gateway-token-for-privacy-tests"
 CSRF_SECRET = "csrf-secret-for-privacy-tests"
 SIGNING_KEY = "visitor-signing-key-for-privacy-tests-" + "x" * 16
+# The provider mints future windows, so the slot a planted booking names has to
+# come from the same source the reservation checks against (`DATA-003`). Each
+# subject takes a different one: a committed booking leaves the offer set, so
+# two subjects sharing a slot means the second one cannot be parsed at all.
+PLANTED_SLOTS = demo_offered_slots("hvac")
+SLOT_FOR_CONTACT = {DANA_PHONE: 0, BORIS_PHONE: 1}
 
 pytestmark = pytest.mark.integration
 
 
 class PlainModel:
-    """A scripted model that answers questions without booking anything."""
+    """Answers plainly, but proposes the action a turn's message asks for.
+
+    Since `BUG-021` retired the direct booking and lead routes, the graph is the
+    only ingress that can plant a subject's records. The trigger is the visitor
+    message rather than a fixed script, so one model instance serves every
+    session this suite opens without the tests having to order their turns.
+    """
 
     def __init__(self) -> None:
         self.calls: list[AssembledPrompt] = []
@@ -66,7 +83,49 @@ class PlainModel:
         self, prompt: AssembledPrompt, *, tools: Sequence[ToolSpec]
     ) -> ModelResponse:
         self.calls.append(prompt)
+        offered = {tool.name for tool in tools}
+        message = prompt.messages[-1].content if prompt.messages else ""
+        for trigger, call in ((BOOK_TRIGGER, _book_call), (LEAD_TRIGGER, _lead_call)):
+            if trigger in message and (proposed := call(message)).name in offered:
+                return ModelResponse(content="", tool_calls=(proposed,), model_name="scripted")
         return ModelResponse(content="Noted, thank you.", model_name="scripted")
+
+
+BOOK_TRIGGER = "book my appointment"
+LEAD_TRIGGER = "call me back"
+
+
+def _contact_in(message: str) -> str:
+    """The phone number the planting message carries, so a subject owns its records."""
+    return message.rsplit(" ", maxsplit=1)[-1].strip(".")
+
+
+def _book_call(message: str) -> ToolCall:
+    contact = _contact_in(message)
+    return ToolCall(
+        call_id="call-book_appointment",
+        name="book_appointment",
+        arguments={
+            "service": "HVAC",
+            "slot": PLANTED_SLOTS[SLOT_FOR_CONTACT.get(contact, 2)].label,
+            "customer_name": "Dana Ruiz",
+            "customer_phone_or_email": contact,
+            "address": "12 Alder Court, Portland, OR 97205",
+        },
+    )
+
+
+def _lead_call(message: str) -> ToolCall:
+    return ToolCall(
+        call_id="call-create_lead",
+        name="create_lead",
+        arguments={
+            "customer_name": "Dana Ruiz",
+            "customer_phone_or_email": _contact_in(message),
+            "service": "HVAC",
+            "summary": "Furnace needs service.",
+        },
+    )
 
 
 def _libpq(sqlalchemy_url: str) -> str:
@@ -164,117 +223,112 @@ def offered_slot(client: TestClient, tenant_id: str, service: str = "HVAC") -> s
     return slots[0]
 
 
+def committed(turn: dict[str, Any], action: str) -> dict[str, Any] | None:
+    """The record one turn committed for ``action``, if it committed one."""
+    for entry in turn.get("committed", ()):
+        if entry["action"] == action:
+            return cast(dict[str, Any], entry)
+    return None
+
+
 def plant_subject(
     client: TestClient, tenant_id: str, phone: str, *, with_booking: bool = True
 ) -> tuple[str, dict[str, object]]:
     """A session with a transcript and a lead naming one subject, plus a booking
     when the tenant books.
 
-    The booking and lead are stored against the session the server derives from
-    the correlation id, while the transcript and consent sit on the conversation
-    session, so a correct export has to stitch both together.
+    Everything is planted through the graph, which is the only ingress since
+    `BUG-021` retired the direct routes — so what the export has to find is
+    exactly what a real conversation writes.
     """
     visitor = open_session_with_consent(client, tenant_id, ["booking", "follow_up"])
     session_id = visitor.session_id
-    turn = client.post(
+    booking = None
+    if with_booking:
+        proposed = client.post(
+            "/api/chat",
+            json={"message": f"Please book my appointment, my number is {phone}"},
+            headers=visitor.headers,
+        )
+        assert proposed.status_code == 200, proposed.text
+        assert proposed.json()["pending"], proposed.text
+        confirmed = client.post(
+            "/api/chat/confirmation",
+            json={"decision": "approved"},
+            headers=visitor.headers,
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        booking = committed(confirmed.json(), "book_appointment")
+        assert booking is not None, confirmed.text
+    captured = client.post(
         "/api/chat",
         json={"message": f"Please call me back at {phone}"},
         headers=visitor.headers,
     )
-    assert turn.status_code == 200, turn.text
-    booking = None
-    if with_booking:
-        booking_response = client.post(
-            "/api/book",
-            json={
-                "tenant_id": tenant_id,
-                "session_id": session_id,
-                "customer_name": "Dana Ruiz",
-                "contact": phone,
-                "service": "HVAC",
-                "slot": offered_slot(client, tenant_id),
-                "address": "12 Alder Court, Portland, OR 97205",
-            },
-            headers={"Idempotency-Key": f"privacy-{session_id}"},
+    assert captured.status_code == 200, captured.text
+    lead = committed(captured.json(), "create_lead")
+    if lead is None:
+        # A lead the graph pauses on is confirmed the same way a booking is.
+        assert captured.json()["pending"], captured.text
+        confirmed_lead = client.post(
+            "/api/chat/confirmation",
+            json={"decision": "approved"},
+            headers=visitor.headers,
         )
-        assert booking_response.status_code == 201, booking_response.text
-        booking = booking_response.json()
-    lead = client.post(
-        "/api/leads",
-        json={
-            "tenant_id": tenant_id,
-            "session_id": session_id,
-            "customer_name": "Dana Ruiz",
-            "contact": phone,
-            "service": "HVAC",
-            "summary": "Furnace needs service.",
-        },
+        assert confirmed_lead.status_code == 200, confirmed_lead.text
+        lead = committed(confirmed_lead.json(), "create_lead")
+    assert lead is not None
+    return session_id, {"booking": booking, "lead": lead}
+
+
+def attempt_booking(client: TestClient, visitor: Visitor) -> dict[str, Any]:
+    """Drive a booking to the point the consent gate decides it.
+
+    The gate lives in the booking service, so the graph reaches it through
+    `commit_booking` — an ungranted purpose surfaces as a refused turn rather
+    than an HTTP 403, because the conversation continues either way.
+    """
+    proposed = client.post(
+        "/api/chat",
+        json={"message": f"Please book my appointment, my number is {DANA_PHONE}"},
+        headers=visitor.headers,
     )
-    assert lead.status_code == 201, lead.text
-    return session_id, {"booking": booking, "lead": lead.json()}
-
-
-def test_consent_required_error_carries_the_missing_purposes(client: TestClient) -> None:
-    visitor = open_session(client, BOOKING_TENANT)
-
-    refused = client.post(
-        "/api/book",
-        json={
-            "tenant_id": BOOKING_TENANT,
-            "session_id": visitor.session_id,
-            "customer_name": "Dana Ruiz",
-            "contact": DANA_PHONE,
-            "service": "HVAC",
-            "slot": offered_slot(client, BOOKING_TENANT),
-            "address": "12 Alder Court, Portland, OR 97205",
-        },
-        headers={"Idempotency-Key": "privacy-no-consent"},
+    assert proposed.status_code == 200, proposed.text
+    if not proposed.json()["pending"]:
+        return cast(dict[str, Any], proposed.json())
+    confirmed = client.post(
+        "/api/chat/confirmation",
+        json={"decision": "approved"},
+        headers=visitor.headers,
     )
+    assert confirmed.status_code == 200, confirmed.text
+    return cast(dict[str, Any], confirmed.json())
 
-    assert refused.status_code == 403
-    assert refused.json()["code"] == "consent_required"
+
+def test_an_ungranted_purpose_commits_no_booking(client: TestClient) -> None:
+    """No grant at all: the action must not commit, whatever the model proposed."""
+    turn = attempt_booking(client, open_session(client, BOOKING_TENANT))
+
+    assert committed(turn, "book_appointment") is None
 
 
 def test_a_follow_up_only_grant_cannot_book(client: TestClient) -> None:
     """The booking requires both purposes; one is not enough."""
     visitor = open_session_with_consent(client, BOOKING_TENANT, ["follow_up"])
 
-    refused = client.post(
-        "/api/book",
-        json={
-            "tenant_id": BOOKING_TENANT,
-            "session_id": visitor.session_id,
-            "customer_name": "Dana Ruiz",
-            "contact": DANA_PHONE,
-            "service": "HVAC",
-            "slot": offered_slot(client, BOOKING_TENANT),
-            "address": "12 Alder Court, Portland, OR 97205",
-        },
-        headers={"Idempotency-Key": "privacy-follow-up-only"},
-    )
+    turn = attempt_booking(client, visitor)
 
-    assert refused.status_code == 403
-    assert refused.json()["code"] == "consent_required"
+    assert committed(turn, "book_appointment") is None
 
 
 def test_a_recorded_grant_unlocks_the_action(client: TestClient) -> None:
     visitor = open_session_with_consent(client, BOOKING_TENANT, ["booking", "follow_up"])
 
-    accepted = client.post(
-        "/api/book",
-        json={
-            "tenant_id": BOOKING_TENANT,
-            "session_id": visitor.session_id,
-            "customer_name": "Dana Ruiz",
-            "contact": DANA_PHONE,
-            "service": "HVAC",
-            "slot": offered_slot(client, BOOKING_TENANT),
-            "address": "12 Alder Court, Portland, OR 97205",
-        },
-        headers={"Idempotency-Key": "privacy-granted"},
-    )
+    turn = attempt_booking(client, visitor)
 
-    assert accepted.status_code == 201
+    booking = committed(turn, "book_appointment")
+    assert booking is not None, turn
+    assert booking["reference"].startswith("BK-")
 
 
 def test_an_export_contains_one_subject_and_no_other(
@@ -303,11 +357,13 @@ def test_an_export_contains_one_subject_and_no_other(
     assert any(DANA_PHONE in message for message in exported_messages)
     assert not any(BORIS_PHONE in message for message in exported_messages)
 
+    # The graph reports a committed action as its reference, which is the same
+    # identifier the store assigned and the export reads back.
     assert [item["booking_id"] for item in body["bookings"]] == [
-        cast(dict[str, object], dana["booking"])["booking_id"]
+        cast(dict[str, object], dana["booking"])["reference"]
     ]
     assert [item["lead_id"] for item in body["leads"]] == [
-        cast(dict[str, object], dana["lead"])["lead_id"]
+        cast(dict[str, object], dana["lead"])["reference"]
     ]
     assert all(item["contact"] == "+15552221919" for item in body["bookings"])
     assert all(item["contact"] == "+15552221919" for item in body["leads"])
@@ -363,6 +419,15 @@ def test_a_deletion_request_is_fulfilled_and_audited(
 ) -> None:
     dana_session, _ = plant_subject(client, BOOKING_TENANT, DANA_PHONE)
     boris_session, _ = plant_subject(client, BOOKING_TENANT, BORIS_PHONE)
+    # Measured rather than hardcoded: what matters is that erasing one subject
+    # changes nothing for the other, not how many turns planting happened to take.
+    with psycopg.connect(_libpq(privacy_database_url)) as connection:
+        boris_messages_before = _scalar(
+            connection,
+            "SELECT count(*) FROM messages WHERE tenant_id = %s AND chat_session_id = %s",
+            (BOOKING_TENANT, uuid.UUID(boris_session)),
+        )
+    assert boris_messages_before > 0
 
     filed = client.post(
         "/api/admin/privacy/deletion-requests",
@@ -436,7 +501,7 @@ def test_a_deletion_request_is_fulfilled_and_audited(
             "SELECT count(*) FROM messages WHERE tenant_id = %s AND " "chat_session_id = %s",
             (BOOKING_TENANT, uuid.UUID(boris_session)),
         )
-        assert other_messages == 2
+        assert other_messages == boris_messages_before
 
         request_row = _row(
             connection,
@@ -617,13 +682,14 @@ def test_an_export_includes_turn_records_and_their_projections(
     assert response.status_code == 200, response.text
     body = response.json()
 
-    # The chat turn itself already earned one inference-plane record (the
+    # The planting conversation earns an inference-plane record per turn (the
     # `OBS-004` finalizer records every completed turn); the planted record is
-    # the second one, and it is the one this test controls.
+    # the one this test controls. What must hold is that the export carries the
+    # subject's records and only the subject's, not a particular count.
     by_id = {item["turn_id"]: item for item in body["turn_records"]}
     assert str(dana_turn) in by_id
     assert str(boris_turn) not in by_id
-    assert len(body["turn_records"]) == 2
+    assert {item["session_id"] for item in body["turn_records"]} == {dana_session}
     exported = by_id[str(dana_turn)]
     assert exported["trace_id"] == "trace-for-privacy-tests"
     assert DANA_PHONE in exported["content"]["prompt"]
@@ -724,10 +790,12 @@ def test_an_erasure_request_removes_turn_records_and_derived_projections(
             """,
             (BOOKING_TENANT,),
         )
-        # The chat turn's own record is erased alongside the planted one: the
-        # `OBS-004` finalizer records every completed turn, so Dana's subject
-        # data lives in two records.
-        assert erased[0]["turn_records_deleted"] == 2
+        # The conversation's own records are erased alongside the planted one:
+        # the `OBS-004` finalizer records every completed turn, so a subject's
+        # inference-plane data spans the planted record and each turn theirs
+        # produced. The audited count is the erasure's own report of what it
+        # removed, and the tables above already prove nothing survived.
+        assert erased[0]["turn_records_deleted"] > 1
 
 
 def test_erasure_cascades_feedback_reviews_and_reviewer_diagnoses(

@@ -1,17 +1,18 @@
-"""Generate Grafana dashboard JSON files from a compact Python description.
+"""Generate or verify Grafana dashboard JSON from a compact description.
 
-This script is the canonical source of the L6 Grafana dashboards. It writes
+This script is the canonical source of the Grafana dashboards. It writes
 complete dashboard JSON files into k8s/grafana/ so the dashboards can be
-provisioned as ConfigMaps. Run it from the repo root, then apply the generated
-JSON through k8s/grafana/provision.sh.
+provisioned as ConfigMaps. ``--check`` compares the committed files with the
+canonical render without modifying the worktree.
 
 Every panel resolves against a metric that exists in the inventory
 (tenantchat.core.metrics.MetricName) except where explicitly marked as an
-L4/L5 dependency.
+optional observability dependency.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -739,7 +740,7 @@ This dashboard ties the operational plane (Grafana/Prometheus) to the inference 
 
 ## Step 2: Open the trace in Tempo
 - Copy the `trace_id` value from the exemplar
-- Open **Tempo** (`http://192.168.1.170:3200` or your configured Tempo LB)
+- Open **Tempo** (`http://192.168.1.177:3200` on the current local cluster, or your configured Tempo LB)
 - Paste the trace ID and inspect the full span waterfall
 
 ## Step 3: Inspect the turn content in the admin explorer
@@ -1007,11 +1008,30 @@ DASHBOARDS = {
 }
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if a generated dashboard differs, without writing files",
+    )
+    args = parser.parse_args(argv)
+    drifted: list[Path] = []
     for filename, data in DASHBOARDS.items():
         path = OUT_DIR / filename
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        rendered = json.dumps(data, indent=2) + "\n"
+        if args.check:
+            if not path.exists() or path.read_text() != rendered:
+                drifted.append(path)
+            continue
+        path.write_text(rendered)
         print(f"Wrote {path}")
+    if drifted:
+        for path in drifted:
+            print(f"Generated dashboard differs: {path}")
+        raise SystemExit(1)
+    if args.check:
+        print(f"Generated dashboards are in sync ({len(DASHBOARDS)} files)")
 
 
 if __name__ == "__main__":

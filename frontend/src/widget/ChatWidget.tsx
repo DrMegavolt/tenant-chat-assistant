@@ -16,7 +16,7 @@ import { TypingIndicator } from "src/widget/components/TypingIndicator";
 import { CloseIcon } from "src/widget/icons";
 import type { Citation, TenantConfig } from "src/widget/types";
 import { useConversation } from "src/widget/useConversation";
-import { VisitorData, consentStatement } from "src/widget/visitorData";
+import { VisitorData } from "src/widget/visitorData";
 
 export interface ChatWidgetProps {
   api: ChatApi;
@@ -153,7 +153,7 @@ export function ChatWidget({ api, tenantId, config, isOpen, onOpen, onClose }: C
                 <BookingConfirmation
                   key={entry.id}
                   pending={entry.pending}
-                  consentStatement={consentStatement(config.name)}
+                  consentStatement={config.contactConsentStatement}
                   onDecide={(decision) => conversation.decide(decision)}
                 />
               );

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import Iterator
@@ -44,6 +45,12 @@ def repository_database_url(postgres_server_url: str) -> Iterator[str]:
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "services/api/migrations"))
     command.upgrade(config, "head")
+    # A test that drives a turn reaches the agent runtime, whose checkpoint
+    # tables are created the deployed way (`make migrate-checkpoints`) rather
+    # than by Alembic.
+    from scripts.setup_checkpoints import _setup
+
+    asyncio.run(_setup(database_url))
     try:
         yield database_url
     finally:

@@ -725,8 +725,8 @@ spec:
                 secretKeyRef:
                   name: visitor-credential-signing-key
                   key: key
-            # The API applies its own credential-free CORS allowlist to the
-            # visitor surface; the same origins the gateway's embed allows.
+            # The API applies its own origin allowlist to the visitor surface;
+            # bearer identity stays in the explicit visitor credential header.
             - name: CHAT_API_ALLOWED_ORIGINS
               valueFrom:
                 configMapKeyRef:

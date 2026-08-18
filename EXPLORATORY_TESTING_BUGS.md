@@ -1,6 +1,49 @@
 # Exploratory Testing Defect Dossier
 
-> Agent handoff document. Reproduce each issue against the current deployment before changing code. Treat **Observed evidence** as fact and **Working theory** as a hypothesis that still needs proof.
+> Current defect register and historical exploratory evidence. The status table
+> below is authoritative. Dated revalidation tables preserve what was observed
+> at discovery time; they do not override the current status.
+
+## Current status — 2026-08-17
+
+`Guarded by` is what fails if the defect returns. A resolved row whose guard is
+operational rather than a build test says so, because that distinction decides
+whether a regression is caught before or after a deploy.
+
+| ID | Current status | Backlog owner | Guarded by | Current interpretation |
+|---|---|---|---|---|
+| BUG-001 | **Resolved** | `FEAT-004` / `SEC-002` | `tests/repositories/test_handoff_repository.py` | Handoff binds to the real visitor session; the live accept/reply/resolve journey passed. |
+| BUG-002 | **Resolved** | `DATA-003` / `AGENT-001` | `packages/core/tests/test_intent_routing.py` (continuation rule); single commit by `DATA-003`'s idempotency tests | An active booking workflow survives a service-area detour instead of being displaced into escalation, and commits once. |
+| BUG-003 | **Resolved** | `AGENT-001` | `tests/agent_runtime/test_routing_workflows.py`, `tests/agent_runtime/test_tool_dispatch.py` | Lead confirmation and idempotent commit nodes are in `dispatch@3`, which is now the only lead ingress (BUG-024). |
+| BUG-004 | **Resolved** | `RAG-005` | `services/api/tests/test_citations.py`, `packages/core/tests/test_claims.py` | An answer resting only on tool verdicts publishes no document citation. The prose fallback that could still bypass this closed with BUG-020. |
+| BUG-005 | **Resolved** | `RAG-002` | `services/api/tests/test_search_query_fields.py` | Every retrieval query is held to the adapter's own index mapping, which is the fault the live cluster hid. |
+| BUG-006 | **Resolved** | Demo data / `RAG-001` | Operational only: knowledge index-integrity check | The contaminated source was renamed/tombstoned. Demo data cannot be guarded by a unit test; re-check after any reseed. |
+| BUG-007 | **Resolved** | `PRIV-001` / `FEAT-013` | `frontend/tests/privacy.test.tsx` | The general storage disclosure matches free-text behavior. |
+| BUG-008 | **Resolved** | `SEC-002` / widget | `frontend/tests/session.test.tsx` | A rejected stored credential is discarded and a fresh session is opened. |
+| BUG-009 | **Resolved** | `RAG-007` | `services/api/tests/test_citations.py`, `services/api/tests/test_harness_cases.py` | Trusted tenant configuration can support business-hours answers. |
+| BUG-010 | **Open — not deterministically revalidated** | `REL-001` / `QA-005` | — | Safe replay after a forced model timeout still needs a fault-injection proof. |
+| BUG-011 | **Resolved** | `OBS-003` | Operational: `make dashboard-check`, `make grafana-smoke` | All repository dashboards are generated from one source and verified against the deployment. |
+| BUG-012 | **Open — audit incomplete** | `OBS-003` | — | Tenant Chat dashboards exist; the wider Tempo/Phoenix/MLflow/Pyroscope quality audit was not repeated. |
+| BUG-013 | **Open — not revalidated** | `SEC-002` / `FEAT-010` | — | Old-widget/new-server compatibility has not been exercised in a controlled deployment window. |
+| BUG-014 | **Resolved** | `DEP-001` | `tests/test_local_k8s_release.py` | The orphan Service is gone and reconciliation fails the release if one recurs. |
+| BUG-015 | **Resolved** | `FEAT-013` | Presentation only: `white-space: pre-wrap` in `frontend/src/widget/widget.css` | Availability choices render as separate lines. No test asserts the line breaks; a CSS change could regress it silently. |
+| BUG-016 | **Resolved** | `OBS-005` / database | `tests/repositories/test_trace_governance.py`, `frontend/tests/session.test.tsx` | Turn outcomes accept `refused`/`failed`, and unrelated integrity errors are no longer mapped to session 404. |
+| BUG-017 | **Resolved** | `FEAT-004` | `frontend/tests/admin.test.tsx` | Handoff lifecycle notices render with a System author. |
+| BUG-018 | **Resolved** | `FEAT-016` | `tests/test_audit_taxonomy.py` | The audit action vocabulary has one backend source and a completeness test. |
+| BUG-019 | **Resolved** | `AGENT-001` | `packages/core/tests/test_intent_routing.py`, `tests/agent_runtime/test_routing_workflows.py` | Booking and availability are removed when tenant policy disables booking. |
+| BUG-020 | **Resolved** | `RAG-007` | `packages/core/tests/test_claims.py` | A ZIP the tool decided is grounded on that verdict alone; retrieval can neither overrule it nor stand in for a ZIP the tool never checked, and affirmative idioms no longer read as refusals. |
+| BUG-021 | **Resolved** | `SEC-002` | `tests/test_web_gateway.py`, `services/api/tests/test_openapi_contract.py` | `POST /api/book` and `POST /api/leads` were retired. Every booking and lead now commits through the graph, under the signed visitor credential; no route accepts body identity. |
+| BUG-022 | **Resolved** | `SEC-003` | `tests/test_web_gateway.py` | The consent preflight allows the credential header the widget sends, and a per-route table now pins every public route's preflight to the headers its own request carries. |
+| BUG-023 | **Resolved** | `PRIV-001` | `packages/core/tests/test_tenant.py`, `frontend/tests/privacy.test.tsx` | `GET /api/tenants` publishes the server's statement and the widget renders it verbatim; the widget's local copy of the sentence was deleted. |
+| BUG-024 | **Resolved** | `DATA-004` | `services/api/tests/test_actions.py`, `tests/repositories/test_postgres_repositories.py` | The non-idempotent ingress is gone with the route. The one remaining lead path is `RecordedLeadService`, whose replay contract was already covered. |
+| BUG-025 | **Resolved** | `FEAT-007` | `frontend/tests/admin.test.tsx` | Every admin read claims a generation before its first await and publishes only while newest, so a superseded tenant queue or transcript is discarded. |
+| BUG-026 | **Open** | `RAG-007` | — | A model's own disclaimer ("we cannot guarantee approval") is kinded as a coverage claim, fails token overlap, and refuses the whole answer. Found live on 2026-08-17; fires only when the model phrases the hedge that way. |
+
+Every defect found by the 2026-08-17 repository review is closed. BUG-010,
+BUG-012, and BUG-013 remain unverified rather than unfixed — each awaits fresh
+fault-injection, observability-audit, or deployment-window evidence. BUG-026 is
+new, found by the post-fix live run. See `BACKLOG.md` for gate ownership and
+dispatch order.
 
 ## Test context
 
@@ -15,7 +58,26 @@
 
 The cluster was healthy during testing. Application pods had zero restarts and there were no current warning events. Elasticsearch and PostgreSQL showed five older restarts each, but no active failure was observed.
 
-## Post-fix revalidation — 2026-08-09
+## Live revalidation — 2026-08-17, after the BUG-020…BUG-025 fixes
+
+Run against the local MicroK8s cluster carrying the fixes (`chat-backend` and
+`web` images rebuilt and rolled, migrations applied, knowledge reseeded).
+
+| Run | Result | Notes |
+|---|---|---|
+| `make harness-live` (default `HARNESS_TIMEOUT=60`) | 20 checks, 7 failures | Six were `ERROR: timed out`; one was apex `case-1-grounded` returning zero citations, which is BUG-026. |
+| Re-run with `HARNESS_TIMEOUT=180` | **20 checks, 0 failures** | Both tenants, all ten cases. |
+
+The six timeouts were the harness's own 60-second per-request default, not the
+system under test: the same cases passed unchanged at 180 seconds. The local
+Qwen model regularly needs longer than 60 seconds for a retrieval turn, so a
+default-timeout run reports failures that say nothing about the build. Set
+`HARNESS_TIMEOUT` to at least 180 on this hardware before reading a run as a
+Gate B result.
+
+BUG-026 is the one genuine finding from the run and is recorded below.
+
+## Historical revalidation snapshot — 2026-08-09
 
 This pass restarted from fresh HTTPS tabs and exercised both tenants, the admin console, tool-backed flows, consent gates, handoff, audit, knowledge, AI turn details, and the live Grafana deployment. The local Qwen model was allowed up to roughly 50 seconds per turn before treating a response as failed.
 
@@ -39,7 +101,7 @@ This pass restarted from fresh HTTPS tabs and exercised both tenants, the admin 
 
 New defects found in this pass are BUG-016 through BUG-019 below.
 
-## Post-fix revalidation — 2026-08-17
+## Historical revalidation snapshot — 2026-08-17
 
 Verified against the repository and the live MicroK8s cluster: the applied
 migration head, the Elasticsearch mapping and contents, the Postgres knowledge
@@ -61,6 +123,7 @@ across both tenants.
 | BUG-017 | **Pass** | Handoff lifecycle notices carry a system author and render as System. |
 | BUG-018 | **Pass** | The action taxonomy has one home in `tenantchat.api.store.AUDIT_ACTIONS`; `tests/test_audit_taxonomy.py` fails if a router emits outside it or the console omits any of it. |
 | BUG-019 | **Pass** | Booking and availability leave the routing candidate set when the tenant has booking disabled. |
+| BUG-020 | **Partial** | The original true-answer refusal was fixed and verified live, but repository review found two deterministic residual failures documented below. |
 
 ### Found in this pass
 
@@ -90,7 +153,10 @@ that retrieves.
 
 ---
 
-## BUG-020 — Medium: a tool-confirmed service-area claim is refused as unsupported
+## BUG-020 — Medium: a tool-confirmed service-area claim is refused as unsupported — **Resolved**
+
+Retained in full because it is the one defect whose fix moved a trust boundary,
+and because BUG-004 is only intelligible alongside it.
 
 ### Impact
 
@@ -135,11 +201,30 @@ shape of the existing `trusted_prices` argument.
 
 ### Resolution
 
-Fixed. Claim validation now takes the turn's service-area verdicts, keyed by
-ZIP, and a claim must name a ZIP the tool actually checked and agree with its
-answer. Verified live on both tenants.
+Resolved in two passes. The first gave claim validation the turn's service-area
+verdicts keyed by ZIP, which fixed the original true-answer refusal and was
+verified live on both tenants. It left two deterministic holes, closed in the
+second pass:
 
-**Fixing it re-opened BUG-004**, which the over-refusal had been hiding: once
+- **Retrieval could overrule the tool.** A claim counted as grounded when the
+  tool verdict agreed **or** `_sentence_supported` matched retrieved prose, so a
+  matching passage could publish a claim the tool had answered `served: false`,
+  or vouch for a ZIP the tool was never asked about. A sentence naming a ZIP is
+  now decided by the tool verdict alone; only a sentence naming no ZIP ("we
+  serve your area") falls back to evidence, because the tool decided nothing
+  about it. Every existing test used empty `evidence_texts`, which is why the
+  fallback survived the first pass — the new tests supply contradicting prose.
+- **Affirmative idioms read as refusals.** The negation scan matched the bare
+  `no` in "No problem, we serve ZIP 97205" and refused a true answer. A closed
+  set of affirmative idioms is removed before the scan, so a match of the
+  negation pattern keeps exactly one meaning.
+
+Regression coverage is in `packages/core/tests/test_claims.py`: contradictory
+tool-plus-passage evidence, an unasked ZIP with supporting prose, an affirmative
+idiom over a `served: true` verdict, and an idiom that must not mask the real
+negation that follows it.
+
+**The first pass re-opened BUG-004**, which the over-refusal had been hiding: once
 the answer became publishable, the model cited the financing document's
 lead-capture paragraph beside "yes, we serve 97205", because that paragraph
 mentions "ZIP code". Citation validation only ever checked that a cited source
@@ -148,10 +233,196 @@ was in the prompt context, never that it supported anything.
 Relevance scoring cannot separate these. Measured over live turns, the bad
 pairing scores **0.40** against the answer's content words while citations that
 are genuinely earned score **0.38** and **0.14** — a threshold that drops the
-first drops real ones too. The usable distinction is structural: when every
+first drops real ones too. The usable distinction for BUG-004 is structural:
+when every
 sensitive claim in an answer was decided by a tool verdict, no document earned
 a citation. An answer that also makes a claim a passage supported keeps its
 citations, so an ordinary grounded answer is untouched.
+
+### BUG-004 versus BUG-020
+
+These are adjacent regressions, not duplicate defect IDs:
+
+| Defect | Contract | Current state |
+|---|---|---|
+| BUG-020 | Decide whether a service-area claim is true enough to publish. | **Resolved:** the tool's verdict on a named ZIP is authoritative in both directions. |
+| BUG-004 | Decide whether a published answer earned each document citation. | **Resolved:** an answer resting only on tool verdicts publishes no document citations. |
+
+BUG-020's over-refusal temporarily masked BUG-004 because no service-area answer
+reached publication. Fixing that symptom exposed BUG-004.
+
+The two fixes also had to be closed in this order. `answer_rests_only_on_tool_verdicts`
+asks whether the tool decided every sensitive claim, using the strict verdict
+check; while validation still had its prose fallback, a claim published through
+that fallback answered "no" and kept its document citations. So BUG-020's
+fallback was simultaneously the last route back to BUG-004's exact failure —
+a service-area answer the tool never authorized, published with a citation that
+did not support it. Closing the fallback removed both.
+
+## Defects found by the 2026-08-17 repository review — all resolved
+
+### BUG-021 — High: direct actions bypass the visitor credential — **Resolved**
+
+`POST /api/book` and `POST /api/leads` accepted `tenant_id` and `session_id`
+from the request body and did not depend on `VisitorIdentity`, contradicting the
+SEC-002 boundary every chat, consent, feedback, and citation route already
+honoured. Booking also checked `find_replay(tenant_id, idempotency_key)` before
+any ownership check, so knowledge of a tenant/key pair returned the original
+booking response without proving ownership.
+
+**Resolved by retiring both routes** rather than binding them. Nothing called
+them: the shipped widget's whole surface is `/api/tenants`, `/api/chat`, and
+`/api/chat/*`, and both actions already commit through the graph under the
+signed credential. Binding them would have kept a second ingress to the same
+effects, permanently needing the same proofs as the first. Removing them means
+there is no route that can accept body identity, which is a stronger guarantee
+than a test that no route does.
+
+Removed: `routers/bookings.py`, `routers/leads.py`, their `BookingRequest`,
+`LeadRequest`, `BookingResponse`, and `LeadResponse` schemas, and their gateway
+locations. `tests/test_web_gateway.py` pins the visitor path set against the
+API's own routers and `services/api/tests/test_openapi_contract.py` pins the
+published operations, so neither can return unnoticed.
+
+The route tests moved to the layer that still owns the behaviour: confirmation
+echo and reference uniqueness to `services/api/tests/test_actions.py`, the
+availability/booking agreement to `services/api/tests/test_tenants.py`, and the
+problem-details mapping to a contact-bearing admin route plus a direct assertion
+on `problem_response`. The privacy and repository integration suites now plant
+their subjects through the graph, so what they assert about is what a real
+conversation writes.
+
+### BUG-022 — High: cross-origin action preflights omit required headers — **Resolved**
+
+The nginx preflight for `/api/chat/consent` allowed only `Content-Type`, but the
+request carries `X-Visitor-Credential`, so a real customer-site embed could not
+grant consent. A same-origin demo never shows this: the preflight only runs
+cross-origin.
+
+Resolved: the consent location allows the credential header, and the two
+`/api/book` and `/api/leads` locations that needed `Idempotency-Key` are gone
+with BUG-021. FastAPI's CORS list already carried exactly `Content-Type` and the
+credential header, so nothing was needed there once the direct actions left.
+
+`tests/test_web_gateway.py` now holds a per-route table of the headers each
+public route's own frontend request sends, asserts every location's `OPTIONS`
+answer matches it exactly, and requires that table to name the same routes as
+the proxy allowlist. Checked per route deliberately: the defect was one location
+out of eight, and an aggregate union would have passed while consent stayed
+broken.
+
+### BUG-023 — High: displayed consent copy is not the recorded consent copy — **Resolved**
+
+`TenantPolicy.public_view()` carried `contact_consent_statement`, but
+`TenantSummary` omitted it. The widget instead called its own
+`consentStatement(tenantName)`. The default strings happened to match, so a
+tenant override was silently dropped and the UI could display one statement
+while the server recorded another.
+
+Resolved: `TenantSummary` carries the field, the widget renders
+`config.contactConsentStatement` verbatim, and the widget's local
+`consentStatement()` was deleted rather than left as a second source. The
+frontend fixture now uses one override constant for both `GET /api/tenants` and
+the `POST /api/chat/consent` echo, which is faithful — on the server both read
+`TenantPolicy.consent_statement()` — so a widget that rebuilds the copy renders
+the default and fails.
+
+Guards: `packages/core/tests/test_tenant.py` (override and composed-default
+projection), `services/api/tests/test_tenants.py` (the field is in the response
+the widget's `normalizeTenant` reads), `frontend/tests/privacy.test.tsx`
+(rendered label equals the served string, and equals the recorded grant).
+
+### BUG-024 — Medium: direct lead capture is not idempotent — **Resolved**
+
+`POST /api/leads` called `LeadStore.record` directly and accepted no idempotency
+key, so a retry could create duplicate callbacks, while the graph path committed
+through `RecordedLeadService` and a durable idempotency store.
+
+Resolved with BUG-021: the non-idempotent ingress went away with the route. The
+one remaining lead path is `RecordedLeadService`, whose replay contract
+`services/api/tests/test_actions.py` already covers, and
+`tests/repositories/test_postgres_repositories.py` now proves the production
+composition persists a lead through that path against real PostgreSQL.
+
+### BUG-025 — Medium: admin polling can publish stale tenant data — **Resolved**
+
+`useAdminConsole.refresh` read tenant/selection refs, awaited the list, read the
+selection again, then published results without a request generation or abort.
+Tenant switches, manual selections, interval ticks, and post-send refreshes can
+overlap, so a slower earlier response could overwrite the newer tenant's
+sessions or selected transcript — an operator reading one conversation under
+another's heading.
+
+Resolved: every read claims a generation before its first await and publishes
+only while it is still the newest. `select` shares the same counter as
+`refresh`, because the two race each other as readily as either races itself.
+
+`frontend/tests/admin.test.tsx` covers both shapes with hand-released promises
+rather than real timers: a superseded tenant queue answering last, and a
+superseded transcript answering after a newer selection. Both were confirmed to
+fail without the guard.
+
+## BUG-026 — Medium: a model's own disclaimer is refused as an unsupported claim
+
+Found by the live harness run on 2026-08-17, after the BUG-020 through BUG-025
+fixes were deployed.
+
+### Impact
+
+`case-1-grounded` refused on `apex` while passing on `clearview` with the same
+query. The answer was correct and grounded — two evidence chunks were admitted —
+but it closed with a hedge, and the hedge is what refused it. The visitor sees
+the server-written refusal instead of a good financing answer, and the case
+looks like a retrieval failure in the harness output when retrieval worked.
+
+### Observed evidence
+
+Turn `5eb54c51-8978-4554-a67b-53d04a2bd2a8` (`apex`, "What financing options are
+available for a major HVAC replacement?"):
+
+- `retrieval.evidence`: 2 chunks admitted
+- `verdicts.claims_invalid`: one `coverage` claim — *"Our team can explain the
+  available options and help you start an application, though we cannot
+  guarantee approval."*
+- `verdicts.citations`: `[]`, and the answer was not published
+
+### Working theory
+
+`guarantee` is in `_SENSITIVE_KEYWORDS`, so any sentence containing it becomes a
+COVERAGE claim requiring 70% token overlap with one admitted passage. The
+sentence here is the model declining to promise something — the safest thing it
+could have said — and it is mostly the model's own connective prose, so it
+cannot clear the threshold against any passage.
+
+The keyword set cannot distinguish "we guarantee X" from "we cannot guarantee
+X". The first is a business commitment that must be evidenced; the second is a
+disclaimer that commits to nothing and needs no support. This is the same shape
+as BUG-020 — a validator refusing a true, safe answer — but in the COVERAGE
+family, where BUG-020's fix does not reach.
+
+### Acceptance criteria
+
+- A sentence that declines to promise a covered/guaranteed/warranted outcome is
+  not treated as asserting one, and does not by itself refuse an answer.
+- An actual coverage assertion is still refused without supporting evidence.
+- The distinction is deterministic and tested in both polarities, including
+  "we guarantee approval" against the same evidence.
+
+### Reproduction is output-dependent, not flaky
+
+A second run of the same case on the same revision passed with two citations,
+because that answer did not include the hedge. The defect is deterministic given
+the recorded output — `sensitive_claims` on that sentence returns a COVERAGE
+claim every time — and intermittent only in whether the model writes such a
+sentence. Reproduce from the recorded turn, not by re-running the harness.
+
+### Note on scope
+
+The negation machinery this needs already exists — `_NEGATION_RE` and
+`_AFFIRMATIVE_IDIOM_RE` were built for service-area polarity in BUG-020 — but
+polarity means something different here. For service area, a negated claim is
+still a claim and must match the tool's verdict. For coverage, a negated claim
+is usually not a claim at all. Do not reuse the service-area rule directly.
 
 ## How implementation agents should use this document
 
@@ -163,7 +434,13 @@ citations, so an ordinary grounded answer is untouched.
 6. Run the targeted test suites and the repository's standard checks before handoff.
 7. Do not make model prose the source of truth for committed actions. Success language should be derived from committed server-side effects.
 
-## Priority summary
+## What each defect was, as first filed (historical)
+
+Severity, area, and confidence at filing time. Since the resolved BUG-001
+through BUG-019 narratives were pruned, this table is the surviving one-line
+record of what each of those defects actually was — the fix and its guard are in
+[Current status](#current-status--2026-08-17), which is what decides whether
+anything remains open.
 
 | ID | Severity | Area | Summary | Confidence |
 |---|---|---|---|---|
@@ -190,502 +467,11 @@ citations, so an ordinary grounded answer is untouched.
 
 ---
 
-## BUG-001 — Critical: handoff binds to a shadow session
-
-### Impact
-
-An operator can accept a handoff while the visitor's real conversation continues invoking the AI. The admin queue opens a different session and cannot see the original transcript. This defeats the core human-handoff safety contract and can produce simultaneous AI and staff handling.
-
-### Reproduction
-
-1. Open a Clearview visitor conversation.
-2. Ask for a human until a handoff is requested.
-3. In the admin queue, accept the request.
-4. From the visitor, send `Are you there?` and then `Testing while assigned.`
-5. Observe that the AI still processes the visitor turns.
-6. Compare the visitor session ID with the session ID on the handoff record and the session shown in the admin queue.
-
-### Observed evidence
-
-- Real Clearview visitor/trace session: `81ed60de-74b0-4dd8-a747-19c813c819c2`
-- Handoff: `HO-BC3D91E616D34B928F1AF13320B3007E`
-- Handoff session: `3e3b49cd-67ef-425e-903e-974bba130f2c`
-- Trace: `75db100e8bcf35811481829ca4b4ebc8`
-- Trace outcome: `escalated`
-- Graph duration: approximately `61,890 ms`, with 9 nodes and 9 edges
-- The post-acceptance visitor messages invoked the graph and returned abstentions.
-- The pause check queried the real visitor session, found no active handoff for it, and therefore did not pause.
-- The admin queue selected the shadow session and showed handoff status notices rather than the original conversation.
-- The handoff was accepted, released, accepted again, and resolved during testing. The queue was clean at the end.
-
-### Working theory
-
-`_action_session()` still treats its third argument as a legacy client correlation label. Callers now pass the SEC-002 server-issued session UUID. The repository inserts a new `chat_sessions.id` and stores the real session UUID in `client_correlation_id`, creating a shadow row. Chat pause logic then looks up the handoff by the real row ID and misses it.
-
-Relevant code:
-
-- `services/api/src/tenantchat/api/persistence/repositories.py`
-  - `_action_session(connection, tenant_id, client_correlation_id)`
-  - Its docstring says this is temporary “until SEC-002 replaces it,” but SEC-002 credentials are already in use.
-- `services/api/src/tenantchat/api/actions.py`
-  - `RecordedHandoffService.request(...)` passes a session ID into the persistence layer.
-- `packages/orchestration/src/tenantchat/orchestration/nodes.py`
-  - `_handoff` and `escalate` pass `state["session_id"]`.
-- `services/api/src/tenantchat/api/routers/chat.py`
-  - `send_message` pauses by calling `handoffs.for_session(tenant_id, str(session_id))` with the authoritative credential session.
-
-### Fix hints
-
-- Make the session identity contract explicit. A server-issued UUID should resolve the existing row by `(tenant_id, chat_sessions.id)`, not be inserted or resolved through `client_correlation_id`.
-- Keep any legacy write-only correlation behavior behind a separately named method/parameter if it is still required.
-- Fail closed if a handoff action references a nonexistent session. Do not silently create a new conversation row.
-- Backfill or clean shadow rows only after identifying whether any non-demo data depends on them.
-
-### Acceptance criteria
-
-- A newly requested handoff's `session_id` exactly equals the session named by the visitor credential.
-- Requested or assigned handoffs pause AI execution for subsequent visitor messages.
-- The admin queue shows the complete visitor conversation for the handed-off session.
-- Accept, release, re-accept, resolve, and visitor polling all operate on one session row.
-- Tenant-leading lookups remain mandatory.
-
-### Required regression coverage
-
-- Repository test: an existing authoritative session is reused and no shadow row is inserted.
-- API/integration test: request a handoff, accept it, then POST another visitor message and assert that the model is not called.
-- Admin projection test: handoff session, displayed transcript, and visitor credential all resolve to the same server session.
-
----
-
-## BUG-002 — High: booking workflow is displaced by service-area routing
-
-### Impact
-
-A user who supplies the requested booking details can be routed away from booking merely because the message contains a ZIP code. The system repeats service-area checks, fails the turn, and escalates instead of advancing the booking.
-
-### Reproduction
-
-1. Start a new Clearview conversation.
-2. Send `Book HVAC`.
-3. After availability is shown, send:
-
-   ```text
-   Mon Aug 10 at 9:00 AM. Name: QA Tester. Address: 480 Test Avenue, Portland, OR 97205. Email: qa-tester-clearview@example.invalid.
-   ```
-
-4. Inspect the trace, route decision, tool calls, and committed actions.
-
-### Observed evidence
-
-- `get_availability` succeeded and returned 20 slots.
-- The details message was routed to `service_area`, apparently because it contained ZIP `97205`.
-- `check_service_area` was called four times.
-- The last service-area call ended as `turn_abandoned`.
-- `book_appointment` was never called.
-- The turn escalated instead of proposing or confirming a booking.
-- Trace: `75db100e8bcf35811481829ca4b4ebc8`
-- Approximate model-call durations included 46.8 s, 1.3 s, 12.4 s, and 1.3 s.
-- The only committed domain effect was the handoff.
-
-### Working theory
-
-The router scores the current message independently enough that a ZIP code can switch an active booking workflow to service-area intent. The current workflow is loaded, but a different chosen route suspends it. In this context the ZIP is a booking field, not a new user intent.
-
-Relevant code:
-
-- `packages/core/src/tenantchat/core/routing.py` — ZIP-based service-area scoring and booking scores
-- `packages/orchestration/src/tenantchat/orchestration/nodes.py` — `route()` and workflow suspension behavior
-- `packages/orchestration/src/tenantchat/orchestration/agents.py` — booking field extraction and requirements
-
-### Fix hints
-
-- Give an active workflow ownership of messages that supply its outstanding fields unless the user clearly changes or cancels intent.
-- Treat ZIP/address tokens as entity values during an active booking, not as automatic evidence of a new service-area request.
-- If serviceability must be checked inside booking, make it an explicit booking substep rather than changing the top-level workflow.
-- Cap retries and return a deterministic, user-actionable error if a tool repeats without progress.
-
-### Acceptance criteria
-
-- After availability, the full-details message remains in the booking workflow.
-- Name, address, ZIP, email, service, and selected slot are parsed into booking state.
-- The system proposes a confirmation and does not commit before explicit approval.
-- Explicit approval commits exactly one booking.
-- An explicit intent change such as `Never mind, do you serve 97205?` can still switch workflows.
-
-### Required regression coverage
-
-- Router test for an active booking plus a message containing an address and ZIP.
-- End-to-end booking test from availability through explicit confirmation and one committed appointment.
-- Loop-protection test ensuring repeated identical tool calls cannot consume an unbounded turn.
-
----
-
-## BUG-003 — High: false callback confirmation without a committed lead
-
-### Impact
-
-The assistant tells the visitor that a team member will call, but no lead is created. This is a silent loss of a customer request and a high-risk mismatch between user-visible language and durable state.
-
-### Reproduction
-
-1. In an Apex conversation with prior service context, send:
-
-   ```text
-   Please have someone call QA Tester at qa-tester@example.invalid about an electrical panel repair.
-   ```
-
-2. Inspect the answer, route decision, tool calls, and committed action list.
-
-### Observed evidence
-
-- Session: `9e930e8a-5e0a-46e3-af55-b32ecd8f5de0`
-- Trace: `d5282f2dcaaf8682cc521c2811a16359`
-- Turn: `2865248b-8b70-4c0b-8627-ec519adf02a6`
-- Assistant response:
-
-  > Thank you. Our team will contact QA Tester at qa-tester@example.invalid regarding your electrical panel repair…
-
-- Outcome: `answered`
-- Committed actions: `[]`
-- No `create_lead` call occurred.
-- Routing candidates tied at `booking=4` and `lead=4`; booking was selected.
-- The trace exposed only a prior-context `check_service_area(zip=98103)` tool call.
-- Tempo returned this exact trace with HTTP 200 and 122 spans.
-
-### Working theory
-
-Service and work nouns raise the booking score enough to tie an explicit callback phrase. Current workflow/context then selects booking. Separately, answer generation is allowed to promise an effect that the commit layer did not perform.
-
-Relevant code:
-
-- `packages/core/src/tenantchat/core/routing.py` — callback/lead and booking scoring
-- `packages/orchestration/src/tenantchat/orchestration/agents.py` — lead agent contract
-- `packages/orchestration/src/tenantchat/orchestration/nodes.py` — `create_lead`, action commit, and final answer assembly
-
-### Fix hints
-
-- Make an explicit callback/contact request win over generic service-category nouns.
-- Require the needed lead fields, propose/confirm according to the product contract, and commit through `create_lead`.
-- Generate success wording from the committed effect/result. If no effect committed, the assistant must ask for missing information or state that it could not submit the request.
-- Keep current-turn tool calls separate from historical tool calls in trace/admin projections.
-
-### Acceptance criteria
-
-- The reproduction routes to lead capture.
-- A successful callback promise is accompanied by exactly one committed lead.
-- A failed or uncommitted lead can never produce “will contact,” “submitted,” or equivalent success language.
-- Service nouns such as `electrical panel repair` do not override an explicit callback intent.
-
-### Required regression coverage
-
-- Routing test for `call me`/`have someone call` plus a service noun.
-- Orchestration invariant test: success-language rendering requires a committed `create_lead` result.
-- Trace test: current-turn tool calls are not populated by a previous turn's tool history.
-
----
-
-## BUG-004 — High: irrelevant citation passes as support for a service-area claim
-
-### Impact
-
-The bot can make a business commitment about where service is available, cite unrelated material, and still mark the claim as supported. This creates false confidence and makes citation review misleading.
-
-### Reproduction
-
-1. Ask Apex: `Do you serve 98103?`
-2. Open the answer citation.
-3. Inspect retrieval candidates and the claim/citation verdict in the trace explorer.
-
-### Observed evidence
-
-- The answer said Apex serves `98103`.
-- The displayed citation was **Apex financing options / Customer Guidance**, which does not establish service area.
-- Turn: `5c60cf23-4aa6-4e19-a269-b3621c43c147`
-- Component manifest prefix: `75ca0bdbeb95`
-- Retrieval was marked insufficient.
-- Top observed financing chunks scored approximately `0.09736` and `0.09664`.
-- The gold case `apex-hvac-serves-98103` points to gold chunk `apex-hvac-1`, whose text does support the service-area fact.
-- The verdict nevertheless recorded the claim as supported and the citation as valid.
-- A thumbs-down was submitted.
-- Review `efa888f5-1f35-4d62-b475-dd843e7abde0` was changed to `Awaiting fix` / `Amended`, with diagnosis `Retrieval rank` and an operator note/proposed fix.
-
-### Working theory
-
-Citation finalization proves only that the cited ID exists in admitted context; it does not prove semantic relevance. The deterministic sensitive-claim validator recognizes prices and words such as `coverage`, `permit`, and `insurance`, but not `serve`, `serves`, ZIP serviceability, or `service area`. An answer with no recognized sensitive claim can therefore pass automatically.
-
-Relevant code:
-
-- `packages/core/src/tenantchat/core/claims.py`
-  - `_SENSITIVE_KEYWORDS`
-  - `sensitive_claims()`
-  - `validate_sensitive_claims()`
-- Orchestration finalization/citation verification code that checks cited IDs against current context
-- Retrieval/reranking logic and the gold-case fixtures for `apex-hvac-serves-98103`
-
-### Fix hints
-
-- Add service-area assertions to deterministic sensitive-claim coverage, including common forms such as `serve`, `serves`, `service area`, ZIP/postal-code availability, and geographic coverage.
-- Consider sentence-to-passage entailment or high-overlap validation for every cited factual sentence, not only ID membership.
-- Do not allow low-score, unrelated evidence to be converted into a definitive answer.
-- Re-evaluate ranking/index content so the known service-area gold chunk is retrievable.
-
-### Acceptance criteria
-
-- The question returns either a properly supported answer citing the service-area source or a clear abstention.
-- A financing passage cannot validate a ZIP serviceability claim.
-- Trace/admin views distinguish `citation ID exists` from `citation semantically supports claim`.
-- The gold service-area evaluation passes consistently.
-
-### Required regression coverage
-
-- Unit tests for positive and negative service-area sensitive claims.
-- Finalization test with a valid-but-irrelevant citation ID.
-- Retrieval/gold-case test for `apex-hvac-serves-98103`.
-
----
-
-## BUG-005 — High: knowledge integrity check reports zero indexed chunks for retrievable content
-
-### Impact
-
-Operators are told that published knowledge is missing from the index even while production retrieval uses it. Persistent false findings make the integrity dashboard untrustworthy and can trigger unnecessary or destructive remediation.
-
-### Reproduction
-
-1. In Admin, run the knowledge integrity check for Apex and Clearview.
-2. Record published version IDs and recorded/indexed counts.
-3. In a live chat or trace replay, retrieve a chunk from each flagged version.
-4. Fetch a cited chunk through the authorized citation endpoint.
-
-### Observed evidence
-
-- Apex financing: recorded `7`, indexed `0`; findings `Partially indexed` and `Chunk count mismatch`.
-- Clearview financing: recorded `6`, indexed `0`.
-- Clearview service policy: recorded `9`, indexed `0`.
-- Northline policy stored under Clearview: recorded `9`, indexed `0`.
-- Despite those zero counts, live chat and trace replay retrieved chunks from the flagged content.
-- The authorized citation endpoint returned HTTP 200 for retrieved chunks.
-- Running the check persisted the findings in the admin system.
-
-### Working theories to test
-
-Do not choose one without evidence:
-
-- The count query uses a different Elasticsearch index or alias from retrieval.
-- Older documents store or map `version_id` differently from the exact `term` query.
-- API detector and retriever receive different deployed index-name configuration.
-- The integrity route constructs an empty/fresh adapter while live retrieval uses another configured instance.
-
-Relevant code:
-
-- `services/api/src/tenantchat/api/index_integrity.py`
-  - `IndexIntegrityDetector._published_findings()`
-- `services/api/src/tenantchat/api/search.py`
-  - `SearchIndex.active_chunk_count(tenant_id, version_id)`
-  - Elasticsearch `_count` query over `tenant_id`, `active`, and `version_id`
-- `services/api/src/tenantchat/api/routers/knowledge.py` — integrity route and finding persistence
-
-### Fix hints
-
-- Log or expose the resolved index/alias and normalized version ID for both retrieval and integrity count operations.
-- Compare the exact Elasticsearch request and mapping against one known retrievable chunk.
-- Add a real-adapter test; an in-memory search fake is unlikely to catch index, alias, or mapping drift.
-- Do not delete or reindex content until the detector itself is proven correct.
-
-### Acceptance criteria
-
-- `active_chunk_count` matches the count of retrievable active chunks for every published version.
-- Fully indexed content produces no partial-index or mismatch finding.
-- Retrieval and integrity code use the same configured index/alias and tenant/version representation.
-- Existing false findings can be re-evaluated and resolved without manual database edits.
-
-### Required regression coverage
-
-- Elasticsearch integration test that indexes a published version, retrieves it, and asserts the same per-version count.
-- Configuration test asserting retrieval and integrity adapters resolve the same index name.
-- Older-version fixture if the defect is a mapping/migration incompatibility.
-
----
-
-## BUG-006 — High: Clearview knowledge contains Northline-branded policy
-
-### Impact
-
-Clearview answers can be grounded in another company's policy. Even though authorization still scopes the chunk to Clearview, this is a tenant-content integrity failure that can expose the wrong brand, coverage area, or commitments to visitors.
-
-### Reproduction
-
-1. Open Clearview knowledge sources in Admin.
-2. Locate **Northline Service Policy**.
-3. Inspect its files/chunks and a Clearview prompt or retrieval trace.
-4. Attempt to fetch the same chunk with Clearview and Apex visitor credentials.
-
-### Observed evidence
-
-- A Clearview source titled **Northline Service Policy** includes both `clearview-service-policy.md` and `northline-service-policy.md`.
-- Both are Published/Indexed.
-- A Clearview assembled prompt contained a full Northline Heating & Air service-area passage alongside Clearview/financing passages.
-- Example source ID: `3715f5ee-1567-524f-8c26-7941cd05b911:5bb13c2c-7976-4be7-bf1e-02ae9ae5bd04:000001`
-- That chunk returned HTTP 200 with a Clearview credential and HTTP 404 with an Apex credential.
-
-### Interpretation
-
-This is **not evidence of a cross-tenant authorization bypass**. The Northline chunk has been assigned to Clearview, and credential scoping correctly prevents Apex from reading it. The defect is in demo seeding, source upload/upsert behavior, migration, or content governance.
-
-### Fix hints
-
-- Audit source creation/upsert history and demo content initialization for the source/version IDs involved.
-- `scripts/seed_knowledge.py` currently appears focused on financing sources, so this may be stale data from an older demo/upload path rather than the current seed script.
-- Add source-title/brand/document consistency checks before publication.
-- Add a safe cleanup or migration for known contaminated demo versions.
-- Consider stable source keys that cannot accidentally merge two brands during idempotent seeding.
-
-### Acceptance criteria
-
-- Clearview has no published or active Northline text.
-- Reindexing or reseeding cannot merge documents from different brands into one source.
-- Brand/source validation blocks or clearly warns on mismatched content before publication.
-- Tenant authorization behavior remains unchanged: foreign credentials still receive 404.
-
-### Required regression coverage
-
-- Idempotent seed/upsert test using two tenants and similarly named source files.
-- Publication validation test for an obvious brand mismatch.
-- Post-migration retrieval test confirming contaminated chunks are inactive and absent from prompts.
-
----
-
-## BUG-007 — Medium: privacy disclosure does not match free-text PII handling
-
-### Impact
-
-Visitors are told that name, address, and contact details are sent only after they fill in a form and agree. In reality, a visitor can type those details into the chat composer and they are sent and stored immediately. The disclosure also implies that closing the tab ends the conversation, while the server-side session persists.
-
-### Reproduction
-
-1. Open the widget's **Privacy and your data** panel.
-2. Read the contact-data and tab/session statements.
-3. Without using a structured form, type a message containing a name, address, and email.
-4. Observe the network request and stored visitor message.
-5. Close/reopen or switch away and inspect whether the server session still exists.
-
-### Observed evidence
-
-- UI copy in `frontend/src/widget/components/PrivacyDisclosure.tsx` says:
-  - `Name, address, and contact details are sent only when you fill in a form and agree first.`
-  - `Closing the tab ends the conversation id.`
-- The free-text composer immediately submits the raw message.
-- The API appends/stores the visitor message before orchestration.
-- `frontend/src/widget/useConversation.ts` best-effort grants `follow_up` consent when a session is created, before a visitor performs a visible consent action.
-- Booking has a later explicit confirmation step, but that does not stop contact information from already being transmitted in chat.
-
-### Product decision required
-
-Choose and document one contract:
-
-- Detect/block/redact contact details in free text until explicit consent, then collect through an appropriate form; or
-- Clearly disclose that anything typed into chat is transmitted and stored, and obtain any legally/product-required consent before collection.
-
-The correct legal wording is a product/legal decision. The engineering invariant is that UI claims and actual data flow must agree.
-
-### Fix hints
-
-- Review `PrivacyDisclosure.tsx`, `useConversation.ts`, the composer submission path, consent endpoint semantics, and server message persistence ordering together.
-- Distinguish deleting a browser credential from deleting or ending the server-side conversation.
-- Do not use automatic `follow_up` consent as evidence of a user gesture unless that is explicitly the intended policy.
-
-### Acceptance criteria
-
-- Disclosure text accurately describes free-text message transmission, storage, browser credential lifetime, and server retention.
-- Any required affirmative consent is captured before the corresponding PII is transmitted.
-- The “delete from browser” control does not imply server deletion unless it actually performs it.
-- Automated browser coverage proves the selected contract.
-
----
-
-## BUG-008 — Medium: tenant switch hides transcript but preserves hidden context
-
-### Impact
-
-Switching tenants presents a fresh-looking chat while retaining the previous tenant's credential and server checkpoint. When the visitor returns, the model can continue using context the user cannot see. This is confusing and makes it difficult to understand or correct the current conversational state.
-
-### Reproduction
-
-1. Have a multi-turn conversation with Clearview.
-2. Switch to Apex.
-3. Switch back to Clearview.
-4. Observe the widget transcript.
-5. Send a context-dependent follow-up or inspect the server session snapshot.
-
-### Observed evidence
-
-- Returning to Clearview showed only the welcome message; prior visitor and assistant messages were absent.
-- The same stored Clearview credential/server checkpoint was reused.
-- The AI could therefore continue with hidden context.
-- Staff polling later imports only staff replies, not the historical visitor/assistant transcript.
-- `frontend/src/widget/WidgetSurface.tsx` renders `<ChatWidget key={tenantId}>`, forcing a remount on tenant change.
-- `frontend/src/widget/ChatWidget.tsx` comments say the remount makes the switched-away conversation unreachable.
-- `frontend/src/widget/useConversation.ts` initializes entries with the welcome message and filters session hydration to unseen `staff` messages.
-- `frontend/src/widget/visitorData.ts` persists one credential per tenant in session storage.
-
-### Fix options
-
-Choose one coherent experience:
-
-- On remount, hydrate a bounded, authorized transcript for the stored credential; or
-- Explicitly terminate/forget the previous local credential and create a new server session, so the blank UI really is a blank conversation.
-
-### Acceptance criteria
-
-- A blank transcript never retains hidden model context.
-- If the session is reused, the visitor sees its complete retained transcript in order, including visitor, assistant, and staff messages allowed by the API contract.
-- If the session is reset, the old credential/checkpoint is not reused.
-- Switching tenants never mixes credentials or messages across tenants.
-
-### Required regression coverage
-
-- Browser test: Clearview conversation → Apex → Clearview, asserting the selected hydration/reset behavior.
-- Isolation assertion that tenant-specific credentials and transcripts never cross.
-- Polling test that staff messages are deduplicated after hydration.
-
----
-
-## BUG-009 — Medium: known business hours are refused because they are not retrieved
-
-### Impact
-
-The bot refuses a basic question whose answer is present in trusted tenant configuration. Visitors receive an unnecessary abstention even though the system prompt/business facts already contain the hours.
-
-### Reproduction
-
-1. Ask Apex: `What are your hours?`
-2. Inspect the assembled prompt, retrieval result, citation policy, and final answer.
-
-### Observed evidence
-
-- The assistant abstained.
-- Trusted business facts in the assembled prompt contained Apex's hours.
-- The public tenant page also displayed the hours.
-- Apex knowledge sources available during testing were financing-focused, so retrieval did not supply an hours citation.
-- The final grounding/citation policy prevented the configured fact from being used as an answer.
-
-### Working theory
-
-There are two competing contracts: tenant configuration is presented as trusted business truth, while finalization requires retrieved evidence for the answer. The current demo does not index an official hours document that satisfies the latter.
-
-### Fix options
-
-- Treat server-owned tenant business facts as an admitted, attributable evidence class; or
-- Seed/index an official business-profile document and retrieve it reliably for common business-fact questions.
-
-### Acceptance criteria
-
-- A tenant with configured hours answers the hours question accurately.
-- The trace states whether support came from tenant configuration or indexed knowledge.
-- A tenant without hours still abstains or requests clarification.
-- The fix does not create a general path for uncited model claims.
-
----
+## Open defect narratives
+
+Full reproductions for the defects that are still open. The resolved
+BUG-001 through BUG-019 narratives were removed once each fix had a named
+guard; the status table above records what guards them now.
 
 ## BUG-010 — Medium: turn and safe replay are not bounded by a useful end-to-end deadline
 
@@ -726,62 +512,6 @@ The visitor can wait far beyond the configured model timeout, and admin safe rep
 - Live turn and safe replay stop within documented bounds, including retries/fallbacks.
 - Timeout and provider-unavailable failures are distinguishable in API responses, traces, metrics, and UI.
 - A failed replay records no domain action and does not alter the original turn.
-
----
-
-## BUG-011 — Medium: five repository Grafana dashboards are missing from the deployment
-
-### Impact
-
-The release contains dashboard definitions and a provisioning workflow, but operators cannot see the intended Tenant Chat dashboards in Grafana after deployment.
-
-### Observed evidence
-
-The following repository dashboards were absent from deployed Grafana:
-
-- Chat Turn Outcomes
-- Retrieval & Routing Quality
-- LLM Ops & Token Cost
-- Exemplar → Trace → Explorer
-- Safety & Governance
-
-Relevant assets:
-
-- `docs/runbooks/observability-dashboards.md`
-- `k8s/grafana/provision.sh`
-- `k8s/grafana/*.json`
-
-The runbook requires a separate execution of `./k8s/grafana/provision.sh`; the latest application release did not leave these dashboards available.
-
-### Post-fix root cause and verification
-
-Two independent problems produced the timeout:
-
-- The dashboard sidecar could not watch Kubernetes ConfigMaps because its TLS client rejects the local MicroK8s API CA: `CA cert does not include key usage extension`.
-- The verifier queried Grafana's authenticated search API without credentials and received HTTP 401.
-
-The local deployment now keeps the labeled ConfigMaps as desired state, stages their JSON into Grafana's shared dashboard volume, requests a provisioning reload through the authenticated localhost API using credentials already injected into the sidecar, and verifies the five expected UIDs through the same local authenticated path. It does not disable TLS or decode credentials in the deployment process.
-
-Live verification passed:
-
-```text
-All dashboards provisioned and Grafana reload requested.
-All 5 dashboards verified in Grafana.
-PASS: all 5 expected Grafana dashboards are present.
-```
-
-### Fix hints
-
-- Make provisioning an idempotent, verified release step or package the dashboards through the cluster's normal Grafana sidecar/ConfigMap mechanism.
-- Fail the release verification if required dashboard UIDs are absent.
-- Preserve operator edits only if that is an explicit supported workflow.
-
-### Acceptance criteria
-
-- All five dashboards appear after a normal clean deployment and upgrade.
-- Re-running provisioning is safe and deterministic.
-- Deployment smoke tests query Grafana for the expected dashboard UIDs.
-- Panels use data sources that exist in the deployed environment.
 
 ---
 
@@ -865,137 +595,18 @@ A visitor with an already-open page during deployment can receive a 422 from the
 - A page open across a deployment either keeps working or receives a clear automatic/manual refresh path instead of an unexplained validation error.
 - Contract coverage exercises an old-client/new-server combination for one supported deployment window.
 
----
+### The mirror case, introduced by BUG-023's fix
 
-## BUG-014 — Low: stale live `chat-backend` Service points at port 8000
+`chat-backend` and `web` are separate images rolled independently from
+`k8s/app.yaml`, so a rolling update can briefly serve the **new** widget against
+the **old** API. The new widget renders `contact_consent_statement` from
+`GET /api/tenants` verbatim; an API that predates that field returns nothing for
+it and the consent label renders empty — a privacy regression, not a 422.
 
-### Impact
-
-The cluster contains a misleading service that selects the live backend pods but cannot reach their current port. Future automation, monitoring, or operators may choose the stale service and see connection failures.
-
-### Observed evidence
-
-- The live `chat-backend` Service used service/target port `8000`.
-- The current backend container listens on `8004`; in-pod port 8000 refused connections.
-- The active `chat-admin` Service uses port/target `8004` and works.
-- The current `k8s/app.yaml` defines `chat-admin` on 8004 and the backend deployment on 8004. It does **not** appear to define the stale `chat-backend` Service, so this is likely an orphan from an older release rather than a current manifest defect.
-
-### Fix hints
-
-- Confirm ownership and references before deletion.
-- If nothing intentionally depends on it, remove the orphan through the deployment/migration workflow and add drift detection.
-- If the name is still part of the supported contract, manage it in source and point it to 8004.
-
-### Acceptance criteria
-
-- Every Service selecting backend pods targets an actual named/container port.
-- No unmanaged legacy Service remains after upgrade.
-- Release tests detect orphaned or mismatched service ports.
-
----
-
-## BUG-015 — Low: availability list is difficult to scan
-
-### Impact
-
-The 20 returned appointment slots appear as dense, run-on `*` text rather than a clearly separated list, making selection unnecessarily difficult.
-
-### Reproduction
-
-1. Start a Clearview booking.
-2. Ask for HVAC availability.
-3. Inspect the assistant response on desktop and narrow widget widths.
-
-### Fix hints
-
-- Normalize model/tool slot output into structured presentation data or robust Markdown list rendering.
-- Limit the initial number of choices and offer pagination or date grouping if appropriate.
-
-### Acceptance criteria
-
-- Each slot is visually distinct and keyboard/screen-reader understandable.
-- Layout remains readable at the widget's minimum supported width.
-
----
-
-## BUG-016 — High: service-area turns end in a delayed session-ownership 404
-
-### Impact
-
-Visitors cannot reliably check whether either tenant serves a ZIP code. The widget waits for a full model turn, then shows a generic connectivity failure even though the backend reports an authoritative session/tenant mismatch. In at least one case the admin transcript retained the visitor message and an abstention that the visitor never received.
-
-### Reproduction and evidence
-
-1. Start a fresh Apex or Clearview HTTPS session, or complete one successful turn first.
-2. Ask `Do you serve 98103?` for Apex or `Do you serve ZIP 97205?` for Clearview.
-3. Wait for the local model.
-
-Observed repeatedly:
-
-- Visitor: `I could not reach the chat service...`
-- Backend: HTTP 404, `session absent or outside tenant`
-- Example traces: `f14ed6ce...`, `7a2a998b...`, `1b6d5aed...`, `9de40dade...`
-- Retrying the same turn did not recover.
-- The selected admin projection showed no current `check_service_area` call for one failed turn.
-
-### Acceptance criteria
-
-- A valid current visitor credential resolves to exactly one authoritative tenant/session before orchestration starts.
-- Service-area questions for both tenants either return the tool-backed answer or a truthful bounded tool failure, never a delayed session-ownership 404.
-- Tenant switching creates or selects a compatible server session atomically and retries do not remain poisoned.
-- If a turn is rejected, no hidden assistant response is persisted only in the admin projection.
-
----
-
-## BUG-017 — Medium: admin transcript attributes handoff system notices to Visitor
-
-### Impact
-
-Operators see system-generated handoff lifecycle messages as visitor speech, which can mislead transcript review and auditing.
-
-### Observed evidence
-
-In the successful Clearview handoff session `cd8d72e3-47a8-4303-8a3d-cbd9f38e8b7e`, both `A member of the team has joined...` and `A member of the team is now with you...` appeared with the **Visitor** label. The actual staff reply was correctly labeled **Staff**.
-
-### Acceptance criteria
-
-- System, visitor, assistant, and staff messages retain distinct author types from persistence through every admin projection.
-- Handoff lifecycle notices are visually and semantically identified as system events.
-
----
-
-## BUG-018 — Low: audit Action filter omits event types already present in the table
-
-### Impact
-
-The audit trail records events that an operator cannot select in the advertised Action filter, making incident review unnecessarily manual.
-
-### Observed evidence
-
-The Clearview audit table contained `handoff.accepted`, `handoff.resolved`, `knowledge.version_published`, and `knowledge.version_approved`, but those values were absent from the Action dropdown. Filtering for the available `staff_reply_sent` value worked and returned the expected handoff session.
-
-### Acceptance criteria
-
-- Every filterable action present in the current result set or action taxonomy is available in the Action control.
-- Newly added action types cannot silently diverge from the filter options.
-
----
-
-## BUG-019 — Medium: Apex offers booking even though tenant booking is disabled
-
-### Impact
-
-The assistant can invite a visitor into an unavailable workflow, creating a false expectation and potentially collecting unnecessary contact/address data.
-
-### Observed evidence
-
-After correctly refusing a prompt-injection request to reveal system instructions/passwords or bypass consent, Apex said it could schedule an appointment if the visitor supplied service, slot, name, contact details, and address. The Apex admin configuration has Booking disabled. No booking tool or domain action was invoked in this probe.
-
-### Acceptance criteria
-
-- Tenant capability flags constrain both tool availability and assistant claims.
-- A tenant with booking disabled never solicits booking-only fields or promises scheduling.
-- Prompt-injection refusal tests also assert that the safe continuation respects tenant capabilities.
+A local fallback would fix the window and reintroduce exactly the second source
+of consent copy BUG-023 exists to forbid, so the deployment order is the control
+instead: **roll `chat-backend` before `web`**. Whatever version handshake closes
+this defect must cover the new-client/old-server direction too.
 
 ---
 
@@ -1023,12 +634,15 @@ These observations were not proven enough to assign as independent defects. Conf
 
 ## Verified security invariants
 
-These checks passed and must remain passing after fixes:
+These checks passed on the credentialed chat/admin surfaces and must remain
+passing after fixes:
 
 - Apex citation fetched with the owning Apex visitor credential: HTTP 200.
 - The same Apex citation fetched with a Clearview visitor credential: HTTP 404.
 - Northline-branded chunk stored under Clearview: Clearview credential HTTP 200; Apex credential HTTP 404.
-- Forging `tenant_id=clearview` in an Apex visitor request body: HTTP 422.
+- Forging `tenant_id=clearview` in an Apex **credentialed chat-route** request
+  body: HTTP 422. This now holds for every visitor route, because the two that
+  took body identity were retired (BUG-021).
 - Admin headers sent directly without the authenticated gateway/session: HTTP 401.
 - Authenticated viewer without tenant membership: HTTP 403.
 - Platform-admin request for a nonexistent tenant: HTTP 404.
@@ -1036,7 +650,10 @@ These checks passed and must remain passing after fixes:
 
 Expected security behavior:
 
-- Authorization derives tenant/session identity from the signed server-issued credential or authenticated admin membership, never from a request-body tenant claim.
+- Authorization must derive tenant/session identity from the signed
+  server-issued credential or authenticated admin membership, never from a
+  request-body tenant claim. No visitor route violates this: BUG-021 retired
+  the two that did.
 - Cross-tenant resources remain indistinguishable from missing resources where the API currently returns 404.
 - Fixes must not expose raw prompt, PII, credentials, or full tenant identifiers in telemetry.
 
@@ -1056,14 +673,11 @@ Exploratory testing intentionally changed demo data. Agents should account for t
 - A temporary Kibana port-forward was stopped.
 - Destructive knowledge actions and privacy-delete operations were intentionally not executed.
 
-## Suggested implementation order
+## Implementation order
 
-1. **BUG-016** and **BUG-008** — repair session identity and tenant switching, then unblock service-area citation retesting.
-2. **BUG-003** — make the consented lead flow complete durably, retaining the new truthful failure behavior.
-3. **BUG-005** and **BUG-006** — reconcile index truth and remove contaminated Clearview/Northline demo content.
-4. **BUG-014** — remove or source-manage the orphan Service after checking dependencies.
-5. **BUG-017** through **BUG-019** — correct admin attribution/filter taxonomy and capability-aware assistant behavior.
-6. Re-run **BUG-004**, **BUG-010**, **BUG-012**, and **BUG-013** once their prerequisites can be exercised deterministically.
+`BACKLOG.md`'s **Current dispatch sequence** owns the order, because sequencing
+is a gate decision and a second ordered list here would drift from it. This
+document owns which defects are open and what each one is.
 
 ## Definition of done for each assigned bug
 

@@ -1,7 +1,7 @@
 # Local development dependencies.
 #
 #     make up        # Postgres + Elasticsearch (fast)
-#     make up-all    # also the embedding service and Kibana
+#     make up-all    # also the embedding service
 #     make web       # the frontend behind nginx, as deployed
 #
 # Every credential is required from the environment with `:?`, so a missing value

@@ -113,8 +113,10 @@ def authenticate(request: Request, settings: Settings) -> AdminIdentity:
 
     Raises:
         UnauthenticatedError: the deployment has no gateway token configured,
-            the presented token did not match, an identity header was missing,
-            or the role is not one this service defines.
+            the presented token did not match, or an identity header was
+            missing.
+        ForbiddenError: the gateway authenticated the operator, but no
+            application role (or an unknown one) reached the service.
     """
     expected = settings.admin_gateway_token
     presented = request.headers.get(GATEWAY_TOKEN_HEADER, "").strip()
@@ -130,8 +132,14 @@ def authenticate(request: Request, settings: Settings) -> AdminIdentity:
     subject = request.headers.get(SUBJECT_HEADER, "").strip()
     email = request.headers.get(EMAIL_HEADER, "").strip()
     role = request.headers.get(ROLE_HEADER, "").strip()
-    if not subject or not email or role not in ROLES:
+    if not subject or not email:
         raise UnauthenticatedError
+    if role not in ROLES:
+        logger.warning(
+            "admin identity has no recognized role",
+            extra={"subject": subject, "path": request.url.path},
+        )
+        raise ForbiddenError
 
     return AdminIdentity(subject=subject, email=email, role=role)
 

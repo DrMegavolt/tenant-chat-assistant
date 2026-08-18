@@ -257,6 +257,70 @@ class TestBookingIdempotency:
         asyncio.run(scenario())
 
 
+class TestBookingConfirmationEcho:
+    """What the confirmation reports back, now that no HTTP route projects it.
+
+    These moved here when `BUG-021` retired `POST /api/book`. The graph's
+    `commit_booking` node reads the same fields to tell the customer what was
+    booked, so the guarantees outlive the route that used to serve them.
+    """
+
+    def test_distinct_bookings_get_distinct_references(
+        self, bookings: Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]
+    ) -> None:
+        """A confirmation number is what a customer quotes; two must never collide.
+
+        Distinct keys, so this is the opposite of the replay guarantee above:
+        the same key must return one reference, and different keys must not.
+        """
+        service, _ = bookings()
+        other = IdempotencyKey.derive("clearview", SESSION, "book_appointment", "2", "call-2")
+
+        async def scenario() -> None:
+            first = await service.confirm(
+                booking_command(), session_id=SESSION, idempotency_key=KEY
+            )
+            second = await service.confirm(
+                booking_command(slot=_OTHER_LABEL), session_id=SESSION, idempotency_key=other
+            )
+
+            assert first.reference != second.reference
+
+        asyncio.run(scenario())
+
+    def test_the_confirmation_echoes_the_contact_the_business_will_dial(
+        self, bookings: Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]
+    ) -> None:
+        """Echoing the typed string would confirm a number nobody can reach."""
+        service, _ = bookings()
+
+        async def scenario() -> None:
+            confirmation = await service.confirm(
+                booking_command(contact="+1 (555) 222-1919"),
+                session_id=SESSION,
+                idempotency_key=KEY,
+            )
+
+            assert confirmation.contact == "(555) 222-1919"
+
+        asyncio.run(scenario())
+
+    def test_the_confirmation_names_the_service_the_catalog_resolved(
+        self, bookings: Callable[[], tuple[RecordedBookingService, InMemoryBookingStore]]
+    ) -> None:
+        """ "a/c" is what the customer typed; "HVAC" is what was booked."""
+        service, _ = bookings()
+
+        async def scenario() -> None:
+            confirmation = await service.confirm(
+                booking_command(service="a/c"), session_id=SESSION, idempotency_key=KEY
+            )
+
+            assert confirmation.service_name == "HVAC"
+
+        asyncio.run(scenario())
+
+
 class TestLeadIdempotency:
     def test_a_retry_returns_the_original_lead(self) -> None:
         store = InMemoryLeadStore()

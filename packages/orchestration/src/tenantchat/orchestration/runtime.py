@@ -56,10 +56,10 @@ from tenantchat.orchestration.trace import build_turn_trace
 
 logger = logging.getLogger(__name__)
 
-# The visitor controls the session ID today (`SEC-002` replaces it with a
-# server-issued credential). Bounding it here means a hostile value cannot become
-# an unbounded checkpoint key, and the tenant prefix means it cannot address
-# another tenant's thread even if it collides.
+# SEC-002 resolves this session ID from a signed visitor credential before the
+# runtime receives it. Bounding it again here keeps an injected test adapter or
+# future caller from creating an unbounded checkpoint key; the tenant prefix
+# means even a collision cannot address another tenant's thread.
 _SESSION_ID = re.compile(r"\A[A-Za-z0-9._:-]{1,128}\Z")
 
 _INTERRUPT_KEY: Final = "__interrupt__"

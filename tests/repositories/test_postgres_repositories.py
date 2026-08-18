@@ -6,6 +6,7 @@ import asyncio
 import multiprocessing
 import tempfile
 import uuid
+from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 
 import psycopg
@@ -24,15 +25,84 @@ from tenantchat.api.persistence.availability import (
     PostgresAvailabilityProvider,
     seed_demo_availability,
 )
-from tenantchat.api.registry import TenantRegistry
+from tenantchat.api.registry import TenantRegistry, demo_offered_slots
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import BookingAttempt, MessageRole
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.core.commands import BookingCommand, LeadCommand
 from tenantchat.core.errors import NotFoundError, SlotUnavailableError
 from tenantchat.core.ports import IdempotencyKey
+from tenantchat.orchestration.model import (
+    AssembledPrompt,
+    ModelResponse,
+    ToolCall,
+    ToolSpec,
+)
 
 TEST_POOL = DatabasePoolSettings(size=2, max_overflow=1, timeout_seconds=2)
+
+BOOK_MESSAGE = "Please book my appointment."
+LEAD_MESSAGE = "Please call me back."
+
+
+class _ActionModel:
+    """Proposes the action the visitor message names, and nothing else.
+
+    The graph is the only ingress that writes a booking or a lead since
+    `BUG-021` retired the direct routes, so a test about what the production
+    composition *persists* has to go through it.
+    """
+
+    async def complete(
+        self, prompt: AssembledPrompt, *, tools: Sequence[ToolSpec]
+    ) -> ModelResponse:
+        message = prompt.messages[-1].content
+        offered = {tool.name for tool in tools}
+        if BOOK_MESSAGE in message and "book_appointment" in offered:
+            return ModelResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        call_id="call-book_appointment",
+                        name="book_appointment",
+                        arguments={
+                            "service": "HVAC",
+                            "slot": demo_offered_slots("hvac")[0].label,
+                            "customer_name": "Dana Ruiz",
+                            "customer_phone_or_email": "555-222-1919",
+                            "address": "12 Alder Court, Portland, OR 97205",
+                        },
+                    ),
+                ),
+                model_name="scripted",
+            )
+        if LEAD_MESSAGE in message and "create_lead" in offered:
+            return ModelResponse(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        call_id="call-create_lead",
+                        name="create_lead",
+                        arguments={
+                            "customer_name": "Dana Ruiz",
+                            "customer_phone_or_email": "dana@example.com",
+                            "service": "HVAC",
+                            "summary": "Furnace is making a grinding noise.",
+                        },
+                    ),
+                ),
+                model_name="scripted",
+            )
+        return ModelResponse(content="Noted, thank you.", model_name="scripted")
+
+
+def _open(client: TestClient, tenant_id: str, purposes: list[str]) -> dict[str, str]:
+    """A consented conversation, returning the header that names it."""
+    opened = client.post("/api/chat/session", json={"tenant_id": tenant_id}).json()
+    headers = {VISITOR_CREDENTIAL_HEADER: opened["credential"]}
+    granted = client.post("/api/chat/consent", json={"purposes": purposes}, headers=headers)
+    assert granted.status_code == 200, granted.text
+    return headers
 
 
 def _psycopg_url(sqlalchemy_url: str) -> str:
@@ -90,57 +160,21 @@ def test_production_composition_persists_current_api_writes(
         # RAG-002: production composition requires the isolated upload root.
         ingestion_storage_root=tempfile.mkdtemp(prefix="tenantchat-ingestion-"),
     )
-    with TestClient(create_app(settings)) as client:
-        apex = client.post("/api/chat/session", json={"tenant_id": "apex"}).json()
-        apex_session = apex["session"]["session_id"]
-        clearview = client.post("/api/chat/session", json={"tenant_id": "clearview"}).json()
-        clearview_session = clearview["session"]["session_id"]
-        # Consent is named by the credential, like every other visitor route.
-        assert (
-            client.post(
-                "/api/chat/consent",
-                json={"purposes": ["follow_up"]},
-                headers={VISITOR_CREDENTIAL_HEADER: apex["credential"]},
-            ).status_code
-            == 200
-        )
-        assert (
-            client.post(
-                "/api/chat/consent",
-                json={"purposes": ["booking", "follow_up"]},
-                headers={VISITOR_CREDENTIAL_HEADER: clearview["credential"]},
-            ).status_code
-            == 200
-        )
-        lead = client.post(
-            "/api/leads",
-            json={
-                "tenant_id": "apex",
-                "session_id": apex_session,
-                "customer_name": "Dana Ruiz",
-                "contact": "dana@example.com",
-                "service": "HVAC",
-                "summary": "Furnace is making a grinding noise.",
-            },
-        )
-        offered = client.get(
-            "/api/tenants/clearview/availability", params={"service": "HVAC"}
-        ).json()["slots"]
-        booking = client.post(
-            "/api/book",
-            json={
-                "tenant_id": "clearview",
-                "session_id": clearview_session,
-                "customer_name": "Dana Ruiz",
-                "contact": "555-222-1919",
-                "service": "HVAC",
-                "slot": offered[0],
-                "address": "12 Alder Court, Portland, OR 97205",
-            },
-            headers={"Idempotency-Key": "repository-booking-1"},
-        )
-    assert lead.status_code == 201, lead.text
-    assert booking.status_code == 201, booking.text
+    with TestClient(create_app(settings, chat_model=_ActionModel())) as client:
+        apex = _open(client, "apex", ["follow_up"])
+        clearview = _open(client, "clearview", ["booking", "follow_up"])
+
+        # Both actions pause for the visitor's confirmation before committing
+        # (`AGENT-001`), so each takes a turn and then an approval.
+        for headers, message in ((apex, LEAD_MESSAGE), (clearview, BOOK_MESSAGE)):
+            proposed = client.post("/api/chat", json={"message": message}, headers=headers)
+            assert proposed.status_code == 200, proposed.text
+            assert proposed.json()["pending"], proposed.text
+            approved = client.post(
+                "/api/chat/confirmation", json={"decision": "approved"}, headers=headers
+            )
+            assert approved.status_code == 200, approved.text
+            assert approved.json()["committed"], approved.text
 
     with psycopg.connect(_psycopg_url(repository_database_url)) as connection:
         counts = connection.execute(

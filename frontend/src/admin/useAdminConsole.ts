@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { UnauthorizedError, redirectToLogin, type AdminApi } from "src/admin/adminApi";
+import {
+  AccessDeniedError,
+  UnauthorizedError,
+  redirectToLogin,
+  type AdminApi
+} from "src/admin/adminApi";
 import type { SessionDetail, SessionSummary, TenantSummary } from "src/admin/types";
 
 const REFRESH_INTERVAL_MS = 3000;
@@ -52,11 +57,24 @@ export function useAdminConsole(api: AdminApi): AdminConsole {
   const selectedIdRef = useRef<string | null>(null);
   const tenantIdRef = useRef<string | null>(null);
 
+  // Interval ticks, tenant switches, manual selections, and post-send refreshes
+  // all fetch the same two pieces of state, and a slower earlier response would
+  // otherwise land last and win — showing one tenant's sessions under another
+  // tenant's name (`BUG-025`). Every read claims a generation before its first
+  // await and may only publish while it is still the newest.
+  const generationRef = useRef(0);
+  const claimGeneration = useCallback(() => {
+    const generation = (generationRef.current += 1);
+    return () => generation === generationRef.current;
+  }, []);
+
   const refresh = useCallback(async () => {
     const openTenant = tenantIdRef.current;
     if (!openTenant) return;
+    const isCurrent = claimGeneration();
     try {
       const rows = await api.sessions(openTenant);
+      if (!isCurrent()) return;
       setSessions(rows);
 
       const current = selectedIdRef.current ?? rows[0]?.sessionId ?? null;
@@ -64,7 +82,9 @@ export function useAdminConsole(api: AdminApi): AdminConsole {
         selectedIdRef.current = current;
         setSelectedId(current);
       }
-      setSelected(current ? await api.session(current, openTenant) : null);
+      const detail = current ? await api.session(current, openTenant) : null;
+      if (!isCurrent()) return;
+      setSelected(detail);
       setLastUpdated(Date.now() / 1000);
       setError(null);
     } catch (reason) {
@@ -72,11 +92,12 @@ export function useAdminConsole(api: AdminApi): AdminConsole {
         redirectToLogin();
         return;
       }
+      if (!isCurrent()) return;
       setError("Could not reach the admin API. Retrying…");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [api]);
+  }, [api, claimGeneration]);
 
   // The tenant list is stable enough to fetch once: it is the membership the
   // gateway resolved for this operator, which changes only when an
@@ -99,6 +120,13 @@ export function useAdminConsole(api: AdminApi): AdminConsole {
         if (cancelled) return;
         if (reason instanceof UnauthorizedError) {
           redirectToLogin();
+          return;
+        }
+        if (reason instanceof AccessDeniedError) {
+          setError(
+            "This account is signed in but has no TenantChat role. Ask a Keycloak administrator to assign an admin group."
+          );
+          setLoading(false);
           return;
         }
         setError("Could not reach the admin API. Retrying…");
@@ -154,15 +182,17 @@ export function useAdminConsole(api: AdminApi): AdminConsole {
       selectedIdRef.current = sessionId;
       setSelectedId(sessionId);
       setSelected(null);
+      const isCurrent = claimGeneration();
       void (async () => {
         try {
-          setSelected(await api.session(sessionId, openTenant));
+          const detail = await api.session(sessionId, openTenant);
+          if (isCurrent()) setSelected(detail);
         } catch (reason) {
           if (reason instanceof UnauthorizedError) redirectToLogin();
         }
       })();
     },
-    [api]
+    [api, claimGeneration]
   );
 
   const sendStaffMessage = useCallback(

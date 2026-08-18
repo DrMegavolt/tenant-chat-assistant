@@ -10,6 +10,17 @@ import type { WireTenant } from "src/widget/api";
  * pass against a response the backend never sends, which is how a blank page
  * once shipped green.
  */
+/**
+ * A tenant override, deliberately unlike the sentence the server composes from
+ * a tenant name. `GET /api/tenants` publishes it and `POST /api/chat/consent`
+ * records it, because both read `TenantPolicy.consent_statement()` — so one
+ * constant here is the faithful fixture. A widget that rebuilds the copy from
+ * the tenant name renders the default instead and fails (`BUG-023`).
+ */
+export const CLEARVIEW_CONSENT_STATEMENT =
+  "Clearview Heating keeps the details you enter here to schedule your " +
+  "visit and to contact you about it.";
+
 export const TENANTS: Record<string, WireTenant> = {
   apex: {
     name: "Apex Home Services",
@@ -23,6 +34,10 @@ export const TENANTS: Record<string, WireTenant> = {
     booking_enabled: false,
     lead_capture_enabled: true,
     proactive_lead_capture: false,
+    contact_consent_statement:
+      "I agree that Apex Home Services may store the name, address, and " +
+      "contact details I enter here in order to arrange this appointment and " +
+      "follow up about it.",
     services: ["HVAC", "Electrical"],
     quick_actions: ["What do you repair?", "Talk to a person"]
   },
@@ -38,6 +53,7 @@ export const TENANTS: Record<string, WireTenant> = {
     booking_enabled: true,
     lead_capture_enabled: true,
     proactive_lead_capture: true,
+    contact_consent_statement: CLEARVIEW_CONSENT_STATEMENT,
     services: ["HVAC"],
     quick_actions: ["Find an appointment"]
   }
@@ -96,7 +112,7 @@ export const SIMPLE_REPLY = {
 
 export const CONSENT_GRANTED = {
   purposes: ["booking", "follow_up"],
-  statement: "I agree that Clearview Heating may store the details I enter.",
+  statement: CLEARVIEW_CONSENT_STATEMENT,
   granted_at: "2026-08-04T00:00:00Z"
 };
 

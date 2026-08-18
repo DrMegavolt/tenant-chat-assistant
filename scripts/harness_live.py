@@ -2,14 +2,14 @@
 """Live semantic acceptance checks against the cluster's configured model.
 
 This is the demo seed — it puts real turn records in front of the explorer on the
-day, one per L10 showcase case (the ten cases the walkthrough's steps reference).
+day, one per showcase case (the ten cases the walkthrough's steps reference).
 Idempotent and re-runnable: every case opens a fresh session, sends a visitor
 message, and prints the reply, turn id, and outcome. Next-run picks a new session
 and produces a new set of records.
 
 Environment:
     CHAT_API_URL          visitor-facing widget API root (default http://localhost:8004)
-    HARNESS_TIMEOUT       per-request HTTP timeout in seconds (default 60)
+    HARNESS_TIMEOUT       per-request HTTP timeout in seconds (default 180)
     ADMIN_API_URL         admin API root for the optional outcome check
                           (default http://chat-admin:8004)
     ADMIN_GATEWAY_TOKEN   gateway token; when set, each turn's recorded outcome
@@ -50,7 +50,11 @@ def _env(name: str, default: str = "") -> str:
 CHAT_API_URL = _env("CHAT_API_URL", "http://localhost:8004")
 ADMIN_API_URL = _env("ADMIN_API_URL", "http://chat-admin:8004")
 ADMIN_GATEWAY_TOKEN = _env("ADMIN_GATEWAY_TOKEN")
-TIMEOUT = int(_env("HARNESS_TIMEOUT", "60"))
+# A retrieval turn on a local quantized model regularly exceeds a minute, and a
+# timeout here is reported as a case failure — which reads as a defect in the
+# build rather than in the clock. The default is generous for that reason;
+# lower it only where the model is known to be fast.
+TIMEOUT = int(_env("HARNESS_TIMEOUT", "180"))
 
 HARNESS_TENANTS = ("clearview", "apex")
 
@@ -61,7 +65,7 @@ EXIT_FAILURE = 1
 
 VISITOR_CREDENTIAL_HEADER = "X-Visitor-Credential"
 
-# The ten L10 showcase cases, in the walkthrough's order. Expectations are the
+# The ten showcase cases, in the walkthrough's order. Expectations are the
 # guarantees the visitor API can honestly make against a seeded cluster: a turn
 # record exists, a reply (or a pending confirmation) was produced, and — when
 # the admin token is configured — the recorded outcome is one of the case's
@@ -219,7 +223,7 @@ def _api_post(
 
 
 def _verify_health() -> None:
-    report("=== L9b HARNESS-B Live Mode ===")
+    report("=== Gate B Live Harness ===")
     report("")
     report(f"  Chat API:   {CHAT_API_URL}")
     report("")

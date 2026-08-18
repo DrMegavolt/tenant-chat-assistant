@@ -76,13 +76,11 @@ from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
 from tenantchat.api.retrieval import HybridRetrieverConfig
 from tenantchat.api.routers import (
     admin,
-    bookings,
     chat,
     handoffs,
     health,
     jobs,
     knowledge,
-    leads,
     metrics,
     privacy,
     reviews,
@@ -425,9 +423,9 @@ def create_app(
             across replicas. ``InMemoryRateLimitStore`` is the test/development
             fallback and is correct for one process only.
         visitor_identity: Maps each request to the ip/tenant/session keys its
-            budgets are counted against. `SEC-002` replaces the default with
-            an extractor that reads its signed visitor credential; the default
-            uses the body's and path's ``session_id``.
+            budgets are counted against. The default extractor verifies the
+            SEC-002 signed visitor credential. Tests may inject an alternate
+            extractor explicitly.
         availability_provider: What the tenant is currently offering. Explicit
             test adapter; production builds the PostgreSQL-backed fake provider.
         knowledge_store: The knowledge system of record (RAG-001). Injected
@@ -906,8 +904,6 @@ def create_app(
     app.include_router(health.router)
     app.include_router(metrics.router)
     app.include_router(tenants.router)
-    app.include_router(bookings.router)
-    app.include_router(leads.router)
     app.include_router(chat.router)
     app.include_router(privacy.router)
     app.include_router(jobs.router)

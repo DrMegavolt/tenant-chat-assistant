@@ -34,6 +34,7 @@ class TestPublicTenantSurface:
             "booking_enabled",
             "lead_capture_enabled",
             "proactive_lead_capture",
+            "contact_consent_statement",
             "site_headline",
             "site_description",
         }
@@ -55,6 +56,35 @@ class TestPublicTenantSurface:
 
         assert "97035" not in body
         assert "98101," not in body
+
+    def test_offered_slots_are_slots_the_domain_will_accept(self, client: TestClient) -> None:
+        """A slot the widget was shown must be one a booking can be parsed against.
+
+        The two lists come from the same provider but through different code —
+        this endpoint projects labels, `BookingCommand.parse` matches them — so
+        a formatting change on either side silently offers unbookable times.
+        Held here since `BUG-021` retired `POST /api/book`, which used to prove
+        it end to end.
+        """
+        from tenantchat.api.registry import TenantRegistry, demo_offered_slots
+        from tenantchat.core.commands import BookingCommand
+
+        offered = client.get(
+            "/api/tenants/clearview/availability", params={"service": "HVAC"}
+        ).json()["slots"]
+        assert offered
+
+        command = BookingCommand.parse(
+            TenantRegistry.seeded().get("clearview").policy,
+            customer_name="Dana Ruiz",
+            contact="555-222-1919",
+            address="12 Alder Court, Portland, OR 97205",
+            service="HVAC",
+            slot=offered[0],
+            offered_slots=demo_offered_slots("hvac"),
+        )
+
+        assert command.slot == offered[0]
 
     def test_booking_policy_is_reported_per_tenant(self, client: TestClient) -> None:
         tenants = client.get("/api/tenants").json()["tenants"]

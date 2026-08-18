@@ -199,6 +199,47 @@ class TestServiceAreaClaims:
         )
         assert validation.verdict is ClaimVerdict.UNSUPPORTED
 
+    def test_a_passage_cannot_overrule_a_refusing_tool_verdict(self) -> None:
+        """The tool owns coverage, so agreeing prose is not a second opinion.
+
+        A tenant document that describes the service area in the answer's own
+        words would otherwise clear the token-overlap threshold and publish a
+        "yes" the tool had just refused.
+        """
+        validation = validate_sensitive_claims(
+            "Yes, we serve ZIP code 97205.",
+            evidence_texts=("Yes, we serve ZIP code 97205 and the surrounding metro.",),
+            confirmed_service_areas={"97205": False},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_a_passage_cannot_vouch_for_a_zip_the_tool_never_checked(self) -> None:
+        """Coverage the tool was never asked about has no authority behind it."""
+        validation = validate_sensitive_claims(
+            "Yes, we serve ZIP code 98103.",
+            evidence_texts=("Yes, we serve ZIP code 98103 throughout the year.",),
+            confirmed_service_areas={},
+        )
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_an_affirmative_idiom_is_not_a_negative_verdict(self) -> None:
+        """ "No problem" opens a yes; reading it as a refusal withheld a true answer."""
+        validation = validate_sensitive_claims(
+            "No problem, we serve ZIP 97205.",
+            evidence_texts=(),
+            confirmed_service_areas={"97205": True},
+        )
+        assert validation.verdict is ClaimVerdict.SUPPORTED
+
+    def test_an_affirmative_idiom_does_not_mask_a_real_negation(self) -> None:
+        """Stripping the idiom must leave the sentence's actual polarity intact."""
+        validation = validate_sensitive_claims(
+            "No problem, we do not serve ZIP 98999.",
+            evidence_texts=(),
+            confirmed_service_areas={"98999": False},
+        )
+        assert validation.verdict is ClaimVerdict.SUPPORTED
+
     def test_tool_verdicts_do_not_ground_other_claim_kinds(self) -> None:
         """A service-area verdict must not license a price or coverage claim."""
         validation = validate_sensitive_claims(

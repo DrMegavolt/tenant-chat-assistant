@@ -120,6 +120,7 @@ export interface WireTenant {
   booking_enabled: boolean;
   lead_capture_enabled: boolean;
   proactive_lead_capture: boolean;
+  contact_consent_statement: string;
   services: string[];
   quick_actions: string[];
   site_headline: string;
@@ -192,6 +193,7 @@ function normalizeTenant(wire: WireTenant): TenantConfig {
     bookingEnabled: wire.booking_enabled,
     leadCaptureEnabled: wire.lead_capture_enabled,
     proactiveLeadCapture: wire.proactive_lead_capture,
+    contactConsentStatement: wire.contact_consent_statement,
     services: wire.services,
     quickActions: wire.quick_actions
   };

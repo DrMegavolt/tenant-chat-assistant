@@ -35,6 +35,13 @@ conversation the visitor opened, under the sentence the tenant's policy publishe
 (see `TenantPolicy.consent_statement`). Withdrawal is a status flip, never a
 delete: "consent was given and then withdrawn" stays answerable.
 
+That sentence has exactly one source. `GET /api/tenants` publishes what
+`TenantPolicy.consent_statement()` returns, tenant override included, and the
+widget renders that string rather than composing its own — the drift BUG-023
+recorded, where a tenant override was displayed as the default it happened to
+resemble. An override test asserts the displayed and recorded copy are the same
+string.
+
 ## Retention
 
 The retention policy in `tenantchat.core.privacy.RetentionPolicy` pairs each

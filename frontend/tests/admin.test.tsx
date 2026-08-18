@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axe from "axe-core";
 import { describe, expect, test, vi } from "vitest";
 
@@ -221,6 +221,157 @@ describe("the chat queue", () => {
   });
 });
 
+describe("overlapping reads never publish a superseded response", () => {
+  /**
+   * BUG-025: the console read the tenant and selection, awaited, then published
+   * whatever came back. A slow earlier response landing last replaced the newer
+   * tenant's queue or transcript, so an operator could read one conversation
+   * under another's heading — and act on it.
+   *
+   * Each response is released by hand, so both orders are exercised
+   * deterministically rather than by racing real timers.
+   */
+  /** Let every already-resolved promise settle, without touching timers. */
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  function deferredBackend() {
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/api/admin/tenants")) {
+        return jsonResponse({
+          tenants: [
+            { tenant_id: "apex", name: "Apex Home Services", role: "support_agent" },
+            { tenant_id: "clearview", name: "Clearview Heating", role: "support_agent" }
+          ]
+        });
+      }
+      if (url.endsWith("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "token-1" });
+      return new Promise((resolve) => {
+        pending.push({ url, release: (body) => resolve(jsonResponse(body)) });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return {
+      pending,
+      /** Release the oldest still-unanswered request whose URL matches.
+       *
+       * Waits for it, because the console issues its second read only after the
+       * first resolves — a synchronous lookup would miss it.
+       */
+      async release(fragment: string, body: unknown) {
+        await waitFor(() =>
+          expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true)
+        );
+        const index = pending.findIndex((entry) => entry.url.includes(fragment));
+        pending.splice(index, 1)[0]!.release(body);
+      }
+    };
+  }
+
+  async function switchToClearview() {
+    const backend = deferredBackend();
+    render(<AdminPage />);
+    await waitFor(() => expect(backend.pending.length).toBeGreaterThan(0));
+
+    fireEvent.change(await screen.findByLabelText("Tenant"), {
+      target: { value: "clearview" }
+    });
+    await waitFor(() =>
+      expect(backend.pending.some((entry) => entry.url.includes("tenant_id=clearview"))).toBe(true)
+    );
+    return backend;
+  }
+
+  test("a stale tenant's queue is dropped when it answers after the new one", async () => {
+    const backend = await switchToClearview();
+
+    await backend.release("tenant_id=clearview", { sessions: [WIRE_ARCHIVED] });
+    await backend.release(`/api/admin/chats/${CLEARVIEW_SESSION_ID}`, {
+      session: WIRE_ARCHIVED,
+      messages: []
+    });
+    await waitFor(() =>
+      expect(document.querySelector("#sessionList")?.textContent).toContain("Clearview Heating")
+    );
+
+    // The superseded apex queue answers last, and must change nothing.
+    await backend.release("tenant_id=apex", { sessions: [WIRE_SUMMARY] });
+    await flush();
+
+    const queue = document.querySelector("#sessionList")?.textContent ?? "";
+    expect(queue).toContain("Clearview Heating");
+    expect(queue).not.toContain("Apex Home Services");
+  });
+
+  test("a stale transcript is dropped when a newer selection answers first", async () => {
+    // The selection race rather than the tenant race: the operator clicks a
+    // second conversation while the first transcript is still in flight, and
+    // the slower first response must not overwrite what they are now reading.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/api/admin/tenants")) {
+          return jsonResponse({
+            tenants: [
+              { tenant_id: "apex", name: "Apex Home Services", role: "support_agent" },
+              { tenant_id: "clearview", name: "Clearview Heating", role: "support_agent" }
+            ]
+          });
+        }
+        if (url.endsWith("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "token-1" });
+        if (url.includes("/api/admin/chats?")) {
+          return jsonResponse({ sessions: [WIRE_SUMMARY, WIRE_ARCHIVED] });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url, release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+
+    render(<AdminPage />);
+    // The poll auto-selects the first row, so its transcript is already in
+    // flight when the operator clicks the second.
+    const rows = await screen.findAllByText(/Home Services|Heating/, {
+      selector: ".session-row strong"
+    });
+    fireEvent.click(rows[1]!.closest("button")!);
+
+    await release(`/api/admin/chats/${CLEARVIEW_SESSION_ID}`, {
+      session: WIRE_ARCHIVED,
+      messages: []
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: CLEARVIEW_SESSION_ID })).toBeTruthy()
+    );
+
+    // The first click's transcript lands last and names the other conversation.
+    await release(`/api/admin/chats/${APEX_SESSION_ID}`, {
+      session: WIRE_SUMMARY,
+      messages: WIRE_MESSAGES
+    });
+    await flush();
+
+    expect(screen.queryByRole("heading", { name: APEX_SESSION_ID })).toBeNull();
+    expect(screen.getByRole("log", { name: "Transcript" }).textContent ?? "").not.toContain(
+      "My boiler is out."
+    );
+  });
+});
+
 describe("the console when the admin API is unreachable", () => {
   test("says so instead of showing an empty queue as though there were no chats", async () => {
     vi.stubGlobal(
@@ -252,6 +403,27 @@ describe("the console when the admin API is unreachable", () => {
     render(<AdminPage />);
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/admin/"));
+  });
+
+  test("a signed-in account without a role is not sent through an OIDC loop", async () => {
+    const fetchMock = vi.fn(() => jsonResponse({}, { ok: false, status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const assign = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({
+      protocol: "https:",
+      set href(value: string) {
+        assign(value);
+      }
+    } as unknown as Location);
+
+    render(<AdminPage />);
+
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "This account is signed in but has no TenantChat role. Ask a Keycloak administrator to assign an admin group."
+    );
+    expect(assign).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

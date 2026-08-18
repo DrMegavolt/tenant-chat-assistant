@@ -45,15 +45,6 @@ export function safeStorage(): VisitorStorage {
   }
 }
 
-/** The sentence a visitor agrees to before contact details are submitted. */
-export function consentStatement(tenantName: string): string {
-  return (
-    `I agree that ${tenantName} may store the name, address, and contact ` +
-    `details I enter here in order to arrange this appointment and follow up ` +
-    `about it.`
-  );
-}
-
 function parse<T>(raw: string | null): T | null {
   if (!raw) return null;
   try {

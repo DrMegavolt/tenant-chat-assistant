@@ -1,7 +1,12 @@
 import { fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 
-import { requestBodies, stubBackend, workingBackend } from "tests/support/backend";
+import {
+  CLEARVIEW_CONSENT_STATEMENT,
+  requestBodies,
+  stubBackend,
+  workingBackend
+} from "tests/support/backend";
 import {
   inWidget,
   openBookingConfirmation,
@@ -11,14 +16,19 @@ import {
 } from "tests/support/widget";
 
 describe("consent before contact data leaves the browser", () => {
-  test("the booking confirmation states what is stored and by whom before approving", async () => {
+  test("the booking confirmation shows the server's own consent statement", async () => {
+    /**
+     * BUG-023: the widget composed this sentence itself from the tenant name.
+     * The default text matched by coincidence, so a tenant override displayed
+     * one statement while the server recorded another. Asserting the exact
+     * served string is what makes rebuilding it locally fail here.
+     */
     stubBackend(workingBackend());
     await renderDemo();
     const confirmation = await openBookingConfirmation();
 
     const consentLabel = confirmation.querySelector("label[for='bookingConfirmConsent']");
-    expect(consentLabel?.textContent).toContain("Clearview Heating");
-    expect(consentLabel?.textContent).toContain("name, address, and contact details");
+    expect(consentLabel?.textContent).toContain(CLEARVIEW_CONSENT_STATEMENT);
     expect(confirmation.querySelector<HTMLInputElement>("#bookingConfirmConsent")?.checked).toBe(
       false
     );
@@ -61,7 +71,32 @@ describe("consent before contact data leaves the browser", () => {
     const stored = JSON.parse(
       window.sessionStorage.getItem("tenant-chat-consent:clearview") ?? "null"
     ) as { statement: string };
-    expect(stored.statement).toContain("Clearview Heating");
+    expect(stored.statement).toBe(CLEARVIEW_CONSENT_STATEMENT);
+  });
+
+  test("the displayed statement and the recorded statement are the same string", async () => {
+    /** The whole point of BUG-023: these two must never be able to diverge. */
+    stubBackend(workingBackend());
+    await renderDemo();
+    const confirmation = await openBookingConfirmation();
+
+    const displayed = confirmation
+      .querySelector("label[for='bookingConfirmConsent']")!
+      .textContent.trim();
+    fireEvent.click(confirmation.querySelector("#bookingConfirmConsent")!);
+    fireEvent.click(
+      [...confirmation.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Confirm booking")
+      )!
+    );
+
+    await waitFor(() =>
+      expect(window.sessionStorage.getItem("tenant-chat-consent:clearview")).not.toBeNull()
+    );
+    const stored = JSON.parse(window.sessionStorage.getItem("tenant-chat-consent:clearview")!) as {
+      statement: string;
+    };
+    expect(displayed).toContain(stored.statement);
   });
 });
 

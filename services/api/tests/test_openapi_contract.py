@@ -33,8 +33,7 @@ PUBLISHED_OPERATIONS = {
     ("get", "/readyz"),
     ("get", "/api/tenants"),
     ("get", "/api/tenants/{tenant_id}/availability"),
-    ("post", "/api/book"),
-    ("post", "/api/leads"),
+    # No direct `POST /api/book` or `/api/leads`
     ("post", "/api/chat"),
     ("post", "/api/chat/session"),
     ("get", "/api/chat/session"),

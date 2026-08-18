@@ -118,8 +118,8 @@ handles this with an explicit, tightly allowlisted CORS policy:
 - The nginx `map` directive returns the origin only if it matches the
   allowlist; otherwise empty (deny).
 - `Vary: Origin` is always emitted for cache correctness.
-- `Access-Control-Allow-Credentials` is never set — widget requests are
-  credential-free by design.
+- `Access-Control-Allow-Credentials` is never set — the widget uses an explicit
+  `X-Visitor-Credential` bearer header, not ambient browser cookies.
 - Admin routes are never exposed through CORS.
 - `OPTIONS` preflight returns 204 with explicit headers.
 

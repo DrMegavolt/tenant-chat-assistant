@@ -100,10 +100,15 @@ kubectl apply -f "$ROOT_DIR/k8s/kibana-setup-job.yaml"
 kubectl -n "$NS" wait --for=condition=complete job/configure-kibana-system-user --timeout=300s
 
 kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
-kubectl -n "$NS" rollout restart deploy/web deploy/oauth2-proxy deploy/chat-backend deploy/job-worker deploy/embedding-service deploy/kibana
+# The API rolls out and becomes ready before the widget bundle that reads it.
+# The widget renders fields the API publishes — the consent statement is one
+# (`BUG-023`) — so a new bundle served by an older API renders them empty. The
+# reverse order is safe: an older bundle ignores a field it does not know about.
+kubectl -n "$NS" rollout restart deploy/oauth2-proxy deploy/chat-backend deploy/job-worker deploy/embedding-service deploy/kibana
 kubectl -n "$NS" rollout status deploy/oauth2-proxy --timeout=180s
 kubectl -n "$NS" rollout status deploy/chat-backend --timeout=180s
 kubectl -n "$NS" rollout status deploy/job-worker --timeout=180s
+kubectl -n "$NS" rollout restart deploy/web
 kubectl -n "$NS" rollout status deploy/web --timeout=180s
 # These names belonged to the former split-port gateway. Applying the new
 # manifests does not prune renamed resources, so remove them only after the

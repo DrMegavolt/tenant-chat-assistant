@@ -43,6 +43,32 @@ class TestPublicProjection:
 
         assert "97201" not in rendered
 
+    def test_public_view_publishes_the_tenant_consent_override(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """BUG-023: the widget must render this, not compose its own sentence.
+
+        A tenant that overrides the statement is the case where a locally
+        rebuilt default and the recorded copy silently disagree, so the value
+        the visitor agreed to is not the value the grant stores.
+        """
+        override = "Clearview keeps what you enter here to schedule your visit."
+        tenant = build_tenant(contact_consent_statement=override)
+
+        assert tenant.public_view().contact_consent_statement == override
+        assert tenant.consent_statement() == override
+
+    def test_public_view_falls_back_to_the_server_composed_statement(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """A tenant that never overrides still publishes a statement to render."""
+        tenant = build_tenant(contact_consent_statement=None)
+
+        published = tenant.public_view().contact_consent_statement
+
+        assert published == tenant.consent_statement()
+        assert tenant.name in published
+
     def test_public_view_exposes_expected_branding(self, build_tenant: TenantBuilder) -> None:
         public = build_tenant().public_view()
 

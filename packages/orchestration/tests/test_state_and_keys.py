@@ -77,7 +77,7 @@ def test_a_thread_key_is_tenant_qualified() -> None:
     ids=["empty", "spaces", "traversal", "too-long"],
 )
 def test_an_unusable_session_id_is_refused(session_id: str) -> None:
-    """The visitor controls this value until `SEC-002` issues a real credential."""
+    """The runtime still bounds a server-resolved session before key assembly."""
     with pytest.raises(ValueError, match="safe characters"):
         thread_id("clearview", session_id)
 

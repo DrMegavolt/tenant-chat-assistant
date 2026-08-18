@@ -17,6 +17,8 @@ export interface TenantConfig {
   bookingEnabled: boolean;
   leadCaptureEnabled: boolean;
   proactiveLeadCapture: boolean;
+  /** The server's own consent sentence; the widget renders it verbatim. */
+  contactConsentStatement: string;
   services: string[];
   quickActions: string[];
 }

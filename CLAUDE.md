@@ -36,11 +36,15 @@ tests/              Cross-cutting tests, including architecture invariants.
 docs/adr/           Architecture decision records. Start at docs/adr/README.md.
 architecture/likec4/ Architecture-as-code model and generated diagrams.
 BACKLOG.md          Full productionization plan with task IDs. Gate B is the target.
+EXPLORATORY_TESTING_BUGS.md Current defect status and historical reproductions.
 ```
 
 ## Invariants
 
-These are enforced by tests, not convention. Breaking one fails the build.
+These are the repository's architectural invariants. Mechanical portions are
+enforced by tests; known gaps are release blockers in `BACKLOG.md` and
+`EXPLORATORY_TESTING_BUGS.md`, not silent exceptions. There are no current
+exceptions to the rules below.
 
 1. **`packages/core` imports no framework, driver, transport, or model SDK.**
    Domain rules define `Protocol` ports; adapters live in the service that owns
@@ -70,11 +74,12 @@ These are enforced by tests, not convention. Breaking one fails the build.
    two-plane split; the trace store is the one deliberate home for that content,
    governed by `PRIV-002`.
 
-Not yet enforced, because the code it governs does not exist: **every answer is
-reconstructible** from its turn record — router decision, retrieval candidate
-set, assembled prompt, model parameters, and validator verdicts, each pinned to a
-component version. `OBS-004` builds it and makes it testable. Design new
-orchestration code so this stays achievable.
+**Every answer is reconstructible** from its turn record — router decision,
+retrieval candidate set, assembled prompt, model/tool rounds, parameters,
+validator verdicts, diagnoses, and executed graph, each pinned to a component
+version. `OBS-004`, `OBS-006`, and `FEAT-015` implement and test that contract.
+New orchestration code must extend the record rather than inventing an
+unobservable path.
 
 ## Conventions
 

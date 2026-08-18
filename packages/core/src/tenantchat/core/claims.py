@@ -19,10 +19,11 @@ Two families are recognized:
 
 Service-area claims are the one family retrieval cannot ground: whether a ZIP
 is served is decided by the tenant's own policy through a deterministic tool,
-not written down in an approved document. They are checked against that tool's
-verdict for the exact ZIP the sentence names, which is stronger evidence than
-any passage — a claim about a ZIP the tool was not asked about, or one whose
-polarity disagrees with the tool, still fails.
+not written down in an approved document. A sentence naming a ZIP is therefore
+decided by that tool's verdict alone — a claim about a ZIP the tool was not
+asked about, or one whose polarity disagrees with the tool, fails, and no
+passage may overrule either answer. A sentence naming no ZIP asserts nothing
+the tool decided ("we serve your area") and falls back to evidence.
 
 The verdict is applied to the whole answer: an unsupported price means the
 published answer must not carry it, and the graph refuses the answer rather
@@ -52,6 +53,14 @@ _NEGATION_RE = re.compile(
     r"\b(?:not|no|never|cannot|outside|beyond|unfortunately|unable"
     rf"|do(?:es)?n{_APOSTROPHE}t|can{_APOSTROPHE}t|is\s?n{_APOSTROPHE}t"
     rf"|are\s?n{_APOSTROPHE}t|wo\s?n{_APOSTROPHE}t)\b",
+    re.IGNORECASE,
+)
+
+# Idioms whose negative token opens an affirmative sentence: "No problem, we
+# serve 97205" is a yes. They are removed before the negation scan rather than
+# excluded inside it, so a match of `_NEGATION_RE` keeps exactly one meaning.
+_AFFIRMATIVE_IDIOM_RE = re.compile(
+    r"\b(?:no|not)\s+(?:a\s+|an\s+)?(?:problem|worries|worry|issue|trouble)\b",
     re.IGNORECASE,
 )
 
@@ -185,8 +194,8 @@ def validate_sensitive_claims(
             policy), which may ground a price claim without retrieval.
         confirmed_service_areas: ZIP to served verdict, as the service-area
             tool answered it during this turn. Only ZIPs the tool was actually
-            asked about appear; a claim naming any other ZIP falls back to
-            evidence and normally fails.
+            asked about appear; a claim naming any other ZIP is unsupported,
+            because no passage may authorize coverage the tool did not decide.
 
     Returns:
         :attr:`ClaimVerdict.UNSUPPORTED` when any claim fails, with the
@@ -200,9 +209,14 @@ def validate_sensitive_claims(
                 claim.value in line for line in trusted_prices
             )
         elif claim.kind is ClaimKind.SERVICE_AREA:
-            grounded = _service_area_confirmed(
-                claim.value, confirmed_service_areas
-            ) or _sentence_supported(claim.value, evidence_texts)
+            # A named ZIP is checkable, so the tool's verdict is the only thing
+            # that can ground it: a passage may not stand in for a ZIP the tool
+            # was never asked about, nor overrule a `served: false` it returned.
+            grounded = (
+                _service_area_confirmed(claim.value, confirmed_service_areas)
+                if _ZIP_RE.search(claim.value)
+                else _sentence_supported(claim.value, evidence_texts)
+            )
         else:
             grounded = _sentence_supported(claim.value, evidence_texts)
         if not grounded:
@@ -244,15 +258,15 @@ def answer_rests_only_on_tool_verdicts(
 def _service_area_confirmed(sentence: str, confirmed: Mapping[str, bool]) -> bool:
     """Whether the service-area tool already decided exactly what this sentence says.
 
-    Requires a ZIP: "we serve your area" names nothing checkable and is left to
-    evidence. Every ZIP the sentence names must have been checked this turn,
-    and the sentence's polarity must match every verdict — so a "yes" about an
-    unserved ZIP, or a claim mixing a served and an unserved ZIP, still fails.
+    Requires a ZIP: "we serve your area" names nothing checkable. Every ZIP the
+    sentence names must have been checked this turn, and the sentence's polarity
+    must match every verdict — so a "yes" about an unserved ZIP, or a claim
+    mixing a served and an unserved ZIP, still fails.
     """
     zips = _ZIP_RE.findall(sentence)
     if not zips:
         return False
-    expected = not _NEGATION_RE.search(sentence)
+    expected = not _NEGATION_RE.search(_AFFIRMATIVE_IDIOM_RE.sub(" ", sentence))
     return all(zip_code in confirmed and confirmed[zip_code] is expected for zip_code in zips)
 
 

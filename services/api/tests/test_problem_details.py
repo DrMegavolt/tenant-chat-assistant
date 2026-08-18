@@ -5,52 +5,65 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from typing import Any
 
+import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from services.api.tests.conftest import BOOKING_TENANT
 from tenantchat.api.app import _handle_unexpected_error
 from tenantchat.api.problems import REQUEST_ID_HEADER, problem_response
-from tenantchat.core.errors import InvalidVersionTransitionError
+from tenantchat.core.errors import InvalidVersionTransitionError, SlotUnavailableError
 from tenantchat.core.lifecycle import VersionState
 
 PayloadBuilder = Callable[..., dict[str, object]]
 
+# A contact-bearing route that still parses a `Contact`, so the domain raises
+# the same `InvalidContactError` these tests are about. The visitor booking and
+# lead routes that used to serve this purpose were retired with `BUG-021`.
+CONTACT_ROUTE = "/api/admin/privacy/export"
+UNPARSEABLE_CONTACT = "0001234567"
+
+
+@pytest.fixture
+def contact_request(
+    client: TestClient, operator_headers: Callable[..., dict[str, str]]
+) -> Callable[..., object]:
+    """POST a subject query as an authorized operator, with any body override."""
+    headers = operator_headers(role="tenant_admin")
+    token = client.get("/api/admin/csrf-token", headers=headers).json()["csrf_token"]
+
+    def post(**body: object) -> object:
+        return client.post(
+            CONTACT_ROUTE,
+            headers=headers | {"X-CSRF-Token": token},
+            json={"tenant_id": BOOKING_TENANT, "contact": UNPARSEABLE_CONTACT} | body,
+        )
+
+    return post
+
 
 class TestProblemDocumentShape:
     def test_domain_errors_use_the_problem_media_type(
-        self, client: TestClient, booking_payload: PayloadBuilder
+        self, contact_request: Callable[..., Any]
     ) -> None:
-        response = client.post(
-            "/api/book",
-            json=booking_payload(contact="0001234567"),
-            headers={"Idempotency-Key": "problem-1"},
-        )
-
-        assert response.headers["content-type"].startswith("application/problem+json")
+        assert contact_request().headers["content-type"].startswith("application/problem+json")
 
     def test_problem_carries_a_stable_machine_readable_code(
-        self, client: TestClient, booking_payload: PayloadBuilder
+        self, contact_request: Callable[..., Any]
     ) -> None:
         """Clients branch on `code`; it is part of the public contract."""
-        body = client.post(
-            "/api/book",
-            json=booking_payload(contact="0001234567"),
-            headers={"Idempotency-Key": "problem-2"},
-        ).json()
+        body = contact_request().json()
 
         assert body["code"] == "invalid_contact"
         assert body["type"] == "/problems/invalid_contact"
         assert body["status"] == 422
 
     def test_problem_detail_is_prose_a_visitor_can_be_shown(
-        self, client: TestClient, booking_payload: PayloadBuilder
+        self, contact_request: Callable[..., Any]
     ) -> None:
-        body = client.post(
-            "/api/book",
-            json=booking_payload(contact="0001234567"),
-            headers={"Idempotency-Key": "problem-2"},
-        ).json()
+        body = contact_request().json()
 
         assert body["detail"] == (
             "Provide a valid email address or a complete 10-digit US phone number "
@@ -59,44 +72,48 @@ class TestProblemDocumentShape:
 
 
 class TestOperatorDetailIsNotPublished:
-    def test_domain_error_detail_never_reaches_the_response(
-        self, client: TestClient, booking_payload: PayloadBuilder
-    ) -> None:
+    def test_domain_error_detail_never_reaches_the_response(self) -> None:
         """`DomainError.detail` exists to hold what is unsafe to publish.
 
         A booking for an unoffered slot builds a detail naming the slot and the
         resolved service slug. The response may carry the current offers, which
         are server-owned, but not that operator string.
+
+        Asserted against the mapping itself rather than through a route, so it
+        holds for every caller that raises this error — the graph's booking tool
+        included, which is the only ingress left since `BUG-021` retired the
+        direct route.
         """
-        response = client.post(
-            "/api/book",
-            json=booking_payload(slot="Sun Jul 7, 3:00 AM"),
-            headers={"Idempotency-Key": "problem-3"},
+        error = SlotUnavailableError(
+            offered=("Mon Jul 8, 9:00 AM",),
+            detail="'Sun Jul 7, 3:00 AM' is not offered for hvac",
         )
 
-        assert "not offered for" not in response.text
+        published = json.loads(bytes(problem_response(error, request_id="r-1").body))
 
-    def test_rejected_input_is_not_echoed_by_schema_validation(self, client: TestClient) -> None:
+        assert error.detail
+        assert error.detail not in json.dumps(published)
+        assert published["offeredSlots"] == ["Mon Jul 8, 9:00 AM"]
+
+    def test_rejected_input_is_not_echoed_by_schema_validation(
+        self, contact_request: Callable[..., Any]
+    ) -> None:
         """Pydantic's error list carries the rejected value; the response must not.
 
-        For this endpoint that value is a phone number or a home address, and
+        For this endpoint that value is a phone number or an email address, and
         error responses are among the most-logged objects in the system.
         """
-        response = client.post(
-            "/api/book",
-            json={"tenant_id": "clearview", "contact": ["555-222-1919"]},
-        )
+        response = contact_request(contact=["555-222-1919"])
 
         assert response.status_code == 422
         assert response.json()["code"] == "malformed_request"
         assert "555-222-1919" not in response.text
 
-    def test_schema_validation_still_names_the_offending_field(self, client: TestClient) -> None:
+    def test_schema_validation_still_names_the_offending_field(
+        self, contact_request: Callable[..., Any]
+    ) -> None:
         """Withholding the value must not leave the caller unable to fix the request."""
-        response = client.post(
-            "/api/book",
-            json={"tenant_id": "clearview", "contact": ["555-222-1919"]},
-        )
+        response = contact_request(contact=["555-222-1919"])
 
         locations = [field["location"] for field in response.json()["invalidFields"]]
         assert any("contact" in location for location in locations)
@@ -107,14 +124,10 @@ class TestRequestCorrelation:
         assert client.get("/healthz").headers[REQUEST_ID_HEADER]
 
     def test_problem_body_repeats_the_header_request_id(
-        self, client: TestClient, booking_payload: PayloadBuilder
+        self, contact_request: Callable[..., Any]
     ) -> None:
-        """A visitor reporting a failure can be matched to the log line."""
-        response = client.post(
-            "/api/book",
-            json=booking_payload(contact="0001234567"),
-            headers={"Idempotency-Key": "problem-1"},
-        )
+        """A caller reporting a failure can be matched to the log line."""
+        response = contact_request()
 
         assert response.json()["requestId"] == response.headers[REQUEST_ID_HEADER]
 
@@ -164,21 +177,21 @@ class TestTypedExtensions:
 
 
 class TestRequestBounds:
-    def test_unknown_field_is_rejected_rather_than_ignored(
-        self, client: TestClient, booking_payload: PayloadBuilder
-    ) -> None:
+    """Body handling before a route sees it, checked on a live visitor route."""
+
+    def test_unknown_field_is_rejected_rather_than_ignored(self, client: TestClient) -> None:
         """A silently dropped typo looks like the field was never sent."""
-        response = client.post("/api/book", json=booking_payload(customerName="Dana Ruiz"))
+        response = client.post(
+            "/api/chat/session", json={"tenant_id": BOOKING_TENANT, "tenantName": "Clearview"}
+        )
 
         assert response.status_code == 422
         assert response.json()["code"] == "malformed_request"
 
-    def test_oversized_body_is_refused_before_it_is_read(
-        self, client: TestClient, booking_payload: PayloadBuilder
-    ) -> None:
+    def test_oversized_body_is_refused_before_it_is_read(self, client: TestClient) -> None:
         response = client.post(
-            "/api/book",
-            content=json.dumps(booking_payload(address="x" * 4096)),
+            "/api/chat/session",
+            content=json.dumps({"tenant_id": BOOKING_TENANT, "padding": "x" * 65536}),
             headers={"Content-Type": "application/json"},
         )
 
@@ -188,7 +201,7 @@ class TestRequestBounds:
 
     def test_malformed_json_does_not_reach_a_handler(self, client: TestClient) -> None:
         response = client.post(
-            "/api/book",
+            "/api/chat/session",
             content="{not json",
             headers={"Content-Type": "application/json"},
         )

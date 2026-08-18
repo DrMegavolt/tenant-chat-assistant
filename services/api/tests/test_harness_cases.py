@@ -1,9 +1,8 @@
-"""L9a — Harness-A: real turns for the independent Gate B acceptance cases.
-L9b — Harness-B: the remaining cases (2-7) and live mode preconditions.
+"""Real turns for the independent Gate B acceptance cases.
 
 Each case runs through the real graph with a scripted model provider and
-per-case precondition planters. L9b adds cases 2-7 by adding planters,
-not by rewriting the driver.
+per-case precondition planters. Cases 2-7 add planters rather than rewriting the
+driver.
 
 The driver opens a session, grants consent, sends a ``POST /api/chat`` message,
 and asserts against the :class:`TurnRecord` the graph produced — never a
@@ -393,7 +392,7 @@ async def _plant_multicase_knowledge(
     )
 
 
-# ── L9b Case planters ──────────────────────────────────────────────────────
+# ── Case precondition planters ─────────────────────────────────────────────
 
 # Cases 2 and 3 ask about the Care Plan rather than about hours. The tenant's
 # hours are server-owned configuration bound into every prompt, so an hours
@@ -913,7 +912,7 @@ class TestHarnessTenantIsolation:
             assert valid.status_code == 200, valid.text
 
 
-# ── L9b Cases 2-7 ─────────────────────────────────────────────────────────
+# ── Cases 2-7 ──────────────────────────────────────────────────────────────
 
 
 class TestCase2StaleSource:

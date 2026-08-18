@@ -80,14 +80,29 @@ def test_a_wrong_gateway_token_is_refused(
 def test_an_undefined_role_is_refused(
     client: TestClient, operator_headers: Callable[..., dict[str, str]]
 ) -> None:
-    """A role this service does not define grants nothing, rather than defaulting."""
+    """An authenticated identity with an unknown role is forbidden, not logged out."""
     response = client.get(
         "/api/admin/chats",
         params={"tenant_id": BOOKING_TENANT},
         headers=operator_headers(**{ROLE_HEADER: "superuser"}),
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 403
+    assert response.json()["code"] == "forbidden"
+
+
+@pytest.mark.security
+def test_an_authenticated_operator_without_a_role_is_forbidden(
+    client: TestClient, operator_headers: Callable[..., dict[str, str]]
+) -> None:
+    """A roleless OIDC user must not trigger the console's expired-session loop."""
+    response = client.get(
+        "/api/admin/tenants",
+        headers=operator_headers(**{ROLE_HEADER: ""}),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "forbidden"
 
 
 @pytest.mark.security
