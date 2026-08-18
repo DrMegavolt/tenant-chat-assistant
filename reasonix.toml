@@ -1,2 +1,0 @@
-[permissions]
-allow = ["Bash=cd \"/Users/sergio/Documents/LLM research\" && sed -n '1,60p' scripts/verify_image_contracts.py"]
