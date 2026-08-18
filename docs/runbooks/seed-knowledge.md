@@ -1,8 +1,7 @@
 # Seed Knowledge
 
 Drives the governed ingestion pipeline for both demo tenants: upload, approve,
-publish, and poll the durable ingestion job to completion. It is the only seed
-path; the deleted prototype ingester and financing agent are not deployed.
+publish, and poll the durable ingestion job to completion. It is the only seed path.
 
 ## Usage
 

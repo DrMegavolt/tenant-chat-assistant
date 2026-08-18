@@ -67,9 +67,9 @@ export function DemoPage({ host }: { host: HTMLElement }) {
       </a>
 
       <div className="page">
-        <aside className="preview-bar" aria-label="Prototype preview">
+        <aside className="preview-bar" aria-label="Demo preview">
           <p>
-            <strong>Prototype preview.</strong> This page stands in for a customer website. The same
+            <strong>Demo preview.</strong> This page stands in for a customer website. The same
             widget is embedded on both, with different policies and knowledge.
           </p>
           {tenants && (

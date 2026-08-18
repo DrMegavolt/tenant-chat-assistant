@@ -25,7 +25,7 @@ body {
   padding-block: var(--space-5) var(--space-8);
 }
 
-/* --- Prototype banner ----------------------------------------------------- */
+/* --- Demo banner ----------------------------------------------------- */
 
 /* The switcher is scaffolding, not part of the site being imitated, so it is
    visibly bolted on above the page rather than dressed up as navigation. */

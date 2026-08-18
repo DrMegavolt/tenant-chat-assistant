@@ -28,9 +28,6 @@ dev = [
 # complete transitive graphs still live in uv.lock, so every image consumes the
 # same reviewed lock as the production API instead of maintaining hand-written
 # requirements files that drift independently.
-prototype-runtime = [
-    "psycopg[binary]==3.2.3",
-]
 embedding-runtime = [
     "fastapi==0.141.1",
     "prometheus-client==0.21.1",

@@ -14,14 +14,30 @@ Every defect the 2026-08-17 repository review found is closed; the hermetic gate
 and the real-PostgreSQL suites are green; and `make harness-live` runs 20 checks
 with 0 failures against a cluster carrying this revision.
 
-Three things still qualify what you can claim. BUG-010, BUG-012, and BUG-013 are
-unverified rather than fixed. BUG-026 is open: a model that hedges with "we
+Several things still qualify what you can claim. BUG-010, BUG-012, and BUG-013
+are unverified rather than fixed. BUG-026 is open: a model that hedges with "we
 cannot guarantee approval" has that answer refused, so a financing question can
 occasionally return the refusal text instead — safe, but not the answer you
 wanted on stage; re-ask if it happens. And a live harness run is evidence only
 about the revision it ran against, so check that the run you cite matches what
 you are showing. Confirm current status in [BACKLOG.md](../../BACKLOG.md) and
 the [defect dossier](../../EXPLORATORY_TESTING_BUGS.md) before presenting.
+
+The 2026-08-18 walkthrough added BUG-027 through BUG-033, and three of them
+change what you should say on stage:
+
+- **BUG-027** — a turn record's tool table and committed effects are
+  session-cumulative. Opening a late turn credits it with earlier turns' tool
+  calls and actions, and contradicts the executed graph in the same view. Drive
+  the tools and idempotency beat from a turn whose effect is its own, and use
+  the executed graph as the account of what ran.
+- **BUG-028 / BUG-029** — the session detail's Bookings, Lead info, and Tool
+  calls cards never fill, and the queue's Leads and Messages tiles always read
+  zero. Show a captured lead from the turn record or the visitor's receipt, not
+  from those panels.
+- **BUG-030 / BUG-031 / BUG-032** are cosmetic but on-camera: a stray space
+  before a period in grounded answers, a missing conjunction in the consent
+  sentence, and a cited source dated in UTC.
 
 Some Gate B scenarios are inherently hermetic — they need planted stale content,
 a controlled retriever config, or a scripted model. Those are covered by

@@ -38,12 +38,21 @@ whether a regression is caught before or after a deploy.
 | BUG-024 | **Resolved** | `DATA-004` | `services/api/tests/test_actions.py`, `tests/repositories/test_postgres_repositories.py` | The non-idempotent ingress is gone with the route. The one remaining lead path is `RecordedLeadService`, whose replay contract was already covered. |
 | BUG-025 | **Resolved** | `FEAT-007` | `frontend/tests/admin.test.tsx` | Every admin read claims a generation before its first await and publishes only while newest, so a superseded tenant queue or transcript is discarded. |
 | BUG-026 | **Open** | `RAG-007` | — | A model's own disclaimer ("we cannot guarantee approval") is kinded as a coverage claim, fails token overlap, and refuses the whole answer. Found live on 2026-08-17; fires only when the model phrases the hedge that way. |
+| BUG-027 | **Open** | `OBS-004` | — | A turn record's `tools` section is session-cumulative, not turn-scoped: every turn replays all prior turns' tool calls and committed effects. Found live on 2026-08-18. |
+| BUG-028 | **Open** | `FEAT-007` | — | The admin session detail's Bookings, Lead info, and Tool calls cards read fields the API never returns, so all three are permanently empty. Found live on 2026-08-18. |
+| BUG-029 | **Open** | `FEAT-007` | — | The chat-queue Leads and Messages tiles sum fields the session list never carries, so both always read 0. Found live on 2026-08-18. |
+| BUG-030 | **Open** | `RAG-005` | — | Stripping `[evidence:...]` markers leaves the preceding space, so published answers show " ." wherever a citation was cited. Found live on 2026-08-18. |
+| BUG-031 | **Open** | `PRIV-001` | — | The generated consent sentence joins its purpose clauses with a comma and no conjunction, and the visitor agrees to that text verbatim. Found live on 2026-08-18. |
+| BUG-032 | **Open** | `RAG-005` | — | The widget renders a cited source's effective date in UTC, so a visitor west of UTC sees tomorrow's date on a source published today. Found live on 2026-08-18. |
+| BUG-033 | **Open** | `FEAT-016` | — | `handoff.*`, `knowledge.version_*`, and `trace.replay_*` are offered in the audit filter but absent from the authorizing-permission map, so the console prints the bare action name. Found live on 2026-08-18. |
 
 Every defect found by the 2026-08-17 repository review is closed. BUG-010,
 BUG-012, and BUG-013 remain unverified rather than unfixed — each awaits fresh
 fault-injection, observability-audit, or deployment-window evidence. BUG-026 is
-new, found by the post-fix live run. See `BACKLOG.md` for gate ownership and
-dispatch order.
+new, found by the post-fix live run. BUG-027 through BUG-033 were found by the
+2026-08-18 demo walkthrough against the same cluster; BUG-027 is the one that
+touches a stated invariant rather than presentation. See `BACKLOG.md` for gate
+ownership and dispatch order.
 
 ## Test context
 
@@ -423,6 +432,190 @@ The negation machinery this needs already exists — `_NEGATION_RE` and
 polarity means something different here. For service area, a negated claim is
 still a claim and must match the tool's verdict. For coverage, a negated claim
 is usually not a claim at all. Do not reuse the service-area rule directly.
+
+## Defects found by the 2026-08-18 demo walkthrough
+
+Driven through Chrome against the local MicroK8s cluster carrying `8b00db8`:
+both tenants, the visitor widget, and every admin tab. One Apex session
+(`a9cc827d-f743-48be-b290-6d1f553a31da`) carried the grounded-answer,
+service-area, lead-capture, and escalation beats and is the evidence for
+BUG-027 through BUG-030.
+
+## BUG-027 — High: a turn record reports tool calls and effects the turn never made
+
+### Impact
+
+The turn record is the demo's third claim — "every answer is reconstructible
+from its turn record". It is not, for tools. Opening the escalation turn in the
+explorer shows an executed graph of two nodes (`route` → `escalate`, 21 ms)
+beside a tool table listing `check_service_area` and `create_lead`, and a
+committed-effects list crediting that turn with the lead the *previous* turn
+created. Two panels of the same record contradict each other, and the one an
+operator would read as "what this turn did" is the wrong one.
+
+### Observed evidence
+
+`turn_records` for the session above, `content->'tools'`:
+
+| Turn | Outcome | `tool_calls` recorded | Actually called |
+|---|---|---|---|
+| 2 | answered | `check_service_area` | `check_service_area` |
+| 3 | answered | `check_service_area` (same `call_id`) | none |
+| 4 | answered | `check_service_area` (same `call_id`) | none |
+| 5 | answered | `check_service_area`, `create_lead` | `create_lead` |
+| 6 | escalated | `check_service_area`, `create_lead` | none |
+
+Turn 6's `committed` holds both `LD-B6E217C39B3E4D9287749D19058C261E` (turn 5)
+and `HO-1195FABC8A6A43AC9F7E237CEA7EE5CE` (turn 6), each with `replayed: false`.
+
+### Cause
+
+`_tools_section` in `packages/orchestration/src/tenantchat/orchestration/trace.py`
+walks the whole conversation `history` and the whole accumulated
+`state["committed"]`. Neither is narrowed to the turn being recorded, while
+`_executed_graph_section` is — which is exactly why the two disagree.
+
+### Acceptance criteria
+
+- A turn record's `tool_calls`, `tool_results`, and `committed` contain only
+  what that turn produced.
+- A turn that called no tool records none, whatever earlier turns did.
+- A committed effect appears on exactly one turn record.
+- Covered by a multi-turn test where an early tool call must not reappear.
+
+### Note on scope
+
+`nodes.py` already has `_current_turn(transcript)` — "the entries written since
+the visitor's most recent message" — used by `_confirmed_service_areas` for this
+same reason. The scoping rule exists; the trace assembler does not apply it.
+
+## BUG-028 — Medium: the session detail's Bookings, Lead info, and Tool calls cards can never fill
+
+### Impact
+
+A dispatcher opening the conversation that captured a lead sees "No captured
+leads for this chat yet." The lead exists, on that exact session. The operator
+has no in-console path from a conversation to what it produced.
+
+### Observed evidence
+
+Session `a9cc827d-f743-48be-b290-6d1f553a31da` shows all three cards empty while
+`leads` holds `b6e217c3-9b3e-4d92-8774-9d19058c261e` with that
+`chat_session_id`, and the turn record holds two tool calls.
+
+### Cause
+
+`SessionDetail.tsx` renders `session.leads`, `session.bookings`, and
+`session.toolEvents`. `GET /api/admin/chats/{session_id}` returns only `session`
+and `messages`; `adminApi.session()` maps only those. Nothing in the application
+or its tests ever assigns the three fields — they are optional in `types.ts` and
+permanently `undefined`.
+
+### Acceptance criteria
+
+- The session detail endpoint returns the session's leads, bookings, and tool
+  events, or the three cards are removed.
+- A session with a committed lead renders it, asserted against a session whose
+  lead was created through the graph.
+
+## BUG-029 — Medium: the Leads and Messages tiles always read zero
+
+### Impact
+
+The chat queue's summary bar reported `LEADS 0` and `MESSAGES 0` against 49 live
+chats, a visible lead, and 481 rows in `messages`. Four of six tiles are
+trustworthy and two are not, which is worse than omitting them.
+
+### Cause
+
+`StatBar` sums `row.leadCount ?? 0` and `row.messageCount ?? 0` over session
+summaries. `sessionSummaryFromWire` never sets either field. Only the *detail*
+mapping sets `messageCount`, and the bar is not built from details.
+
+### Acceptance criteria
+
+- Both tiles reflect the tenant's real counts, or are removed.
+- A test fails if a tile's source field stops being populated.
+
+## BUG-030 — Low: stripped citation markers leave a space before the punctuation
+
+### Impact
+
+Published answers read "...including major system replacements ." Visible in the
+widget and in the admin transcript, on exactly the grounded answers the demo
+opens with.
+
+### Cause
+
+`strip_citation_markers` substitutes `[evidence:...]` with the empty string and
+only `.strip()`s the ends, so an interior " [evidence:x]." becomes " .".
+
+### Acceptance criteria
+
+- Removing a marker leaves no doubled or orphaned whitespace, at any position.
+- Tested for a marker before punctuation, mid-sentence, and at the end.
+
+## BUG-031 — Low: the generated consent sentence has no conjunction
+
+### Impact
+
+The visitor ticks: "I agree that Apex Home Services may store the name, address,
+and contact details I enter here in order to arrange the appointment, follow up
+about the work." This is the sentence the consent grant stores verbatim.
+
+### Cause
+
+`consent_statement` in `packages/core/src/tenantchat/core/privacy.py` builds the
+purpose list with `", ".join(ordered)`, which is correct for one clause and
+ungrammatical for two.
+
+### Acceptance criteria
+
+- Two purposes join with "and"; three or more use a serial list.
+- One purpose is unchanged.
+
+## BUG-032 — Low: a cited source's effective date is rendered in UTC
+
+### Impact
+
+A source published at 18:30 PDT displays "Revision 1 · effective 2026-08-18" to
+a Pacific visitor on 2026-08-17 — a citation dated tomorrow, in the panel whose
+whole job is provenance.
+
+### Cause
+
+`effectiveDate` in `frontend/src/widget/components/SourceViewer.tsx` formats with
+`date.toISOString().slice(0, 10)`, which is the UTC calendar date regardless of
+the viewer's zone.
+
+### Acceptance criteria
+
+- The date shown is the one in effect for the viewer, or is explicitly labelled
+  UTC.
+- Tested from a zone where the local and UTC dates differ.
+
+## BUG-033 — Low: the audit console cannot name the permission for a third of its actions
+
+### Impact
+
+The audit trail's "permission that authorized it" column prints the bare action
+name for `handoff.accepted`, `handoff.released`, `handoff.resolved`,
+`knowledge.version_approved`, `knowledge.version_published`,
+`knowledge.version_reindexed`, `knowledge.version_expired`,
+`trace.replay_trials`, `trace.replay_retrieval`, and `trace.replay_template` —
+including the handoff actions a governance walkthrough would demonstrate.
+
+### Cause
+
+`_AUTHORIZING_PERMISSION` in `services/api/src/tenantchat/api/access.py` is a
+narrower set than the action vocabulary the filter offers, and
+`authorizing_permission` falls back to the action name. BUG-018 gave the filter
+one source of truth; the permission map was not brought along.
+
+### Acceptance criteria
+
+- Every action in the audit vocabulary has an authorizing-permission entry.
+- A test fails when an action is added without one.
 
 ## How implementation agents should use this document
 

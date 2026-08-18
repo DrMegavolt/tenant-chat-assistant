@@ -27,7 +27,7 @@ export async function renderDemo({
   awaitReady = true
 }: DemoOptions = {}): Promise<HTMLElement> {
   document.documentElement.lang = "en";
-  document.title = "Tenant Chat Assistant Prototype";
+  document.title = "Tenant Chat Assistant";
 
   const host = document.createElement("div");
   host.id = "tenant-chat";

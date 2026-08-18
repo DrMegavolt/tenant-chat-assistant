@@ -1322,9 +1322,6 @@ embedding-runtime = [
     { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-prototype-runtime = [
-    { name = "psycopg", extra = ["binary"] },
-]
 
 [package.metadata]
 
@@ -1350,7 +1347,6 @@ embedding-runtime = [
     { name = "transformers", specifier = "==5.14.1" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.34.0" },
 ]
-prototype-runtime = [{ name = "psycopg", extras = ["binary"], specifier = "==3.2.3" }]
 
 [[package]]
 name = "tenantchat-api"

@@ -9,9 +9,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Images whose contents come from the Python lockfile.
-# The root Dockerfile that shipped the prototype is gone; every workload now
-# runs from a service image.
+# Images whose contents come from the Python lockfile. Every Python workload
+# builds from a service image; there is no root Dockerfile.
 PYTHON_DOCKERFILES = (
     ROOT / "services/api/Dockerfile",
     ROOT / "services/embedding/Dockerfile",
