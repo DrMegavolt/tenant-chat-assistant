@@ -40,7 +40,12 @@ for image in "${IMAGES[@]}"; do
     --metadata-file "$metadata" \
     "$ROOT_DIR"
   docker image inspect "$tag" >"$OUTPUT_DIR/$image.inspect.json"
-  docker image inspect --format '{{index .RepoDigests 0}}' "$tag" >"$OUTPUT_DIR/$image.digest"
+  # Buildx's own metadata, not `RepoDigests`: a `--load`ed image is never pushed,
+  # so the daemon leaves `RepoDigests` empty and only a machine that happens to
+  # hold a pushed copy can answer. `render_local_k8s_release.py` pins the release
+  # from this same field.
+  digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$metadata")"
+  printf '%s@%s\n' "${tag%:*}" "$digest" >"$OUTPUT_DIR/$image.digest"
   printf '%s\n' "$tag" >"$OUTPUT_DIR/$image.tag"
 done
 
