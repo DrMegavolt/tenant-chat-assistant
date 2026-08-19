@@ -1,11 +1,11 @@
 """The model call, reduced to what a graph node needs.
 
-Deliberately smaller than any provider's API. A node needs to send an assembled
-prompt and a tool list and get back either prose or tool calls; anything else —
-streaming, usage accounting, retries, provider selection — belongs to `AI-001`,
-which implements this port. Keeping the port this narrow is what lets the graph
-be tested against a scripted model with no network, no key, and no recorded
-fixtures.
+Deliberately smaller than any provider's API. A node sends an assembled prompt
+and a tool list and gets back prose or tool calls, plus any usage counters the
+provider returned. Retries and provider selection wrap this port. Response
+streaming is not implemented and remains in `FEAT-010`. Keeping the port this
+narrow lets the graph run against a scripted model with no network, key, or
+recorded fixtures.
 
 The port's input is the **assembled prompt** (`AI-003`): a closed, versioned
 value carrying its template ID and version, its resolved bindings, and its

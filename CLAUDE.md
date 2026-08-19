@@ -36,15 +36,13 @@ tests/              Cross-cutting tests, including architecture invariants.
 docs/adr/           Architecture decision records. Start at docs/adr/README.md.
 architecture/likec4/ Architecture-as-code model and generated diagrams.
 BACKLOG.md          Full productionization plan with task IDs. Gate B is the target.
-EXPLORATORY_TESTING_BUGS.md Current defect status and historical reproductions.
 ```
 
 ## Invariants
 
 These are the repository's architectural invariants. Mechanical portions are
-enforced by tests; known gaps are release blockers in `BACKLOG.md` and
-`EXPLORATORY_TESTING_BUGS.md`, not silent exceptions. There are no current
-exceptions to the rules below.
+enforced by tests; known gaps are tracked in `BACKLOG.md`, not as silent
+exceptions. There are no current exceptions to the rules below.
 
 1. **`packages/core` imports no framework, driver, transport, or model SDK.**
    Domain rules define `Protocol` ports; adapters live in the service that owns

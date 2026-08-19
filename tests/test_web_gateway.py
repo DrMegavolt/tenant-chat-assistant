@@ -85,8 +85,8 @@ CREDENTIAL_HEADER = "X-Visitor-Credential"
 # What each public route's own frontend request carries, which is what its
 # preflight has to allow. A browser fails the actual request when the preflight
 # omits a header it sends, so an under-permissive entry here is an outage for
-# every cross-origin embed and a same-origin demo never sees it (`BUG-022`:
-# `/api/chat/consent` allowed only `Content-Type` while the widget sent the
+# every cross-origin embed and a same-origin demo never sees it. For example,
+# `/api/chat/consent` once allowed only `Content-Type` while the widget sent the
 # credential, so consent could not be granted from a customer site).
 PUBLIC_PREFLIGHT_HEADERS = {
     # Unauthenticated reads: the widget attaches no credential.

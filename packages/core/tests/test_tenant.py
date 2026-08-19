@@ -46,7 +46,7 @@ class TestPublicProjection:
     def test_public_view_publishes_the_tenant_consent_override(
         self, build_tenant: TenantBuilder
     ) -> None:
-        """BUG-023: the widget must render this, not compose its own sentence.
+        """The widget must render this, not compose its own sentence.
 
         A tenant that overrides the statement is the case where a locally
         rebuilt default and the recorded copy silently disagree, so the value

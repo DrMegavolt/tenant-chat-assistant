@@ -517,7 +517,7 @@ def _requires_retrieved_evidence(agent: AgentSpec | None, rule: RoutingRule | No
     the agent's own intent, and for the general agent that evidence set *is* the
     tenant's business facts — hours, opening times, pricing, phone, address,
     services — which are server-owned truth already bound into the prompt, so
-    retrieval only enriches them (`BUG-009`). Any other rule placed the turn
+    retrieval only enriches them. Any other rule placed the turn
     here without that evidence, which leaves approved documents as the only
     thing that can answer it.
     """
@@ -740,7 +740,7 @@ class DispatchNodes:
         # A tenant without booking does not offer it: booking and its
         # availability precursor leave the candidate set entirely, so the
         # recorded decision never shows them and the assistant is never put in
-        # a position to solicit booking-only fields (`BUG-019`).
+        # a position to solicit booking-only fields.
         policy = await self._deps.policies.policy(tenant_id)
         disabled_intents = (
             (IntentName.BOOKING, IntentName.AVAILABILITY) if not policy.booking_enabled else ()

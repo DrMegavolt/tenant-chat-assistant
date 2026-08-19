@@ -323,7 +323,7 @@ def test_a_handoff_on_a_real_session_reuses_the_session_not_a_shadow_row(
 ) -> None:
     """A server-issued session UUID must not spawn a second ``chat_sessions`` row.
 
-    BUG-001: when the caller passes a real session UUID the store created earlier,
+    When the caller passes a real session UUID the store created earlier,
     ``_action_session`` must resolve it to that existing row instead of inserting
     a shadow row that the pause gate cannot discover.
     """

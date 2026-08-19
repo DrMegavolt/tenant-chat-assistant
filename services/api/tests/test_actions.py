@@ -260,7 +260,7 @@ class TestBookingIdempotency:
 class TestBookingConfirmationEcho:
     """What the confirmation reports back, now that no HTTP route projects it.
 
-    These moved here when `BUG-021` retired `POST /api/book`. The graph's
+    These moved here when the direct `POST /api/book` route was retired. The graph's
     `commit_booking` node reads the same fields to tell the customer what was
     booked, so the guarantees outlive the route that used to serve them.
     """

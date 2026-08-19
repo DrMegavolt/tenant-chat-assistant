@@ -1,51 +1,46 @@
-# Tenant Chat Target Architecture
+# Architecture diagrams
 
-This directory is the architecture-as-code source for the proposed production end
-state. It is a *target* model, not a picture of `main` — most of it is the plan in
-[`BACKLOG.md`](../../BACKLOG.md), not shipped code.
+This directory models the implementation and reference Kubernetes deployment
+currently present in the repository. It does not include proposed calendar,
+CRM, notification, streaming, high-availability, or managed-data services.
+Those remain in [`BACKLOG.md`](../../BACKLOG.md).
 
-It models the decisions in [`docs/adr/`](../../docs/adr/):
-
-- Framework-independent typed domain services own authorization, policy,
-  transactions, idempotency, and business records.
-- LangGraph v1 is the **only** agent runtime, with no abstraction layer over
-  agent frameworks ([ADR-0001](../../docs/adr/0001-agent-runtime.md)). Its
-  checkpoints are not the business system of record.
-- Postgres and a durable outbox/worker layer own committed application state and
-  external delivery.
-- Telemetry is split into two planes
-  ([ADR-0010](../../docs/adr/0010-telemetry-planes.md)): a content-free
-  operational plane, and an inference plane whose turn record — a first-party
-  Postgres table, not a vendor — is the system of record for answer provenance.
-- MCP is an optional interoperability boundary, not a replacement for domain
-  validation.
+The source is [`architecture.c4`](architecture.c4), written in LikeC4. Generated
+PNG files are committed under [`diagrams/`](diagrams/) so they render on
+GitHub without a build step.
 
 ## Views
 
-- `index`: system context and external dependencies.
-- `platform_overview`: logical platform containers and data stores.
-- `agent_runtime`: the LangGraph runtime, router, prompt assembly, specialized agents, and the deterministic tool boundary. The dispatcher graph, the checkpoint adapter, and the action idempotency store are built (`ARCH-001`); the rest of this view is target state.
-- `knowledge_pipeline`: governed ingestion, retrieval, evidence, and citation flow.
-- `business_actions`: transactional tools, outbox workers, and external integrations.
-- `answer_provenance`: the turn record, failure attribution, replay, evaluation, and the two telemetry planes.
-- `production_deployment`: proposed Kubernetes and managed-data deployment.
+| View | Scope |
+| --- | --- |
+| [`index`](diagrams/index.png) | Visitors, operators, the platform, and its external dependencies |
+| [`platform_overview`](diagrams/platform_overview.png) | Current process and storage boundaries |
+| [`agent_runtime`](diagrams/agent_runtime.png) | The implemented `dispatch@3` LangGraph path and deterministic tool boundary |
+| [`knowledge_pipeline`](diagrams/knowledge_pipeline.png) | Upload, ingestion, indexing, retrieval, and evidence validation |
+| [`business_actions`](diagrams/business_actions.png) | Locally committed bookings, leads, and handoffs |
+| [`answer_provenance`](diagrams/answer_provenance.png) | Turn records, operator review, and content-free operational telemetry |
+| [`production_deployment`](diagrams/production_deployment.png) | The single-replica MicroK8s topology tracked under `k8s/` |
 
-## Commands
+The final view keeps its historical filename so existing links do not break,
+but it shows the repository's reference deployment rather than claiming a
+highly available production topology.
 
-Run from this directory:
+## Update the diagrams
 
-```bash
-npm install
-npm run format:check
-npm run validate
-npm run build
-npm run export:png
-```
-
-Preview interactively:
+From the repository root:
 
 ```bash
-npx likec4 serve
+npm --prefix architecture/likec4 ci
+make arch-validate
+make arch-build
 ```
 
-Generated PNG files are written to `diagrams/`. The generated static site is written to `dist/` and intentionally ignored because it can be rebuilt from the model.
+To check formatting or open the interactive viewer:
+
+```bash
+npm --prefix architecture/likec4 run format:check
+npm --prefix architecture/likec4 exec likec4 serve
+```
+
+`make arch-build` regenerates the tracked PNGs. LikeC4 also writes a static
+site to `dist/`; that directory is ignored because it is fully rebuildable.

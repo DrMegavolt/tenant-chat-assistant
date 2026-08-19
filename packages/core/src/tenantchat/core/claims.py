@@ -235,8 +235,7 @@ def answer_rests_only_on_tool_verdicts(
     97205?" is answered by the service-area tool, so a retrieved passage that
     happens to share a word with it — the financing document's lead-capture
     paragraph mentions "ZIP code" — is not support, and publishing it as a
-    citation attributes the answer to a document that had no part in it
-    (`BUG-004`).
+    citation attributes the answer to a document that had no part in it.
 
     Relevance scoring cannot make this call: that passage scores 0.40 against
     the answer's content words, above legitimate citations at 0.38 and 0.14.

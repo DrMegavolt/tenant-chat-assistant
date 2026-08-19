@@ -142,7 +142,7 @@ def test_plain_answer_without_sensitive_claims_is_supported() -> None:
 class TestServiceAreaClaims:
     """Whether a ZIP is served is decided by tenant policy, never by a document.
 
-    BUG-020: the service-area tool answered `served: true`, the model said so,
+    The service-area tool answered `served: true`, the model said so,
     and the validator refused the whole answer because no retrieved passage
     repeated it. Retrieval cannot ground these claims, so the tool's own
     verdict has to.

@@ -60,7 +60,7 @@ export function useAdminConsole(api: AdminApi): AdminConsole {
   // Interval ticks, tenant switches, manual selections, and post-send refreshes
   // all fetch the same two pieces of state, and a slower earlier response would
   // otherwise land last and win — showing one tenant's sessions under another
-  // tenant's name (`BUG-025`). Every read claims a generation before its first
+  // tenant's name. Every read claims a generation before its first
   // await and may only publish while it is still the newest.
   const generationRef = useRef(0);
   const claimGeneration = useCallback(() => {

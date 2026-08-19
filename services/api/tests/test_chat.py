@@ -199,7 +199,7 @@ def test_a_consented_lead_confirmation_captures_once(
 ) -> None:
     """A lead pauses for the visitor's consent and captures only after approval.
 
-    BUG-003: the assistant must never promise a callback without a committed
+    The assistant must never promise a callback without a committed
     lead, and an approval alone is not consent — the recorded grant is what the
     domain service accepts before storing contact data.
     """

@@ -233,7 +233,7 @@ AUDIT_ACTIONS: Final = frozenset(
 """Every action an audit record may carry.
 
 The operator's action filter offers exactly this set, so an event type that
-reaches the table but not the filter — `BUG-018` — is a test failure rather
+reaches the table but not the filter is a test failure rather
 than something an operator discovers mid-incident. `tests/test_audit_taxonomy.py`
 holds both ends to it: the routers may emit nothing outside it, and the admin
 console's `AUDIT_ACTIONS` must list all of it.

@@ -364,7 +364,7 @@ def _lead_call() -> ToolCall:
 def test_a_second_lead_in_one_response_is_refused_rather_than_ignored() -> None:
     """Only one lead can await consent; the other call still needs an answer.
 
-    BUG-003: capturing a second lead after the customer answered about the
+    Capturing a second lead after the customer answered about the
     first would store contact data nobody agreed to, and skipping the call
     would leave it dangling for the next turn.
     """
@@ -420,7 +420,7 @@ def test_a_declined_lead_captures_nothing() -> None:
 def test_a_lead_is_never_captured_without_a_recorded_consent_grant() -> None:
     """The consent gate lives in the domain service, not in the graph.
 
-    BUG-003: even with the confirmation answered, an approval alone must not
+    Even with the confirmation answered, an approval alone must not
     capture a lead when the session holds no grant — the recorded grant is the
     only thing `PRIV-001` accepts as consent, and the refusal surfaces as a
     tool result the assistant can tell the visitor about.

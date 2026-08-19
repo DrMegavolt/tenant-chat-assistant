@@ -125,7 +125,7 @@ def test_release_scripts_and_smoke_tests_name_only_current_workloads() -> None:
 
 
 def test_the_local_release_reconciles_orphaned_networking_objects() -> None:
-    """BUG-014: apply deletes nothing, so a release must fail on stale drift.
+    """Apply deletes nothing, so a release must fail on stale drift.
 
     The one-time cleanup deleted the orphan chat-backend Service and the
     monitors for the removed services; the reconciliation step is what stops a

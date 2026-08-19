@@ -48,8 +48,8 @@ LEAD_MESSAGE = "Please call me back."
 class _ActionModel:
     """Proposes the action the visitor message names, and nothing else.
 
-    The graph is the only ingress that writes a booking or a lead since
-    `BUG-021` retired the direct routes, so a test about what the production
+    The graph is the only ingress that writes a booking or a lead since the
+    direct routes were retired, so a test about what the production
     composition *persists* has to go through it.
     """
 

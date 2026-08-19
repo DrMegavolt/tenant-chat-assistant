@@ -112,7 +112,7 @@ describe("the chat queue", () => {
   });
 
   test("handoff lifecycle notices are attributed to the system, not the visitor", async () => {
-    // BUG-017: a system notice collapsed to the customer side of the
+    // A system notice must not collapse to the customer side of the
     // conversation, so operators read "a member of the team joined" as visitor
     // speech. Each author type keeps its own label.
     stubAdminBackend();
@@ -223,7 +223,7 @@ describe("the chat queue", () => {
 
 describe("overlapping reads never publish a superseded response", () => {
   /**
-   * BUG-025: the console read the tenant and selection, awaited, then published
+   * The console reads the tenant and selection, awaits, then publishes
    * whatever came back. A slow earlier response landing last replaced the newer
    * tenant's queue or transcript, so an operator could read one conversation
    * under another's heading — and act on it.

@@ -101,8 +101,8 @@ kubectl -n "$NS" wait --for=condition=complete job/configure-kibana-system-user 
 
 kubectl -n "$NS" rollout status statefulset/postgres --timeout=300s
 # The API rolls out and becomes ready before the widget bundle that reads it.
-# The widget renders fields the API publishes — the consent statement is one
-# (`BUG-023`) — so a new bundle served by an older API renders them empty. The
+# The widget renders fields the API publishes, including the consent statement,
+# so a new bundle served by an older API renders them empty. The
 # reverse order is safe: an older bundle ignores a field it does not know about.
 kubectl -n "$NS" rollout restart deploy/oauth2-proxy deploy/chat-backend deploy/job-worker deploy/embedding-service deploy/kibana
 kubectl -n "$NS" rollout status deploy/oauth2-proxy --timeout=180s

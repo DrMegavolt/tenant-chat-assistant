@@ -72,7 +72,7 @@ def test_every_intent_is_a_scored_candidate_not_just_the_winner() -> None:
 def test_a_disabled_intent_is_not_a_candidate_and_cannot_be_chosen() -> None:
     """A tenant without a capability is not offered it, on any message.
 
-    BUG-019: booking routing for a booking-disabled tenant would hand the
+    Booking routing for a booking-disabled tenant would hand the
     assistant the booking agent's context — "you may schedule once you collect
     these fields" — contradicting the tenant's policy. Removing the intent from
     the candidate set means the recorded decision honestly shows it never

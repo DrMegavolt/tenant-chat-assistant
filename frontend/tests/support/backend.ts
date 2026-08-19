@@ -15,7 +15,7 @@ import type { WireTenant } from "src/widget/api";
  * a tenant name. `GET /api/tenants` publishes it and `POST /api/chat/consent`
  * records it, because both read `TenantPolicy.consent_statement()` — so one
  * constant here is the faithful fixture. A widget that rebuilds the copy from
- * the tenant name renders the default instead and fails (`BUG-023`).
+ * the tenant name renders the default instead and fails.
  */
 export const CLEARVIEW_CONSENT_STATEMENT =
   "Clearview Heating keeps the details you enter here to schedule your " +

@@ -318,8 +318,8 @@ def test_refused_and_failed_outcomes_are_recorded(
 ) -> None:
     """A `RAG-007` refusal or an `OBS-006` crash is a legitimate terminal outcome.
 
-    BUG-016: the outcome CHECK constraint was frozen before the graph learned
-    to record these two statuses, so a refused or failed turn failed its own
+    The outcome CHECK constraint must include every terminal state the graph can
+    record. Otherwise a refused or failed turn fails its own
     insert and the IntegrityError was misreported as "session absent or outside
     tenant" after the model had already answered.
     """

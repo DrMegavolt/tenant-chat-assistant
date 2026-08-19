@@ -16,7 +16,7 @@ NPM := npm --prefix frontend
 	js-format-check js-typecheck js-build js-test js-test-cov 	deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate \
-	seed-knowledge dashboard-check grafana-smoke harness-a harness-b harness-live
+	seed-knowledge dashboard-check docs-check grafana-smoke harness-a harness-b harness-live
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -62,6 +62,9 @@ dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated ou
 		$(UV_RUN) python -c "import json; json.load(open('$$f'))" && echo "  OK: $$f" || exit 1; \
 	done
 	@$(UV_RUN) python k8s/grafana/_generate_dashboards.py --check
+
+docs-check: ## Verify local links and images in repository Markdown
+	$(UV_RUN) python scripts/check_docs.py
 
 test-cov: ## Run tests with a coverage report
 	$(UV_RUN) pytest -m "not integration and not chart" --cov --cov-report=term-missing \
@@ -164,7 +167,7 @@ deploy-local: ## Build, migrate, and deploy all images to the local MicroK8s clu
 # eval-gate runs the baseline-vs-candidate comparison over every versioned
 # dataset with determinism verification; it is hermetic and takes ~2s.
 check: lock-check lint format-check typecheck js-lint js-typecheck js-format-check js-build \
-	eval-gate test-cov js-test-cov deployment-security image-contracts dashboard-check ## Full local and CI quality gate
+	eval-gate test-cov js-test-cov deployment-security image-contracts dashboard-check docs-check ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
 

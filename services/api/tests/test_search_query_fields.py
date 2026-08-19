@@ -75,7 +75,7 @@ def _index(handler: Any) -> ElasticsearchSearchIndex:
 
 # Every read or bulk-mutation this adapter issues against a tenant's chunks.
 # A new one belongs here: the mapping contract below is only as wide as this
-# list, and a query nobody exercises is exactly how BUG-020's sibling shipped.
+# list; an unexercised query can silently drift from the mapping.
 _QUERY_CALLS = (
     "active_chunk_count",
     "active_embedding_models",

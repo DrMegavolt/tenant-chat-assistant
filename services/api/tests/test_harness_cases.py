@@ -396,7 +396,7 @@ async def _plant_multicase_knowledge(
 
 # Cases 2 and 3 ask about the Care Plan rather than about hours. The tenant's
 # hours are server-owned configuration bound into every prompt, so an hours
-# question is answerable with no retrieval at all (`BUG-009`) and would keep
+# question is answerable with no retrieval at all and would keep
 # answering whether the source was stale or the generation missing — proving
 # neither. Only the document each case plants, and neither case leaves
 # retrievable, can answer these.

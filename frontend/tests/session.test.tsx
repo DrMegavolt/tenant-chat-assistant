@@ -283,7 +283,7 @@ describe("a stored credential the API would reject", () => {
 
   test("a credential whose conversation is gone is discarded and the message delivered once again", async () => {
     // A 404 means the server no longer has the session the stored credential
-    // names (BUG-008/BUG-016): a stored conversation erased server-side, or a
+    // names: a stored conversation erased server-side, or a
     // switch back to a tenant whose session was discarded. The widget must
     // recover the same way it recovers from an expired token instead of
     // leaving the visitor stuck on a generic failure.

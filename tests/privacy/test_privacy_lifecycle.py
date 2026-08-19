@@ -70,7 +70,7 @@ pytestmark = pytest.mark.integration
 class PlainModel:
     """Answers plainly, but proposes the action a turn's message asks for.
 
-    Since `BUG-021` retired the direct booking and lead routes, the graph is the
+    Since the direct booking and lead routes were retired, the graph is the
     only ingress that can plant a subject's records. The trigger is the visitor
     message rather than a fixed script, so one model instance serves every
     session this suite opens without the tests having to order their turns.
@@ -238,7 +238,7 @@ def plant_subject(
     when the tenant books.
 
     Everything is planted through the graph, which is the only ingress since
-    `BUG-021` retired the direct routes — so what the export has to find is
+    the direct routes were retired — so what the export has to find is
     exactly what a real conversation writes.
     """
     visitor = open_session_with_consent(client, tenant_id, ["booking", "follow_up"])

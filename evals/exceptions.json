@@ -8,7 +8,7 @@
       "candidate_manifest_hash": "30bb437eeb374df01bd8ce355d756d09c22d01830137dad367f8c9d99375bbe7",
       "waived_by": "RAG-008 baseline review",
       "waived_at": "2026-08-06",
-      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes refreshed by RAG-006 when the query planner version joined the manifest, and again when the lead-confirmation nodes raised the dispatcher graph to dispatch@3 (BUG-003)."
+      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes were refreshed when the query planner version joined the manifest and again when lead confirmation raised the dispatcher graph to dispatch@3."
     },
     {
       "case_id": "clearview-hvac-current-pricing",
@@ -17,7 +17,7 @@
       "candidate_manifest_hash": "30bb437eeb374df01bd8ce355d756d09c22d01830137dad367f8c9d99375bbe7",
       "waived_by": "RAG-008 baseline review",
       "waived_at": "2026-08-06",
-      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes refreshed by RAG-006 when the query planner version joined the manifest, and again when the lead-confirmation nodes raised the dispatcher graph to dispatch@3 (BUG-003)."
+      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes were refreshed when the query planner version joined the manifest and again when lead confirmation raised the dispatcher graph to dispatch@3."
     }
   ]
 }

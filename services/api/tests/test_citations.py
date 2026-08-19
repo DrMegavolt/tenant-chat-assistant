@@ -628,7 +628,7 @@ def test_evidence_excluded_by_the_prompt_budget_answers_from_tenant_facts() -> N
 
 
 def test_a_question_outside_the_tenant_facts_abstains_without_calling_the_model() -> None:
-    """The `BUG-009` carve-out is scoped to the questions the tenant's own
+    """The trusted-configuration carve-out is scoped to questions the tenant's own
     configuration answers. A question the router matched nothing for has no
     server-owned fact behind it, so an empty evidence pool leaves the model
     with nothing to answer from and it must not be asked to try.
@@ -717,7 +717,7 @@ def _service_area_script(zip_code: str, answer: str) -> list[ModelResponse]:
 
 
 def test_a_service_area_answer_its_own_tool_confirmed_is_published() -> None:
-    """BUG-020: the tool said served, and the answer was refused anyway.
+    """A tool-confirmed service-area answer must be published.
 
     No approved document records which ZIPs a tenant serves, so claim
     validation had nothing to match and withheld a true answer the graph had
@@ -749,7 +749,7 @@ def test_a_service_area_answer_contradicting_its_tool_is_still_refused() -> None
 
 
 def test_a_tool_answered_service_area_reply_cites_no_document() -> None:
-    """BUG-004: the answer's truth came from the tool, so no document earned a citation.
+    """An answer grounded by a tool must not cite an unrelated document.
 
     The financing document's lead-capture paragraph mentions "ZIP code", which
     is enough for the model to cite it beside "yes, we serve 97205" — and enough

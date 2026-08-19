@@ -9,35 +9,21 @@ records the walkthrough steps reference, then speak to what the run printed.
 
 ## Readiness status
 
-This runbook is the operator path for a **controlled local** demonstration.
-Every defect the 2026-08-17 repository review found is closed; the hermetic gate
-and the real-PostgreSQL suites are green; and `make harness-live` runs 20 checks
-with 0 failures against a cluster carrying this revision.
+This runbook is the operator path for a **controlled local** demonstration. The
+2026-08-17 repository review findings were repaired, and the later live harness
+completed 20 checks without a failure after its timeout was raised for the local
+model. That result applies to the tested cluster revision, not automatically to
+the current checkout.
 
-Several things still qualify what you can claim. BUG-010, BUG-012, and BUG-013
-are unverified rather than fixed. BUG-026 is open: a model that hedges with "we
-cannot guarantee approval" has that answer refused, so a financing question can
-occasionally return the refusal text instead — safe, but not the answer you
-wanted on stage; re-ask if it happens. And a live harness run is evidence only
-about the revision it ran against, so check that the run you cite matches what
-you are showing. Confirm current status in [BACKLOG.md](../../BACKLOG.md) and
-the [defect dossier](../../EXPLORATORY_TESTING_BUGS.md) before presenting.
+Several things still qualify what you can claim. Model timeout replay, the wider
+observability UI audit, and old-widget/new-server compatibility have not been
+revalidated in a controlled deployment. A model disclaimer can also be refused
+as an unsupported coverage claim; this is safe, but may produce an unexpected
+financing answer on stage. Re-ask if it occurs.
 
-The 2026-08-18 walkthrough added BUG-027 through BUG-033, and three of them
-change what you should say on stage:
-
-- **BUG-027** — a turn record's tool table and committed effects are
-  session-cumulative. Opening a late turn credits it with earlier turns' tool
-  calls and actions, and contradicts the executed graph in the same view. Drive
-  the tools and idempotency beat from a turn whose effect is its own, and use
-  the executed graph as the account of what ran.
-- **BUG-028 / BUG-029** — the session detail's Bookings, Lead info, and Tool
-  calls cards never fill, and the queue's Leads and Messages tiles always read
-  zero. Show a captured lead from the turn record or the visitor's receipt, not
-  from those panels.
-- **BUG-030 / BUG-031 / BUG-032** are cosmetic but on-camera: a stray space
-  before a period in grounded answers, a missing conjunction in the consent
-  sentence, and a cited source dated in UTC.
+A live harness run is evidence only about the revision it ran against. Confirm
+the current scope in [BACKLOG.md](../../BACKLOG.md), run the harness, and use
+the executed graph—not summary cards—as the account of what a turn ran.
 
 Some Gate B scenarios are inherently hermetic — they need planted stale content,
 a controlled retriever config, or a scripted model. Those are covered by
@@ -57,16 +43,16 @@ click.
 
    `k8s/deploy.sh` rolls `chat-backend` to ready before `web`, because the
    widget renders fields the API publishes and a new bundle served by an older
-   API renders them empty (see BUG-013 in the defect dossier). Keep that order
-   if you ever restart the deployments by hand.
+   API can render them empty. Keep that order if you restart the deployments by
+   hand.
 
 2. **Seed knowledge.** The retrieval pipeline needs governed knowledge for both
    demo tenants. The `make seed-knowledge` target loads the financing options
    document through the full upload → approve → publish → index lifecycle for
    the `clearview` and `apex` tenants. Business hours, pricing, and contact
-   facts are trusted tenant configuration, not indexed documents — the BUG-009
-   hours answers come from that configuration. Without the seed, the citation
-   cases retrieve nothing.
+   facts are trusted tenant configuration, not indexed documents. Hours answers
+   therefore come from configuration. Without the seed, the citation cases
+   retrieve nothing.
 
 3. **Run the harness live.** This puts real turn records into the explorer for
    the demo. It is idempotent and re-runnable — each run produces a fresh set
@@ -171,7 +157,7 @@ rather than answering from stale content.
 
 The query deliberately is *not* an hours question. Hours, phone, address, and
 approved prices are server-owned tenant configuration bound into every prompt,
-so the general agent answers those without any retrieval at all (`BUG-009`) and
+so the general agent answers those without any retrieval at all and
 a stale hours document would be invisible. Only the expired Care Plan document
 can answer this one, which is what makes the expiry observable.
 
@@ -203,7 +189,7 @@ weekends?" **Outcome.** `answered` from trusted tenant configuration, with no
 evidence items — the seeded cluster holds no indexed hours document.
 
 The live cluster cannot reproduce a deliberately expired document without
-reseeding, so the live record demonstrates the BUG-009 configuration path
+reseeding, so the live record demonstrates the trusted-configuration path
 rather than the freshness check. The hermetic scenario above is what proves
 the expiry behavior.
 

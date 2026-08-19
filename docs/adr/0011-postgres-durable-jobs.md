@@ -1,75 +1,49 @@
-# 0011 — PostgreSQL outbox with leased at-least-once delivery
+# 0011 — PostgreSQL outbox with at-least-once delivery
 
 - **Status:** Accepted
 - **Date:** 2026-08-04
-- **Affects:** `REL-003`, `RAG-002`, `FEAT-003`, `FEAT-005`, `PRIV-001`
 
 ## Context
 
-Ingestion, privacy erasure, CRM delivery, notifications, and webhooks must
-survive API and worker restarts. A process-local task or broker acknowledgement
-cannot commit atomically with the PostgreSQL domain record that caused it. The
-system also needs tenant-qualified operator inspection and replay without
-publishing job payloads, which can contain contact or document data.
-
-An external call cannot be made atomically with a local database commit. A
-worker can always die after the receiver commits and before the local queue is
-acknowledged, so a generic claim of exactly-once execution would be false.
+Ingestion and privacy work must survive API and worker restarts. Publishing to a
+separate broker cannot be committed atomically with the PostgreSQL record that
+caused the work. No generic queue can guarantee exactly-once execution across a
+database and an external receiver.
 
 ## Decision
 
-Use PostgreSQL as the durable job/outbox store. A domain mutation and its job
-intent are inserted in one database transaction. Workers claim due rows with
-`FOR UPDATE SKIP LOCKED`, a bounded lease, and a stable worker ID. Expired leases
-are eligible for another worker, so termination and cluster restart lose no
-work. A heartbeat extends leases for long handlers.
+Use PostgreSQL as the durable job and outbox store. Insert the domain mutation
+and its job intent in one transaction.
 
-Delivery is at least once. Each job has a unique `(tenant_id, kind,
-idempotency_key)` identity and a hash of its payload. Re-enqueueing the same key
-and payload returns the original row; reusing it for different work is a
-conflict. Every effect handler must propagate that stable key to its external
-receiver or use it in the transaction that records a local effect. The receiver
-returns the original result for a repeated key. This is how duplicate execution
-produces one business effect.
+Workers claim jobs with `FOR UPDATE SKIP LOCKED`, a bounded lease, and a stable
+worker identity. Expired leases can be reclaimed, and long handlers renew their
+lease. Retryable failures use capped exponential backoff; permanent or exhausted
+failures enter a dead-letter state.
 
-Retryable failures use capped exponential backoff. A non-retryable failure, or
-a failure at the configured attempt limit, enters `dead_lettered`. Operators
-with tenant-admin access can inspect safe metadata and an append-only event
-trail, retry a dead letter from attempt zero, or cancel pending/dead-lettered
-work. Running work cannot be cancelled because an external effect may already
-be in flight. Payloads are deliberately absent from the operator API, logs, and
-job events.
+Delivery is at least once. Each job has a unique tenant, kind, and idempotency
+key plus a payload hash. Reusing the key for different work is a conflict. Every
+effect handler must pass the stable key to its receiver or enforce it in the
+local transaction that records the effect.
 
-The first handler moves privacy deletion onto this mechanism. Later tasks add
-ingestion, CRM, notification, and webhook handlers behind the same typed
-contract; REL-003 reserves those kinds but does not implement their integrations.
+Authorized operators can inspect safe metadata and event history, retry dead
+letters, or cancel work that has not started. Job payloads are excluded from the
+operator API and telemetry.
 
 ## Consequences
 
-**Gained.** Jobs and their audit trail survive restarts, workers scale without
-double leasing, transient failures retry without hot loops, and failed work is
-visible and controllable within its tenant boundary. The transactional privacy
-outbox proves that a committed request cannot exist without runnable work.
+Committed work survives restarts, workers scale without double leasing, and
+failures remain visible and recoverable. PostgreSQL remains the only durable
+queue dependency.
 
-**Cost.** Handler authors must implement effect-level idempotency. Queue polling
-adds bounded Postgres traffic, and long handlers write lease-renewal events.
-Postgres remains a single dependency for both domain state and delivery.
-
-**Boundary.** “Exactly once” means one observable business effect, not one
-handler invocation. A provider that offers no idempotency key requires a local
-reconciliation design in the dependent integration task; REL-003 cannot create
-an atomic transaction across two systems.
+Handlers must implement effect-level idempotency. Polling and lease renewal add
+database traffic. “Exactly once” means one observable business effect, not one
+handler invocation.
 
 ## Alternatives considered
 
-**Celery/Redis or a managed broker.** Rejected for this stage because publishing
-to the broker still races the domain commit and would require a PostgreSQL
-outbox relay anyway. It also adds an operational dependency without improving
-the demonstrated guarantee.
-
-**PostgreSQL advisory locks.** Rejected because they disappear with the
-connection and do not record ownership, expiry, retries, or operator history.
-
-**Exactly-once worker acknowledgements.** Rejected as an impossible generic
-promise across an external receiver and PostgreSQL. Receiver idempotency plus
-at-least-once delivery states the real guarantee.
+- **Celery, Redis, or a managed broker:** rejected because a transactional
+  outbox relay would still be required.
+- **Advisory locks:** rejected because they do not persist ownership, expiry,
+  retries, or operator history.
+- **Exactly-once acknowledgements:** rejected because they cannot make an
+  external receiver and PostgreSQL one atomic system.

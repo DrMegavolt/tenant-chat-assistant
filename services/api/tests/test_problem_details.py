@@ -20,8 +20,8 @@ from tenantchat.core.lifecycle import VersionState
 PayloadBuilder = Callable[..., dict[str, object]]
 
 # A contact-bearing route that still parses a `Contact`, so the domain raises
-# the same `InvalidContactError` these tests are about. The visitor booking and
-# lead routes that used to serve this purpose were retired with `BUG-021`.
+# the same `InvalidContactError` these tests are about. The former visitor
+# booking and lead routes that served this purpose have been retired.
 CONTACT_ROUTE = "/api/admin/privacy/export"
 UNPARSEABLE_CONTACT = "0001234567"
 
@@ -81,8 +81,7 @@ class TestOperatorDetailIsNotPublished:
 
         Asserted against the mapping itself rather than through a route, so it
         holds for every caller that raises this error — the graph's booking tool
-        included, which is the only ingress left since `BUG-021` retired the
-        direct route.
+        included, which is the only ingress after the direct route was retired.
         """
         error = SlotUnavailableError(
             offered=("Mon Jul 8, 9:00 AM",),

@@ -16,11 +16,11 @@ retry after a timeout cannot duplicate one — and a model call is the only
 operation this adapter retries. The graph still turns the *final* failure into
 a handoff, exactly as ``call_model`` documents.
 
-Deliberate non-goals, owned by later tasks:
+Deliberate non-goals:
 
-- Streaming and usage accounting beyond the naive token counts a provider may
-  include are `AI-001`/`OBS-002` scope; this adapter captures whatever the
-  response carries and nothing more.
+- Response streaming belongs to `FEAT-010`. Usage accounting records the
+  counters returned by the provider but does not attempt provider-specific
+  billing.
 
 Why httpx rather than the ``openai`` SDK: the SDK is a heavy, fast-moving
 dependency and drags in a transport layer the project does not otherwise need.

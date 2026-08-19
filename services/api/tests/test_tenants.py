@@ -63,8 +63,8 @@ class TestPublicTenantSurface:
         The two lists come from the same provider but through different code —
         this endpoint projects labels, `BookingCommand.parse` matches them — so
         a formatting change on either side silently offers unbookable times.
-        Held here since `BUG-021` retired `POST /api/book`, which used to prove
-        it end to end.
+        Held here since the direct `POST /api/book` route that used to prove it
+        end to end was retired.
         """
         from tenantchat.api.registry import TenantRegistry, demo_offered_slots
         from tenantchat.core.commands import BookingCommand

@@ -45,12 +45,6 @@ specification {
     }
   }
 
-  element agent {
-    style {
-      color blue
-    }
-  }
-
   element worker {
     style {
       color amber
@@ -102,12 +96,6 @@ specification {
 
   deploymentNode environment
 
-  deploymentNode edge {
-    style {
-      color green
-    }
-  }
-
   deploymentNode kubernetes {
     style {
       color blue
@@ -124,7 +112,7 @@ specification {
     }
   }
 
-  deploymentNode managed {
+  deploymentNode storage {
     style {
       color amber
     }
@@ -139,584 +127,383 @@ specification {
 
 model {
   visitor = person 'Visitor' {
-    description 'Customer using an embedded tenant chat widget'
+    description 'Uses the embedded chat widget'
   }
 
-  supportAgent = person 'Support Agent' {
-    description 'Handles escalations and takes over conversations'
-  }
-
-  tenantAdmin = person 'Tenant Administrator' {
-    description 'Configures tenant policy, knowledge, integrations, and reporting'
+  operator = person 'Operator' {
+    description 'Reviews chats, knowledge, handoffs, jobs, access, and AI turns'
   }
 
   platformOperator = person 'Platform Operator' {
-    description 'Operates deployments, security, reliability, and incident response'
+    description 'Deploys the system and monitors its health'
   }
 
-  identityProvider = externalSystem 'Identity Provider' {
-    technology 'OIDC / OAuth 2.1'
-    description 'Authenticates staff and administrative principals'
+  identityProvider = externalSystem 'Keycloak' {
+    technology 'OIDC'
+    description 'Authenticates operators and supplies group membership to oauth2-proxy'
   }
 
-  modelProviders = externalSystem 'Model Providers' {
-    technology 'OpenAI-compatible and provider adapters'
-    description 'Chat, tool-calling, embedding, and optional reranking models'
+  chatModel = externalSystem 'OpenAI-compatible Chat Model' {
+    description 'Generates assistant responses and tool calls. The repository deployment points to a separately operated provider.'
   }
 
-  calendarProvider = externalSystem 'Calendar / Field Service' {
-    description 'Authoritative external availability and appointment system'
+  operationalTelemetry = externalSystem 'Operational Observability Stack' {
+    technology 'OpenTelemetry, Prometheus, Grafana, Loki, Tempo'
+    description 'Stores content-free logs, metrics, and traces'
   }
 
-  crmProvider = externalSystem 'CRM' {
-    description 'Receives consented, deduplicated leads'
-  }
+  platform = softwareSystem 'Tenant Chat Assistant' {
+    description 'Multi-tenant RAG, booking, lead, handoff, and answer-review demo'
 
-  messageProvider = externalSystem 'Email / SMS Provider' {
-    description 'Sends consented notifications and operational messages'
-  }
+    web = application 'Web Image' {
+      technology 'nginx, React, Vite'
+      description 'One image containing the public site, widget bundle, operator console, and same-origin gateway'
 
-  mcpServers = externalSystem 'Optional MCP Tool Servers' {
-    technology 'MCP with OAuth 2.1'
-    description 'Reusable external tools with least-privilege authorization'
-  }
-
-  observability = externalSystem 'Operational Telemetry Platform' {
-    technology 'OpenTelemetry Collector, Prometheus, Grafana, Loki, Tempo'
-    description 'The content-free plane: spans, metrics, logs, SLOs, and alerts carrying identifiers, enums, counts, and versions. Never prompts, evidence, or outputs.'
-  }
-
-  traceViewer = externalSystem 'Inference Trace Viewer' {
-    technology 'Self-hosted OSS — Phoenix, Langfuse, or OpenLIT'
-    description 'A replaceable projection of GenAI-convention spans, never a system of record. Content export is off by default; swapping it is collector configuration, not an instrumentation change.'
-  }
-
-  platform = softwareSystem 'Tenant Chat Platform' {
-    description 'Secure multi-tenant RAG and business-workflow platform'
-
-    experience = application 'Experience Layer' {
-      technology 'Versioned web assets'
-
-      widget = userInterface 'Embeddable Chat Widget' {
-        technology 'HTML, CSS, JavaScript'
-        description 'Streaming chat, citations, consent, booking, and handoff status'
+      gateway = service 'nginx Gateway' {
+        description 'Serves assets, applies the visitor CORS allowlist, auth-gates admin paths, and proxies the API'
       }
 
-      admin = userInterface 'Tenant Operations Console' {
-        technology 'Web application'
-        description 'Conversation operations, handoff, knowledge, configuration, and analytics'
+      widget = userInterface 'Visitor Widget' {
+        technology 'React in a shadow root'
+        description 'Chat, citations, consent, booking confirmation, feedback, and handoff status'
+      }
+
+      admin = userInterface 'Operator Console' {
+        technology 'React'
+        description 'Chat, handoff, review, knowledge, trace, access, and audit views'
       }
     }
 
-    edgeGateway = service 'TLS Ingress and API Gateway' {
-      technology 'Ingress, WAF, rate limits'
-      description 'TLS termination, origin controls, request limits, routing, and correlation IDs'
+    authProxy = service 'oauth2-proxy' {
+      description 'Completes OIDC login and returns authenticated identity headers to nginx'
     }
 
     api = application 'Application API' {
-      technology 'Python ASGI / FastAPI'
+      technology 'FastAPI'
+      description 'One process serving visitor, operator, health, and metrics routes'
 
-      visitorApi = service 'Visitor Chat API' {
-        description 'Secure session creation, turns, citations, and customer data controls'
+      visitorRoutes = service 'Visitor API' {
+        description 'Tenant configuration, signed sessions, chat turns, consent, confirmation, feedback, and source views'
       }
 
-      adminApi = service 'Admin API' {
-        description 'Tenant-scoped administrative and support operations'
+      adminRoutes = service 'Admin API' {
+        description 'Tenant-scoped operations for chats, handoffs, knowledge, reviews, traces, jobs, privacy, and access'
       }
 
-      realtime = service 'Realtime Delivery' {
-        technology 'SSE or WebSocket'
-        description 'Resumable message, staff reply, and handoff event delivery'
+      identity = component 'Identity and Session Security' {
+        description 'Validates gateway identity, tenant membership, CSRF tokens, and signed visitor credentials'
       }
 
-      identity = component 'Identity and RBAC' {
-        description 'Validates staff identity and tenant-scoped roles'
+      orchestration = component 'LangGraph Dispatcher' {
+        technology 'dispatch@3 with a PostgreSQL checkpointer'
+        description 'Nine-node route, model, tool, confirmation, commit, escalation, and finalize graph'
       }
 
-      visitorSessions = component 'Visitor Session Security' {
-        description 'Issues opaque credentials bound to one tenant and conversation'
-      }
-    }
-
-    orchestration = application 'Agent Orchestration' {
-      description 'The single durable workflow boundary. Orchestrates typed domain calls; owns no business truth.'
-
-      graphRuntime = component 'LangGraph v1 Runtime' {
-        technology 'LangGraph with Postgres checkpointer'
-        description 'The only agent runtime, per ADR-0001: branching, pause/resume, approval, handoff, and failure recovery. No abstraction layer over agent frameworks.'
+      router = component 'Intent Router and Agent Registry' {
+        description 'Routes to seven versioned agents with closed tool allowlists'
       }
 
-      dispatchGraph = component 'Dispatcher Graph' {
-        technology 'Six nodes: model, tools, confirm booking, commit booking, escalate, finalize'
-        description 'Built. Interrupts before a booking is committed and resumes after process restart. Causes every effect through an idempotent domain service with a derived key.'
+      prompts = component 'Prompt Assembly' {
+        description 'Builds versioned prompts with explicit trusted and untrusted sections'
       }
 
-      checkpointAdapter = component 'Checkpoint Adapter' {
-        technology 'AsyncPostgresSaver on its own psycopg pool'
-        description 'Built. Persists LangGraph execution state only. Schema created by the library under the schema-owner role, never at runtime. Truncating it loses no business record.'
+      toolDispatcher = component 'Tool Dispatcher' {
+        description 'Executes service-area, availability, booking, lead, and handoff tools through typed domain commands'
       }
 
-      router = component 'Intent Router' {
-        description 'Versioned structured routing. Records every candidate intent and score, not only the winner, so a misroute is distinguishable from a retrieval failure.'
+      domain = component 'Deterministic Domain Services' {
+        technology 'packages/core'
+        description 'Owns policy, validation, consent, state transitions, idempotency, and business rules without framework dependencies'
       }
 
-      promptAssembly = component 'Prompt Assembly and Template Registry' {
-        description 'Versioned templates with schema-validated tenant slots and an explicit trusted/untrusted segment boundary. The only input the model adapter accepts.'
+      persistence = component 'PostgreSQL Adapters' {
+        technology 'SQLAlchemy and psycopg'
+        description 'Stores tenant-qualified conversations, actions, jobs, knowledge metadata, audit events, and turn records'
       }
 
-      guardrails = component 'Agent Guardrails' {
-        description 'Input, output, evidence, tool, budget, and workflow transition checks'
+      knowledge = component 'Knowledge and Retrieval' {
+        description 'Manages document versions and performs tenant-filtered hybrid retrieval, evidence selection, and citation validation'
       }
 
-      generalRag = agent 'General Knowledge Agent' {
-        description 'Answers grounded tenant knowledge questions with evidence'
-      }
-
-      financing = agent 'Financing Agent' {
-        description 'Applies financing-specific policy, retrieval, and safe abstention'
-      }
-
-      scheduling = agent 'Scheduling Agent' {
-        description 'Collects fields and proposes availability before confirmed actions'
-      }
-
-      leadQualification = agent 'Lead Qualification Agent' {
-        description 'Collects consented lead fields and prepares a typed action'
-      }
-
-      handoff = agent 'Handoff Agent' {
-        description 'Summarizes context and enters the staff queue when policy requires'
+      provenance = component 'Answer Provenance' {
+        description 'Records routing, candidates, prompts, model rounds, validation, diagnosis, and executed graph events'
       }
     }
 
-    domain = application 'Deterministic Domain Services' {
-      description 'Framework-independent policy and transactional business actions'
+    jobWorker = application 'Durable Job Worker' {
+      technology 'API image, separate command'
+      description 'Leases PostgreSQL jobs and handles ingestion and privacy deletion with at-least-once execution'
 
-      toolGateway = service 'Typed Tool Gateway' {
-        description 'Authenticated, authorized, validated, and auditable tool boundary'
+      leases = queue 'PostgreSQL Job Queue' {
+        description 'Tenant-qualified jobs, retries, leases, and dead-letter state'
       }
 
-      policy = component 'Tenant Policy Engine' {
-        description 'Deterministic service, pricing, action, consent, and tool permissions'
+      ingestion = worker 'Ingestion Handler' {
+        description 'Scans, parses, chunks, embeds, indexes, and activates approved document versions'
       }
 
-      conversations = service 'Conversation Service' {
-        description 'Tenant-qualified append-only messages ordered transactionally with per-session row locks'
-      }
-
-      bookings = service 'Booking Service' {
-        description 'Transactional slot reservation, confirmation, cancellation, and idempotency'
-      }
-
-      leads = service 'Lead Service' {
-        description 'Consent validation, deduplication, and durable CRM delivery state'
-      }
-
-      handoffs = service 'Handoff Service' {
-        description 'Queue, SLA, assignment, takeover, release, and resolution'
-      }
-
-      tenants = service 'Tenant Configuration Service' {
-        description 'Versioned policies, branding, allowed origins, models, quotas, and integrations'
-      }
-
-      privacy = service 'Privacy Service' {
-        description 'Consent, retention, export, deletion, and PII redaction policy'
-      }
-
-      idempotency = component 'Action Idempotency Store' {
-        technology 'Claim-then-complete over a tenant-scoped unique index'
-        description 'Built. One committed effect per key across bookings, leads, and handoffs, so a replayed graph node writes nothing twice. Keys are stored hashed.'
+      privacy = worker 'Privacy Handler' {
+        description 'Executes approved export, retention, and deletion work with the dedicated database role'
       }
     }
 
-    knowledge = application 'Knowledge and RAG Platform' {
-      description 'Governed content lifecycle and evidence-producing retrieval'
-
-      management = service 'Knowledge Management API' {
-        description 'Draft, scan, approve, publish, supersede, expire, rollback, and delete'
-      }
-
-      ingestion = service 'Ingestion Pipeline' {
-        description 'Secure parsers, model-aware chunking, embedding batches, and index activation'
-      }
-
-      retrieval = service 'Hybrid Retrieval Service' {
-        technology 'Lexical + vector + reranking'
-        description 'Tenant/version filters, relevance threshold, diversification, and abstention'
-      }
-
-      evidence = component 'Evidence and Citation Validator' {
-        description 'Binds supported claims to exact authorized document versions and locations'
-      }
-
-      contentSafety = component 'Content Safety Scanner' {
-        description 'Quarantines suspicious or unsupported source content'
-      }
+    embedding = application 'Embedding Service' {
+      technology 'FastAPI and pinned Qwen3 embedding model'
+      description 'Creates document and query embeddings over authenticated internal routes'
     }
 
-    provenance = application 'Answer Provenance' {
-      description 'The inference telemetry plane, per ADR-0010: what produced each answer, and which stage was at fault when it was wrong'
-
-      turnRecord = service 'Turn Record Service' {
-        description 'Append-only per-turn router decision, retrieval candidate set, assembled prompt, output, validator verdicts, and the version of every component that contributed'
-      }
-
-      failureAttribution = component 'Failure Attribution' {
-        description 'Assigns a closed failure class: stale source, retrieval miss, retrieval rank, filter exclusion, context truncation, ungrounded claim, fabricated citation, routing, tool, or provider'
-      }
-
-      replay = component 'Turn Replay' {
-        description 'Re-runs retrieval alone, the model call alone, or a whole turn under a changed component version, and diffs the result'
-      }
-
-      evalHarness = component 'Evaluation Harness' {
-        technology 'Offline golden datasets, no live dependencies'
-        description 'Scores retrieval recall, citation precision, and abstention against pinned component versions; reviewed production turns become cases'
-      }
+    releaseJobs = application 'Release Jobs' {
+      description 'Runs Alembic, creates LangGraph checkpoint tables, and seeds governed demo knowledge'
     }
 
-    workers = application 'Durable Workers' {
-      description 'Idempotent background work driven by leases and an outbox'
-
-      ingestionWorker = worker 'Ingestion Worker'
-      integrationWorker = worker 'Integration Delivery Worker'
-      reconciliationWorker = worker 'Calendar Reconciliation Worker'
-      notificationWorker = worker 'Notification Worker'
-      privacyWorker = worker 'Retention and Deletion Worker'
+    postgres = database 'PostgreSQL' {
+      description 'System of record for application data, durable jobs, inference records, and LangGraph checkpoints'
     }
 
-    postgres = database 'Postgres System of Record' {
-      technology 'PostgreSQL + bounded async SQLAlchemy pools'
-      description 'Authoritative tenant, conversation, action, audit, outbox, and LangGraph checkpoint schemas'
+    elasticsearch = database 'Elasticsearch' {
+      description 'Rebuildable tenant-scoped lexical and vector search index'
     }
 
-    traceStore = database 'Inference Trace Store' {
-      technology 'PostgreSQL schema, short retention, dedicated RBAC'
-      description 'System of record for answer provenance. Carries prompts, evidence, and outputs, so it is content-bearing, audited on read, and in scope for subject erasure.'
+    uploads = database 'Knowledge Upload Storage' {
+      description 'Versioned uploaded source files. The repository deployment uses a persistent volume.'
     }
 
-    vectorIndex = database 'Knowledge Search Index' {
-      technology 'Elasticsearch'
-      description 'Derived active document chunks with tenant and version filters'
-    }
-
-    objectStorage = database 'Document Object Storage' {
-      description 'Versioned originals and safe parsed artifacts'
-    }
-
-    jobQueue = queue 'Durable Outbox and Job Queue' {
-      technology 'Postgres outbox / durable worker queue'
-      description 'Leased, retryable, idempotent background work and dead-letter state'
+    kibana = userInterface 'Kibana' {
+      description 'Internal Elasticsearch inspection UI in the reference deployment'
     }
   }
 
-  visitor -[request]-> platform.experience.widget 'Chats and manages consent over HTTPS'
-  supportAgent -[request]-> platform.experience.admin 'Accepts handoffs and replies'
-  tenantAdmin -[request]-> platform.experience.admin 'Manages tenant configuration and knowledge'
-  platformOperator -[request]-> observability 'Monitors SLOs and incidents'
+  visitor -[request]-> platform.web.widget 'Chats'
+  operator -[request]-> platform.web.admin 'Operates the demo'
+  platformOperator -[request]-> operationalTelemetry 'Monitors the deployment'
 
-  platform.experience.widget -[request]-> platform.edgeGateway 'Visitor API and realtime traffic'
-  platform.experience.admin -[request]-> platform.edgeGateway 'Authenticated admin traffic'
-  platform.edgeGateway -[request]-> platform.api.visitorApi 'Routes visitor requests'
-  platform.edgeGateway -[request]-> platform.api.adminApi 'Routes admin requests'
-  platform.edgeGateway -[request]-> platform.api.realtime 'Routes resumable event streams'
+  platform.web.widget -[request]-> platform.web.gateway 'Visitor requests'
+  platform.web.admin -[request]-> platform.web.gateway 'Admin requests'
+  platform.web.gateway -[request]-> platform.authProxy 'Checks admin authentication'
+  platform.authProxy -[request]-> identityProvider 'OIDC login and validation'
+  platform.web.gateway -[request]-> platform.api.visitorRoutes 'Proxies public API paths'
+  platform.web.gateway -[request]-> platform.api.adminRoutes 'Proxies authenticated admin paths'
 
-  platform.api.adminApi -[request]-> platform.api.identity 'Authorizes tenant-scoped operations'
-  platform.api.identity -[request]-> identityProvider 'Validates tokens and roles'
-  platform.api.visitorApi -[request]-> platform.api.visitorSessions 'Validates tenant-bound session'
-  platform.api.visitorApi -[command]-> platform.domain.conversations 'Appends visitor messages'
-  platform.api.visitorApi -[request]-> platform.orchestration.graphRuntime 'Runs an agent turn'
-  platform.api.adminApi -[command]-> platform.domain.handoffs 'Operates queue and takeover'
-  platform.api.adminApi -[command]-> platform.domain.tenants 'Publishes tenant configuration'
-  platform.api.adminApi -[command]-> platform.knowledge.management 'Manages knowledge lifecycle'
-  platform.api.realtime -[query]-> platform.domain.conversations 'Streams committed messages'
-  platform.api.realtime -[query]-> platform.domain.handoffs 'Streams handoff state'
+  platform.api.visitorRoutes -[request]-> platform.api.identity 'Validates signed visitor identity'
+  platform.api.adminRoutes -[request]-> platform.api.identity 'Checks operator and tenant access'
+  platform.api.visitorRoutes -[request]-> platform.api.orchestration 'Runs a turn'
+  platform.api.adminRoutes -[command]-> platform.api.knowledge 'Manages knowledge versions'
+  platform.api.adminRoutes -[query]-> platform.api.provenance 'Reads and replays turn records'
+  platform.api.adminRoutes -[command]-> platform.api.domain 'Operates handoffs, reviews, privacy, and access'
 
-  platform.orchestration.graphRuntime -[request]-> platform.orchestration.guardrails 'Validates nodes and transitions'
-  platform.orchestration.graphRuntime -[request]-> platform.orchestration.router 'Routes current workflow step'
-  platform.orchestration.router -[request]-> platform.orchestration.generalRag 'Delegates general knowledge'
-  platform.orchestration.router -[request]-> platform.orchestration.financing 'Delegates financing questions'
-  platform.orchestration.router -[request]-> platform.orchestration.scheduling 'Delegates booking workflow'
-  platform.orchestration.router -[request]-> platform.orchestration.leadQualification 'Delegates lead workflow'
-  platform.orchestration.router -[request]-> platform.orchestration.handoff 'Delegates escalation'
-  platform.orchestration.graphRuntime -[request]-> platform.orchestration.promptAssembly 'Builds the versioned prompt for every model call'
-  platform.orchestration.promptAssembly -[query]-> platform.domain.tenants 'Reads schema-validated tenant slots'
-  platform.orchestration.graphRuntime -[request]-> modelProviders 'Invokes configured chat model'
-  platform.orchestration.graphRuntime -[request]-> platform.orchestration.dispatchGraph 'Runs the versioned dispatcher graph'
-  platform.orchestration.dispatchGraph -[command]-> platform.orchestration.checkpointAdapter 'Writes a resume point after every node'
-  platform.orchestration.checkpointAdapter -[command]-> platform.postgres 'Persists workflow checkpoints only'
-  platform.orchestration.graphRuntime -[async]-> platform.provenance.turnRecord 'Records routing, retrieval, prompt, output, and component versions'
+  platform.api.orchestration -[request]-> platform.api.router 'Chooses an intent and registered agent'
+  platform.api.orchestration -[request]-> platform.api.prompts 'Assembles each model request'
+  platform.api.orchestration -[request]-> chatModel 'Calls the configured provider'
+  platform.api.orchestration -[command]-> platform.api.toolDispatcher 'Runs an allowed tool'
+  platform.api.orchestration -[query]-> platform.api.knowledge 'Retrieves evidence for general answers'
+  platform.api.orchestration -[command]-> platform.api.provenance 'Records the turn'
 
-  platform.orchestration.generalRag -[query]-> platform.knowledge.retrieval 'Requests grounded context'
-  platform.orchestration.financing -[query]-> platform.knowledge.retrieval 'Requests financing evidence'
-  platform.orchestration.scheduling -[command]-> platform.domain.toolGateway 'Proposes typed scheduling tools'
-  platform.orchestration.leadQualification -[command]-> platform.domain.toolGateway 'Proposes typed lead tools'
-  platform.orchestration.handoff -[command]-> platform.domain.toolGateway 'Proposes typed handoff tool'
+  platform.api.toolDispatcher -[command]-> platform.api.domain 'Parses and authorizes typed commands'
+  platform.api.domain -[command]-> platform.api.persistence 'Commits business records and idempotency keys'
+  platform.api.knowledge -[query]-> platform.elasticsearch 'Runs hybrid search'
+  platform.api.knowledge -[request]-> platform.embedding 'Embeds visitor queries'
+  platform.api.knowledge -[query]-> platform.api.persistence 'Checks published versions and indexing state'
+  platform.api.provenance -[command]-> platform.api.persistence 'Appends content-bearing turn records'
+  platform.api.persistence -[command]-> platform.postgres 'Reads and writes application data'
 
-  platform.domain.toolGateway -[request]-> platform.domain.policy 'Authorizes every action deterministically'
-  platform.domain.toolGateway -[command]-> platform.domain.bookings 'Executes booking commands'
-  platform.domain.toolGateway -[command]-> platform.domain.leads 'Executes lead commands'
-  platform.domain.toolGateway -[command]-> platform.domain.handoffs 'Executes handoff commands'
-  platform.domain.toolGateway -[query]-> platform.domain.tenants 'Reads published tenant policy'
-  platform.domain.toolGateway -[request]-> mcpServers 'Optionally invokes authorized reusable tools'
+  platform.jobWorker.leases -[query]-> platform.postgres 'Claims due work'
+  platform.jobWorker.ingestion -[query]-> platform.uploads 'Reads uploaded sources'
+  platform.jobWorker.ingestion -[request]-> platform.embedding 'Embeds chunks'
+  platform.jobWorker.ingestion -[command]-> platform.elasticsearch 'Indexes one generation'
+  platform.jobWorker.ingestion -[command]-> platform.postgres 'Updates lifecycle and job state'
+  platform.jobWorker.privacy -[command]-> platform.postgres 'Applies retention and deletion'
+  platform.api.knowledge -[command]-> platform.uploads 'Stores uploaded sources'
+  platform.api.knowledge -[async]-> platform.jobWorker.leases 'Enqueues ingestion'
+  platform.api.domain -[async]-> platform.jobWorker.leases 'Enqueues privacy work'
 
-  platform.domain.conversations -[command]-> platform.postgres 'Stores authoritative transcript and outcome'
-  platform.domain.bookings -[command]-> platform.postgres 'Commits slot and idempotency transaction'
-  platform.domain.bookings -[request]-> platform.domain.idempotency 'Claims the key before writing'
-  platform.domain.leads -[request]-> platform.domain.idempotency 'Claims the key before writing'
-  platform.domain.handoffs -[request]-> platform.domain.idempotency 'Claims the key before writing'
-  platform.domain.idempotency -[command]-> platform.postgres 'Records claim and completed response'
-  platform.domain.bookings -[command]-> calendarProvider 'Reserves or changes provider appointment'
-  platform.domain.bookings -[async]-> platform.jobQueue 'Publishes reconciliation and notification work'
-  platform.domain.leads -[command]-> platform.postgres 'Stores lead and outbox atomically'
-  platform.domain.leads -[async]-> platform.jobQueue 'Publishes CRM delivery work'
-  platform.domain.handoffs -[command]-> platform.postgres 'Stores queue and ownership state'
-  platform.domain.handoffs -[async]-> platform.jobQueue 'Publishes staff notification work'
-  platform.domain.tenants -[command]-> platform.postgres 'Stores versioned tenant configuration'
-  platform.domain.privacy -[command]-> platform.postgres 'Applies retention and subject requests'
+  platform.releaseJobs -[command]-> platform.postgres 'Applies migrations and creates checkpoint tables'
+  platform.releaseJobs -[request]-> platform.api.adminRoutes 'Seeds knowledge through the authenticated lifecycle'
+  platform.kibana -[query]-> platform.elasticsearch 'Inspects the search index'
 
-  platform.knowledge.management -[command]-> platform.objectStorage 'Stores versioned source documents'
-  platform.knowledge.management -[async]-> platform.jobQueue 'Queues scan and ingestion'
-  platform.jobQueue -[async]-> platform.workers.ingestionWorker 'Leases ingestion work'
-  platform.workers.ingestionWorker -[request]-> platform.knowledge.ingestion 'Runs the ingestion pipeline'
-  platform.knowledge.ingestion -[request]-> platform.knowledge.contentSafety 'Scans untrusted documents'
-  platform.knowledge.ingestion -[request]-> modelProviders 'Creates embeddings'
-  platform.knowledge.ingestion -[query]-> platform.objectStorage 'Reads approved source version'
-  platform.knowledge.ingestion -[command]-> platform.vectorIndex 'Atomically activates indexed chunks'
-  platform.knowledge.ingestion -[command]-> platform.postgres 'Records version and job state'
-  platform.knowledge.retrieval -[query]-> platform.vectorIndex 'Hybrid tenant-filtered search'
-  platform.knowledge.retrieval -[request]-> modelProviders 'Embeds query and optionally reranks'
-  platform.knowledge.retrieval -[request]-> platform.knowledge.evidence 'Builds bounded evidence contract'
-  platform.knowledge.evidence -[query]-> platform.postgres 'Validates authorized source version'
-
-  platform.jobQueue -[async]-> platform.workers.integrationWorker 'Leases CRM and webhook deliveries'
-  platform.jobQueue -[async]-> platform.workers.reconciliationWorker 'Leases calendar reconciliation'
-  platform.jobQueue -[async]-> platform.workers.notificationWorker 'Leases consented notifications'
-  platform.jobQueue -[async]-> platform.workers.privacyWorker 'Leases retention and deletion jobs'
-  platform.workers.integrationWorker -[command]-> crmProvider 'Upserts lead with idempotency key'
-  platform.workers.reconciliationWorker -[query]-> calendarProvider 'Reconciles appointment state'
-  platform.workers.notificationWorker -[command]-> messageProvider 'Sends approved email or SMS'
-  platform.workers.privacyWorker -[command]-> platform.objectStorage 'Deletes or anonymizes content'
-  platform.workers.privacyWorker -[command]-> platform.vectorIndex 'Removes derived subject or tenant data'
-  platform.workers.privacyWorker -[command]-> platform.postgres 'Records deletion audit result'
-
-  platform.provenance.turnRecord -[command]-> platform.traceStore 'Appends the authoritative turn record'
-  platform.provenance.failureAttribution -[query]-> platform.provenance.turnRecord 'Classifies every failure decidable from the record alone'
-  platform.provenance.replay -[query]-> platform.provenance.turnRecord 'Reads the pinned versions and exact context of one turn'
-  platform.provenance.replay -[query]-> platform.knowledge.retrieval 'Re-runs retrieval against pinned and current versions'
-  platform.provenance.evalHarness -[query]-> platform.provenance.turnRecord 'Promotes reviewed turns into golden datasets'
-  platform.experience.admin -[query]-> platform.provenance.turnRecord 'Opens one answer: routing, candidates, prompt, claims, and verdicts'
-  platform.domain.privacy -[command]-> platform.traceStore 'Applies short retention and subject erasure'
-
-  platform -[observe]-> observability 'Emits content-free spans, metrics, logs, SLOs, and alerts'
-  platform.provenance.turnRecord -[observe]-> traceViewer 'Exports GenAI-convention spans; content only inside the trust boundary'
+  platform.api -[observe]-> operationalTelemetry 'Emits content-free telemetry'
+  platform.jobWorker -[observe]-> operationalTelemetry 'Emits content-free telemetry'
+  platform.embedding -[observe]-> operationalTelemetry 'Emits content-free telemetry'
 }
 
 deployment {
-  environment production 'Production' {
-    edge publicEdge 'Public Edge' {
-      widgetCdn = instanceOf platform.experience.widget 'Versioned Widget CDN'
-      adminWeb = instanceOf platform.experience.admin 'Admin Web Hosting'
-      gateway = instanceOf platform.edgeGateway 'TLS Ingress / WAF'
-    }
-
-    kubernetes cluster 'Kubernetes Cluster' {
-      namespace appNamespace 'Application Namespace' {
-        workload apiPool 'Application API Pods' {
-          api1 = instanceOf platform.api 'API Replica 1'
-          api2 = instanceOf platform.api 'API Replica 2'
+  environment repository 'Repository Kubernetes Deployment' {
+    kubernetes microk8s 'MicroK8s Cluster' {
+      namespace appNamespace 'llm-chat' {
+        workload webPod 'web Deployment' {
+          web = instanceOf platform.web
         }
 
-        workload orchestrationPool 'Agent Runtime Pods' {
-          agent1 = instanceOf platform.orchestration 'Agent Replica 1'
-          agent2 = instanceOf platform.orchestration 'Agent Replica 2'
+        workload authPod 'oauth2-proxy Deployment' {
+          auth = instanceOf platform.authProxy
         }
 
-        workload domainPool 'Domain Service Pods' {
-          domain1 = instanceOf platform.domain 'Domain Replica 1'
-          domain2 = instanceOf platform.domain 'Domain Replica 2'
+        workload apiPod 'chat-backend Deployment' {
+          api = instanceOf platform.api
         }
 
-        workload knowledgePool 'Knowledge Service Pods' {
-          knowledge1 = instanceOf platform.knowledge 'Knowledge Replica 1'
-          knowledge2 = instanceOf platform.knowledge 'Knowledge Replica 2'
+        workload workerPod 'job-worker Deployment' {
+          worker = instanceOf platform.jobWorker
         }
 
-        workload workerPool 'Durable Worker Pods' {
-          workers1 = instanceOf platform.workers 'Worker Replica 1'
-          workers2 = instanceOf platform.workers 'Worker Replica 2'
+        workload embeddingPod 'embedding-service Deployment' {
+          embedding = instanceOf platform.embedding
         }
 
-        workload provenancePool 'Answer Provenance Pods' {
-          provenance1 = instanceOf platform.provenance 'Provenance Replica 1'
+        workload postgresPod 'postgres StatefulSet' {
+          postgres = instanceOf platform.postgres
+        }
+
+        workload elasticsearchPod 'elasticsearch StatefulSet' {
+          elasticsearch = instanceOf platform.elasticsearch
+        }
+
+        workload kibanaPod 'kibana Deployment' {
+          kibana = instanceOf platform.kibana
+        }
+
+        workload releasePod 'Migration and Seed Jobs' {
+          releases = instanceOf platform.releaseJobs
+        }
+
+        storage uploadsPvc 'knowledge-upload-storage PVC' {
+          uploads = instanceOf platform.uploads
+        }
+      }
+
+      namespace identityNamespace 'identity' {
+        workload keycloakPod 'Keycloak Helm release' {
+          keycloak = instanceOf identityProvider
+        }
+      }
+
+      namespace observabilityNamespace 'observability' {
+        workload telemetryPods 'Collector and observability stack' {
+          telemetry = instanceOf operationalTelemetry
         }
       }
     }
 
-    managed dataServices 'Managed Data Services' {
-      postgresPrimary = instanceOf platform.postgres 'Postgres Primary'
-      postgresStandby = instanceOf platform.postgres 'Postgres Standby'
-      traces = instanceOf platform.traceStore 'Inference Trace Schema'
-      search = instanceOf platform.vectorIndex 'Elasticsearch Cluster'
-      documents = instanceOf platform.objectStorage 'Encrypted Object Storage'
-      jobs = instanceOf platform.jobQueue 'Durable Queue / Outbox'
+    external inferenceHost 'Separately operated model host' {
+      model = instanceOf chatModel
     }
 
-    external providers 'External Providers' {
-      idp = instanceOf identityProvider
-      models = instanceOf modelProviders
-      calendar = instanceOf calendarProvider
-      crm = instanceOf crmProvider
-      messaging = instanceOf messageProvider
-      mcp = instanceOf mcpServers
-      telemetry = instanceOf observability
-      traceProjection = instanceOf traceViewer
-    }
-
-    publicEdge.gateway -[deploymentFlow]-> cluster.appNamespace.apiPool 'Routes HTTPS and event streams'
-    cluster.appNamespace.apiPool -[deploymentFlow]-> cluster.appNamespace.orchestrationPool 'Runs agent turns'
-    cluster.appNamespace.apiPool -[deploymentFlow]-> cluster.appNamespace.domainPool 'Reads and commits application state'
-    cluster.appNamespace.apiPool -[deploymentFlow]-> cluster.appNamespace.knowledgePool 'Manages knowledge'
-    cluster.appNamespace.apiPool -[deploymentFlow]-> providers.idp 'Validates staff identity'
-    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> cluster.appNamespace.domainPool 'Invokes typed domain tools'
-    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> cluster.appNamespace.knowledgePool 'Retrieves grounded evidence'
-    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> dataServices.postgresPrimary 'Persists workflow checkpoints'
-    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> providers.models 'Invokes chat models'
-    cluster.appNamespace.domainPool -[deploymentFlow]-> dataServices.postgresPrimary 'Commits authoritative records and outbox'
-    cluster.appNamespace.domainPool -[deploymentFlow]-> providers.calendar 'Executes idempotent booking commands'
-    cluster.appNamespace.domainPool -[deploymentFlow]-> providers.mcp 'Optionally invokes authorized MCP tools'
-    cluster.appNamespace.knowledgePool -[deploymentFlow]-> dataServices.search 'Queries and updates tenant index'
-    cluster.appNamespace.knowledgePool -[deploymentFlow]-> dataServices.documents 'Reads and writes document versions'
-    cluster.appNamespace.knowledgePool -[deploymentFlow]-> providers.models 'Creates embeddings and reranks'
-    cluster.appNamespace.workerPool -[deploymentFlow]-> dataServices.jobs 'Leases durable jobs'
-    cluster.appNamespace.workerPool -[deploymentFlow]-> dataServices.postgresPrimary 'Updates delivery and audit state'
-    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.crm 'Delivers deduplicated leads'
-    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.calendar 'Reconciles appointments'
-    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.messaging 'Sends consented notifications'
-    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> cluster.appNamespace.provenancePool 'Records each turn'
-    cluster.appNamespace.provenancePool -[deploymentFlow]-> dataServices.traces 'Appends content-bearing turn records'
-    cluster.appNamespace.provenancePool -[deploymentFlow]-> providers.traceProjection 'Exports GenAI spans through the redacting collector'
-    cluster.appNamespace.apiPool -[deploymentFlow]-> providers.telemetry 'Emits content-free telemetry'
-    cluster.appNamespace.orchestrationPool -[deploymentFlow]-> providers.telemetry 'Emits content-free telemetry'
-    cluster.appNamespace.domainPool -[deploymentFlow]-> providers.telemetry 'Emits content-free telemetry'
-    cluster.appNamespace.knowledgePool -[deploymentFlow]-> providers.telemetry 'Emits content-free telemetry'
-    cluster.appNamespace.workerPool -[deploymentFlow]-> providers.telemetry 'Emits content-free telemetry'
-    dataServices.postgresStandby -[deploymentFlow]-> dataServices.postgresPrimary 'Streaming replication'
+    microk8s.appNamespace.webPod.web -[deploymentFlow]-> microk8s.appNamespace.authPod.auth 'Authenticates admin requests'
+    microk8s.appNamespace.authPod.auth -[deploymentFlow]-> microk8s.identityNamespace.keycloakPod.keycloak 'Uses OIDC'
+    microk8s.appNamespace.webPod.web -[deploymentFlow]-> microk8s.appNamespace.apiPod.api 'Proxies API requests'
+    microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.appNamespace.postgresPod.postgres 'Reads and writes state'
+    microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.appNamespace.elasticsearchPod.elasticsearch 'Retrieves evidence'
+    microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.appNamespace.embeddingPod.embedding 'Embeds queries'
+    microk8s.appNamespace.apiPod.api -[deploymentFlow]-> inferenceHost.model 'Calls the chat model'
+    microk8s.appNamespace.workerPod.worker -[deploymentFlow]-> microk8s.appNamespace.postgresPod.postgres 'Claims and updates jobs'
+    microk8s.appNamespace.workerPod.worker -[deploymentFlow]-> microk8s.appNamespace.elasticsearchPod.elasticsearch 'Indexes chunks'
+    microk8s.appNamespace.workerPod.worker -[deploymentFlow]-> microk8s.appNamespace.embeddingPod.embedding 'Embeds chunks'
+    microk8s.appNamespace.workerPod.worker -[deploymentFlow]-> microk8s.appNamespace.uploadsPvc.uploads 'Reads source files'
+    microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.appNamespace.uploadsPvc.uploads 'Stores source files'
+    microk8s.appNamespace.kibanaPod.kibana -[deploymentFlow]-> microk8s.appNamespace.elasticsearchPod.elasticsearch 'Inspects the index'
+    microk8s.appNamespace.releasePod.releases -[deploymentFlow]-> microk8s.appNamespace.postgresPod.postgres 'Applies schema changes'
+    microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.observabilityNamespace.telemetryPods.telemetry 'Exports telemetry'
+    microk8s.appNamespace.workerPod.worker -[deploymentFlow]-> microk8s.observabilityNamespace.telemetryPods.telemetry 'Exports telemetry'
+    microk8s.appNamespace.embeddingPod.embedding -[deploymentFlow]-> microk8s.observabilityNamespace.telemetryPods.telemetry 'Exports metrics'
   }
 }
 
 views {
   view index {
     title '01 / System Context'
-    description 'People, the Tenant Chat Platform, and trusted external dependencies in the proposed production end state.'
+    description 'People and external systems connected to the implementation in this repository.'
 
     include visitor
-    include supportAgent
-    include tenantAdmin
+    include operator
     include platformOperator
     include platform
     include identityProvider
-    include modelProviders
-    include calendarProvider
-    include crmProvider
-    include messageProvider
-    include mcpServers
-    include observability
+    include chatModel
+    include operationalTelemetry
   }
 
   view platform_overview {
-    title '02 / Platform Containers'
-    description 'Logical runtime boundaries. Domain services and Postgres own business truth; agent frameworks orchestrate typed calls.'
+    title '02 / Current Platform'
+    description 'Runtime boundaries in main. The FastAPI process is a modular monolith; the worker, embedding service, and web gateway run separately.'
 
     include visitor
-    include supportAgent
-    include tenantAdmin
+    include operator
     include platform.*
     include identityProvider
-    include modelProviders
-    include calendarProvider
-    include crmProvider
-    include messageProvider
-    include mcpServers
-    include observability
+    include chatModel
+    include operationalTelemetry
   }
 
   view agent_runtime {
-    title '03 / Agent Runtime and Workflow Boundary'
-    description 'LangGraph v1 is the only runtime, with no abstraction layer over agent frameworks. Every prompt is assembled from a versioned template, and every side effect crosses the deterministic tool gateway.'
+    title '03 / Agent Runtime'
+    description 'The implemented dispatch@3 graph. LangGraph coordinates work while domain services authorize and commit every business effect.'
 
-    include platform.api.visitorApi
-    include platform.orchestration.*
-    include platform.provenance.turnRecord
-    include platform.domain.toolGateway
-    include platform.domain.policy
-    include platform.domain.bookings
-    include platform.domain.leads
-    include platform.domain.handoffs
-    include platform.domain.idempotency
-    include platform.domain.tenants
-    include platform.knowledge.retrieval
+    include platform.api.visitorRoutes
+    include platform.api.identity
+    include platform.api.orchestration
+    include platform.api.router
+    include platform.api.prompts
+    include platform.api.toolDispatcher
+    include platform.api.domain
+    include platform.api.persistence
+    include platform.api.knowledge
+    include platform.api.provenance
     include platform.postgres
-    include modelProviders
-    include mcpServers
+    include platform.elasticsearch
+    include platform.embedding
+    include chatModel
   }
 
   view knowledge_pipeline {
-    title '04 / Governed Knowledge and RAG Pipeline'
-    description 'Approved document versions become tenant-filtered evidence. Retrieval returns citations or an explicit insufficient-evidence result.'
+    title '04 / Knowledge and Retrieval'
+    description 'An approved upload becomes one indexed generation. The answer path retrieves only published tenant content and validates its evidence.'
 
-    include tenantAdmin
-    include platform.api.adminApi
-    include platform.knowledge.*
-    include platform.workers.ingestionWorker
+    include operator
+    include platform.web.admin
+    include platform.api.adminRoutes
+    include platform.api.knowledge
+    include platform.api.persistence
+    include platform.jobWorker.*
+    include platform.embedding
     include platform.postgres
-    include platform.vectorIndex
-    include platform.objectStorage
-    include platform.jobQueue
-    include modelProviders
+    include platform.elasticsearch
+    include platform.uploads
   }
 
   view business_actions {
-    title '05 / Transactional Actions and Durable Delivery'
-    description 'Business actions are authorized and committed transactionally. The outbox and workers handle retryable external delivery.'
+    title '05 / Business Actions'
+    description 'Bookings, leads, and handoffs are validated and committed locally. External calendar, CRM, and notification integrations are not implemented.'
 
-    include platform.domain.*
-    include platform.workers.*
+    include platform.api.visitorRoutes
+    include platform.api.orchestration
+    include platform.api.toolDispatcher
+    include platform.api.domain
+    include platform.api.persistence
+    include platform.jobWorker.leases
     include platform.postgres
-    include platform.jobQueue
-    include platform.objectStorage
-    include platform.vectorIndex
-    include calendarProvider
-    include crmProvider
-    include messageProvider
-    include mcpServers
   }
 
   view answer_provenance {
-    title '06 / Answer Provenance and Failure Attribution'
-    description 'Every answer is reconstructible. One turn record pins the routing decision, candidate set, prompt, output, and every component version, so a wrong answer resolves to a stage rather than a mystery. Content lives here and never on the operational plane.'
+    title '06 / Answer Provenance'
+    description 'The operator explorer reads the same Postgres turn record that captured routing, retrieval, prompts, model rounds, verdicts, diagnoses, and graph events.'
 
-    include supportAgent
-    include platform.experience.admin
-    include platform.orchestration.graphRuntime
-    include platform.orchestration.dispatchGraph
-    include platform.orchestration.router
-    include platform.orchestration.promptAssembly
-    include platform.knowledge.retrieval
-    include platform.knowledge.evidence
-    include platform.provenance.*
-    include platform.domain.privacy
-    include platform.traceStore
-    include observability
-    include traceViewer
+    include operator
+    include platform.web.admin
+    include platform.api.adminRoutes
+    include platform.api.orchestration
+    include platform.api.router
+    include platform.api.prompts
+    include platform.api.knowledge
+    include platform.api.provenance
+    include platform.api.persistence
+    include platform.postgres
+    include operationalTelemetry
   }
 
   deployment view production_deployment {
-    title '07 / Production Deployment'
-    description 'Proposed highly available Kubernetes runtime with managed state, external providers, and independently scalable API, agent, domain, knowledge, and worker pools.'
+    title '07 / Repository Kubernetes Deployment'
+    description 'The single-replica MicroK8s reference deployment tracked under k8s/. It is a demo topology, not a highly available production design.'
 
-    include production.**
+    include repository.**
     exclude * -> * where tag is not #deployment
   }
 }

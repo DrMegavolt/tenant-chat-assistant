@@ -2,79 +2,41 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-31
-- **Affects:** `AI-001`, `AI-002`, `AI-003`, `RAG-008`, `RAG-009`, `DEP-003`
 
 ## Context
 
-The platform needs a language model for the agent loop and for grounded answer
-generation, and an embedding model for retrieval. Two things pull in opposite
-directions.
-
-Development cost pulls toward local inference. `RAG-009` puts an evaluation
-harness in the ordinary development loop, and `RAG-008` grows it into a suite that
-runs on every change to a prompt, retriever, chunker, or model. Those suites are
-run hundreds of times while being built, each run covering a full dataset. Metering every one of those calls against a hosted API turns iteration
-speed into a billing decision, which is the wrong incentive when the goal is
-retrieval quality.
-
-Demonstrability pulls toward a hosted provider. A hosted deployment cannot reach a
-model server on a developer's LAN, so a locally-hosted model means there is no
-public URL a reader can click.
+Model and retrieval evaluations run frequently during development. Requiring a
+hosted API for every run adds cost and makes the repository depend on an
+external account. A public deployment, however, cannot reach a model running on
+a developer's machine.
 
 ## Decision
 
-**Default to a local OpenAI-compatible server. Reach it through a
-provider-neutral interface so a hosted provider is a configuration change.**
+Default to a local OpenAI-compatible endpoint and keep provider details behind
+the orchestration model port.
 
-- `LLM_BASE_URL` defaults to `http://localhost:1234/v1`, which LM Studio, Ollama,
-  and llama.cpp all serve.
-- The chat, tool-call, streaming, usage, and error contracts are defined in
-  `packages/core` as ports. No domain or workflow code names a provider.
-- Provider and model selection come from environment configuration and approved
-  tenant policy — never from visitor input, which would let a caller select an
-  expensive model or one with different safety behavior.
-- Usage accounting and tool-call shapes are normalized at the adapter boundary, so
-  token counting and cost attribution do not vary by provider.
+- Base URL and model selection come from configuration, never visitor input.
+- The adapter normalizes completion, tool-call, usage, and error behavior.
+- Response streaming is outside the current provider contract.
+- Hosted OpenAI-compatible providers can be selected without changing workflow
+  or domain code.
+- The embedding service uses a pinned model revision with remote model code
+  disabled.
 
 ## Consequences
 
-**Gained.** Evaluation runs are free, so they can be run on every commit without a
-budget conversation. No API key is required to clone and run the project. Local
-inference also forces the degraded-operation paths to be exercised routinely,
-because a local server is genuinely less reliable than a hosted one.
+The project runs and evaluates without an API key, and local failure modes are
+exercised routinely. Provider changes remain configuration and adapter concerns.
 
-**Cost — the significant one.** There is no public demo URL. A hosted instance
-cannot reach a LAN model server, so a reader either runs the project locally or
-watches a recording. For a portfolio artifact this is a real loss: a link that
-works is worth more than a repository that must be cloned.
-
-**Mitigation.** The provider interface makes a hosted adapter a configuration
-change rather than a rewrite, so a deployed instance can flip to a hosted provider
-without touching workflow code. Whether to do that is deferred to the packaging
-stage, when the cost of a hosted eval budget can be measured rather than guessed.
-
-**Cost.** Local models are weaker at instruction-following and tool-calling than
-frontier hosted models. Prompts and tool schemas tuned against a local model may
-behave differently against a hosted one, so the evaluation suite must be run
-against any provider before it is trusted — this is exactly why `AI-001` requires
-the same contract suite to pass against every configured adapter.
-
-**Constraint.** Embeddings are served locally by `services/embedding`. The model
-name is currently unpinned and loads with `trust_remote_code=True`, which executes
-code from the model repository. `DEP-001` covers pinning the revision; the remote
-code execution needs an explicit decision before any untrusted deployment.
+There is no public demo backed by a developer's local endpoint. Local models may
+also differ from hosted models in tool use and instruction following, so every
+configured model must pass the same evaluation contract before use.
 
 ## Alternatives considered
 
-**Hosted provider as the default.** Rejected on evaluation cost, which is the
-dominant model expense in a retrieval-focused project — evaluation dwarfs demo
-traffic. Reconsider at packaging time if a public link is judged more valuable
-than free iteration.
-
-**Hosted for the deployed instance, local for development.** Not rejected —
-deferred. This is the likely end state, and the provider interface exists so the
-decision can be made late rather than now.
-
-**Multiple hosted adapters up front.** Rejected for now. Building three adapters
-before one workflow is finished optimizes for a capability claim rather than for
-working software. The port exists; adapters are added when there is a reason.
+- **Hosted provider by default:** rejected because recurring evaluation cost
+  would discourage routine testing.
+- **Hosted production and local development:** compatible with this decision
+  and appropriate when a hosted deployment is needed.
+- **Several provider-specific adapters immediately:** deferred until a concrete
+  provider requires behavior beyond the compatible interface.

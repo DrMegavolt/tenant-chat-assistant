@@ -1,6 +1,6 @@
 """The audit action taxonomy is one list, enforced at both ends.
 
-`BUG-018`: the Clearview trail carried `handoff.accepted`, `handoff.resolved`,
+The Clearview trail carried `handoff.accepted`, `handoff.resolved`,
 `knowledge.version_published`, and `knowledge.version_approved` while the
 console's Action dropdown offered none of them, so an operator working an
 incident could not filter for the events they were looking at. Keeping the two
@@ -56,7 +56,7 @@ def test_every_emitted_action_is_in_the_taxonomy() -> None:
 
 
 def test_the_console_filter_offers_the_whole_taxonomy() -> None:
-    """The reproduction of BUG-018: a filterable action the dropdown omits."""
+    """Every filterable action must appear in the dropdown."""
     missing = set(AUDIT_ACTIONS) - _console_actions()
     assert not missing, (
         f"the admin Action filter omits {sorted(missing)}. An operator cannot filter for an "

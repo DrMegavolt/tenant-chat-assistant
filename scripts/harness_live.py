@@ -85,7 +85,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "id": "case-2-stale-source",
         "label": "weekend-hours question",
         "query": "What are your hours on weekends?",
-        # BUG-009: the hours answer comes from trusted tenant configuration,
+        # The hours answer comes from trusted tenant configuration,
         # so the live outcome is an answer even though no indexed hours
         # document exists. The stale-evidence distinction is hermetic.
         "outcomes": ("answered",),

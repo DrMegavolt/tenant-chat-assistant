@@ -42,7 +42,7 @@ class AnswerBasis(StrEnum):
     address, approved prices — and the approved documents retrieval supplies.
     An agent declaring it answers from those two and nothing else, so a
     question that neither covers is one it must refuse rather than improvise
-    (`BUG-009`, `RAG-005`).
+    (`RAG-005`).
 
     ``TOOL_RESULTS`` is an agent carried by its tools and its durable workflow
     record. The knowledge base is beside the point for it: an appointment does

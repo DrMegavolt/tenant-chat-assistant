@@ -68,7 +68,7 @@ export const ROLE_LABELS: Record<string, string> = {
  * Must equal `AUDIT_ACTIONS` in `services/api/src/tenantchat/api/store.py`;
  * `tests/test_audit_taxonomy.py` fails when the two drift, because an action
  * that reaches the table but not this filter is invisible to an operator
- * working an incident (`BUG-018`).
+ * working an incident.
  */
 export const AUDIT_ACTIONS = [
   "audit.read",

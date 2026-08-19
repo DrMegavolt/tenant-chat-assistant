@@ -3,7 +3,7 @@
 
 The local release deletes nothing, and `kubectl apply` cannot delete objects a
 newer release dropped. A Service or ServiceMonitor that an old release created
-then survives into the new deployment: BUG-014's orphan `chat-backend` Service
+then survives into the new deployment. An orphan `chat-backend` Service once
 pointed at port 8000 (nothing listens) and stayed a permanently-down Prometheus
 target, and the `financing-agent`/`ingestion-service` monitors kept scraping
 services `DEP-001` had removed.

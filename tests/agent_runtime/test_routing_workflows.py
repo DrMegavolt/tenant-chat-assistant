@@ -529,7 +529,7 @@ def test_a_customer_requested_handoff_marks_the_workflow_handed_off() -> None:
 def test_a_booking_disabled_tenant_never_dispatches_the_booking_agent() -> None:
     """Capability flags constrain the assistant, not just its tools.
 
-    BUG-019: Apex does not offer booking. A booking-routed message must not
+    Apex does not offer booking. A booking-routed message must not
     dispatch the booking agent — whose context would present its scheduling plan
     and tool list as available — so the model is offered the general agent's
     empty tool set, no booking workflow starts, and the policy rule in the
@@ -622,7 +622,7 @@ def test_a_lead_workflow_completes_with_the_captured_lead() -> None:
 def test_a_callback_request_with_service_nouns_routes_to_lead() -> None:
     """An explicit callback phrase wins over service-category words in routing.
 
-    BUG-003: a message like "have someone call me about electrical repair"
+    A message like "have someone call me about electrical repair"
     tied booking and lead scores because the service-category nouns ("electrical",
     "repair") weighed as much as the callback phrase. With the fix, the callback
     signal now outweighs the service nouns, so the message routes to lead and
@@ -674,7 +674,7 @@ def test_a_callback_request_with_service_nouns_routes_to_lead() -> None:
 def test_callback_promise_without_committed_lead_is_refused() -> None:
     """An answer that promises a callback is refused when no lead was committed.
 
-    BUG-003: the model can promise "our team will contact you" even when
+    The model can promise "our team will contact you" even when
     create_lead was not called. The finalize node must detect the uncommitted
     promise and replace the answer with a server-written refusal instead of
     misleading the visitor.

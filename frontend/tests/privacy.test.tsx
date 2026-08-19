@@ -18,7 +18,7 @@ import {
 describe("consent before contact data leaves the browser", () => {
   test("the booking confirmation shows the server's own consent statement", async () => {
     /**
-     * BUG-023: the widget composed this sentence itself from the tenant name.
+     * The widget previously composed this sentence itself from the tenant name.
      * The default text matched by coincidence, so a tenant override displayed
      * one statement while the server recorded another. Asserting the exact
      * served string is what makes rebuilding it locally fail here.
@@ -75,7 +75,7 @@ describe("consent before contact data leaves the browser", () => {
   });
 
   test("the displayed statement and the recorded statement are the same string", async () => {
-    /** The whole point of BUG-023: these two must never be able to diverge. */
+    /** The displayed and recorded statements must never diverge. */
     stubBackend(workingBackend());
     await renderDemo();
     const confirmation = await openBookingConfirmation();

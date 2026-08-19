@@ -1,85 +1,104 @@
 # Tenant Chat Assistant
 
-A multi-tenant RAG and agent platform for home-services dispatch: an embeddable
-chat widget that answers from tenant-approved knowledge, books appointments,
-captures leads, and escalates to a human.
+[![CI](https://github.com/DrMegavolt/tenant-chat-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/DrMegavolt/tenant-chat-assistant/actions/workflows/ci.yml)
 
-It is built as a demonstration, which means the interesting part is not that it
-answers questions — it is what happens around the answer.
+Tenant Chat Assistant is a production-oriented demo of a multi-tenant support
+chat for home-service companies. It combines retrieval-augmented generation
+(RAG), appointment and lead workflows, human handoff, and an operator console.
 
-**What it sets out to prove:**
+The project focuses on the parts of an AI assistant that are easy to overlook:
 
-1. **Grounded answers, with the receipts.** Documents are parsed, chunked,
-   embedded, and retrieved under tenant and version filters. Answers cite the
-   exact authorized source version or abstain and offer a human. A citation the
-   model invented is rejected mechanically rather than discouraged by a prompt.
-2. **Business actions that survive reality.** Booking, lead capture, and handoff
-   are transactional, idempotent, and authorized by deterministic domain
-   services — so a retry, a restart, or a replayed workflow node cannot
-   double-book anyone.
-3. **Answers you can debug.** Every turn is recorded with the routing decision
-   and its rejected alternatives, the retrieval candidate set with per-stage
-   scores, the exact assembled prompt, and each claim linked to its supporting
-   chunk. When an answer is wrong, the record says *which stage* was wrong —
-   stale source, retrieval miss, truncated context, or a genuinely ungrounded
-   claim — rather than leaving "the model hallucinated" as the diagnosis.
+- Answers use approved, tenant-scoped documents and carry validated citations.
+- Bookings, leads, and handoffs pass through deterministic policy checks and
+  idempotent domain services.
+- Each turn records its route, retrieved evidence, assembled prompt, model
+  rounds, validation results, and executed graph so an operator can investigate
+  a poor answer.
+- Logs, metrics, and operational traces exclude message and document content.
+  Content-bearing inference records have separate access controls and retention.
 
-The third is the one that is hard to fake, and it drives most of the
-architecture.
+This repository is a demonstration, not a hosted service or a claim of full
+production readiness. The current release has a complete local and Kubernetes
+demo path, but real calendar, CRM, and notification integrations, high
+availability, disaster recovery, and load testing remain out of scope. See the
+[backlog](BACKLOG.md) for the current boundary.
 
-**State of play.** `services/api` is the production backend and serves tenant
-configuration, availability, booking, lead capture, the visitor chat surface,
-and the operator console over the domain rules in `packages/core`.
-`packages/orchestration` holds the LangGraph agent runtime (`ARCH-001`): a
-versioned dispatcher graph that pauses for a customer to confirm a booking,
-survives a process restart, and commits only through idempotent domain services.
-Chat is served over that runtime through the `AI-001` provider abstraction: a
-deployment composes the OpenAI-compatible adapter from its `LLM_*` environment
-and answers turns, and a deployment with no model configured reports the chat
-routes unavailable rather than guessing. The `DEP-001` cutover is shipped:
-the deployed `api` image is `services/api`, the prototype `server.py` and its
-image are gone, and the gateway forwards exactly the API's visitor routes. Claim
-3's turn-record and explorer path is implemented: routing,
-retrieval, assembled prompts, model/tool rounds, validator verdicts, diagnoses,
-and the executed graph are stored and inspectable. Current release blockers and
-unverified defects are tracked in the dossier below; a green historical demo
-harness is not treated as a current release sign-off.
+![Tenant Chat system context](architecture/likec4/diagrams/index.png)
 
-## Planning and architecture artifacts
+## What is implemented
 
-| Artifact | What it is |
+The visitor widget can:
+
+- answer questions from approved tenant knowledge and trusted tenant settings;
+- show validated sources and refuse answers with weak or invalid evidence;
+- check service areas and availability;
+- collect a lead or propose a booking, with explicit confirmation before a
+  business action is committed;
+- request a human handoff; and
+- collect per-answer feedback.
+
+The operator console includes chat and handoff queues, knowledge lifecycle
+management, answer reviews, an AI turn explorer, tenant memberships, audit
+events, and index-integrity findings. The admin API also exposes jobs, leads,
+bookings, and privacy requests. Access is enforced again in the API even when
+the nginx gateway and `oauth2-proxy` have already authenticated the operator.
+
+The main runtime is split into three deployable images:
+
+| Image | Responsibility |
 | --- | --- |
-| [`BACKLOG.md`](BACKLOG.md) | Every task with acceptance criteria and verification. Gate B is the target; Gate C is documented, not committed. |
-| [`EXPLORATORY_TESTING_BUGS.md`](EXPLORATORY_TESTING_BUGS.md) | Authoritative current defect status, historical reproductions, and BUG-004/BUG-020 lineage. |
-| [`docs/adr/`](docs/adr/README.md) | Decision records — what was chosen, what it cost, what was rejected and why. |
-| [`architecture/likec4/`](architecture/likec4/README.md) | Architecture-as-code for the target end state, with generated diagrams. |
-| [`CLAUDE.md`](CLAUDE.md) | Working agreements and the invariants enforced by tests. |
-| [`docs/runbooks/`](docs/runbooks/) | Operational procedures, including the current demo walkthrough. |
+| `api` | FastAPI, the LangGraph runtime, domain adapters, admin and visitor APIs, and the durable job-worker command |
+| `embedding` | The pinned local embedding model and HTTP service |
+| `web` | The React builds and nginx gateway for the demo site, widget, and operator console |
 
-Decisions worth reading first: [ADR-0001](docs/adr/0001-agent-runtime.md)
-(LangGraph as the single agent runtime over a framework-free domain) and
-[ADR-0010](docs/adr/0010-telemetry-planes.md) (two telemetry planes, with the
-turn record — not a vendor — as the system of record for answer provenance).
+PostgreSQL is authoritative for application state, LangGraph checkpoints, jobs,
+and inference turn records. Elasticsearch contains rebuildable search data.
+Uploaded source files use the configured object-store adapter; the supplied
+Kubernetes deployment mounts a persistent volume for them.
 
-## Running it
+## Repository layout
 
-The quality gate is hermetic and needs no live services:
+```text
+packages/core/              framework-free domain rules and ports
+packages/orchestration/     LangGraph state, nodes, prompts, agents, and tools
+services/api/               FastAPI app, persistence, workers, and migrations
+services/embedding/         local embedding service
+frontend/                   React widget, demo page, operator console, and nginx
+evals/                      versioned offline retrieval and grounding evaluations
+architecture/likec4/        architecture source and generated diagrams
+docs/                       ADRs, policies, and operational runbooks
+k8s/                        reference MicroK8s deployment and observability config
+```
+
+The framework boundary is intentional: `packages/core` has no runtime
+dependencies, and tests prevent FastAPI, SQLAlchemy, LangGraph, model SDKs, or
+network clients from entering it. LangGraph belongs in orchestration; it does
+not own authentication, authorization, transactions, or business records. The
+reasoning is recorded in [ADR-0001](docs/adr/0001-agent-runtime.md).
+
+## Prerequisites
+
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 24 and npm
+- Docker with Compose
+- an OpenAI-compatible chat server such as LM Studio, Ollama, or llama.cpp
+
+The embedding container downloads the pinned model on its first start and is
+memory-intensive. Its model cache is kept in a Docker volume.
+
+## Run the local visitor demo
+
+Install the locked Python and frontend dependencies and create `.env` from the
+safe example:
 
 ```bash
 make setup
-make check
-make test-database  # optional integration gate; starts disposable Postgres
 ```
 
-`make check` includes the deterministic evaluation gate. Its current baseline
-has two explicit, manifest-bound recall waivers in `evals/exceptions.json`
-(`apex-hvac-heating-repair` and `clearview-hvac-current-pricing`, each 0.5
-recall@5). A green gate therefore means no unreviewed regression against that
-declared baseline, not perfect recall on every golden case.
-
-For a clean-checkout local demo, first run `make setup`, edit `.env`, and
-replace every `REPLACE_WITH_*` value. Also set `LLM_MODEL` to a model your
-OpenAI-compatible server actually serves and enable loopback-only admin auth:
+Replace every `REPLACE_WITH_*` value in `.env`. Set `LLM_MODEL` to a model that
+your OpenAI-compatible server actually provides. For loopback development you
+may also enable the API's restricted development-auth mode:
 
 ```dotenv
 CHAT_API_DEV_AUTH=true
@@ -87,20 +106,25 @@ LLM_BASE_URL=http://localhost:1234/v1
 LLM_MODEL=your-loaded-model
 ```
 
-The Make recipes do **not** auto-load `.env` into the host shell. Source it in
-each terminal that runs the API, worker, migrations, or seed:
+The Make recipes do not load `.env` into the shell. In every terminal used for
+the API, worker, migrations, or seed command, load it first:
 
 ```bash
 set -a
 source .env
 set +a
+```
+
+Start PostgreSQL, Elasticsearch, and the embedding service, then apply both
+application and LangGraph checkpoint migrations:
+
+```bash
 make up-all
 make migrate
 make migrate-checkpoints
 ```
 
-Start the local OpenAI-compatible model server separately. Then run the worker,
-API, and frontend in separate sourced terminals:
+Run the worker, API, and frontend in separate sourced terminals:
 
 ```bash
 make worker
@@ -114,262 +138,131 @@ make api
 make dev
 ```
 
-After the API and worker are ready, seed the governed demo documents:
+Once the API and worker are ready, load the two demo tenants' governed
+documents:
 
 ```bash
 API_BASE_URL=http://127.0.0.1:8080 make seed-knowledge
 ```
 
-Open `http://127.0.0.1:5173` for the visitor demo and
-`http://127.0.0.1:5173/admin/` for the operator console. Vite proxies both to
-the API so this path is same-origin. Set
-`CHAT_DEV_BACKEND_ORIGIN=http://127.0.0.1:PORT` to use another backend.
+Open `http://127.0.0.1:5173` for the visitor demo.
 
-To exercise the deployed nginx shape, build/run `make web` against an API on a
-different host port (the default web and API ports are both 8080, so one must be
-changed). See ADR-0007 and ADR-0009 for the gateway/build contracts.
+The Vite server also serves the operator-console bundle at `/admin/`, but it
+does not impersonate an operator or add identity headers. Use the full nginx,
+`oauth2-proxy`, and Keycloak deployment for the browser-based admin workflow.
+The [Kubernetes guide](k8s/README.md) and
+[demo-access runbook](docs/runbooks/demo-access.md) cover that path.
 
-Normal application state is stored in the normalized PostgreSQL tables.
-Process-memory stores are explicit test doubles only; there is no current
-`chats/` JSON persistence mode.
-
-By default, the backend calls an OpenAI-compatible local API at:
-
-```text
-http://localhost:1234/v1/chat/completions
-```
-
-You can override this with environment variables:
+To stop the local dependencies while keeping their data:
 
 ```bash
-LLM_BASE_URL=http://localhost:1234/v1 LLM_MODEL=local-model make api
+make down
 ```
 
-Two seed tenants exercise opposite policies, which is what makes tenant isolation
-visible rather than asserted:
+`make down-clean` also deletes the Docker volumes.
 
-- **Apex Home Services** (`apex`) — a phone-first desk. Answers contact, address,
-  hours, and service-area questions; never shares pricing; does not book through
-  chat.
-- **Clearview Property Care** (`clearview`) — answers from fixed pricing, checks
-  ZIP-code service area, separates availability by service category, and books a
-  selected slot after confirmation.
+## Configuration notes
 
-Both capture follow-up leads once name, contact, service, and request details are
-collected, and both may offer callback capture after buying intent — without
-implying a call is possible before the visitor provides contact details. A
-booking-enabled tenant shows a compact form after availability is checked: slot,
-name, address, and phone or email.
+`.env.example` documents every local setting and contains placeholders only.
+Important defaults and boundaries:
 
-The backend owns the tenant policy and tool calls:
+- `DATABASE_URL` is the application connection. `DATABASE_MIGRATION_URL` is the
+  schema-owner connection used only by migrations.
+- `PRIVACY_DATABASE_URL` is required by the combined ingestion/privacy worker.
+  The local example uses the Compose database owner; deployments use the
+  dedicated privacy role.
+- `LLM_BASE_URL` and `LLM_MODEL` configure the OpenAI-compatible chat adapter.
+  The API reports chat as unavailable when either is missing.
+- `CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY` signs tenant- and session-bound
+  visitor credentials. Production startup fails when it is missing.
+- `CHAT_API_ALLOWED_ORIGINS` controls direct cross-origin visitor API calls.
+  It must never be `*`.
+- `ADMIN_GATEWAY_TOKEN` and `ADMIN_CSRF_SECRET` protect operator routes in a
+  deployed environment. `CHAT_API_DEV_AUTH=true` is allowed only with a
+  loopback database and still requires explicit operator identity headers.
+- `CHAT_RAG_REQUIRED=true` makes startup fail when the retrieval path cannot be
+  composed. The Kubernetes deployment enables it.
 
-- Tenant configuration: allowed services, pricing policy, booking policy, phone, address, hours, escalation rules.
-- Retrieval: the main chat path embeds each resolved query, retrieves only the tenant's approved knowledge generation, applies hybrid ranking and context budgets, abstains below the calibrated evidence threshold, and validates citations before publishing an answer.
-- Tools: `check_service_area`, `get_availability`, `book_appointment`, `create_lead`, `handoff_to_human`.
-- Guardrails: no pricing unless policy allows it, no booking unless policy allows it, human handoff for uncertainty or risky requests.
-- Admin: live chat list, transcript view, lead/tool panels, and manual staff replies into a visitor chat.
-- Persistence: normalized Postgres repositories are authoritative; process-memory adapters are test doubles.
-- Outcomes: admin marks chats as active, abandoned, booked, lead, handoff, completed, or empty.
+Normal application state is never stored in process memory. In-memory adapters
+exist only for explicitly composed tests.
 
-## The production API (`services/api`)
+## API surface
 
-FastAPI, with booking and lead validation rules in `packages/core`. Every
-booking and lead commits through the graph's transactional, idempotent services
-under a signed visitor credential — there is no direct action route, because the
-two that took identity from a request body were retired (BUG-021, BUG-024).
+The public surface contains tenant configuration, availability, signed visitor
+sessions, chat turns, consent, confirmation, feedback, and citation source
+views. Operator routes cover conversations, handoffs, knowledge, reviews,
+traces and replay, jobs, leads, bookings, memberships, audit events, and privacy
+requests.
 
-| Route | Purpose |
-| --- | --- |
-| `GET /healthz` | Liveness. Dependency-aware readiness ships with each dependency, per the backlog's definition of done. |
-| `GET /api/tenants` | Public tenant configuration, projected from `PublicTenantView`. |
-| `GET /api/tenants/{id}/availability?service=` | Slots currently offered, and the list booking validates against. |
-| `POST /api/chat/session` | Opens a conversation and returns its signed visitor credential. |
-| `GET /api/chat/session` | The transcript the `X-Visitor-Credential` header names, and anything it is waiting on. |
-| `POST /api/chat` | Answers one visitor turn through the agent runtime. |
-| `POST /api/chat/confirmation` | Approves or declines a booking the assistant proposed. |
-| `POST /api/chat/consent` | Records the signed visitor's action-consent grant. |
-| `GET /api/admin/chats?tenant_id=` | Operator console: conversations with a transcript, newest first. |
-| `GET /api/admin/chats/{id}?tenant_id=` | One conversation in full. |
-| `POST /api/admin/chats/{id}/messages` | A staff reply, stored as a person speaking. |
-| `GET /api/admin/csrf-token` | The double-submit token a staff reply must echo. |
+The authoritative route and schema reference is the generated OpenAPI document.
+Set `CHAT_API_DOCS_ENABLED=true` for local development and open
+`http://127.0.0.1:8080/docs`. Documentation is disabled in the Kubernetes
+manifest.
 
-A booking proposed by the assistant is not committed when it is proposed. The
-turn pauses, `POST /api/chat` returns `pending` instead of a reply, and nothing
-is written until `POST /api/chat/confirmation` carries the customer's answer.
+Failures use RFC 9457 Problem Details with a stable `code` and a request ID.
+Typed recovery fields such as `missingFields`, `offeredServices`, and
+`offeredSlots` keep clients from parsing prose.
 
-The credentialed chat surface authenticates with a signed `X-Visitor-Credential` header
-minted by `POST /api/chat/session` (SEC-002). The token names exactly one tenant
-and session; those requests carry no `tenant_id` or `session_id`, so a body field
-cannot move a conversation and a leaked session UUID authorizes nothing. Every
-credentialed response reissues the credential, so an active conversation never
-expires. The credential is a bearer secret: it travels in a header, never a
-query string or a log line. Deployment must provide the
-`CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY` secret or visitor routes fail closed
-at startup, like the admin credentials below. Every visitor route enforces this
-boundary, because the two that did not were removed rather than repaired.
+## Embedding the widget
 
-Admin routes require the identity headers the gateway injects plus the shared
-`ADMIN_GATEWAY_TOKEN`, and staff replies additionally require the CSRF token.
-Both values are required at startup, so a deployment missing one fails to boot
-rather than rejecting every operator. They are never reachable cross-origin: the
-`CHAT_API_ALLOWED_ORIGINS` allowlist covers the embedded widget only.
-
-Failures return RFC 9457 Problem Details with a stable `code` a client can branch
-on, plus typed members (`missingFields`, `offeredServices`, `offeredSlots`) so
-recovery never requires parsing prose:
-
-```json
-{
-  "type": "/problems/invalid_contact",
-  "status": 422,
-  "code": "invalid_contact",
-  "detail": "Provide a valid email address or a complete 10-digit US phone number including the area code.",
-  "requestId": "a9f019936ae44127ae33938efc917317"
-}
-```
-
-Set `CHAT_API_DOCS_ENABLED=true` for the OpenAPI schema at `/docs`. It is off by
-default: it names every field and error code the API accepts.
-
-## Database schema
-
-The normalized production schema is versioned under `services/api/migrations`.
-It is upgraded as a release step with `DATABASE_MIGRATION_URL`; API startup never
-creates or alters schema. The separate `DATABASE_URL` role has runtime DML only.
-See `docs/runbooks/database-migrations.md` before migrating a database that held
-the pre-cutover JSONB snapshots or attempting a downgrade.
-
-Normal API composition requires `DATABASE_URL` and constructs bounded async
-PostgreSQL repositories; process-memory stores exist only as explicitly injected
-test doubles. Messages are server-appended under tenant-qualified session locks,
-so all replicas observe one immutable, gap-free transcript order. Pool size,
-overflow, checkout timeout, and recycle interval use the `CHAT_API_DATABASE_*`
-settings documented in `.env.example`. See ADR-0005 for the concurrency decision.
-
-## Running the frontend against a remote backend
-
-The frontend only needs the chat backend API. For Kubernetes local testing:
-
-`k8s/app.yaml` deliberately contains no credential values or private model
-endpoint. Before running `k8s/deploy.sh`, provision the documented runtime
-resources in `llm-chat` from an out-of-band source:
-
-- `elastic-credentials`: `username`, `password`
-- `postgres-credentials`: `username`, `password`, `database`, `databaseUrl`
-- `postgres-migration-credentials`: schema-owner `databaseUrl` for the release Job
-- `kibana-credentials`: `username`, `password`
-- `llm-provider-credentials`: `apiKey`
-- `llm-runtime` ConfigMap: `baseUrl`, `model`, `timeoutSeconds`
-
-The placeholder-only examples, safe local provisioning workflow, production
-secret-manager path, and mandatory rotation warning are in
-[`k8s/README.md`](k8s/README.md). The deploy script fails before changing
-workloads when a required resource or key is missing and never displays values.
-It also requires rendered application and seed manifests whose release image
-contracts have been replaced with registry digests. See
-[`docs/runbooks/container-images.md`](docs/runbooks/container-images.md) for the
-locked build, non-root smoke, metadata, and scanning workflow.
-
-For the full local MicroK8s sequence, install the Keycloak Helm chart first and
-then run `./k8s/deploy.sh <app-release> <seed-release>` as documented in
-[`k8s/README.md`](k8s/README.md).
-That deploy applies the public `web-lb` and `keycloak-lb` MetalLB Services at
-`192.168.1.180` and `192.168.1.181`; the HTTPS browser endpoints continue to use
-the Traefik ingress hostname.
-
-The deployed site is the `web` Service, which serves the assets and proxies the
-visitor API to the backend:
-
-```bash
-kubectl -n llm-chat port-forward svc/web 18080:80     # demo site + visitor API
-open http://127.0.0.1:18080/admin/                    # operator console
-```
-
-To point a locally served frontend at a port-forwarded backend instead, forward
-the API itself and configure the API base with one of these options:
-
-```bash
-kubectl -n llm-chat port-forward svc/chat-admin 18080:8004
-```
-
-```html
-<script>
-  window.CHAT_API_BASE_URL = "http://127.0.0.1:18080";
-</script>
-<script type="module" src="embed.js"></script>
-```
-
-```html
-<div
-  id="tenant-chat"
-  data-company-id="clearview"
-  data-api-base-url="http://127.0.0.1:18080"
-></div>
-```
-
-```html
-<script type="module" src="embed.js" data-api-base-url="http://127.0.0.1:18080"></script>
-```
-
-The admin page supports the same global or script setting, plus `data-api-base-url`
-on `<body>`.
-
-Captured leads are written but not listable: reading them waits on the
-tenant-scoped RBAC in `SEC-001`, and the API deliberately has no unauthenticated
-read side. The operator console lists conversations today.
-
-Useful lead-capture test message:
-
-```text
-Please have someone call me. My name is Sam Lee, my phone is 555-222-1919, I need HVAC help in 97205 this week.
-```
-
-Example embed shape:
+The production frontend build emits a self-contained, stable `embed.js`:
 
 ```html
 <div id="tenant-chat" data-company-id="clearview"></div>
-<script type="module" src="https://your-domain.com/embed.js"></script>
+<script type="module" src="https://your-domain.example/embed.js"></script>
 ```
 
-The mount element carries everything the widget needs. `data-open="true"` starts
-the panel expanded (the demo page does this; a real embed should not), and
-`data-color-scheme="light"` or `"dark"` pins the scheme on a host page that is
-not scheme-aware.
+Optional mount attributes include:
 
-Serving the embed from a different origin than the customer's site requires that
-origin in `WIDGET_ALLOWED_ORIGINS`, which the gateway turns into the CORS
-allowlist for both the visitor API and `/embed.js` itself.
+- `data-api-base-url` to point at another API origin;
+- `data-open="true"` to start expanded; and
+- `data-color-scheme="light"` or `"dark"` to override the host preference.
 
-## The frontend
+The widget renders inside a shadow root. A cross-origin installation must add
+the customer-site origin to `WIDGET_ALLOWED_ORIGINS`; the nginx gateway applies
+that allowlist to both `embed.js` and the visitor API. Admin routes are never
+CORS-enabled.
 
-Everything the browser loads lives under `frontend/`, which is a self-contained
-npm project: React 19 and TypeScript in `strict` mode, built by Vite. The
-`make dev` and `make js-*` targets drive it; nothing at the repository root is
-an npm package.
+## Testing
 
-```text
-frontend/index.html, admin.html   the two page shells
-frontend/src/widget/              the embeddable widget; no host-page coupling
-frontend/src/demo/                the stand-in customer site that embeds it
-frontend/src/admin/               the operator console
-frontend/src/embed/main.ts        the entry a customer site includes
-frontend/tests/                   the Vitest suite
-frontend/nginx/                   the gateway that serves all of it
-frontend/Dockerfile               the `web` image, Node build stage included
-frontend/vite.config.ts           three build passes and the dev server
+The main quality gate is hermetic and needs no running services:
+
+```bash
+make check
 ```
 
-`npm run build` (`make js-build`) runs three passes, because the deployment has
-three audiences: the public page and the operator console are separate builds so
-the two nginx document roots share no chunk, and `embed.js` is a third,
-self-contained file whose name never changes — customer sites hard-code that
-URL, and a module script's imports are fetched under CORS. See
-[ADR-0009](docs/adr/0009-react-frontend-build.md).
+It runs Python and TypeScript linting, formatting and type checks, builds all
+three frontend bundles, executes offline evaluation gates, runs both test
+suites with coverage, and validates deployment, image, and Grafana contracts.
 
-The widget renders into a shadow root, so an embedding page can neither style
-its internals nor collide with its element ids, and its own styles never escape.
-It follows the visitor's `prefers-color-scheme`, or an explicit
-`data-color-scheme` on the mount element. Accessibility is covered in
-[`docs/accessibility.md`](docs/accessibility.md): automated axe, contrast, focus,
-and consent checks run in `make check`, and the manual keyboard and
-screen-reader list lives there too.
+Database integration tests start disposable PostgreSQL 16 containers:
+
+```bash
+make test-database
+```
+
+Other useful checks:
+
+```bash
+make keycloak-check   # requires Helm
+make arch-validate
+make images-check     # builds and smoke-tests all deployable images
+```
+
+CI also scans dependencies, images, and Git history for vulnerabilities and
+committed secrets.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture model and diagrams](architecture/likec4/README.md)
+- [Architecture decisions](docs/adr/README.md)
+- [Kubernetes deployment](k8s/README.md)
+- [Database migrations](docs/runbooks/database-migrations.md)
+- [Privacy model](docs/privacy.md)
+- [Accessibility checks](docs/accessibility.md)
+- [Backlog](BACKLOG.md)
+
+## License
+
+[MIT](LICENSE)

@@ -2,94 +2,50 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-31
-- **Affects:** `QA-001`, `API-001`, `DATA-001`, `DATA-002`, `DEP-001`
 
 ## Context
 
-The prototype backend is a single 1,549-line module built on the standard
-library's `ThreadingHTTPServer`, holding sessions, leads, and bookings in module
-globals. It has no dependency manifest beyond one pinned package, no tests, no
-type checking, and no schema migrations. Postgres persistence exists but the
-container image never installs its driver, so that path cannot run as built.
-
-None of this is defensible for a system that takes customer contact details and
-books appointments. The question is what to replace it with, and how to keep the
-replacement from drifting back.
+The original single-file HTTP server mixed transport, process-local state, and
+business behavior. The replacement needed typed contracts, migrations, async
+I/O, and boundaries that could be checked automatically.
 
 ## Decision
 
-**Stack**
+Use an uv workspace with a committed lockfile. Build the API with FastAPI and
+Pydantic, persistence adapters with async SQLAlchemy and psycopg, migrations with
+Alembic, and tests with pytest. Ruff and strict mypy are repository gates.
 
-| Concern | Choice | Why this one |
-|---|---|---|
-| Packaging | uv workspace, committed `uv.lock` | Fast, and the lockfile carries hashes, which `DEP-001` requires for reproducible images |
-| API | FastAPI + Pydantic v2 | Typed request/response models generate the OpenAPI contract `API-001` calls for, rather than documenting it separately |
-| Persistence | SQLAlchemy 2.0 (async) + Alembic | Explicit migrations replace schema creation during request-server startup |
-| Database | PostgreSQL 16 | Already required for LangGraph checkpoints (ADR-0001); adding a second store would be gratuitous |
-| Tests | pytest | — |
-| Lint/format | ruff | One tool covering both, fast enough to run on every save |
-| Types | mypy, `strict` | — |
+Keep these primary boundaries:
 
-**Layout**
-
-```
-packages/core/      # Domain model. Zero runtime dependencies.
-services/api/       # FastAPI app: routers, schemas, adapters.
-services/embedding/ # Embedding model server; linted and type checked.
-tests/              # Cross-cutting tests, including architecture invariants.
+```text
+packages/core/      Domain model and ports
+packages/orchestration/ Agent graph and model adapters
+services/api/       HTTP API, application services, and persistence adapters
+services/embedding/ Embedding model service
+frontend/           Visitor widget, operator console, and nginx gateway
 ```
 
-The load-bearing rule is that **`packages/core` declares no runtime
-dependencies**. Domain rules define `Protocol` ports; adapters live in the service
-that owns the I/O. FastAPI, SQLAlchemy, and LangGraph are structurally unable to
-appear in a domain type.
-
-The API image also runs the durable ingestion worker and one-shot release jobs;
-the embedding model remains separate because it has a different runtime and
-resource profile. The former prototype ingestion and financing services were
-removed after the governed path became authoritative.
+`packages/core` has no runtime dependencies. It defines business meaning and
+ports; services and orchestration provide I/O implementations. The API and
+durable worker may share an image because they share application code. The
+embedding service remains separate because its model runtime, memory use, and
+startup behavior differ.
 
 ## Consequences
 
-**Gained.** Domain rules are testable without a database, an HTTP client, or a
-model: the test suite runs in well under a second, which is what makes it get run.
-The dependency-free constraint is verified by `tests/test_architecture_invariants.py`,
-so the boundary degrades loudly instead of silently.
+Domain rules run without a database, web server, or model, and architecture
+tests make dependency drift visible. Ports and adapters introduce some
+indirection, but keep transactions and framework code out of domain types.
 
-**Cost.** Ports and adapters mean more indirection than calling the ORM from a
-route handler. For CRUD this is overhead. It pays for itself at the points where
-business rules and idempotency live, which is exactly where correctness matters
-here.
-
-**Cost of separate services.** The API/worker, embedding server, and web gateway
-remain three images, with a network call on the embedding boundary. The shared
-domain package keeps worker and request-path rules from drifting.
-
-**Migration.** `server.py` stays runnable until `services/api` serves the same
-endpoints, then is deleted rather than kept as a fallback. No characterization
-tests were written against it: it is a prototype with no users, and several of its
-behaviors are bugs worth losing (two-way substring service matching, collision-prone
-booking IDs, client-supplied session identifiers).
+The deployment still contains multiple images and a network boundary around
+embeddings. That operational cost is accepted because the processes have
+different resource profiles.
 
 ## Alternatives considered
 
-**Keep `ThreadingHTTPServer`.** Rejected. No async I/O, no request validation, no
-generated contract, and a thread per connection. The prototype's own backlog
-identifies replacing it as a release blocker.
-
-**Django + DRF.** Rejected. The ORM and admin are genuine strengths, but the
-framework wants to own the domain model, which is the opposite of the boundary
-ADR-0001 depends on. Async support remains less mature than FastAPI's.
-
-**Litestar.** A close call — arguably a better-designed framework. Rejected on
-ecosystem size: FastAPI has more integration surface and is far more likely to be
-familiar to whoever reads this code next.
-
-**Collapse into a modular monolith.** Considered and not taken. It would be
-simpler to run and deploy, and at this scale the separation buys little
-operationally. Kept separate as a deliberate product decision: the embedding
-service has genuinely different memory and warmup characteristics, and ingestion
-is bursty work that should not share a request path with chat.
-
-**Poetry or PDM instead of uv.** Rejected on speed and on `uv.lock` carrying
-hashes natively.
+- **Keep the standard-library HTTP server:** rejected for weak validation,
+  contracts, async I/O, and migration support.
+- **Let a full-stack framework own the domain model:** rejected because it would
+  invert the intended dependency direction.
+- **Run embeddings inside the API:** rejected because model serving has a
+  different scaling and failure profile.

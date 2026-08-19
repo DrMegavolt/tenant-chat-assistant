@@ -2,7 +2,7 @@
   "name": "tenant-chat-architecture",
   "private": true,
   "version": "1.0.0",
-  "description": "LikeC4 architecture-as-code model for the production RAG chatbot target state",
+  "description": "LikeC4 model of the current Tenant Chat implementation and reference deployment",
   "scripts": {
     "format": "likec4 format .",
     "format:check": "likec4 format --check .",

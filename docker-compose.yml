@@ -108,10 +108,10 @@ services:
       # routes them through the gateway's public and admin listeners.
       CHAT_BACKEND_ORIGIN: ${CHAT_BACKEND_ORIGIN:-http://host.docker.internal:8080}
       CHAT_ADMIN_ORIGIN: ${CHAT_ADMIN_ORIGIN:-http://host.docker.internal:8080}
-      # Local compose has no oauth2-proxy sidecar.  `make api` has no dev auth
-      # mode, so admin pages require a local auth proxy and the gateway token;
-      # the visitor surface does not touch this origin.  The gateway health
-      # check (nginx -t) requires these to be valid URLs.
+      # Local compose has no oauth2-proxy sidecar. The browser-based admin
+      # console therefore needs a local auth proxy; CHAT_API_DEV_AUTH alone
+      # does not supply operator identity headers. The visitor surface does not
+      # use this origin. nginx -t requires it to be a valid URL.
       AUTH_PROXY_ORIGIN: ${AUTH_PROXY_ORIGIN:-http://host.docker.internal:8080}
       ADMIN_GATEWAY_TOKEN: ${ADMIN_GATEWAY_TOKEN:?set ADMIN_GATEWAY_TOKEN in .env}
       WIDGET_ALLOWED_ORIGINS: ${WIDGET_ALLOWED_ORIGINS:-}

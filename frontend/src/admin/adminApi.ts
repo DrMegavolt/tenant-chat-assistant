@@ -719,7 +719,7 @@ function tenantSummaryFromWire(wire: Record<string, unknown>): TenantSummary {
 /**
  * The store's role vocabulary is wider than the transcript's: `visitor`
  * renders as the customer, `staff` as the operator, and `system` as the
- * server's handoff lifecycle notices — never as visitor speech (BUG-017).
+ * server's handoff lifecycle notices — never as visitor speech.
  */
 function adminMessageFromWire(wire: Record<string, unknown>): AdminMessage {
   const role = str(wire.role);
