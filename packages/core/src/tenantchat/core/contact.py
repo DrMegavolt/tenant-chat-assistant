@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Final
 
 from tenantchat.core.errors import InvalidContactError
 
@@ -117,3 +118,21 @@ class Contact:
     def __str__(self) -> str:
         """Masked by default so an accidental f-string cannot leak PII."""
         return self.masked
+
+
+# The recognition rules `Contact.parse` applies, relaxed for free text: a
+# message can carry a phone number or an address without being a well-formed
+# command. Erasure (privacy) and the promotion PII check (reviews) both read
+# these, so the two checks cannot silently disagree about what counts as
+# contact data. Deliberately looser than the parse rules — a partial match is
+# reason enough to erase or refuse, never to publish.
+PHONE_IN_TEXT: Final[re.Pattern[str]] = re.compile(
+    r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}"
+)
+EMAIL_IN_TEXT: Final[re.Pattern[str]] = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+)
+
+# Replacement marker for irreversible anonymization in free text. ``erased``
+# reads as deliberate where an empty string could be a data-entry hole.
+ERASED_MARKER: Final = "[erased]"

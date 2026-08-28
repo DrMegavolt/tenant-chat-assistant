@@ -434,6 +434,13 @@ def _history_message(turn: HistoryTurn, position: int) -> AssembledMessage:
             role=turn.role,
             segments=(PromptSegment(f"user:{position}", PromptRegion.UNTRUSTED, turn.content),),
         )
+    # Accepted residual risk: assistant and tool turns are TRUSTED because this
+    # runtime produced them, but a model or tool can echo the visitor's own
+    # words back (quoting their message, restating a tool argument), so
+    # untrusted text can re-enter inside a trusted segment. Scanning every
+    # assistant/tool turn would mark legitimate model prose untrusted and
+    # dissolve the trust boundary entirely, so the boundary is drawn at
+    # authorship and the echo route is accepted rather than redesigned.
     region = (
         PromptRegion.TRUSTED
         if turn.role in (MessageRole.ASSISTANT, MessageRole.TOOL)

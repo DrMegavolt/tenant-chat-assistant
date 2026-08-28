@@ -246,7 +246,11 @@ class RoutingPolicy:
         (and its availability precursor) for a tenant with booking disabled.
         Their profiles are not scored at all: a capability the tenant lacks is
         not a candidate that lost, so the recorded decision simply does not
-        contain it, and it can never be chosen or continued.
+        contain it, and it can never be chosen or continued. Disabling *every*
+        intent is a caller bug, but a parsed one: the decision records an empty
+        candidate set, chooses nothing, and asks a generic clarification (and
+        hands off once a clarification is already pending, as any other
+        ambiguity would).
 
         ``clarification_pending`` records that the previous turn already asked;
         an answer that is still ambiguous becomes a handoff instead of a second
@@ -272,14 +276,34 @@ class RoutingPolicy:
         ]
         scored.sort(key=lambda candidate: (-candidate.score, _INTENT_ORDER[candidate.intent.value]))
 
+        if not scored:
+            # Every intent disabled: there is nothing to score, continue, or
+            # choose. Reviving a previous intent here would contradict the
+            # disabled set, so the turn stays a bounded clarification.
+            pending = clarification_pending
+            return RoutingDecision(
+                policy_version=self.version,
+                candidates=(),
+                chosen=None,
+                confidence=0.0,
+                outcome=RoutingOutcome.HANDOFF if pending else RoutingOutcome.CLARIFY,
+                rule=RoutingRule.BOUNDED_CLARIFY if pending else RoutingRule.CLARIFY,
+                direct_threshold=self.direct_threshold,
+                clarify_threshold=self.clarify_threshold,
+                conflict_gap=self.conflict_gap,
+            )
+
         if previous_intent is not None:
             scored = _boost_workflow_continuation(scored, previous_intent, self.direct_threshold)
             scored.sort(
                 key=lambda candidate: (-candidate.score, _INTENT_ORDER[candidate.intent.value])
             )
 
-        top, second = scored[0], scored[1]
-        gap = top.score - second.score
+        # A lone candidate has no competitor to conflict with; its gap is its
+        # whole score, so the direct path needs no second place to exist.
+        top = scored[0]
+        second = scored[1] if len(scored) > 1 else None
+        gap = top.score if second is None else top.score - second.score
 
         chosen: IntentName | None
         if top.score >= self.direct_threshold and gap >= self.conflict_gap:
@@ -362,14 +386,25 @@ def clarify_question(decision: RoutingDecision) -> str:
     """The deterministic question asked when the router is unsure.
 
     Written from the two strongest candidates so the customer's answer can be
-    routed; it quotes no content from the message, only intent labels.
+    routed; it quotes no content from the message, only intent labels. A
+    degenerate decision — a caller disabled all but one intent, or all of
+    them — cannot name two options, so it falls back to a generic question
+    rather than raising.
     """
+    if len(decision.candidates) < 2:
+        return _GENERIC_CLARIFICATION
     top = decision.candidates[0].intent
     second = decision.candidates[1].intent
     return (
         "I want to make sure I help with the right thing — did you mean to "
         f"{_INTENT_QUESTION[top]}, or {_INTENT_QUESTION[second]}?"
     )
+
+
+_GENERIC_CLARIFICATION = (
+    "I want to make sure I help with the right thing — could you tell me a "
+    "little more about what you need?"
+)
 
 
 ROUTING_POLICY_VERSION = "intent-routing@1"

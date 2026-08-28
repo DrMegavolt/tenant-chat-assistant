@@ -181,6 +181,24 @@ class TestBookingService:
         with pytest.raises(UnknownServiceError):
             BookingCommand.parse(build_tenant(), **booking_args(service="v"))
 
+    def test_error_detail_does_not_quote_the_requested_text(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """R-42: visitor free text once passed verbatim into error `detail`.
+
+        Detail reaches operator logs that are not uniformly redacted, and the
+        requested service is the visitor's own words (content, per ADR-0010) —
+        here carrying a phone number to prove the worst case stays out.
+        """
+        requested = "roof repair, call 555-222-1919"
+
+        with pytest.raises(UnknownServiceError) as caught:
+            BookingCommand.parse(build_tenant(), **booking_args(service=requested))
+
+        assert caught.value.detail is not None
+        assert "555-222-1919" not in caught.value.detail
+        assert "roof repair" not in caught.value.detail
+
 
 class TestBookingSlot:
     def test_slot_outside_the_current_offers_is_refused(self, build_tenant: TenantBuilder) -> None:
@@ -213,6 +231,95 @@ class TestBookingSlot:
     def test_empty_offer_list_books_nothing(self, build_tenant: TenantBuilder) -> None:
         with pytest.raises(SlotUnavailableError):
             BookingCommand.parse(build_tenant(), **booking_args(offered_slots=()))
+
+    def test_error_detail_does_not_quote_the_requested_slot_label(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """R-42: an unoffered slot label once passed verbatim into `detail`."""
+        requested = "Mon Jul 8, 9:00 AM — questions? 555-222-1919"
+
+        with pytest.raises(SlotUnavailableError) as caught:
+            BookingCommand.parse(build_tenant(), **booking_args(slot=requested))
+
+        assert caught.value.detail is not None
+        assert "555-222-1919" not in caught.value.detail
+        assert requested not in caught.value.detail
+        assert caught.value.offered == OFFERED_LABELS
+
+    def test_a_slot_offered_for_another_service_is_refused(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """R-13: `OfferedSlot.service_slug` existed and was never checked.
+
+        A label collision across offer sets would book a window that belongs
+        to different work; the slot the visitor picked must come from the
+        requested service's own offers.
+        """
+        base = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=1
+        )
+        other_service = OfferedSlot(
+            id="slot-other",
+            service_slug="window-cleaning",
+            start=base + timedelta(hours=14),
+            end=base + timedelta(hours=15),
+        )
+
+        with pytest.raises(ValidationError) as caught:
+            BookingCommand.parse(
+                build_tenant(),
+                **booking_args(slot=other_service.label, offered_slots=(other_service,)),
+            )
+
+        assert caught.value.code == "validation_error"
+        assert "window-cleaning" in (caught.value.detail or "")
+
+    def test_duplicate_slot_labels_are_refused_rather_than_picked_first(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """R-66: `next()` once silently booked the first of identical labels.
+
+        The catalog refuses ambiguous terms loudly at construction; an offer
+        set where two windows share one customer-facing label is the same
+        configuration bug and gets the same posture.
+        """
+        first, _second = OFFERED_SLOTS
+        duplicate = OfferedSlot(
+            id="slot-1-again",
+            service_slug="hvac",
+            start=first.start,
+            end=first.end,
+        )
+
+        with pytest.raises(ValidationError) as caught:
+            BookingCommand.parse(
+                build_tenant(),
+                **booking_args(slot=OFFERED_LABELS[0], offered_slots=(first, duplicate)),
+            )
+
+        assert caught.value.code == "validation_error"
+
+    def test_a_duplicate_label_refuses_the_booking_even_when_a_unique_slot_was_picked(
+        self, build_tenant: TenantBuilder
+    ) -> None:
+        """Ambiguity anywhere in the offer set is refused, not just when hit.
+
+        A provider returning colliding labels means every booking from that
+        set could bind to the wrong window, so none of them may proceed.
+        """
+        first, second = OFFERED_SLOTS
+        duplicate = OfferedSlot(
+            id="slot-1-again",
+            service_slug="hvac",
+            start=first.start,
+            end=first.end,
+        )
+
+        with pytest.raises(ValidationError):
+            BookingCommand.parse(
+                build_tenant(),
+                **booking_args(slot=OFFERED_LABELS[1], offered_slots=(first, second, duplicate)),
+            )
 
 
 class TestLeadCapture:

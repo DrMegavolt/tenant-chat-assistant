@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, TypeVar
 
+from tenantchat.core.errors import DomainError
 from tenantchat.core.metrics import MetricLabelName, MetricName, MetricsReporter
 
 T = TypeVar("T")
@@ -273,18 +274,25 @@ class CircuitBreaker:
             self._probes_in_flight -= 1
 
 
-class DependencyUnavailableError(Exception):
+class DependencyUnavailableError(DomainError):
     """The dependency was not reached: the breaker refused the call.
 
     Carries only a dependency identifier and a bounded reason, so it is safe to
     surface in logs and metrics. It is deliberately not raised when retries
     exhaust themselves — that path re-raises the underlying exception so a
-    caller's timeout/error classification is preserved.
+    caller's timeout/error classification is preserved. A taxonomy member
+    because a refused call is an expected failure, and expected failures are
+    discoverable, coded, and safe to describe.
     """
 
-    def __init__(self, *, dependency: Dependency) -> None:
+    code = "dependency_unavailable"
+    message = "A required dependency is not accepting requests right now."
+
+    def __init__(self, *, dependency: Dependency, detail: str | None = None) -> None:
         self.dependency = dependency
-        super().__init__(f"{dependency.value} dependency unavailable")
+        # Only the safe message reaches the exception args; the dependency
+        # name is operator context and travels in `detail` through redaction.
+        super().__init__(detail if detail is not None else f"{dependency.value} circuit open")
 
 
 class AsyncResilientCaller:

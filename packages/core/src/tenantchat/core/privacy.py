@@ -13,14 +13,19 @@ exercise them without a database.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Final
 
-from tenantchat.core.contact import Contact
+from tenantchat.core.contact import (
+    EMAIL_IN_TEXT,
+    ERASED_MARKER,
+    PHONE_IN_TEXT,
+    Contact,
+    ContactKind,
+)
 from tenantchat.core.errors import PolicyViolationError
 
 
@@ -177,13 +182,15 @@ _DEFAULT_TRACE_RETENTION: Final = timedelta(days=30)
 class RetentionRule:
     """How long one data class is kept before the worker may purge it.
 
-    No rule means "kept indefinitely": the policy intentionally carries no
-    default rule for bookings and leads, which are business records the tenant
-    may need long after the transcript is gone.
+    ``max_age`` is required, with no default: a silent fallback to the
+    transcript window would quietly apply it to business records the tenant may
+    need long after the transcript is gone. No rule at all — a class absent
+    from :class:`RetentionPolicy.rules` — means "kept indefinitely", and that
+    is a decision the policy states, not one a default makes.
     """
 
     data_class: DataClass
-    max_age: timedelta = _DEFAULT_TRANSCRIPT_RETENTION
+    max_age: timedelta
 
     def expired(self, recorded_at: datetime, *, now: datetime) -> bool:
         return now - recorded_at >= self.max_age
@@ -195,10 +202,14 @@ class RetentionPolicy:
 
     Declared in source for now; `FEAT-006` moves tenant policy into the
     database, and this type is the shape that migration will fill from.
+
+    Only the transcript and the inference trace carry windows: every other
+    class — bookings, leads, consent records — has no rule yet, so nothing
+    expires until a rule names it explicitly.
     """
 
     rules: tuple[RetentionRule, ...] = (
-        RetentionRule(DataClass.TRANSCRIPT),
+        RetentionRule(DataClass.TRANSCRIPT, _DEFAULT_TRANSCRIPT_RETENTION),
         RetentionRule(DataClass.INFERENCE_TRACE, _DEFAULT_TRACE_RETENTION),
     )
 
@@ -239,26 +250,35 @@ class TurnRecordReadReason(StrEnum):
 
 
 # Replacement values for irreversible anonymization. ``erased`` reads as
-# deliberate where an empty string could be a data-entry hole.
+# deliberate where an empty string could be a data-entry hole. Each kind gets
+# a sentinel of its own kind, so a consumer's formatting for that kind renders
+# something deliberate rather than mangling the other kind's shape.
 ANONYMIZED_NAME: Final = "erased"
 ANONYMIZED_ADDRESS: Final = "erased"
 ANONYMIZED_SUMMARY: Final = "erased"
-ANONYMIZED_CONTACT_VALUE: Final = "erased@example.invalid"
+# ``example.invalid`` is reserved by RFC 2606 and can never resolve or deliver.
+ANONYMIZED_EMAIL_VALUE: Final = "erased@example.invalid"
+# NANP reserves 0 for neither area code nor exchange, so this is unreachable by
+# construction while remaining a well-formed E.164 phone value.
+ANONYMIZED_PHONE_VALUE: Final = "+10000000000"
 
-# The same recognition rules `Contact.parse` applies, in free text: a message
-# can carry a phone number or an address without being a well-formed command.
-_PHONE_IN_TEXT = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
-_EMAIL_IN_TEXT = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-_ANONYMIZED_TEXT_MARKER = "[erased]"
+# ``anonymize_text`` reads the shared free-text patterns from
+# :mod:`tenantchat.core.contact` so erasure and the promotion privacy check
+# cannot silently disagree about what counts as contact data. The email
+# pattern runs first: the phone pattern can match the digits of an address's
+# local part, and running it first would leave a half-erased address behind.
 
 
 def anonymized_contact(contact: Contact) -> Contact:
     """The replacement for a real contact value, preserving the kind.
 
-    The kind is kept so the column that held it stays type-consistent; the
-    value is a sentinel no parser will ever confuse with a real address.
+    The kind is kept so the column that held it stays type-consistent, and the
+    value is a sentinel of that same kind — an unreachable reserved phone
+    number for a phone, an ``example.invalid`` address for an email — so a
+    phone contact never renders through email formatting (or the reverse).
     """
-    return Contact(kind=contact.kind, value=ANONYMIZED_CONTACT_VALUE)
+    value = ANONYMIZED_PHONE_VALUE if contact.kind is ContactKind.PHONE else ANONYMIZED_EMAIL_VALUE
+    return Contact(kind=contact.kind, value=value)
 
 
 def anonymize_text(text: str) -> str:
@@ -268,6 +288,4 @@ def anonymize_text(text: str) -> str:
     erasure is that the data is unrecoverable, not that the sentence it lived
     in disappears.
     """
-    return _PHONE_IN_TEXT.sub(
-        _ANONYMIZED_TEXT_MARKER, _EMAIL_IN_TEXT.sub(_ANONYMIZED_TEXT_MARKER, text)
-    )
+    return PHONE_IN_TEXT.sub(ERASED_MARKER, EMAIL_IN_TEXT.sub(ERASED_MARKER, text))

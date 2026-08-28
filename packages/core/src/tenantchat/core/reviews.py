@@ -30,12 +30,12 @@ first, so the ordering depends on no id and no sub-second clock.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from tenantchat.core.contact import EMAIL_IN_TEXT, PHONE_IN_TEXT
 from tenantchat.core.errors import ValidationError
 
 # The causes that make a turn a technical failure rather than a quality
@@ -62,11 +62,10 @@ _CAUSE_SEVERITY: Final[Mapping[str, int]] = {
     "tool_error": 2,
 }
 
-# The same recognition rules the redaction layer applies to free text. A case
-# is promotable only when neither the query nor the scenario carries one of
-# these — the promotion path refuses rather than silently altering a case.
-_PHONE = re.compile(r"(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}")
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+# The promotion PII check reads the shared free-text recognition rules from
+# :mod:`tenantchat.core.contact` — the same source erasure reads — so the
+# promotion gate and the erasure worker cannot silently disagree about what
+# counts as contact data.
 
 
 class FeedbackRating(StrEnum):
@@ -288,6 +287,6 @@ def payload_contains_pii(payload: Mapping[str, object]) -> bool:
     """
     for field in ("query", "scenario"):
         text = str(payload.get(field, ""))
-        if _PHONE.search(text) or _EMAIL.search(text):
+        if PHONE_IN_TEXT.search(text) or EMAIL_IN_TEXT.search(text):
             return True
     return False

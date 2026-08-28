@@ -32,6 +32,7 @@ aggregate, broken invariant, dependency failure.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
 from tenantchat.core.fields import RequiredField
@@ -207,16 +208,40 @@ class GenerationUnavailableError(DomainError):
     message = "The index generation this turn was retrieved against is no longer available."
 
 
+class VisitorCredentialRejection(StrEnum):
+    """The bounded, operator-facing reason a visitor credential was refused.
+
+    The reason never reaches the visitor — the error's message is identical
+    whichever check failed and its ``detail`` stays empty — because the reason
+    is a forgery probe's free intelligence. This vocabulary exists for
+    structured logs and metrics, which need to distinguish a malformed token
+    from a bad signature without carrying free-form text.
+    """
+
+    MALFORMED = "malformed"
+    BAD_SIGNATURE = "bad_signature"
+    UNUSABLE_PAYLOAD = "unusable_payload"
+    CLAIMS_REJECTED = "claims_rejected"
+
+
 class InvalidVisitorCredentialError(DomainError):
     """A presented visitor credential is not one this server issued.
 
-    The ``detail`` never says *why* the token was rejected — the reason is a
-    forgery probe's free intelligence — and the message is stable so clients can
-    branch on the ``code`` and clear their stored credential.
+    The refusal is identical to the visitor whichever check failed: the
+    message is stable so clients can branch on the ``code`` and clear their
+    stored credential, and ``detail`` stays ``None`` — the reason is a forgery
+    probe's free intelligence. Operators read *what* refused from the typed
+    :attr:`reason`, which is bounded and safe for logs and metrics.
     """
 
     code = "invalid_visitor_credential"
     message = "Your session is no longer recognized. Please refresh to start again."
+
+    def __init__(
+        self, reason: VisitorCredentialRejection | None = None, *, detail: str | None = None
+    ) -> None:
+        self.reason = reason
+        super().__init__(detail)
 
 
 class ExpiredVisitorCredentialError(DomainError):

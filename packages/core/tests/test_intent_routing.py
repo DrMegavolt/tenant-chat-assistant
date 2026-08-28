@@ -100,6 +100,60 @@ def test_a_disabled_intent_cannot_be_continued_from_a_prior_workflow() -> None:
     assert all(candidate.intent not in disabled for candidate in decision.candidates)
 
 
+class TestDegenerateCandidateSets:
+    """R-12: caller-supplied filtering could leave fewer than two scoreable
+    intents, and the router once indexed `scored[1]` unguarded."""
+
+    def test_disabling_every_intent_clarifies_instead_of_raising(self) -> None:
+        decision = route("book HVAC on Monday", disabled_intents=set(IntentName))
+
+        assert decision.candidates == ()
+        assert decision.chosen is None
+        assert decision.outcome is RoutingOutcome.CLARIFY
+        assert decision.rule is RoutingRule.CLARIFY
+        assert "right thing" in clarify_question(decision)
+
+    def test_a_pending_clarification_over_an_empty_set_hands_off(self) -> None:
+        """The bounded-clarify rule must survive a degenerate candidate set."""
+        decision = route(
+            "book HVAC on Monday", disabled_intents=set(IntentName), clarification_pending=True
+        )
+
+        assert decision.outcome is RoutingOutcome.HANDOFF
+        assert decision.rule is RoutingRule.BOUNDED_CLARIFY
+
+    def test_a_lone_strong_candidate_routes_directly(self) -> None:
+        """One candidate has no competitor, so no conflict gap is required."""
+        decision = route(
+            "book HVAC on Monday",
+            disabled_intents=set(IntentName) - {IntentName.BOOKING},
+        )
+
+        assert decision.chosen is IntentName.BOOKING
+        assert decision.outcome is RoutingOutcome.DIRECT
+        assert decision.rule is RoutingRule.MATCHED
+
+    def test_a_lone_weak_candidate_falls_back_rather_than_raising(self) -> None:
+        decision = route(
+            "asdfghjkl",
+            disabled_intents=set(IntentName) - {IntentName.BOOKING},
+        )
+
+        assert decision.chosen is IntentName.GENERAL
+        assert decision.rule is RoutingRule.FALLBACK
+
+    def test_a_lone_moderate_candidate_clarifies_without_a_second(self) -> None:
+        """Between the clarify and direct thresholds with no competitor."""
+        decision = route(
+            "i need",
+            disabled_intents=set(IntentName) - {IntentName.BOOKING},
+        )
+
+        assert decision.outcome is RoutingOutcome.CLARIFY
+        assert decision.chosen is None
+        assert "right thing" in clarify_question(decision)
+
+
 def test_a_general_question_routes_to_general_chat() -> None:
     for message in (
         "what are your hours?",

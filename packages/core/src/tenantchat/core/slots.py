@@ -13,6 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from tenantchat.core.errors import ValidationError
+from tenantchat.core.knowledge import require_aware
+
 
 @dataclass(frozen=True, slots=True)
 class OfferedSlot:
@@ -20,15 +23,26 @@ class OfferedSlot:
 
     ``id`` is the provider's own identifier, stable across offers so that
     ``get_availability`` last week and ``BookCommand`` today name the same
-    window. ``start`` and ``end`` are timezone-aware, which is what makes "is
-    this in the past?" and "does my booking overlap another's?" decidable
-    without guessing a timezone.
+    window. ``start`` and ``end`` are timezone-aware with ``end`` after
+    ``start``, enforced at construction — which is what makes "is this in the
+    past?" and "does my booking overlap another's?" decidable without guessing
+    a timezone, and what keeps a naive bound from surfacing later as a bare
+    ``TypeError`` at comparison time.
+
+    Raises:
+        ValidationError: a bound is naive, or ``end`` is not after ``start``.
     """
 
     id: str
     service_slug: str
     start: datetime
     end: datetime
+
+    def __post_init__(self) -> None:
+        require_aware("start", self.start)
+        require_aware("end", self.end)
+        if self.end <= self.start:
+            raise ValidationError(detail="slot end is not after start")
 
     @property
     def label(self) -> str:

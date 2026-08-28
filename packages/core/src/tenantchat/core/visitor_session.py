@@ -40,7 +40,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from tenantchat.core.errors import ExpiredVisitorCredentialError, InvalidVisitorCredentialError
+from tenantchat.core.errors import (
+    ExpiredVisitorCredentialError,
+    InvalidVisitorCredentialError,
+    VisitorCredentialRejection,
+)
 
 # The wire prefix of every credential this server issues, fixed at format v1.
 _CREDENTIAL_PREFIX = "tc.v1."
@@ -137,8 +141,10 @@ class VisitorCredentialSigner(Protocol):
 
         Raises:
             InvalidVisitorCredentialError: the token is not one this server
-                signed, or is structurally malformed. The error carries no
-                reason, so a probing caller cannot learn what to fix.
+                signed, or is structurally malformed. The refusal is identical
+                to the visitor whichever check failed — ``detail`` stays empty
+                — because the reason is a forgery probe's free intelligence.
+                Operators read the bounded ``reason`` on the error instead.
             ExpiredVisitorCredentialError: the signature is valid and the
                 credential is past its expiry.
         """
@@ -199,9 +205,9 @@ class HmacVisitorCredentialSigner:
         try:
             encoded, signature = _split(token)
         except ValueError:
-            raise InvalidVisitorCredentialError(detail="malformed visitor credential") from None
+            raise InvalidVisitorCredentialError(VisitorCredentialRejection.MALFORMED) from None
         if not hmac.compare_digest(self._signature(encoded), signature):
-            raise InvalidVisitorCredentialError(detail="visitor credential signature mismatch")
+            raise InvalidVisitorCredentialError(VisitorCredentialRejection.BAD_SIGNATURE)
 
         try:
             payload = json.loads(_unb64url(encoded))
@@ -211,20 +217,23 @@ class HmacVisitorCredentialSigner:
             issued_at = int(payload["iat"])
             expires_at = int(payload["exp"])
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-            detail = "visitor credential payload unusable"
-            raise InvalidVisitorCredentialError(detail=detail) from error
+            raise InvalidVisitorCredentialError(
+                VisitorCredentialRejection.UNUSABLE_PAYLOAD
+            ) from error
 
         if (
             version != _PAYLOAD_VERSION
             or set(payload) != _PAYLOAD_KEYS
             or not _TENANT_PATTERN.fullmatch(tenant_id)
+            or expires_at <= issued_at
         ):
-            raise InvalidVisitorCredentialError(detail="visitor credential claims rejected")
-        if expires_at <= issued_at:
-            raise InvalidVisitorCredentialError(detail="visitor credential expiry precedes issue")
+            raise InvalidVisitorCredentialError(VisitorCredentialRejection.CLAIMS_REJECTED)
 
         issued = datetime.fromtimestamp(issued_at, tz=UTC)
         expires = datetime.fromtimestamp(expires_at, tz=UTC)
+        # Genuine-but-old is a different, recoverable failure from a forgery:
+        # the class's own message carries it, and a prober holding an expired
+        # token already knew its signature was valid.
         if expires <= now.astimezone(UTC):
             raise ExpiredVisitorCredentialError(detail="visitor credential past expiry")
         return VisitorSessionClaims(

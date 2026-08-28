@@ -31,7 +31,7 @@ from typing import Protocol
 
 from tenantchat.core.citations import Citation
 from tenantchat.core.commands import BookingCommand, HandoffCommand, HandoffReason, LeadCommand
-from tenantchat.core.errors import ValidationError
+from tenantchat.core.errors import DomainError, ValidationError
 from tenantchat.core.privacy import ConsentGrant
 from tenantchat.core.routing import (
     IntentCandidate,
@@ -443,8 +443,17 @@ class EvidenceSource(Protocol):
         ...
 
 
-class EvidenceUnavailableError(Exception):
-    """Retrieval could not run for this turn."""
+class EvidenceUnavailableError(DomainError):
+    """Retrieval could not run for this turn.
+
+    A member of the domain error taxonomy because a failed index is an
+    expected failure the graph handles — it abstains rather than answering
+    ungrounded — and every expected failure is discoverable, coded, and safe
+    to describe.
+    """
+
+    code = "evidence_unavailable"
+    message = "The knowledge base is unavailable right now."
 
 
 @dataclass(frozen=True, slots=True)

@@ -201,7 +201,9 @@ class BookingCommand:
             InvalidContactError: the contact is not a valid email or NANP number.
             UnknownServiceError: the service did not resolve against the catalog.
             SlotUnavailableError: the slot is not offered, or is already past.
-            ValidationError: a field exceeded its length bound.
+            ValidationError: a field exceeded its length bound, the offered
+                slots repeat a label, or the chosen slot was offered for a
+                different service than the one requested.
         """
         if not policy.booking_enabled:
             raise BookingNotPermittedError(detail=f"tenant {policy.tenant_id} has booking disabled")
@@ -227,20 +229,40 @@ class BookingCommand:
         if resolved is None:
             raise UnknownServiceError(
                 offered=policy.catalog.offered_names(),
-                detail=f"{cleaned_service!r} did not resolve for tenant {policy.tenant_id}",
+                detail=f"service did not resolve for tenant {policy.tenant_id}",
             )
 
-        offers = tuple(slot.label for slot in offered_slots)
-        chosen = next((slot for slot in offered_slots if slot.label == cleaned_slot), None)
+        chosen: OfferedSlot | None = None
+        labels: list[str] = []
+        seen_labels: set[str] = set()
+        for slot_offer in offered_slots:
+            if slot_offer.label in seen_labels:
+                raise ValidationError(
+                    detail=f"multiple offered slots share the label {slot_offer.label!r}"
+                )
+            seen_labels.add(slot_offer.label)
+            labels.append(slot_offer.label)
+            if slot_offer.label == cleaned_slot:
+                chosen = slot_offer
         if chosen is None:
             raise SlotUnavailableError(
-                offered=offers,
-                detail=f"{cleaned_slot!r} not offered for {resolved.slug}",
+                offered=tuple(labels),
+                detail=f"requested slot is not offered for {resolved.slug}",
+            )
+        if chosen.service_slug != resolved.slug:
+            # The label matched, so without this check a slot from another
+            # service's offer set would book — reserving a window for work
+            # this tenant does not perform at that time.
+            raise ValidationError(
+                detail=(
+                    f"offered slot {chosen.id!r} belongs to {chosen.service_slug!r}, "
+                    f"not the requested {resolved.slug!r}"
+                )
             )
         if chosen.start <= datetime.now(UTC):
             raise SlotUnavailableError(
-                offered=offers,
-                detail=f"{cleaned_slot!r} has already passed",
+                offered=tuple(labels),
+                detail=f"slot {chosen.id!r} has already passed",
             )
 
         return cls(

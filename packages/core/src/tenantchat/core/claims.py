@@ -9,9 +9,11 @@ given.
 
 Two families are recognized:
 
-- **Prices** — dollar amounts. Every amount in the answer must appear verbatim
-  in an admitted evidence passage or in the tenant's approved price list, which
-  is server-owned and quoted to the model from the same prompt.
+- **Prices** — dollar amounts. Every amount in the answer must appear in an
+  admitted evidence passage or in the tenant's approved price list (server-owned
+  and quoted to the model from the same prompt) as a complete monetary token —
+  same digits and formatting — so a truncated or partial amount cannot ground
+  on a passage quoting a different price.
 - **Coverage, permit, and insurance claims** — sentences that assert a
   business-sensitive fact. A claim sentence must be substantially supported by
   one evidence passage (most of its content words present in one passage);
@@ -40,7 +42,10 @@ from types import MappingProxyType
 
 from tenantchat.core.text import query_words, tokenize
 
-_PRICE_RE = re.compile(r"\$[0-9]+(?:\.[0-9]{2})?")
+# A price is the full monetary token. The comma-grouped branch must stay
+# first: the plain branch would truncate "$1,500" to "$1", and a truncated
+# claim grounds on any passage quoting a different "$1xx" price.
+_PRICE_RE = re.compile(r"\$[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|\$[0-9]+(?:\.[0-9]+)?")
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _ZIP_RE = re.compile(r"\b\d{5}\b")
 
@@ -205,9 +210,7 @@ def validate_sensitive_claims(
     unsupported: list[Claim] = []
     for claim in claims:
         if claim.kind is ClaimKind.PRICE:
-            grounded = any(claim.value in passage for passage in evidence_texts) or any(
-                claim.value in line for line in trusted_prices
-            )
+            grounded = _price_grounded(claim.value, evidence_texts, trusted_prices)
         elif claim.kind is ClaimKind.SERVICE_AREA:
             # A named ZIP is checkable, so the tool's verdict is the only thing
             # that can ground it: a passage may not stand in for a ZIP the tool
@@ -251,6 +254,21 @@ def answer_rests_only_on_tool_verdicts(
         claim.kind is ClaimKind.SERVICE_AREA
         and _service_area_confirmed(claim.value, confirmed_service_areas)
         for claim in claims
+    )
+
+
+def _price_grounded(
+    value: str, evidence_texts: Sequence[str], trusted_prices: Sequence[str]
+) -> bool:
+    """Whether the exact amount appears as a complete monetary token somewhere.
+
+    Substring containment would ground a truncated claim ("$1" cut from
+    "$1,500") on any passage quoting a different "$1xx" price, so each
+    passage's own monetary tokens are extracted and compared whole: "$1,500"
+    grounds on a passage saying "$1,500", but not on "$120" or "$1,500.50".
+    """
+    return any(value in _PRICE_RE.findall(passage) for passage in evidence_texts) or any(
+        value in _PRICE_RE.findall(line) for line in trusted_prices
     )
 
 
