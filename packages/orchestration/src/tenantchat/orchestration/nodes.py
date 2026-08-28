@@ -318,6 +318,16 @@ def _model_attribution(
                 "usage": dict(usage),
                 "prompt_assembly": prompt_assembly,
                 "produced_content": produced_content,
+                # Provenance, not content: whether this answer was freshly
+                # computed or cache-served (R-37), and which earlier models in
+                # the chain failed before this one answered (R-38). A record
+                # that hides either reads a cached answer as fresh zero-token
+                # spend and an outage-shaped hop chain as a first try.
+                "cache_hit": response.cache_hit if response is not None else False,
+                "fallback_hops": [
+                    {"model_name": hop.model_name, "reason": hop.reason}
+                    for hop in (response.fallback_hops if response is not None else ())
+                ],
             }
         ],
     }
@@ -1386,6 +1396,11 @@ class DispatchNodes:
             "committed": committed,
             "refused_tools": refused,
         }
+        if committed:
+            # An empty list is the next turn's reset signal on this channel,
+            # never this node's no-op — a second tool round that commits
+            # nothing must not wipe the first round's effects.
+            update["turn_committed"] = committed
         if agent is not None and agent.workflow and state["workflow_id"]:
             merged = await self._deps.workflows.update(
                 tenant_id=state["tenant_id"],
@@ -1510,6 +1525,12 @@ class DispatchNodes:
             self._observe_booking_commit(ToolOutcome.SUCCEEDED, time.monotonic() - started)
             if workflow_id:
                 await self._resume_and_complete(state, call_id, "approved")
+            action = CommittedAction(
+                action=ToolName.BOOK_APPOINTMENT.value,
+                reference=replay.reference,
+                replayed=True,
+                key=str(key),
+            )
             return self._with_collected(
                 {
                     "transcript": [
@@ -1523,14 +1544,8 @@ class DispatchNodes:
                             ),
                         )
                     ],
-                    "committed": [
-                        CommittedAction(
-                            action=ToolName.BOOK_APPOINTMENT.value,
-                            reference=replay.reference,
-                            replayed=True,
-                            key=str(key),
-                        )
-                    ],
+                    "committed": [action],
+                    "turn_committed": [action],
                     "pending_booking": None,
                 },
                 merged,
@@ -1605,6 +1620,12 @@ class DispatchNodes:
             await self._deps.budgets.record_action(tenant_id, turn_index=state["turn_index"])
         if workflow_id:
             await self._resume_and_complete(state, call_id, "approved")
+        action = CommittedAction(
+            action=ToolName.BOOK_APPOINTMENT.value,
+            reference=confirmation.reference,
+            replayed=confirmation.replayed,
+            key=str(key),
+        )
         return self._with_collected(
             {
                 "transcript": [
@@ -1618,14 +1639,8 @@ class DispatchNodes:
                         ),
                     )
                 ],
-                "committed": [
-                    CommittedAction(
-                        action=ToolName.BOOK_APPOINTMENT.value,
-                        reference=confirmation.reference,
-                        replayed=confirmation.replayed,
-                        key=str(key),
-                    )
-                ],
+                "committed": [action],
+                "turn_committed": [action],
                 "pending_booking": None,
             },
             merged,
@@ -1813,6 +1828,7 @@ class DispatchNodes:
             {
                 "transcript": [tool_entry(call_id, content)],
                 "committed": [action],
+                "turn_committed": [action],
                 "pending_lead": None,
             },
             merged,
@@ -1916,6 +1932,12 @@ class DispatchNodes:
                 idempotency_key=self._workflow_key(state, "hand_off"),
             )
         abandoned = _payload(error="turn_abandoned", message="The conversation was handed over.")
+        action = CommittedAction(
+            action=ToolName.HANDOFF_TO_HUMAN.value,
+            reference=ticket.reference,
+            replayed=ticket.replayed,
+            key=str(key),
+        )
         return {
             "answer": (
                 "I am not able to finish this myself, so I have passed it to the team. "
@@ -1934,14 +1956,8 @@ class DispatchNodes:
                 tool_entry(call["call_id"], abandoned) for call in unanswered_tool_calls(state)
             ],
             "pending_booking": None,
-            "committed": [
-                CommittedAction(
-                    action=ToolName.HANDOFF_TO_HUMAN.value,
-                    reference=ticket.reference,
-                    replayed=ticket.replayed,
-                    key=str(key),
-                )
-            ],
+            "committed": [action],
+            "turn_committed": [action],
         }
 
     async def finalize(self, state: DispatchState) -> dict[str, Any]:

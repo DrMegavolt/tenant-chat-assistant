@@ -34,6 +34,7 @@ from tenantchat.api.store import (
     ReviewDiagnosis,
     TenantMembership,
     TraceAccessGrant,
+    TraceSearchPage,
     TurnFeedback,
     TurnRecord,
     TurnRecordProjection,
@@ -1139,11 +1140,27 @@ class TraceSearchResponse(BaseModel):
 
 
 class TraceSearchResponsePage(BaseModel):
+    """One page of the attribution search, with the honest match count (R-36).
+
+    ``total`` counts every record the filters match; ``offset`` and ``limit``
+    locate this page inside it. All three are additive fields — a client of
+    the pre-pagination shape that reads only ``records`` keeps working, but it
+    now *can* tell a truncated page from the whole answer.
+    """
+
     records: list[TraceSearchResponse]
+    total: int
+    offset: int
+    limit: int
 
     @classmethod
-    def of(cls, records: tuple[TurnRecord, ...]) -> TraceSearchResponsePage:
-        return cls(records=[TraceSearchResponse.of(record) for record in records])
+    def of(cls, page: TraceSearchPage, *, offset: int, limit: int) -> TraceSearchResponsePage:
+        return cls(
+            records=[TraceSearchResponse.of(record) for record in page.records],
+            total=page.total,
+            offset=offset,
+            limit=limit,
+        )
 
 
 class ComponentVersionSnapshot(BaseModel):

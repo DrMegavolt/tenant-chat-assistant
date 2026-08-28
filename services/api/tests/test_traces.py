@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,6 +52,7 @@ from tenantchat.api.store import (
 TRACE_TENANT = BOOKING_TENANT
 OTHER_TENANT = LEAD_TENANT
 READ_REASON = "quality_review"
+BASE = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 TraceApp = tuple[
@@ -455,6 +457,7 @@ def test_search_is_gated_by_the_dedicated_role_and_audited_with_its_filters(
         "since": None,
         "until": None,
         "limit": 10,
+        "offset": 0,
         "generation_id": None,
         "matches": 1,
     }
@@ -509,6 +512,54 @@ def test_search_filters_by_manifest_hash_and_cause(trace_app: TraceApp) -> None:
         headers=headers,
     )
     assert malformed.status_code == 422
+
+
+def test_search_reports_the_total_and_pages_by_offset(trace_app: TraceApp) -> None:
+    """A truncated page must not read as the whole answer (R-36).
+
+    The page carries the unbounded match count beside its records, and
+    ``offset`` walks the match set without repeating rows, so the console can
+    offer "load more" honestly.
+    """
+    client, turns, grants, _audit = trace_app
+    asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+    for index in range(3):
+        asyncio.run(
+            turns.record(
+                TRACE_TENANT,
+                uuid.uuid4(),
+                content={},
+                outcome="answered",
+                recorded_at=BASE + timedelta(minutes=index),
+            )
+        )
+    headers = _operator()
+
+    first = client.get(
+        "/api/admin/traces",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON, "limit": 2, "offset": 0},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert len(body["records"]) == 2
+    assert body["total"] == 3
+    assert body["offset"] == 0
+    assert body["limit"] == 2
+
+    second = client.get(
+        "/api/admin/traces",
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON, "limit": 2, "offset": 2},
+        headers=headers,
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert len(second_body["records"]) == 1
+    assert second_body["total"] == 3
+
+    first_ids = {record["turn_id"] for record in body["records"]}
+    second_ids = {record["turn_id"] for record in second_body["records"]}
+    assert first_ids.isdisjoint(second_ids)
 
 
 def test_the_correlation_lookup_returns_the_record_and_is_audited(

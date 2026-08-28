@@ -26,6 +26,7 @@ import type {
   TraceContent,
   TraceRead,
   TraceSearchFilters,
+  TraceSearchPage,
   TraceSearchRecord
 } from "src/admin/traceTypes";
 import type {
@@ -181,15 +182,22 @@ export class AdminApi {
 
   /**
    * The FEAT-015 attribution surface: content-free results only. The record
-   * itself arrives through `trace`, whose read is audited per record.
+   * itself arrives through `trace`, whose read is audited per record. The
+   * response is one page: `total` counts everything the filters match, so a
+   * truncated page never reads as the whole answer (R-36).
    *
    * @throws {UnauthorizedError} when the admin session has expired.
    */
-  async searchTraces(tenantId: string, filters: TraceSearchFilters): Promise<TraceSearchRecord[]> {
+  async searchTraces(
+    tenantId: string,
+    filters: TraceSearchFilters,
+    offset: number = 0
+  ): Promise<TraceSearchPage> {
     const params = new URLSearchParams({
       tenant_id: tenantId,
       reason: "quality_review",
-      limit: "100"
+      limit: "100",
+      offset: String(Math.max(offset, 0))
     });
     if (filters.since) params.set("since", filters.since);
     if (filters.until) params.set("until", filters.until);
@@ -200,10 +208,20 @@ export class AdminApi {
     if (filters.generationId) params.set("generation_id", filters.generationId);
     const response = await this.request(`/api/admin/traces?${params}`);
     if (!response.ok) throw new Error(`Trace search failed with ${response.status}`);
-    const payload = (await response.json()) as { records?: unknown[] };
-    return (payload.records ?? []).map((wire) =>
+    const payload = (await response.json()) as Record<string, unknown>;
+    const wireRecords = Array.isArray(payload.records) ? payload.records : [];
+    const records = wireRecords.map((wire) =>
       searchRecordFromWire(wire as Record<string, unknown>)
     );
+    // A backend older than the pagination fields carries no total; assuming it
+    // saw everything is the honest reading of what it actually returned.
+    const total = typeof payload.total === "number" ? payload.total : records.length;
+    return {
+      records,
+      total,
+      offset: typeof payload.offset === "number" ? payload.offset : Math.max(offset, 0),
+      limit: typeof payload.limit === "number" ? payload.limit : records.length
+    };
   }
 
   /**
@@ -969,7 +987,17 @@ function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
           }))
         }
       : null,
-    model: model ? { name: str(model.name), usage: obj(model.usage) } : undefined,
+    model: model
+      ? {
+          name: str(model.name),
+          usage: obj(model.usage),
+          cacheHit: model.cache_hit === true,
+          fallbackHops: list(model.fallback_hops).map((hop) => ({
+            modelName: str(hop.model_name),
+            reason: str(hop.reason)
+          }))
+        }
+      : undefined,
     output: output
       ? {
           answer: str(output.answer),

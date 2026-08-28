@@ -33,6 +33,16 @@ export interface TraceSearchRecord {
   sourceGenerationIds: string[];
 }
 
+/** One page of the search surface, with the honest match count (R-36).
+ * `total` counts everything the filters match; `offset`/`limit` locate this
+ * page inside it, so "load more" knows when records actually remain. */
+export interface TraceSearchPage {
+  records: TraceSearchRecord[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface RoutingCandidate {
   intent?: string;
   score?: number | null;
@@ -207,13 +217,30 @@ export interface OutcomeSection {
   failure?: string | null | undefined;
 }
 
+/** One failed attempt a fallback chain made before the answer (R-38): the
+ * tried model's configured name and the bounded outage reason. */
+export interface FallbackHop {
+  modelName: string;
+  reason: string;
+}
+
+export interface ModelSection {
+  name?: string;
+  usage?: Record<string, unknown>;
+  /** True when the answer was served from the response cache (R-37), not
+   * freshly computed — the zero token count is then honest, not a loss. */
+  cacheHit?: boolean;
+  /** The chain of failed attempts the answering call followed (R-38). */
+  fallbackHops?: FallbackHop[];
+}
+
 export interface TraceContent {
   schemaVersion?: string | undefined;
   turnIndex?: number | undefined;
   routing?: RoutingSection | null | undefined;
   retrieval?: RetrievalSection | null | undefined;
   prompt?: PromptSection | null | undefined;
-  model?: { name?: string; usage?: Record<string, unknown> } | undefined;
+  model?: ModelSection | undefined;
   output?: { answer?: string; raw?: string; claims?: string[] } | undefined;
   verdicts?: VerdictsSection | undefined;
   tools?: ToolsSection | undefined;

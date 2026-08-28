@@ -203,8 +203,8 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
         return;
       }
       try {
-        const records = await api.searchTraces(tenantId, { generationId: finding.generationId });
-        setRelatedTurns(records);
+        const page = await api.searchTraces(tenantId, { generationId: finding.generationId });
+        setRelatedTurns(page.records);
       } catch {
         setError("Related turns require the trace-read grant.");
         setRelatedTurns([]);

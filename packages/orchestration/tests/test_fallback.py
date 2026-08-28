@@ -19,6 +19,7 @@ from tenantchat.core.resilience import Dependency, DependencyUnavailableError, R
 from tenantchat.orchestration.model import (
     AssembledMessage,
     AssembledPrompt,
+    FallbackHop,
     MessageRole,
     ModelResponse,
     PromptRegion,
@@ -185,6 +186,71 @@ class TestFallbackObservability:
 
         falls = [obs for obs in metrics.observations if obs[0] == MetricName.MODEL_FALLBACKS.value]
         assert falls == [("tenantchat_model_fallbacks_total", 1.0, {"reason": "unavailable"})]
+
+
+class TestFallbackHopRecords:
+    """R-38: the serving response names the chain that bought it.
+
+    The turn record can only show what the port returns, so the hops ride the
+    response — each failed attempt as its configured model name plus the
+    bounded outage reason, never the provider's failure text.
+    """
+
+    def test_the_answer_from_the_second_model_carries_the_first_s_hop(self) -> None:
+        primary = _StubModel(ModelResponse(content=""), failure=httpx.ReadTimeout("slow"))
+        fallback = _StubModel(ModelResponse(content="rescued", model_name="secondary-model"))
+        chain = FallbackChatModel((primary, fallback), names=("primary-model", "secondary-model"))
+
+        response = _run(chain)
+
+        assert response.fallback_hops == (
+            FallbackHop(model_name="primary-model", reason="timeout"),
+        )
+        assert response.model_name == "secondary-model"
+
+    def test_a_breaker_refusal_hop_records_the_unavailable_reason(self) -> None:
+        primary = _StubModel(
+            ModelResponse(content=""), failure=DependencyUnavailableError(dependency=Dependency.LLM)
+        )
+        fallback = _StubModel(ModelResponse(content="rescued"))
+        chain = FallbackChatModel((primary, fallback), names=("primary", "secondary"))
+
+        response = _run(chain)
+
+        assert response.fallback_hops == (FallbackHop(model_name="primary", reason="unavailable"),)
+
+    def test_two_failed_attempts_record_two_hops_in_order(self) -> None:
+        first = _StubModel(ModelResponse(content=""), failure=httpx.ConnectError("down"))
+        second = _StubModel(ModelResponse(content=""), failure=httpx.ReadTimeout("slow"))
+        third = _StubModel(ModelResponse(content="third try"))
+        chain = FallbackChatModel((first, second, third), names=("m1", "m2", "m3"))
+
+        response = _run(chain)
+
+        assert response.fallback_hops == (
+            FallbackHop(model_name="m1", reason="connect"),
+            FallbackHop(model_name="m2", reason="timeout"),
+        )
+
+    def test_a_healthy_chain_records_no_hops(self) -> None:
+        primary = _StubModel(ModelResponse(content="primary answer"))
+        fallback = _StubModel(ModelResponse(content="unused"))
+        chain = FallbackChatModel((primary, fallback), names=("m1", "m2"))
+
+        response = _run(chain)
+
+        assert response.content == "primary answer"
+        assert response.fallback_hops == ()
+
+    def test_a_chain_without_names_leaves_the_hop_name_empty(self) -> None:
+        """A chain built without configured names records no invented ones."""
+        primary = _StubModel(ModelResponse(content=""), failure=httpx.ReadTimeout("slow"))
+        fallback = _StubModel(ModelResponse(content="rescued"))
+        chain = FallbackChatModel((primary, fallback))
+
+        response = _run(chain)
+
+        assert response.fallback_hops == (FallbackHop(model_name="", reason="timeout"),)
 
 
 class TestFallbackWithTheRealAdapter:

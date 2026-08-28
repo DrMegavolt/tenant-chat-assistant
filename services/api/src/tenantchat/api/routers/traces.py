@@ -128,6 +128,14 @@ RecordedUntilQuery = Annotated[
     ),
 ]
 TraceLimitQuery = Annotated[int, Query(ge=1, le=200)]
+TraceOffsetQuery = Annotated[
+    int,
+    Query(
+        ge=0,
+        description="How many matching records to skip before this page starts "
+        "(R-36 pagination); the response carries the unbounded match count.",
+    ),
+]
 GenerationIdQuery = Annotated[
     uuid.UUID | None,
     Query(
@@ -398,6 +406,7 @@ async def search_turn_records(
     until: RecordedUntilQuery = None,
     limit: TraceLimitQuery = 50,
     generation_id: GenerationIdQuery = None,
+    offset: TraceOffsetQuery = 0,
 ) -> TraceSearchResponsePage:
     """The `OBS-004` attribution surface: records matching content-free filters.
 
@@ -408,13 +417,15 @@ async def search_turn_records(
     failed this morning", or "which turns this index generation grounded"
     without the query touching the opaque content object. Every search is
     audited with the filter that ran, and results carry no content: the record
-    itself is fetched through the single-read route.
+    itself is fetched through the single-read route. The response names the
+    full match count next to the page (R-36), so a client paginating by
+    ``offset`` knows when more remains.
 
     Raises:
         ForbiddenError: the operator holds no trace-read grant for the tenant.
     """
     registry.get(tenant_id)
-    records = await turns.search(
+    page = await turns.search(
         tenant_id,
         manifest_hash=manifest_hash,
         causes=(cause,) if cause else (),
@@ -424,6 +435,7 @@ async def search_turn_records(
         until=until,
         limit=limit,
         generation_ids=(generation_id,) if generation_id is not None else (),
+        offset=offset,
     )
     await audit.record(
         AuditEvent(
@@ -443,12 +455,13 @@ async def search_turn_records(
                 "since": since.isoformat() if since else None,
                 "until": until.isoformat() if until else None,
                 "limit": limit,
+                "offset": offset,
                 "generation_id": str(generation_id) if generation_id is not None else None,
-                "matches": len(records),
+                "matches": len(page.records),
             },
         )
     )
-    return TraceSearchResponsePage.of(records)
+    return TraceSearchResponsePage.of(page, offset=offset, limit=limit)
 
 
 @router.post(

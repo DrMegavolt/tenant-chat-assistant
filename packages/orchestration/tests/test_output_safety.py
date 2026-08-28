@@ -184,13 +184,20 @@ def test_a_provider_failure_records_the_model_call_it_attempted() -> None:
         assert isinstance(result.trace["prompt"], Mapping)
         model_section = _model_section(result.trace)
         assert isinstance(model_section, Mapping)
-        assert dict(model_section) == {"name": "", "usage": {}}
+        assert dict(model_section) == {
+            "name": "",
+            "usage": {},
+            "cache_hit": False,
+            "fallback_hops": [],
+        }
         invocations = _invocations(result.trace)
         assert len(invocations) == 1
         assert invocations[0]["round"] == 1
         assert invocations[0]["model_name"] == ""
         assert invocations[0]["usage"] == {}
         assert invocations[0]["produced_content"] is False
+        assert invocations[0]["cache_hit"] is False
+        assert invocations[0]["fallback_hops"] == []
         assert isinstance(invocations[0]["prompt_assembly"], Mapping)
 
     asyncio.run(scenario())
@@ -226,6 +233,8 @@ def test_an_empty_model_response_records_the_call_and_its_usage() -> None:
         assert dict(model_section) == {
             "name": "scripted",
             "usage": {"prompt_tokens": 120, "completion_tokens": 0},
+            "cache_hit": False,
+            "fallback_hops": [],
         }
         invocations = _invocations(result.trace)
         assert len(invocations) == 1

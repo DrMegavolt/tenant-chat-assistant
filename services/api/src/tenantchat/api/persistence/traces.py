@@ -26,7 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tenantchat.api.persistence.tenancy import require_active_tenant
-from tenantchat.api.store import TraceAccessGrant, TurnRecord, TurnRecordProjection
+from tenantchat.api.store import TraceAccessGrant, TraceSearchPage, TurnRecord, TurnRecordProjection
 from tenantchat.core.errors import NotFoundError
 
 _MAX_TRACE_SEARCH_LIMIT = 200
@@ -49,6 +49,8 @@ _TRACE_COLUMNS = (
 
 # A module constant, never a format site: every read selects the same columns.
 _TRACE_SELECT = "SELECT " + ", ".join(_TRACE_COLUMNS)
+
+_TRACE_COUNT_SELECT = "SELECT count(*) FROM turn_records WHERE "
 
 
 def _turn_record(row: object) -> TurnRecord:
@@ -244,7 +246,8 @@ class PostgresTurnRecordStore:
         until: datetime | None = None,
         limit: int = 50,
         generation_ids: tuple[uuid.UUID, ...] = (),
-    ) -> tuple[TurnRecord, ...]:
+        offset: int = 0,
+    ) -> TraceSearchPage:
         clauses = ["tenant_id = :tenant_id"]
         params: dict[str, object] = {"tenant_id": tenant_id}
         if manifest_hash is not None:
@@ -272,16 +275,26 @@ class PostgresTurnRecordStore:
         # The WHERE clause is built from a fixed clause list and bound
         # parameters only; no caller text ever reaches the statement.
         async with self._engine.begin() as connection:
+            # The count runs beside the page in the same transaction so
+            # ``total`` and ``records`` describe the same match set (R-36): a
+            # count from a moment before the rows shifted would misstate how
+            # much is left to load.
+            count_result = await connection.execute(
+                text(_TRACE_COUNT_SELECT + " AND ".join(clauses)),
+                params,
+            )
+            total = int(count_result.scalar_one())
             result = await connection.execute(
                 text(
                     _TRACE_SELECT
                     + " FROM turn_records WHERE "
                     + " AND ".join(clauses)
-                    + " ORDER BY recorded_at DESC, id LIMIT :limit"
+                    + " ORDER BY recorded_at DESC, id LIMIT :limit OFFSET :offset"
                 ),
-                {**params, "limit": bounded},
+                {**params, "limit": bounded, "offset": max(offset, 0)},
             )
-            return tuple(_turn_record(row) for row in result.all())
+            records = tuple(_turn_record(row) for row in result.all())
+        return TraceSearchPage(records=records, total=total)
 
     async def projections_for_turn(
         self, tenant_id: str, turn_id: uuid.UUID

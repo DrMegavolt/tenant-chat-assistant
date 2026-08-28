@@ -15,6 +15,9 @@ wrong thing:
   reach the model every time so nothing is ever executed from a cache.
 - **A hit reports zero fresh usage.** The cached response returns with its
   token accounting cleared, so the turn records no spend that did not happen.
+- **A hit is marked as one.** The response carries ``cache_hit`` so the turn
+  record shows a served-from-cache answer instead of a fresh zero-token
+  completion (R-37). The flag is provenance, not content.
 
 The cache is per-process and bounded, exactly like the ``RateLimitStore``'s
 in-memory shape: a deployment that needs a shared cache is an operator decision
@@ -95,8 +98,13 @@ class CachingChatModel:
             self._observe(CacheResult.HIT)
             # A hit spent no fresh tokens, so the response must not claim any:
             # attribution is honest spend, and the metric already counted the
-            # original call's tokens when it happened.
-            return replace(cached[1], usage={})
+            # original call's tokens when it happened. The cache_hit flag is
+            # what keeps the record from reading the answer as a fresh
+            # zero-token completion (R-37); the serving turn also made no
+            # provider attempts, so the stored response's original fallback
+            # chain is cleared with the usage — this turn's record carries this
+            # turn's facts.
+            return replace(cached[1], usage={}, cache_hit=True, fallback_hops=())
         if cached is not None:
             del self._entries[key]
         self._observe(CacheResult.MISS)

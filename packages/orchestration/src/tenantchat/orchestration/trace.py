@@ -85,7 +85,17 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 # outcome value. Both are additive: a reader of an older record finds no such
 # key and no such status, and both stay absent until the output validator and
 # the runtime's cancelled-turn path first write them.
-TRACE_SCHEMA_VERSION: Final = "4"
+#
+# ``5`` made the tools section turn-scoped (R-35): ``tool_calls`` and
+# ``tool_results`` hold only this turn's entries, and ``committed`` reads the
+# turn-scoped ``turn_committed`` state channel, so a record no longer repeats
+# every earlier turn's calls and effects — the thread view is the per-turn
+# records. It also marked model provenance (R-37/R-38): the ``model`` section
+# and each ``model_invocations`` entry carry ``cache_hit`` and the
+# ``fallback_hops`` chain (model name + bounded failure reason). A ``4``
+# record's tools section is whole-thread and every invocation reads as fresh,
+# first-try; the added keys are provenance only and carry no content either way.
+TRACE_SCHEMA_VERSION: Final = "5"
 
 DETECTOR_VERSION: Final = "diagnosis@2"
 
@@ -206,6 +216,8 @@ def build_turn_trace(
     history = _list_of_dicts(state.get("transcript"))
     raw_output, claims = _published_output(history)
     manifest = _component_manifest(state, prompt, routing)
+    invocations = _list_of_dicts(state.get("model_invocations"))
+    serving = invocations[-1] if invocations else {}
     verdicts = {
         "citations": _list_of_dicts(state.get("citations")),
         "citation_invalid": _list_of_str(state.get("citation_invalid")),
@@ -222,8 +234,18 @@ def build_turn_trace(
         "model": {
             "name": str(state.get("model_name", "")),
             "usage": _mapping(state.get("model_usage")),
+            # Provenance of the answering call (R-37/R-38), read from the turn's
+            # last invocation so a reader needs no per-round scan to see it.
+            "cache_hit": bool(serving.get("cache_hit")),
+            "fallback_hops": [
+                {
+                    "model_name": str(hop.get("model_name", "")),
+                    "reason": str(hop.get("reason", "")),
+                }
+                for hop in _list_of_dicts(serving.get("fallback_hops"))
+            ],
         },
-        "model_invocations": list(_list_of_dicts(state.get("model_invocations"))),
+        "model_invocations": invocations,
         "output": {
             "answer": str(state.get("answer", "")),
             "raw": raw_output,
@@ -638,7 +660,17 @@ def _tools_section(
 ) -> dict[str, object]:
     tool_calls: list[dict[str, object]] = []
     tool_results: list[dict[str, object]] = []
-    for entry in history:
+    # The transcript is the whole thread, but the record describes one turn
+    # (R-35): the turn's slice runs from its own visitor message onward, the
+    # same boundary `_published_output` and `_latest_user_message` read. Whole
+    # threads belong to no single record — the per-turn records are the
+    # thread view.
+    turn_history = history
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].get("role") == "user":
+            turn_history = history[index:]
+            break
+    for entry in turn_history:
         if entry.get("role") == "assistant":
             for call in _list_of_dicts(entry.get("tool_calls")):
                 arguments = _parsed_json(str(call.get("arguments_json", "")))
@@ -656,6 +688,9 @@ def _tools_section(
                     "result": str(entry.get("content", "")),
                 }
             )
+    # ``turn_committed`` is this turn's effects; the thread-wide ``committed``
+    # channel keeps accumulating for resumed runs and is deliberately not read
+    # here — a record that repeats earlier turns' effects is the bug (R-35).
     committed = [
         {
             "action": str(action.get("action", "")),
@@ -663,7 +698,7 @@ def _tools_section(
             "replayed": bool(action.get("replayed")),
             "idempotency_key": str(action.get("key", "")),
         }
-        for action in _list_of_dicts(state.get("committed"))
+        for action in _list_of_dicts(state.get("turn_committed"))
     ]
     return {"tool_calls": tool_calls, "tool_results": tool_results, "committed": committed}
 

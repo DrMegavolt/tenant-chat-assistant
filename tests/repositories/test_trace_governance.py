@@ -160,14 +160,17 @@ def test_search_filters_by_manifest_hash_cause_and_outcome(
     )
 
     by_manifest = asyncio.run(store.search("tenant-a", manifest_hash="a" * 64))
-    assert {record.outcome for record in by_manifest} == {"answered"}
-    assert len(by_manifest) == 2
+    assert {record.outcome for record in by_manifest.records} == {"answered"}
+    assert len(by_manifest.records) == 2
+    assert by_manifest.total == 2
 
     by_cause = asyncio.run(store.search("tenant-a", causes=("grounding_or_citation_error",)))
-    assert [record.diagnosis_causes for record in by_cause] == [("grounding_or_citation_error",)]
+    assert [record.diagnosis_causes for record in by_cause.records] == [
+        ("grounding_or_citation_error",)
+    ]
 
     by_outcome = asyncio.run(store.search("tenant-a", outcome="abstained"))
-    assert [record.component_manifest_hash for record in by_outcome] == ["b" * 64]
+    assert [record.component_manifest_hash for record in by_outcome.records] == ["b" * 64]
 
     combined = asyncio.run(
         store.search(
@@ -176,18 +179,25 @@ def test_search_filters_by_manifest_hash_cause_and_outcome(
             causes=("grounding_or_citation_error",),
         )
     )
-    assert len(combined) == 1
-    assert combined[0].turn_index == 0
+    assert len(combined.records) == 1
+    assert combined.records[0].turn_index == 0
 
     newest_first = asyncio.run(store.search("tenant-a"))
-    assert [record.outcome for record in newest_first] == [
+    assert [record.outcome for record in newest_first.records] == [
         "answered",
         "abstained",
         "answered",
     ]
 
     bounded = asyncio.run(store.search("tenant-a", limit=2))
-    assert len(bounded) == 2
+    assert len(bounded.records) == 2
+    # The count is the match set's, not the page's (R-36), so a truncated page
+    # cannot read as everything there is.
+    assert bounded.total == 3
+
+    tail = asyncio.run(store.search("tenant-a", limit=2, offset=2))
+    assert len(tail.records) == 1
+    assert tail.records[0].turn_id not in {record.turn_id for record in bounded.records}
 
 
 def test_search_filters_by_diagnosis_status_and_time_range(
@@ -223,19 +233,21 @@ def test_search_filters_by_diagnosis_status_and_time_range(
     )
 
     by_status = asyncio.run(store.search("tenant-a", statuses=("suspected",)))
-    assert [record.diagnosis_statuses for record in by_status] == [("suspected", "inconclusive")]
+    assert [record.diagnosis_statuses for record in by_status.records] == [
+        ("suspected", "inconclusive")
+    ]
 
     since_only = asyncio.run(store.search("tenant-a", since=base + timedelta(minutes=30)))
-    assert len(since_only) == 1
-    assert since_only[0].diagnosis_statuses == ("suspected", "inconclusive")
+    assert len(since_only.records) == 1
+    assert since_only.records[0].diagnosis_statuses == ("suspected", "inconclusive")
 
     window = asyncio.run(store.search("tenant-a", since=base, until=base + timedelta(minutes=30)))
-    assert [record.diagnosis_statuses for record in window] == [("detected",)]
+    assert [record.diagnosis_statuses for record in window.records] == [("detected",)]
 
     combined = asyncio.run(
         store.search("tenant-a", statuses=("detected",), until=base + timedelta(hours=1))
     )
-    assert len(combined) == 1
+    assert len(combined.records) == 1
 
 
 def test_search_and_trace_lookup_never_leak_across_tenants(
@@ -258,7 +270,7 @@ def test_search_and_trace_lookup_never_leak_across_tenants(
     )
 
     assert asyncio.run(store.for_trace_id("tenant-a", "trace-abc")) == recorded
-    assert asyncio.run(store.search("tenant-b", manifest_hash="c" * 64)) == ()
+    assert asyncio.run(store.search("tenant-b", manifest_hash="c" * 64)).records == ()
     with pytest.raises(NotFoundError):
         asyncio.run(store.for_trace_id("tenant-b", "trace-abc"))
     with pytest.raises(NotFoundError):

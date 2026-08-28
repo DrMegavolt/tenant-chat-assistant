@@ -39,6 +39,22 @@ def reduce_model_invocations(
     return [*current, *update]
 
 
+def reduce_turn_committed(
+    current: list[CommittedAction],
+    update: list[CommittedAction],
+) -> list[CommittedAction]:
+    """Accumulate this turn's committed effects; an empty next-turn update resets.
+
+    Mirrors :func:`reduce_model_invocations` for the trace's per-turn view of
+    ``committed``: the thread-wide ``committed`` channel accumulates forever
+    (a resumed run must still see what it did), so the trace reads this
+    turn-scoped twin instead and prior turns stay in their own records.
+    """
+    if not update:
+        return []
+    return [*current, *update]
+
+
 class TurnOutcome(StrEnum):
     """How the turn ended, as the closed status vocabulary the graph records.
 
@@ -212,6 +228,12 @@ class DispatchState(TypedDict):
     # round number, model name, usage block, prompt assembly, and whether the
     # call produced content (`OBS-004`).
     model_invocations: Annotated[list[dict[str, object]], reduce_model_invocations]
+    # The effects this turn committed, turn-scoped beside the thread-wide
+    # ``committed`` channel above (`OBS-004`): the trace records only what this
+    # turn caused, so a turn record does not repeat every earlier turn's
+    # effects. Nodes append only when they actually committed — returning an
+    # empty list is the next turn's reset signal, not a node's no-op.
+    turn_committed: Annotated[list[CommittedAction], reduce_turn_committed]
     # The `OBS-006` executed-graph section of the turn's run, written by the
     # runtime from the captured debug events after the run finishes. It is
     # execution metadata, content-free by construction (see
@@ -274,6 +296,7 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "prompt_assembly": {},
         "model_usage": {},
         "model_invocations": [],
+        "turn_committed": [],
         "executed_graph": None,
     }
 
@@ -318,6 +341,9 @@ def next_turn(message: str) -> dict[str, object]:
         "prompt_assembly": {},
         "model_usage": {},
         "model_invocations": [],
+        # The empty update is what resets the turn-scoped commit channel; the
+        # thread-wide ``committed`` list keeps accumulating.
+        "turn_committed": [],
         # The route node re-decides every turn; the previous turn's executed
         # graph must not leak into the next one.
         "executed_graph": None,

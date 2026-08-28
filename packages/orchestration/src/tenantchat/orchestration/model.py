@@ -173,12 +173,32 @@ class AssembledPrompt:
 
 
 @dataclass(frozen=True, slots=True)
+class FallbackHop:
+    """One failed attempt the fallback chain made before an answer (R-38).
+
+    ``model_name`` is the configured identifier of the model that was tried
+    and ``reason`` the bounded outage classification — the same vocabulary the
+    ``MODEL_FALLBACKS`` metric uses. Never carries failure text: an exception
+    message is provider output and stays out of the record.
+    """
+
+    model_name: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ModelResponse:
     """What one model call produced.
 
     ``content`` and ``tool_calls`` are not exclusive — a provider may return both
     — but a response carrying neither is a failed turn, not an empty answer, and
     the graph treats it as one.
+
+    The two provenance flags keep attribution honest (`OBS-004`): a
+    cache-served response must not read as a fresh completion, and a response
+    that arrived only after earlier models in the chain failed must show the
+    hops. Both default to "fresh, first try" so a plain provider cannot
+    misattribute itself.
     """
 
     content: str
@@ -186,6 +206,8 @@ class ModelResponse:
     # Recorded against the turn so a behavior change is attributable (`OBS-004`).
     model_name: str = "unknown"
     usage: Mapping[str, int] = field(default_factory=dict)
+    cache_hit: bool = False
+    fallback_hops: tuple[FallbackHop, ...] = ()
 
 
 class ChatModel(Protocol):
