@@ -55,6 +55,11 @@ class TurnOutcome(StrEnum):
     node recorded an outcome because none completed. It is written by the
     runtime, not by a node — the node that would have written it is the one
     that crashed.
+
+    ``CANCELLED`` is a turn whose run was cancelled mid-flight (a visitor
+    closing the widget, a shutdown). Like ``FAILED`` it is written by the
+    runtime, and the run is stopped rather than completed — the record exists
+    so the turn is not simply missing from the thread's history.
     """
 
     ANSWERED = "answered"
@@ -64,6 +69,7 @@ class TurnOutcome(StrEnum):
     CLARIFIED = "clarified"
     REFUSED = "refused"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class StoredToolCall(TypedDict):
@@ -185,6 +191,11 @@ class DispatchState(TypedDict):
     # validation and caused the answer to be refused.
     refused_tools: list[str]
     claims_invalid: list[dict[str, str]]
+    # Deterministic output-format verdicts, recorded the same way: kind and
+    # value only. An answer that is raw tool-call syntax the model leaked
+    # instead of calling the tool is refused before publication, and this is
+    # what the record shows for why.
+    output_invalid: list[dict[str, str]]
     # The `OBS-004` trace inputs, each replaced by the node that produced it:
     # the full router decision (every candidate with its score), the one
     # assembled prompt of the model call that produced the published answer
@@ -258,6 +269,7 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "citation_invalid": [],
         "refused_tools": [],
         "claims_invalid": [],
+        "output_invalid": [],
         "routing_decision": {},
         "prompt_assembly": {},
         "model_usage": {},
@@ -299,6 +311,7 @@ def next_turn(message: str) -> dict[str, object]:
         "citation_invalid": [],
         "refused_tools": [],
         "claims_invalid": [],
+        "output_invalid": [],
         # The route node re-decides every turn; the previous turn's trace
         # inputs must not leak into the next one.
         "routing_decision": {},

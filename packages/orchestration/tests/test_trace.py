@@ -142,7 +142,7 @@ def _diagnosis(
         "status": status.value,
         "confidence": confidence.value,
         "evidence": list(evidence),
-        "detector_version": "diagnosis@1",
+        "detector_version": "diagnosis@2",
     }
 
 
@@ -170,7 +170,7 @@ def test_the_trace_carries_the_schema_version_and_turn_index() -> None:
     """The shape version is the reader's contract; the index the query key."""
     trace = build_turn_trace(_answered(), pending=None)
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "3"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "4"
     assert trace["turn_index"] == 1
 
 
@@ -405,6 +405,65 @@ def test_a_diagnosis_for_a_refused_claim_names_the_kind_and_not_the_sentence() -
     references = _diagnoses(trace)[0]["evidence"]
     assert references == ["claims_invalid:price"]
     assert "Kowalski" not in json.dumps(references)
+
+
+def test_a_leaked_tool_call_verdict_is_recorded_and_diagnosed() -> None:
+    """Raw tool-call syntax in the answer is a detected model failure.
+
+    The one turn class the output validators exist for used to sail through
+    as ``answered``: the model wrote its tool call into the text, the tool
+    never ran, and the visitor read the markup verbatim. The verdict rides
+    ``verdicts.output_invalid`` — a format failure is not a claim, so it must
+    not masquerade as one in the grounding diagnosis.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.REFUSED.value,
+            answer="I cannot confirm that. Please call the team.",
+            citations=[],
+            citation_invalid=[],
+            output_invalid=[
+                {"kind": "raw_tool_call", "value": "<tool_call> <function=create_lead>"}
+            ],
+        ),
+        pending=None,
+    )
+
+    assert _section(trace, "verdicts")["output_invalid"] == [
+        {"kind": "raw_tool_call", "value": "<tool_call> <function=create_lead>"}
+    ]
+    assert _diagnoses(trace) == [
+        _diagnosis(
+            DiagnosisCause.MODEL_MALFORMED_OUTPUT,
+            DiagnosisStage.MODEL,
+            DiagnosisRole.PRIMARY,
+            DiagnosisStatus.DETECTED,
+            DiagnosisConfidence.HIGH,
+            ("output_invalid:raw_tool_call",),
+        )
+    ]
+
+
+def test_a_leaked_tool_call_diagnosis_names_the_kind_and_not_the_excerpt() -> None:
+    """The verdict's value quotes the model's leak, which echoes the visitor.
+
+    The excerpt may carry the contact details the visitor had just typed, so
+    the diagnosis reference carries the bounded kind and the excerpt stays in
+    the content plane.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.REFUSED.value,
+            output_invalid=[
+                {"kind": "raw_tool_call", "value": 'create_lead(name="Jane PII-Marker"'}
+            ],
+        ),
+        pending=None,
+    )
+
+    references = _diagnoses(trace)[0]["evidence"]
+    assert references == ["output_invalid:raw_tool_call"]
+    assert "PII-Marker" not in json.dumps(references)
 
 
 def test_a_spent_round_budget_is_recorded_as_escalated_not_answered() -> None:
@@ -764,7 +823,7 @@ def test_a_diagnosis_record_serializes_to_the_store_shape() -> None:
         "status": "detected",
         "confidence": "high",
         "evidence": ["retrieval.sufficient:false"],
-        "detector_version": "diagnosis@1",
+        "detector_version": "diagnosis@2",
     }
 
 
@@ -806,14 +865,14 @@ def _executed_section(**overrides: object) -> dict[str, object]:
     } | overrides
 
 
-def test_a_captured_executed_graph_section_is_recorded_under_schema_version_3() -> None:
+def test_a_captured_executed_graph_section_is_recorded_under_schema_version_4() -> None:
     """The `OBS-006` capture lands in the trace beside the derived content."""
     trace = build_turn_trace(
         _answered(executed_graph=_executed_section()),
         pending=None,
     )
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "3"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "4"
     assert _section(trace, "executed_graph") == _executed_section()
 
 

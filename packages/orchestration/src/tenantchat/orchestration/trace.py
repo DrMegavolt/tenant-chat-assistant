@@ -80,9 +80,14 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 # original user message; a ``3`` record carries both the raw message and the
 # planner's resolved standalone query, exposed by the retrieval funnel when they
 # differ.
-TRACE_SCHEMA_VERSION: Final = "3"
+#
+# ``4`` added the ``output_invalid`` key to ``verdicts`` and the ``cancelled``
+# outcome value. Both are additive: a reader of an older record finds no such
+# key and no such status, and both stay absent until the output validator and
+# the runtime's cancelled-turn path first write them.
+TRACE_SCHEMA_VERSION: Final = "4"
 
-DETECTOR_VERSION: Final = "diagnosis@1"
+DETECTOR_VERSION: Final = "diagnosis@2"
 
 
 class DiagnosisCause(StrEnum):
@@ -91,10 +96,11 @@ class DiagnosisCause(StrEnum):
     ``stale_source`` through ``query_rewrite_error`` are part of the taxonomy
     but are not decidable from the record alone, so :func:`diagnose` never
     emits them: a cause that can only be suspected is a review note, not a
-    dimension. ``injection_quarantine`` is the one exception that reads like
-    intent but is proven by the record: a tool call the server-owned guard
-    refused (``verdicts.refused_tools``) happened, whatever the model meant
-    by it.
+    dimension. ``injection_quarantine`` reads like intent but is proven by the
+    record: a tool call the server-owned guard refused (``verdicts.refused_tools``)
+    happened, whatever the model meant by it. ``model_malformed_output`` is
+    proven the same way: the model's text carried raw tool-call syntax
+    (``verdicts.output_invalid``), which the record can show byte for byte.
     """
 
     STALE_SOURCE = "stale_source"
@@ -107,6 +113,7 @@ class DiagnosisCause(StrEnum):
     CONTEXT_TRUNCATION = "context_truncation"
     PROMPT_REGRESSION = "prompt_regression"
     MODEL_BEHAVIOR = "model_behavior"
+    MODEL_MALFORMED_OUTPUT = "model_malformed_output"
     GROUNDING_OR_CITATION_ERROR = "grounding_or_citation_error"
     INJECTION_QUARANTINE = "injection_quarantine"
     TOOL_ERROR = "tool_error"
@@ -204,6 +211,7 @@ def build_turn_trace(
         "citation_invalid": _list_of_str(state.get("citation_invalid")),
         "refused_tools": _list_of_str(state.get("refused_tools")),
         "claims_invalid": [dict(claim) for claim in _list_of_dicts(state.get("claims_invalid"))],
+        "output_invalid": [dict(item) for item in _list_of_dicts(state.get("output_invalid"))],
     }
     trace: dict[str, object] = {
         "schema_version": TRACE_SCHEMA_VERSION,
@@ -400,6 +408,24 @@ def diagnose(trace: Mapping[str, object]) -> tuple[DiagnosisRecord, ...]:
                 status=DiagnosisStatus.DETECTED,
                 confidence=DiagnosisConfidence.HIGH,
                 evidence=tuple(f"claims_invalid:{claim.get('kind', '')}" for claim in unsupported),
+            )
+        )
+
+    # Leaked tool-call syntax is as decidable as a fabricated citation: the
+    # output validator matched provider markup, or a graph tool written as
+    # source code, in text that was about to be published as the answer. The
+    # excerpt in the verdict is content and stays in the content plane; the
+    # diagnosis carries the verdict kind only.
+    output_invalid = _list_of_dicts(verdicts.get("output_invalid"))
+    if output_invalid:
+        records.append(
+            DiagnosisRecord(
+                cause=DiagnosisCause.MODEL_MALFORMED_OUTPUT,
+                stage=DiagnosisStage.MODEL,
+                role=DiagnosisRole.PRIMARY,
+                status=DiagnosisStatus.DETECTED,
+                confidence=DiagnosisConfidence.HIGH,
+                evidence=tuple(f"output_invalid:{item.get('kind', '')}" for item in output_invalid),
             )
         )
 

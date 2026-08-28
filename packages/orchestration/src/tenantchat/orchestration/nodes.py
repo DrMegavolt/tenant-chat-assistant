@@ -84,7 +84,7 @@ from tenantchat.core.tenant import TenantPolicy
 from tenantchat.core.workflows import ToolResult, WorkflowState, WorkflowTransition
 from tenantchat.orchestration.agents import AGENTS_VERSION, AgentSpec, AnswerBasis
 from tenantchat.orchestration.dependencies import DispatchDependencies
-from tenantchat.orchestration.model import MessageRole, ToolCall
+from tenantchat.orchestration.model import MessageRole, ModelResponse, ToolCall
 from tenantchat.orchestration.otel import set_tenant_identity
 from tenantchat.orchestration.prompts import (
     DEFAULT_BUDGET,
@@ -133,6 +133,26 @@ _CALLBACK_PROMISE_RE = re.compile(
 # label value.
 UNKNOWN_TOOL_LABEL = "unknown"
 
+# Markers of a tool call the model wrote into its *text* instead of emitting
+# as a structured tool call: provider chat-template tags (`<tool_call>`, and
+# the `=`-attribute forms of `<function>`/`<parameter>`), plus a graph tool
+# written as a call with the paren adjacent. Deliberately narrow — prose about
+# "the <function> element" or a spaced mention like "check_service_area
+# (ZIP 97205)" must not refuse an honest answer — because the cost asymmetry
+# runs both ways and only the adjacent-paren call shape is the leak. A code
+# snippet that really calls a tool by name still matches, and that class is
+# indistinguishable from the leak, so refusing it is the safe direction
+# (review 2026-08-27, DB-1).
+_TOOL_CALL_MARKUP_RE = re.compile(r"</?tool_call>|</?function=|</?parameter=", re.IGNORECASE)
+
+_TOOL_NAME_CALL_RE = re.compile(rf"\b(?:{'|'.join(re.escape(spec.name) for spec in TOOL_SPECS)})\(")
+
+# A leaked-syntax verdict carries one line of the model's output, bounded: the
+# trace is the inference plane, so echoing the model's own text is allowed, but
+# a whole leaked call can be long and the kind of defect is what the record
+# needs.
+_LEAK_EXCERPT_LIMIT = 200
+
 
 def citation_ids(text: str) -> tuple[str, ...]:
     """The source ids an answer cites, in the order written, deduplicated."""
@@ -153,6 +173,21 @@ def strip_citation_markers(text: str) -> str:
     failed validation, which must not surface as a dangling reference.
     """
     return _CITATION_RE.sub("", text).strip()
+
+
+def _leaked_tool_syntax(content: str) -> str | None:
+    """The first line of raw tool-call syntax in an answer, or ``None``.
+
+    Deterministic, and deliberately narrow: only chat-template markup and an
+    adjacent-paren call of a graph tool count, so a match classifies the whole
+    answer as an invalid model response rather than something to validate the
+    content of.
+    """
+    for line in content.splitlines():
+        if _TOOL_CALL_MARKUP_RE.search(line) or _TOOL_NAME_CALL_RE.search(line):
+            excerpt = " ".join(line.split())
+            return excerpt[:_LEAK_EXCERPT_LIMIT]
+    return None
 
 
 def _evidence_item_dict(item: EvidenceItem) -> dict[str, object]:
@@ -254,6 +289,40 @@ def _prompt_assembly_dict(outcome: AssemblyOutcome) -> dict[str, object]:
     }
 
 
+def _model_attribution(
+    outcome: AssemblyOutcome,
+    *,
+    round_number: int,
+    response: ModelResponse | None,
+    produced_content: bool,
+) -> dict[str, Any]:
+    """The record fields that attribute one model call (`OBS-004`).
+
+    Every round that reached the provider — answered, empty, blocked, or
+    failed — carries the same attribution shape, because a turn that reached
+    the model is attributable to that call no matter how the call ended. A
+    response that never arrived (provider exception) records an empty name and
+    usage rather than a guess about either.
+    """
+    model_name = response.model_name if response is not None else ""
+    usage: Mapping[str, int] = response.usage if response is not None else {}
+    prompt_assembly = _prompt_assembly_dict(outcome)
+    return {
+        "model_name": model_name,
+        "model_usage": dict(usage),
+        "prompt_assembly": prompt_assembly,
+        "model_invocations": [
+            {
+                "round": round_number,
+                "model_name": model_name,
+                "usage": dict(usage),
+                "prompt_assembly": prompt_assembly,
+                "produced_content": produced_content,
+            }
+        ],
+    }
+
+
 def _evidence_meta_dict(bundle: EvidenceBundle) -> dict[str, object]:
     """The retrieval manifest one turn was grounded in, as the checkpoint stores it.
 
@@ -313,6 +382,18 @@ def _claim_refusal_reply(policy: TenantPolicy) -> str:
         "I cannot confirm some of the details in what I was about to say, so I "
         f"will not say it. The team can confirm it — call {policy.phone}."
     )
+
+
+def _leak_refusal_reply(policy: TenantPolicy) -> str:
+    """The deterministic refusal for an answer that is raw tool-call syntax.
+
+    Distinct from the claim refusal on purpose: nothing the visitor asked for
+    was unsupported — the assistant failed to finish saying anything at all —
+    and the reply should say that, not imply their question was the problem.
+    Server-written like every refusal: the model's own output is the thing
+    being withheld.
+    """
+    return f"I was not able to finish that reply. Please ask again, or call {policy.phone}."
 
 
 def _uncommitted_promise_refusal(policy: TenantPolicy) -> str:
@@ -691,25 +772,36 @@ class DispatchNodes:
         self._observe(MetricName.POLICY_BLOCKS, 1, labels={"reason": reason.value})
 
     def _policy_blocked_update(
-        self, state: DispatchState, policy: TenantPolicy, reason: BlockReason
+        self,
+        state: DispatchState,
+        policy: TenantPolicy,
+        reason: BlockReason,
+        *,
+        model_attribution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """The turn update for a budget or content-policy refusal.
 
         Records the block as a measurable event and answers with the
         deterministic server reply. ``ANSWERED`` is the honest outcome class:
         the visitor did get an answer — the refusal — and the ``POLICY_BLOCKS``
-        metric is what distinguishes it from a model-produced answer.
+        metric is what distinguishes it from a model-produced answer. A block
+        that happened *after* a model response arrived carries that call's
+        attribution, so the turn is reconstructible like any other that
+        reached the model.
         """
         self._observe_policy_block(reason)
         logger.info(
             "assistant request blocked by policy",
             extra={"tenant_id": state["tenant_id"], "reason": reason.value},
         )
-        return {
+        update: dict[str, Any] = {
             "transcript": [assistant_entry(self._blocked_reply(reason, policy), [])],
             "rounds": state["rounds"] + 1,
             "turn_outcome": TurnStatus.ANSWERED.value,
         }
+        if model_attribution is not None:
+            update.update(model_attribution)
+        return update
 
     async def route(self, state: DispatchState) -> dict[str, Any]:
         """Decide the turn's intent, record the decision, and open the workflow.
@@ -940,12 +1032,22 @@ class DispatchNodes:
                 # Deliberately broad, and deliberately not retried. Whatever the
                 # provider did, the customer is waiting; `REL-001` owns retry and
                 # circuit breaking inside the client, and the honest thing left for
-                # the graph to do is fetch a person.
+                # the graph to do is fetch a person. The attempt itself is still
+                # recorded: the turn reached the model, and the escalation that
+                # follows must be attributable to that call.
                 logger.exception(
                     "model call failed",
                     extra={"tenant_id": state["tenant_id"], "turn_index": state["turn_index"]},
                 )
-                return {"failure": HandoffReason.TOOL_FAILURE.value, "rounds": state["rounds"] + 1}
+                return {
+                    "failure": HandoffReason.TOOL_FAILURE.value,
+                    "rounds": state["rounds"] + 1,
+                } | _model_attribution(
+                    outcome,
+                    round_number=state["rounds"] + 1,
+                    response=None,
+                    produced_content=False,
+                )
         finally:
             if ledger is not None and entered is not None:
                 await ledger.exit_call(tenant_id)
@@ -966,11 +1068,32 @@ class DispatchNodes:
         if response.content.strip():
             output_verdict = check_output(response.content, budget)
             if not output_verdict.allowed:
-                return self._policy_blocked_update(state, policy, output_verdict.block_reason)
+                return self._policy_blocked_update(
+                    state,
+                    policy,
+                    output_verdict.block_reason,
+                    model_attribution=_model_attribution(
+                        outcome,
+                        round_number=state["rounds"] + 1,
+                        response=response,
+                        produced_content=True,
+                    ),
+                )
 
         calls = tuple(response.tool_calls)
         if not calls and not response.content.strip():
-            return {"failure": HandoffReason.UNRESOLVED.value, "rounds": state["rounds"] + 1}
+            # An empty response is still a model call that spent the turn's
+            # round: the record keeps the call and its usage, and the
+            # escalation that follows is attributable to it.
+            return {
+                "failure": HandoffReason.UNRESOLVED.value,
+                "rounds": state["rounds"] + 1,
+            } | _model_attribution(
+                outcome,
+                round_number=state["rounds"] + 1,
+                response=response,
+                produced_content=False,
+            )
 
         # An action is held for the customer's confirmation only when the
         # routed agent is allowed to perform it. A held call never passes
@@ -991,14 +1114,7 @@ class DispatchNodes:
             if booking is None and ToolName.CREATE_LEAD.value in allowed_names
             else None
         )
-        update: dict[str, Any] = {
-            "transcript": [assistant_entry(response.content, [_store(call) for call in calls])],
-            "rounds": state["rounds"] + 1,
-            "model_name": response.model_name,
-            "pending_booking": _store(booking) if booking is not None else None,
-            "pending_lead": _store(lead) if lead is not None else None,
-            "model_usage": dict(response.usage),
-        }
+        produced_content = bool(response.content.strip())
         # The prompt of every model call is recorded, not only of the call that
         # produced content: a turn that spends its whole round budget on tool
         # calls and then escalates must still be reconstructible, and it had no
@@ -1008,16 +1124,17 @@ class DispatchNodes:
         # Evidence stays tied to the content-producing call on purpose: finalize
         # validates the published answer against the exact context it was
         # written from, so a later tool-only round must not replace it.
-        update["prompt_assembly"] = _prompt_assembly_dict(outcome)
-        produced_content = bool(response.content.strip())
-        invocation: dict[str, object] = {
-            "round": update["rounds"],
-            "model_name": response.model_name,
-            "usage": dict(response.usage),
-            "prompt_assembly": update["prompt_assembly"],
-            "produced_content": produced_content,
-        }
-        update["model_invocations"] = [invocation]
+        update: dict[str, Any] = {
+            "transcript": [assistant_entry(response.content, [_store(call) for call in calls])],
+            "rounds": state["rounds"] + 1,
+            "pending_booking": _store(booking) if booking is not None else None,
+            "pending_lead": _store(lead) if lead is not None else None,
+        } | _model_attribution(
+            outcome,
+            round_number=state["rounds"] + 1,
+            response=response,
+            produced_content=produced_content,
+        )
         if produced_content:
             update.update(self._evidence_update(bundle, outcome, plan))
         return update
@@ -1752,14 +1869,21 @@ class DispatchNodes:
             1,
             labels={"outcome": TurnOutcome.HANDED_OFF.value},
         )
-        command = HandoffCommand.parse(
-            policy,
-            reason=reason.value,
-            summary=(
+        # A turn with no model call behind it reached this node by design — the
+        # customer asked for a person, or the router declined to guess again —
+        # and "could not complete ... after 0 model calls" would describe a
+        # failure that did not happen.
+        if state["rounds"] == 0:
+            summary = (
+                f"Turn {state['turn_index']} was routed straight to a person "
+                f"({reason.value}); no model call was made."
+            )
+        else:
+            summary = (
                 f"Assistant could not complete turn {state['turn_index']} "
                 f"({reason.value}) after {state['rounds']} model calls."
-            ),
-        )
+            )
+        command = HandoffCommand.parse(policy, reason=reason.value, summary=summary)
         key = self._key(state, ToolName.HANDOFF_TO_HUMAN, "escalation")
         ticket = await self._deps.handoffs.request(
             command,
@@ -1852,6 +1976,24 @@ class DispatchNodes:
                 break
             if entry["role"] == "assistant" and entry["content"].strip():
                 policy = await self._deps.policies.policy(state["tenant_id"])
+                # Output-format validation runs before the content validators:
+                # raw tool-call syntax in the text means the model never actually
+                # called the tool it was writing, and publishing the text would
+                # show the visitor their own contact details inside markup.
+                leak = _leaked_tool_syntax(entry["content"])
+                if leak is not None:
+                    self._observe(
+                        MetricName.TURN_OUTCOMES,
+                        1,
+                        labels={"outcome": TurnOutcome.ANSWER_REFUSED.value},
+                    )
+                    return {
+                        "answer": _leak_refusal_reply(policy),
+                        "turn_outcome": TurnStatus.REFUSED.value,
+                        "citations": [],
+                        "citation_invalid": [],
+                        "output_invalid": [{"kind": "raw_tool_call", "value": leak}],
+                    }
                 validation = validate_sensitive_claims(
                     entry["content"],
                     evidence_texts=[str(item["content"]) for item in state["evidence"]],

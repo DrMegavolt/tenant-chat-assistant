@@ -69,7 +69,7 @@ def test_a_turn_is_answered_and_recorded(
     assert body["pending"] is None
     assert body["provenance"] == {
         "model_name": "scripted",
-        "graph_version": "dispatch@3",
+        "graph_version": "dispatch@4",
         "prompt_version": "dispatch-system@4",
     }
 

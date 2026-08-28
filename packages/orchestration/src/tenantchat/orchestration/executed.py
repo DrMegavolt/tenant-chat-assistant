@@ -28,7 +28,9 @@ its exit never arrives; :meth:`ExecutedGraphListener.crash` closes it as
 ``error`` and no later node is invented, so the section never displays an
 idealized completion. A resumed run is marked ``resumed`` and its first node
 carries ``replayed`` — the node the interrupt paused and re-executed — so a
-checkpoint resume is visibly distinct from a first run.
+checkpoint resume is visibly distinct from a first run. ``replayed`` means
+exactly that and nothing else: a second round of a tool loop is a fresh
+execution with its own attempt number, not a replay.
 """
 
 from __future__ import annotations
@@ -193,7 +195,10 @@ class ExecutedGraphListener:
             edge=edge or None,
             source=self._last_completed,
             started_at=timestamp,
-            replayed=attempt > 1 or (self._resumed and not self._order),
+            # Replay is a checkpoint-resume fact, not an attempt count: a fresh
+            # second round of a tool loop runs the node again for new work, and
+            # the label must not spend the resume signal on it.
+            replayed=self._resumed and not self._order,
         )
         self._by_task[task_id] = run
         self._order.append(task_id)

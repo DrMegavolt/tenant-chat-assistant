@@ -4,20 +4,20 @@
     {
       "case_id": "apex-hvac-heating-repair",
       "metric": "recall_at_k",
-      "baseline_manifest_hash": "67eae5cbc9a036e96ff1de3f706ff77904f37ab7a5a394a799de85e25d83c86f",
-      "candidate_manifest_hash": "30bb437eeb374df01bd8ce355d756d09c22d01830137dad367f8c9d99375bbe7",
+      "baseline_manifest_hash": "f5665965919b538b3237978de714cf59eefecd570f43e02ecd6764eb40b7b707",
+      "candidate_manifest_hash": "bbf405fb1611a3fa27113686b4bcf962c1f697ccb486c0d8f9148b17862960f3",
       "waived_by": "RAG-008 baseline review",
-      "waived_at": "2026-08-06",
-      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes were refreshed when the query planner version joined the manifest and again when lead confirmation raised the dispatcher graph to dispatch@3."
+      "waived_at": "2026-08-28",
+      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes were refreshed when the query planner version joined the manifest and again when lead confirmation raised the dispatcher graph to dispatch@3. The manifest hashes were refreshed again when the failed-attribution release raised the dispatcher graph to dispatch@4."
     },
     {
       "case_id": "clearview-hvac-current-pricing",
       "metric": "recall_at_k",
-      "baseline_manifest_hash": "67eae5cbc9a036e96ff1de3f706ff77904f37ab7a5a394a799de85e25d83c86f",
-      "candidate_manifest_hash": "30bb437eeb374df01bd8ce355d756d09c22d01830137dad367f8c9d99375bbe7",
+      "baseline_manifest_hash": "f5665965919b538b3237978de714cf59eefecd570f43e02ecd6764eb40b7b707",
+      "candidate_manifest_hash": "bbf405fb1611a3fa27113686b4bcf962c1f697ccb486c0d8f9148b17862960f3",
       "waived_by": "RAG-008 baseline review",
-      "waived_at": "2026-08-06",
-      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes were refreshed when the query planner version joined the manifest and again when lead confirmation raised the dispatcher graph to dispatch@3."
+      "waived_at": "2026-08-28",
+      "reason": "Hybrid retriever v1 drops this case's recall to 0.5 (one of two gold chunks ranks outside k=5); this is the documented 1.0000-to-0.95 aggregate recall delta of RAG-009's completion notes, accepted at baseline so the release gate measures what the hybrid ships, not a new regression. Any candidate that changes the manifest must fix it or re-argue the waiver. Manifest hashes were refreshed when the query planner version joined the manifest and again when lead confirmation raised the dispatcher graph to dispatch@3. The manifest hashes were refreshed again when the failed-attribution release raised the dispatcher graph to dispatch@4."
     }
   ]
 }
