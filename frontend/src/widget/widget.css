@@ -987,6 +987,12 @@ textarea {
   align-items: flex-start;
 }
 
+.feedback-failure {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
 .feedback-reason textarea {
   width: 100%;
   min-height: 56px;

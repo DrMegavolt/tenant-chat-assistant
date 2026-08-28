@@ -63,6 +63,28 @@ export class CredentialRejectedError extends Error {
 }
 
 /**
+ * The largest message the chat endpoint accepts, mirroring the backend's
+ * `ChatRequest.message` constraint. The widget states the limit in the failure
+ * it shows when the server answers 422, so a rejected message reads as a
+ * length problem rather than as an outage.
+ */
+export const MAX_MESSAGE_LENGTH = 4000;
+
+/**
+ * The backend refused the request body — a message beyond the length limit, an
+ * empty one, or a value it cannot parse. It is the visitor's input that was
+ * rejected, not the service that failed, and the widget must say so honestly.
+ */
+export class MessageRejectedError extends Error {
+  constructor() {
+    super(
+      `That message was too long to send. Messages can be up to ${MAX_MESSAGE_LENGTH} characters.`
+    );
+    this.name = "MessageRejectedError";
+  }
+}
+
+/**
  * The backend cannot show a source: absent, superseded, expired, revoked, or
  * another tenant's. Every reason is the same bounded failure to the widget,
  * so a citation cannot be used to probe what a tenant has.
@@ -70,6 +92,29 @@ export class CredentialRejectedError extends Error {
 export class SourceUnavailableError extends Error {
   constructor() {
     super("This source is no longer available.");
+  }
+}
+
+/**
+ * Every request gets a deadline, because a fetch that never settles would
+ * leave the composer disabled for the rest of the visit. Chat turns get a
+ * longer one: a grounded answer routinely takes tens of seconds, so the
+ * deadline has to sit above the worst observed latency, not the typical one.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+const TURN_TIMEOUT_MS = 45_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
@@ -127,15 +172,26 @@ export interface WireTenant {
   site_description: string;
 }
 
+interface WireSessionMessage {
+  message_id: string;
+  role: WireMessageRole;
+  content: string;
+  created_at: string;
+  /**
+   * The inference-plane record the turn earned, with the answer's citations
+   * and committed actions. Sent by backends that enrich the transcript; the
+   * widget renders the enrichments only when they are present, never
+   * inventing them for a bare transcript row.
+   */
+  turn_id?: string | null;
+  citations?: WireTurn["citations"];
+  committed?: Array<{ action: string; reference: string; replayed?: boolean }>;
+}
+
 interface WireSession {
   session: { session_id: string };
   credential: string;
-  messages?: Array<{
-    message_id: string;
-    role: WireMessageRole;
-    content: string;
-    created_at: string;
-  }>;
+  messages?: WireSessionMessage[];
   pending?: WireTurn["pending"];
 }
 
@@ -204,7 +260,29 @@ function normalizeMessages(wire: WireSession): ServerMessage[] {
     messageId: m.message_id,
     role: m.role,
     content: m.content,
-    createdAt: m.created_at
+    createdAt: m.created_at,
+    ...(m.turn_id ? { turnId: m.turn_id } : {}),
+    ...(m.citations?.length
+      ? {
+          citations: m.citations.map((c) => ({
+            sourceId: c.source_id,
+            title: c.title,
+            sourceName: c.source_name,
+            location: c.location,
+            revision: c.revision,
+            effectiveAt: c.effective_at
+          }))
+        }
+      : {}),
+    ...(m.committed?.length
+      ? {
+          actions: m.committed.map((c) => ({
+            action: c.action,
+            reference: c.reference,
+            replayed: c.replayed ?? false
+          }))
+        }
+      : {})
   }));
 }
 
@@ -221,7 +299,7 @@ export class ChatApi {
 
   /** @throws {Error} when the backend cannot supply tenant configuration. */
   async tenants(): Promise<TenantDirectory> {
-    const response = await fetch(this.url("/api/tenants"));
+    const response = await fetchWithTimeout(this.url("/api/tenants"), {}, REQUEST_TIMEOUT_MS);
     if (!response.ok) {
       throw new Error("Unable to load tenant configuration from backend.");
     }
@@ -241,11 +319,15 @@ export class ChatApi {
    * @throws {Error} when the backend cannot open a session.
    */
   async openSession(body: OpenSessionRequest): Promise<ServerSession> {
-    const response = await fetch(this.url("/api/chat/session"), {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ tenant_id: body.tenantId })
-    });
+    const response = await fetchWithTimeout(
+      this.url("/api/chat/session"),
+      {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ tenant_id: body.tenantId })
+      },
+      REQUEST_TIMEOUT_MS
+    );
     if (!response.ok) {
       throw new Error(`Unable to open a conversation (${response.status}).`);
     }
@@ -265,6 +347,10 @@ export class ChatApi {
       if (response.status === 401 || response.status === 404) {
         throw new CredentialRejectedError(response.status);
       }
+      // 422 is a rejection of what the visitor sent (a message past the length
+      // limit, usually), which is a different story from a service failure and
+      // gets its own honest wording.
+      if (response.status === 422) throw new MessageRejectedError();
       throw new Error(`${label} failed with ${response.status}`);
     }
     return response.json();
@@ -272,21 +358,29 @@ export class ChatApi {
 
   /** @throws {Error} when the backend rejects the turn. */
   async chat(credential: string, body: ChatRequest): Promise<ChatTurnResponse> {
-    const response = await fetch(this.url("/api/chat"), {
-      method: "POST",
-      headers: ChatApi.credentialHeaders(credential),
-      body: JSON.stringify({ message: body.message })
-    });
+    const response = await fetchWithTimeout(
+      this.url("/api/chat"),
+      {
+        method: "POST",
+        headers: ChatApi.credentialHeaders(credential),
+        body: JSON.stringify({ message: body.message })
+      },
+      TURN_TIMEOUT_MS
+    );
     return normalizeTurn((await ChatApi.unwrap(response, "Chat request")) as WireTurn);
   }
 
   /** Answer a booking the assistant proposed, approving or declining it. */
   async confirm(credential: string, body: ConfirmationRequest): Promise<ChatTurnResponse> {
-    const response = await fetch(this.url("/api/chat/confirmation"), {
-      method: "POST",
-      headers: ChatApi.credentialHeaders(credential),
-      body: JSON.stringify({ decision: body.decision })
-    });
+    const response = await fetchWithTimeout(
+      this.url("/api/chat/confirmation"),
+      {
+        method: "POST",
+        headers: ChatApi.credentialHeaders(credential),
+        body: JSON.stringify({ decision: body.decision })
+      },
+      TURN_TIMEOUT_MS
+    );
     return normalizeTurn((await ChatApi.unwrap(response, "Confirmation")) as WireTurn);
   }
 
@@ -300,11 +394,15 @@ export class ChatApi {
    * @throws {Error} when the backend rejects the grant.
    */
   async consent(body: ConsentGrantRequest): Promise<ConsentGrantResponse> {
-    const response = await fetch(this.url("/api/chat/consent"), {
-      method: "POST",
-      headers: ChatApi.credentialHeaders(body.credential),
-      body: JSON.stringify({ purposes: body.purposes })
-    });
+    const response = await fetchWithTimeout(
+      this.url("/api/chat/consent"),
+      {
+        method: "POST",
+        headers: ChatApi.credentialHeaders(body.credential),
+        body: JSON.stringify({ purposes: body.purposes })
+      },
+      REQUEST_TIMEOUT_MS
+    );
     if (!response.ok) {
       throw new Error(`Consent was not accepted (${response.status}).`);
     }
@@ -314,9 +412,11 @@ export class ChatApi {
   /** Returns null rather than throwing; transcript polling is best effort. */
   async session(credential: string): Promise<SessionSnapshot | null> {
     try {
-      const response = await fetch(this.url("/api/chat/session"), {
-        headers: { [VISITOR_CREDENTIAL_HEADER]: credential }
-      });
+      const response = await fetchWithTimeout(
+        this.url("/api/chat/session"),
+        { headers: { [VISITOR_CREDENTIAL_HEADER]: credential } },
+        REQUEST_TIMEOUT_MS
+      );
       if (!response.ok) return null;
       const wire = (await response.json()) as WireSession;
       const pending: PendingBooking | null = wire.pending
@@ -353,9 +453,11 @@ export class ChatApi {
    * @throws {SourceUnavailableError} when the source is not answerable.
    */
   async source(credential: string, sourceId: string): Promise<SourceView> {
-    const response = await fetch(this.url(`/api/chat/sources/${encodeURIComponent(sourceId)}`), {
-      headers: { [VISITOR_CREDENTIAL_HEADER]: credential }
-    });
+    const response = await fetchWithTimeout(
+      this.url(`/api/chat/sources/${encodeURIComponent(sourceId)}`),
+      { headers: { [VISITOR_CREDENTIAL_HEADER]: credential } },
+      REQUEST_TIMEOUT_MS
+    );
     if (!response.ok) throw new SourceUnavailableError();
     const wire = (await response.json()) as WireSourceView;
     return {
@@ -376,11 +478,15 @@ export class ChatApi {
    * @throws {Error} when the backend rejects the rating.
    */
   async feedback(credential: string, body: FeedbackRequest): Promise<FeedbackResponse> {
-    const response = await fetch(this.url("/api/chat/feedback"), {
-      method: "POST",
-      headers: ChatApi.credentialHeaders(credential),
-      body: JSON.stringify({ turn_id: body.turnId, rating: body.rating, reason: body.reason })
-    });
+    const response = await fetchWithTimeout(
+      this.url("/api/chat/feedback"),
+      {
+        method: "POST",
+        headers: ChatApi.credentialHeaders(credential),
+        body: JSON.stringify({ turn_id: body.turnId, rating: body.rating, reason: body.reason })
+      },
+      REQUEST_TIMEOUT_MS
+    );
     if (!response.ok) throw new Error(`Feedback failed with ${response.status}`);
     const payload = (await response.json()) as {
       turn_id: string;

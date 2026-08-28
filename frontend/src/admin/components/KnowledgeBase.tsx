@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { AdminApi } from "src/admin/adminApi";
+import { ConfirmDialog } from "src/admin/components/ConfirmDialog";
 import type {
   KnowledgeDocument,
   KnowledgeFinding,
@@ -16,8 +17,8 @@ import {
   KNOWLEDGE_SOURCE_KIND_LABELS,
   KNOWLEDGE_STATE_LABELS
 } from "src/admin/knowledgeTypes";
-import { relativeTime } from "src/admin/time";
 import { OUTCOME_LABELS } from "src/admin/traceTypes";
+import { relativeIsoTime } from "src/shared/display";
 import type { TraceSearchRecord } from "src/admin/traceTypes";
 
 export interface KnowledgeBaseProps {
@@ -26,17 +27,11 @@ export interface KnowledgeBaseProps {
   initialTenantId: string | null;
 }
 
-function relativeTimeOr(iso: string | null): string {
-  if (!iso) return "";
-  const seconds = new Date(iso).getTime() / 1000;
-  return relativeTime(Number.isFinite(seconds) ? seconds : undefined);
-}
-
 function versionWindow(version: KnowledgeVersion): string {
   if (version.effectiveAt && version.expiresAt) {
-    return `${relativeTimeOr(version.effectiveAt)} → ${relativeTimeOr(version.expiresAt)}`;
+    return `${relativeIsoTime(version.effectiveAt)} → ${relativeIsoTime(version.expiresAt)}`;
   }
-  return version.effectiveAt ? `from ${relativeTimeOr(version.effectiveAt)}` : "";
+  return version.effectiveAt ? `from ${relativeIsoTime(version.effectiveAt)}` : "";
 }
 
 /**
@@ -51,60 +46,69 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [findings, setFindings] = useState<KnowledgeFinding[]>([]);
   const [hasLoaded, setHasLoaded] = useState(false);
-  const [isLoading, setLoading] = useState(false);
+  const [isLoading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [preview, setPreview] = useState<KnowledgePreview | null>(null);
   const [relatedTurns, setRelatedTurns] = useState<TraceSearchRecord[] | null>(null);
   const [relatedFor, setRelatedFor] = useState<KnowledgeFinding | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<KnowledgeDocument | null>(null);
 
-  const run = async () => {
-    setLoading(true);
-    setError(null);
+  // Reads name the tenant through a ref, so a switch can never leave a request
+  // running for the tenant the panel just left.
+  const tenantIdRef = useRef(tenantId);
+
+  // Refreshes, tenant switches, and mutations all fetch overlapping state, and
+  // a slower earlier response would otherwise land last and win. Every read
+  // claims a generation before its first await and may only publish while it
+  // is still the newest — the chat queue console poller's contract.
+  const generationRef = useRef(0);
+  const claimGeneration = useCallback(() => {
+    const generation = (generationRef.current += 1);
+    return () => generation === generationRef.current;
+  }, []);
+
+  // Only ever publishes after an await, so the mount effect can start the
+  // first read without touching state synchronously.
+  const run = useCallback(async () => {
+    const tenant = tenantIdRef.current;
+    const isCurrent = claimGeneration();
     try {
-      const [tree, faults] = await Promise.all([
-        api.knowledge(tenantId),
-        api.knowledgeFindings(tenantId)
+      // The tree is the primary surface; findings ride along, so a findings
+      // failure must not blank the panel.
+      const [tree, faults] = await Promise.allSettled([
+        api.knowledge(tenant),
+        api.knowledgeFindings(tenant)
       ]);
-      setSources(tree);
-      setFindings(faults);
-      setHasLoaded(true);
-    } catch {
-      setError("Could not reach the knowledge base. Retrying…");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .knowledge(tenantId)
-      .then((tree) => {
-        if (cancelled) return;
-        setSources(tree);
+      if (!isCurrent()) return;
+      if (tree.status === "fulfilled") {
+        setSources(tree.value);
         setHasLoaded(true);
         // A load that succeeds retires the previous failure's banner; without
         // this, switching tenants after one bad fetch leaves it on screen.
         setError(null);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Could not reach the knowledge base. Retrying…");
-      });
-    api
-      .knowledgeFindings(tenantId)
-      .then((faults) => {
-        if (!cancelled) setFindings(faults);
-      })
-      .catch(() => {
-        /* The tree is the primary surface; findings ride along. */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [api, tenantId]);
+      } else {
+        setError("Could not reach the knowledge base. Retrying…");
+      }
+      if (faults.status === "fulfilled") setFindings(faults.value);
+    } finally {
+      if (isCurrent()) setLoading(false);
+    }
+  }, [api, claimGeneration]);
+
+  const beginRefresh = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void run();
+  }, [run]);
+
+  useEffect(() => {
+    void run();
+  }, [run]);
 
   const switchingTenant = (next: string) => {
+    if (next === tenantIdRef.current) return;
+    tenantIdRef.current = next;
     setTenantId(next);
     setSources([]);
     setFindings([]);
@@ -112,7 +116,7 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
     setPreview(null);
     setRelatedTurns(null);
     setRelatedFor(null);
-    void run();
+    beginRefresh();
   };
 
   /** Reports whether the action succeeded, so a caller can keep its form open. */
@@ -155,12 +159,19 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
   };
 
   const remove = (document: KnowledgeDocument) => {
-    const confirmed = window.confirm(`Delete “${document.title}” and every revision of it?`);
-    if (confirmed) {
-      void act(`Deleting “${document.title}”`, () =>
-        api.deleteDocument(document.documentId, tenantId)
-      );
-    }
+    // Deletion is destructive and irreversible, so it asks first — through the
+    // console's focus-managed dialog rather than a native confirm() the
+    // styling and the screen reader contract of this page do not control.
+    setPendingDelete(document);
+  };
+
+  const confirmDelete = () => {
+    const doomed = pendingDelete;
+    setPendingDelete(null);
+    if (!doomed) return;
+    void act(`Deleting “${doomed.title}”`, () =>
+      api.deleteDocument(doomed.documentId, tenantIdRef.current)
+    );
   };
 
   const toggleSource = (source: KnowledgeSource) => {
@@ -233,7 +244,7 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
             type="button"
             className="ghost-button"
             disabled={isLoading}
-            onClick={() => void run()}
+            onClick={beginRefresh}
           >
             {isLoading ? "Refreshing…" : "Refresh"}
           </button>
@@ -285,6 +296,16 @@ export function KnowledgeBase({ api, tenants, initialTenantId }: KnowledgeBasePr
       ))}
 
       {preview && <PreviewPanel preview={preview} onClose={() => setPreview(null)} />}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title={`Delete “${pendingDelete.title}”?`}
+          body="The document and every revision of it are deleted. This cannot be undone."
+          confirmLabel="Delete document"
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </section>
   );
 }
@@ -321,7 +342,7 @@ function FindingsPanel({
               <strong>{KNOWLEDGE_FAULT_LABELS[finding.code] ?? finding.code}</strong>
               <span className="session-meta">
                 {finding.documentTitle ?? "document"} · rev {finding.revision ?? "?"} ·{" "}
-                {finding.sourceName ?? "source"} · {relativeTimeOr(finding.detectedAt)}
+                {finding.sourceName ?? "source"} · {relativeIsoTime(finding.detectedAt)}
               </span>
               {finding.detail && Object.keys(finding.detail).length > 0 && (
                 <span className="session-meta mono">{JSON.stringify(finding.detail)}</span>
@@ -473,7 +494,7 @@ function VersionRow({
       )}
       {version.indexedAt && (
         <span className="session-meta">
-          last successful publish {relativeTimeOr(version.indexedAt)}
+          last successful publish {relativeIsoTime(version.indexedAt)}
         </span>
       )}
       <span className="kb-actions">

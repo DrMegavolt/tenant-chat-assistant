@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { redirectToLogin, UnauthorizedError, type AdminApi } from "src/admin/adminApi";
 import {
@@ -6,7 +6,7 @@ import {
   HANDOFF_STATUS_LABELS,
   type HandoffSummary
 } from "src/admin/handoffTypes";
-import { relativeTime } from "src/admin/time";
+import { relativeIsoTime } from "src/shared/display";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -14,11 +14,6 @@ export interface HandoffQueueProps {
   api: AdminApi;
   tenants: { tenantId: string; name: string }[];
   initialTenantId: string | null;
-}
-
-function relativeTimeOr(iso: string): string {
-  const seconds = new Date(iso).getTime() / 1000;
-  return relativeTime(Number.isFinite(seconds) ? seconds : undefined);
 }
 
 /**
@@ -40,10 +35,28 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // The poller reads the open tenant through a ref: without it, the fetch the
+  // tenant switch itself triggered ran with the previous tenant's closure and
+  // repainted the emptied queue with the other tenant's tickets.
+  const tenantIdRef = useRef(tenantId);
+
+  // Poll ticks, tenant switches, and ownership actions all fetch the same
+  // queue, and a slower earlier response would otherwise land last and win.
+  // Every read claims a generation before its first await and may only publish
+  // while it is still the newest — the chat queue console poller's contract.
+  const generationRef = useRef(0);
+  const claimGeneration = useCallback(() => {
+    const generation = (generationRef.current += 1);
+    return () => generation === generationRef.current;
+  }, []);
+
   const refresh = useCallback(async () => {
-    if (!tenantId) return;
+    const tenant = tenantIdRef.current;
+    if (!tenant) return;
+    const isCurrent = claimGeneration();
     try {
-      const { rows: loaded, operatorSubject: subject } = await api.handoffs(tenantId);
+      const { rows: loaded, operatorSubject: subject } = await api.handoffs(tenant);
+      if (!isCurrent()) return;
       setRows(loaded);
       setOperatorSubject(subject);
       setError(null);
@@ -52,15 +65,24 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
         redirectToLogin();
         return;
       }
-      setError("Could not reach the handoff queue. Retrying…");
+      if (isCurrent()) setError("Could not reach the handoff queue. Retrying…");
     }
-  }, [api, tenantId]);
+  }, [api, claimGeneration]);
 
   useEffect(() => {
     let cancelled = false;
+    // Overlapping ticks would both read the same queue; while one poll is in
+    // flight the next is a no-op, and the generation guard above already
+    // discards any response a newer read has superseded.
+    let inFlight = false;
     const poll = async () => {
-      if (cancelled || document.hidden) return;
-      await refresh();
+      if (cancelled || inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        await refresh();
+      } finally {
+        inFlight = false;
+      }
     };
     void poll();
     const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
@@ -71,6 +93,8 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
   }, [refresh]);
 
   const switchingTenant = (next: string) => {
+    if (next === tenantIdRef.current) return;
+    tenantIdRef.current = next;
     setTenantId(next);
     setRows([]);
     setSelectedId(null);
@@ -80,12 +104,13 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
 
   const mutate = async (handoff: HandoffSummary, action: "accept" | "release" | "resolve") => {
     if (busy) return;
+    const tenant = tenantIdRef.current;
     setBusy(true);
     setActionError(null);
     try {
-      if (action === "accept") await api.acceptHandoff(handoff.handoffId, tenantId);
-      if (action === "release") await api.releaseHandoff(handoff.handoffId, tenantId);
-      if (action === "resolve") await api.resolveHandoff(handoff.handoffId, tenantId);
+      if (action === "accept") await api.acceptHandoff(handoff.handoffId, tenant);
+      if (action === "release") await api.releaseHandoff(handoff.handoffId, tenant);
+      if (action === "resolve") await api.resolveHandoff(handoff.handoffId, tenant);
       await refresh();
     } catch (reason) {
       if (reason instanceof UnauthorizedError) {
@@ -163,7 +188,7 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
               >
                 <span className="session-row">
                   <strong>{HANDOFF_STATUS_LABELS[row.status] ?? row.status}</strong>
-                  <span className="session-meta">{relativeTimeOr(row.requestedAt)}</span>
+                  <span className="session-meta">{relativeIsoTime(row.requestedAt)}</span>
                 </span>
                 <span className="session-preview">{row.summary}</span>
                 <span className="session-meta">
@@ -196,7 +221,7 @@ export function HandoffQueue({ api, tenants, initialTenantId }: HandoffQueueProp
                 <p className="handoff-summary">{selected.summary}</p>
                 <p className="muted-copy">
                   Reason: {HANDOFF_REASON_LABELS[selected.reason] ?? selected.reason} · Requested{" "}
-                  {relativeTimeOr(selected.requestedAt)}
+                  {relativeIsoTime(selected.requestedAt)}
                 </p>
               </div>
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
 import { AdminApi } from "src/admin/adminApi";
@@ -6,7 +6,17 @@ import { HandoffQueue } from "src/admin/components/HandoffQueue";
 import { jsonResponse } from "tests/support/backend";
 import { tick } from "tests/support/timers";
 
-const TENANTS = [{ tenantId: "apex", name: "Apex Home Services" }];
+/** Let every already-resolved promise settle, without touching timers. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+const TENANTS = [
+  { tenantId: "apex", name: "Apex Home Services" },
+  { tenantId: "clearview", name: "Clearview Heating" }
+];
 
 /** A wire-format row, exactly as `GET /api/admin/handoffs` publishes it. */
 interface HandoffWire {
@@ -163,5 +173,109 @@ describe("the handoff queue", () => {
     await renderQueue([]);
 
     expect(screen.getByText("No conversations are waiting for a person right now.")).toBeTruthy();
+  });
+});
+
+describe("overlapping reads never publish a superseded response", () => {
+  test("switching tenants fetches the new tenant's queue and a stale reply is dropped", async () => {
+    // The switch used to fetch through the previous render's closure: it
+    // emptied the queue and then repainted it with the OLD tenant's tickets,
+    // and a slow reply could land under the new heading either way.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).endsWith("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-1" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    render(<HandoffQueue api={new AdminApi("")} tenants={TENANTS} initialTenantId="apex" />);
+
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+    const apexRows = {
+      handoffs: [{ ...OPEN, summary: "Apex: warranty claim callback." }],
+      operator_subject: "operator-7",
+      limit: 200
+    };
+    const clearviewRows = {
+      handoffs: [{ ...OPEN, handoff_id: "HO-CLEARVIEW", summary: "Clearview: estimate review." }],
+      operator_subject: "operator-7",
+      limit: 200
+    };
+
+    // The mount's apex read is left in flight; switching must issue a NEW read
+    // for the new tenant, not let the old closure answer for it.
+    fireEvent.change(screen.getByLabelText("Handoff queue tenant"), {
+      target: { value: "clearview" }
+    });
+    const switched = await waitFor(() => {
+      const found = pending.find((entry) => entry.url.includes("tenant_id=clearview"));
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    expect(switched.url).toContain("tenant_id=clearview");
+    switched.release(clearviewRows);
+    await screen.findByText("Clearview: estimate review.", { selector: ".session-preview" });
+
+    // The superseded apex queue answers last, and must change nothing.
+    await release("/api/admin/handoffs?", apexRows);
+    await flush();
+
+    expect(
+      screen.queryByText("Apex: warranty claim callback.", { selector: ".session-preview" })
+    ).toBeNull();
+    expect(
+      screen.getByText("Clearview: estimate review.", { selector: ".session-preview" })
+    ).toBeTruthy();
+  });
+
+  test("a poll still in flight is not started again by the next tick", async () => {
+    // Overlapping ticks would each read the same queue and race the same
+    // publish; while one poll is in flight the next is a no-op.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).endsWith("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-1" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    vi.useFakeTimers();
+    render(<HandoffQueue api={new AdminApi("")} tenants={TENANTS} initialTenantId="apex" />);
+
+    // Let the mount poll start, then answer it so the next tick begins a fresh
+    // poll that never returns.
+    await tick();
+    expect(pending.length).toBe(1);
+    pending
+      .splice(
+        pending.findIndex((entry) => entry.url.includes("/api/admin/handoffs?")),
+        1
+      )[0]!
+      .release(jsonResponse({ handoffs: [], operator_subject: "operator-7", limit: 200 }));
+    await tick();
+
+    await tick(3000);
+    expect(pending.length).toBe(1);
+    // The in-flight poll never returned, so the later ticks started nothing.
+    await tick(3000);
+    await tick(3000);
+    expect(pending.length).toBe(1);
   });
 });

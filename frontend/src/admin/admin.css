@@ -1447,3 +1447,41 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Destructive-action confirmation. Overlays the console like the widget's
+   source viewer overlays its panel: the rest of the page stays inert behind
+   it, and focus is managed by the dialog component, not the stylesheet. */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgb(0 0 0 / 0.45);
+}
+
+.confirm-dialog {
+  width: min(28rem, 100%);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+
+.confirm-dialog h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 1.05rem;
+}
+
+.confirm-dialog p {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-muted);
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}

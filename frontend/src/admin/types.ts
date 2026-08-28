@@ -51,6 +51,21 @@ export interface AdminToolEvent {
 }
 
 /**
+ * A question the assistant is waiting on the visitor to answer, as the session
+ * detail's `pending` field reports it. A booking confirmation carries the slot
+ * and address; a lead confirmation carries the contact and summary instead.
+ */
+export interface PendingConfirmation {
+  awaiting: string;
+  service: string;
+  slot: string;
+  customerName: string;
+  address: string;
+  contact: string;
+  summary: string;
+}
+
+/**
  * One row of `GET /api/admin/chats`.
  *
  * The counts and the preview are optional because the list endpoint returns
@@ -76,6 +91,8 @@ export interface SessionDetail extends SessionSummary {
   leads?: Lead[];
   bookings?: Booking[];
   toolEvents?: AdminToolEvent[];
+  /** Present only while the conversation is paused on a visitor decision. */
+  pending?: PendingConfirmation | null;
 }
 
 export const OUTCOME_LABELS: Record<Outcome, string> = {

@@ -51,12 +51,22 @@ export interface ServerSession {
   credential: string;
 }
 
-/** The server's view of one transcript message (`TranscriptMessage`). */
+/**
+ * The server's view of one transcript message (`TranscriptMessage`).
+ *
+ * The enrichment fields are sent only by backends that publish them with the
+ * transcript; a bare row (message id, role, content, time) is the base
+ * contract, and the widget renders enrichments only when they arrive.
+ */
 export interface ServerMessage {
   messageId: string;
   role: WireMessageRole;
   content: string;
   createdAt: string;
+  /** The inference-plane record the answer's feedback targets (`FEAT-008`). */
+  turnId?: string;
+  citations?: Citation[];
+  actions?: CommittedAction[];
 }
 
 /**

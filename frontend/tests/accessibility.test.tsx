@@ -68,6 +68,7 @@ describe("automated accessibility checks", () => {
     stubBackend(() => jsonResponse({}, { ok: false, status: 503 }));
     const host = document.createElement("div");
     host.id = "tenant-chat";
+    host.dataset.companyId = "apex";
     document.body.append(host);
     mountWidget(host);
     await waitFor(() => expect(inWidget(".widget-error")).not.toBeNull());

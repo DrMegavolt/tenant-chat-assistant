@@ -1,9 +1,18 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
 import { AdminApi } from "src/admin/adminApi";
+import { ReviewDetail } from "src/admin/components/ReviewDetail";
 import { ReviewQueue } from "src/admin/components/ReviewQueue";
 import { jsonResponse } from "tests/support/backend";
+import type { ReviewSummary } from "src/admin/reviewTypes";
+
+/** Let every already-resolved promise settle, without touching timers. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
 
 const TENANTS = [
   { tenantId: "clearview", name: "Clearview Heating" },
@@ -262,5 +271,216 @@ describe("the FEAT-008 review queue", () => {
         )
       ).toBe(true);
     });
+  });
+});
+
+describe("overlapping reads never publish a superseded response", () => {
+  test("a stale tenant's reviews are dropped when they answer after the new tenant's", async () => {
+    // A refresh, a tenant switch, and a detail open all fetch overlapping
+    // state; without the generation guard a slow earlier response landed last
+    // and showed one tenant's reviews under another's heading.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-review" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    renderQueue();
+
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+
+    // The mount's clearview read is left in flight.
+    fireEvent.change(screen.getByLabelText("Review queue tenant"), {
+      target: { value: "apex" }
+    });
+    // The newer apex read resolves first, showing an empty queue.
+    await release("tenant_id=apex", { reviews: [] });
+    await screen.findByText("No reviews match these filters.");
+
+    // The superseded clearview list answers last, and must change nothing.
+    await release("tenant_id=clearview", { reviews: [REVIEW_WIRE] });
+    await flush();
+
+    expect(screen.queryByText(/priority 32/i)).toBeNull();
+    expect(screen.getByText("No reviews match these filters.")).toBeTruthy();
+  });
+
+  test("a detail open during an in-flight refresh does not strand the list's loading state", async () => {
+    // A detail open used to claim the same generation token the list refresh
+    // owned: the refresh was discarded and, owning the loading state, left the
+    // spinner up forever with no read left to clear it.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-review" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    renderQueue();
+
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+
+    await release("tenant_id=clearview", { reviews: [REVIEW_WIRE] });
+    await screen.findByText(/priority 32/i);
+
+    // The refresh is still in flight when the operator opens a review.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(screen.getByRole("button", { name: /priority 32/i }));
+
+    // The refresh answers after the detail open and must still publish.
+    await release("tenant_id=clearview", { reviews: [REVIEW_WIRE] });
+    await flush();
+
+    const refresh = screen.getByRole("button", { name: "Refresh" });
+    expect((refresh as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole("button", { name: /priority 32/i })).toBeTruthy();
+  });
+
+  test("a detail read answered after a tenant switch does not restore the old tenant's review", async () => {
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-review" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    renderQueue();
+
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+
+    await release("tenant_id=clearview", { reviews: [REVIEW_WIRE] });
+    await screen.findByText(/priority 32/i);
+
+    // The detail read is still in flight when the operator switches tenants.
+    fireEvent.click(screen.getByRole("button", { name: /priority 32/i }));
+    fireEvent.change(screen.getByLabelText("Review queue tenant"), {
+      target: { value: "apex" }
+    });
+    await release("tenant_id=apex", { reviews: [] });
+    await screen.findByText("No reviews match these filters.");
+
+    // The superseded detail answers last, and must restore nothing.
+    await release("tenant_id=clearview", DETAIL_WIRE);
+    await flush();
+
+    expect(screen.queryByRole("article", { name: /review-1/i })).toBeNull();
+  });
+});
+
+describe("the reviewer's identity", () => {
+  const SUMMARY: ReviewSummary = {
+    reviewId: "review-1",
+    turnId: "turn-1",
+    sessionId: "session-1",
+    recordedAt: "2026-08-06T12:00:00Z",
+    outcome: "answered",
+    source: "user_feedback",
+    status: "awaiting_fix",
+    priority: 32,
+    recurrence: 1,
+    manifestHash: "a".repeat(64),
+    committedActions: false,
+    novelManifest: true,
+    caseId: null,
+    verdict: "confirmed",
+    diagnosisCauses: [],
+    diagnosisStatuses: [],
+    closingEvalRunId: null,
+    closingEvalCaseId: null,
+    createdAt: "2026-08-06T12:00:00Z",
+    turnIndex: 4
+  };
+
+  function stubDetail(reviewerSubject: string | null) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-review" });
+        }
+        if (String(url).includes("/api/admin/traces/gold-cases")) {
+          return jsonResponse({ cases: [] });
+        }
+        if (String(url).includes("/api/admin/traces/")) {
+          return jsonResponse(TRACE_WIRE);
+        }
+        if (String(url).includes("/api/admin/reviews/")) {
+          return jsonResponse({ ...REVIEWED_DETAIL_WIRE, reviewer_subject: reviewerSubject });
+        }
+        throw new Error(`unexpected request: ${url}`);
+      })
+    );
+  }
+
+  test("a readable subject is shown as the backend publishes it", async () => {
+    stubDetail("operator-7");
+    render(
+      <ReviewDetail
+        api={new AdminApi("")}
+        tenantId="clearview"
+        summary={SUMMARY}
+        onChanged={() => {}}
+      />
+    );
+
+    expect(await screen.findByText(/by operator-7/)).toBeTruthy();
+  });
+
+  test("a directory uuid is shortened to the segment that still tells reviewers apart", async () => {
+    // A 36-character opaque id reads as noise in a decision record; the short
+    // form is enough to tell two reviewers apart.
+    const uuid = "d1c0e5a9-6f2b-4a17-9e88-3c5d1b7f2a90";
+    stubDetail(uuid);
+    render(
+      <ReviewDetail
+        api={new AdminApi("")}
+        tenantId="clearview"
+        summary={SUMMARY}
+        onChanged={() => {}}
+      />
+    );
+
+    expect(await screen.findByText(/by d1c0e5a9/)).toBeTruthy();
+    expect(screen.queryByText(uuid)).toBeNull();
   });
 });

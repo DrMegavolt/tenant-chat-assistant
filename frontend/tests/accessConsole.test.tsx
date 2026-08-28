@@ -1,10 +1,17 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import axe from "axe-core";
 import { describe, expect, test, vi } from "vitest";
 
 import { AccessConsole } from "src/admin/components/AccessConsole";
 import { AdminApi } from "src/admin/adminApi";
 import { jsonResponse } from "tests/support/backend";
+
+/** Let every already-resolved promise settle, without touching timers. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
 
 const TENANTS = [
   { tenantId: "clearview", name: "Clearview Heating" },
@@ -258,6 +265,84 @@ describe("the FEAT-016 audit trail filters", () => {
     await screen.findByText(/This tenant cannot be opened/i);
     expect(screen.queryByText(/operator-8/)).toBeNull();
     expect(screen.queryByText(/staff_reply_sent/)).toBeNull();
+  });
+});
+
+describe("overlapping reads never publish a superseded response", () => {
+  test("a stale tenant's trail is dropped when it answers after the new tenant's", async () => {
+    // Every trail read and permissions read races the next one; without the
+    // generation guard a slow response landed last and put one tenant's audit
+    // rows under another tenant's heading.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-1" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    renderAccess();
+
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+    const apexPermissions = {
+      roles: [
+        {
+          tenant_id: "apex",
+          subject: "apex-operator",
+          role: "support_agent",
+          granted_by: "platform-1",
+          granted_at: "2026-08-01T10:00:00Z",
+          updated_at: "2026-08-01T10:00:00Z"
+        }
+      ],
+      grants: []
+    };
+    const apexAudit = {
+      events: [
+        {
+          action: "staff_reply_sent",
+          actor_type: "staff",
+          principal: "apex-operator",
+          tenant_id: "apex",
+          request_id: "req-apex",
+          trace_id: null,
+          resource_type: "chat_session",
+          resource_id: "session-2",
+          occurred_at: "2026-08-07T09:00:00Z",
+          permission: "support_agent — tenant membership"
+        }
+      ]
+    };
+
+    // The mount's clearview reads are left in flight.
+    fireEvent.change(screen.getByLabelText("Access console tenant"), {
+      target: { value: "apex" }
+    });
+    // The newer apex reads resolve first.
+    await release("/api/admin/permissions?tenant_id=apex", apexPermissions);
+    await release("/api/admin/audit?tenant_id=apex", apexAudit);
+    await screen.findByText("req-apex");
+
+    // The superseded clearview trail answers last, and must change nothing.
+    await release("/api/admin/permissions?tenant_id=clearview", PERMISSIONS_WIRE);
+    await release("/api/admin/audit?tenant_id=clearview", AUDIT_WIRE);
+    await flush();
+
+    expect(screen.queryByText("req-reply")).toBeNull();
+    expect(screen.queryByText(/operator-8/)).toBeNull();
+    expect(screen.getByText("req-apex")).toBeTruthy();
   });
 });
 

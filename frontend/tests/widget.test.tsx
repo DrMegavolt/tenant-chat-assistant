@@ -1,5 +1,5 @@
 import { fireEvent, waitFor } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { mountWidget } from "src/widget/mount";
 import {
@@ -15,6 +15,7 @@ import {
   stubBackend,
   workingBackend
 } from "tests/support/backend";
+import { tick } from "tests/support/timers";
 import {
   allInWidget,
   inWidget,
@@ -136,6 +137,7 @@ describe("widget initialization", () => {
 
     const host = document.createElement("div");
     host.id = "tenant-chat";
+    host.dataset.companyId = "apex";
     document.body.append(host);
     mountWidget(host);
 
@@ -289,5 +291,26 @@ describe("chat and booking contracts", () => {
     });
     expect(requireInWidget<HTMLInputElement>("#chatInput").disabled).toBe(false);
     expect(inWidget("#messages")?.getAttribute("aria-busy")).toBe("false");
+  });
+});
+
+describe("an embed without data-company-id", () => {
+  test("no widget starts, and the integrator is told why in the console", async () => {
+    // The default-tenant fallback would silently serve one company's bot on
+    // another company's site — the worst possible way to fail.
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubBackend(workingBackend());
+    const host = document.createElement("div");
+    host.id = "tenant-chat";
+    document.body.append(host);
+
+    mountWidget(host);
+
+    await tick();
+    expect(host.shadowRoot?.querySelector("#chatWindow")).toBeUndefined();
+    expect(host.shadowRoot?.querySelector("#openChat")).toBeUndefined();
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("data-company-id"));
+    consoleError.mockRestore();
   });
 });
