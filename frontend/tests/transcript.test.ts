@@ -175,6 +175,39 @@ describe("merging a snapshot into the live transcript", () => {
     expect(mergeTranscript(previous, [], null)).toEqual([WELCOME]);
   });
 
+  test("a proactive nudge the visitor already saw survives hydration", () => {
+    // The nudge is widget-side: no server row will ever carry its text or its
+    // `proactive` source, so a snapshot can neither match it away nor replace
+    // it — resume keeps it, deterministically, after the server's rows.
+    const previous: TranscriptEntry[] = [
+      WELCOME,
+      {
+        kind: "message",
+        id: "proactive-9",
+        role: "assistant",
+        source: "proactive",
+        text: "If it helps, I can have the team follow up."
+      }
+    ];
+    const hydrated = entriesFromMessages([
+      userMessage("My furnace is dead.", "m1"),
+      {
+        messageId: "m2",
+        role: "assistant",
+        content: "A technician will call you back.",
+        createdAt: "2026-08-26T09:00:00Z"
+      }
+    ]);
+
+    const merged = mergeTranscript(previous, hydrated, null);
+
+    expect(merged.map((entry) => (entry.kind === "message" ? entry.id : ""))).toEqual([
+      "server-m1",
+      "server-m2",
+      "proactive-9"
+    ]);
+  });
+
   test("the confirmation card the server reports is restored, and a local one is replaced", () => {
     const previous: TranscriptEntry[] = [
       WELCOME,
