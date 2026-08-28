@@ -69,6 +69,12 @@ def test_a_booking_pauses_for_the_customer_before_anything_is_committed() -> Non
         assert result.pending is not None
         assert result.pending["awaiting"] == "booking_confirmation"
         assert result.pending["slot"] == OFFERED_SLOT
+        assert result.pending["customer_name"] == "Dana Ruiz"
+        assert result.pending["address"] == "12 Alder Court, Portland, OR 97205"
+        # The question shows the contact in the canonical form the booking will
+        # store: the visitor is consenting to that value, not to what the model
+        # happened to type ("555-222-1919" stores as "(555) 222-1919").
+        assert result.pending["contact"] == "(555) 222-1919"
         assert await harness.bookings.for_tenant(BOOKING_TENANT) == ()
 
     asyncio.run(scenario())

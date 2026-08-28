@@ -198,6 +198,9 @@ describe("chat and booking contracts", () => {
     expect(confirmationCard.textContent).toContain("Confirm your booking");
     expect(confirmationCard.textContent).toContain("HVAC");
     expect(confirmationCard.textContent).toContain("Tomorrow 09:00");
+    // The card is the review step: the visitor must see the contact that will
+    // be stored before consenting, not just the slot and address.
+    expect(confirmationCard.textContent).toContain("(555) 222-1919");
 
     const approve = [...confirmationCard.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Confirm booking")

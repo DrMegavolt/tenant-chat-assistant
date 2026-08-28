@@ -128,7 +128,7 @@ def test_a_proposed_booking_pauses_before_it_commits(
         "slot": OFFERED_SLOT,
         "customer_name": "Dana Ruiz",
         "address": "12 Alder Court, Portland, OR 97205",
-        "contact": "",
+        "contact": "(555) 222-1919",
         "summary": "",
     }
 

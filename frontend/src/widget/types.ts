@@ -114,8 +114,9 @@ export type TranscriptEntry =
 /**
  * A proposed booking (or lead) the customer still has to approve. Mirrors the
  * API's `PendingConfirmation` so the widget can render a review before
- * deciding. A booking carries the slot and address; a lead (`awaiting ===
- * "lead_confirmation"`) carries the contact and summary instead.
+ * deciding. A booking carries the slot, address, and contact to be stored; a
+ * lead (`awaiting === "lead_confirmation"`) carries the contact and summary
+ * instead.
  */
 export interface PendingBooking {
   awaiting: string;

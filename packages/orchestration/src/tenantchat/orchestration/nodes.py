@@ -114,6 +114,12 @@ logger = logging.getLogger(__name__)
 # time they would rather spend talking to a person.
 MAX_TOOL_ROUNDS: Final = 4
 
+# How many slots the availability tool result enumerates in prose for the model
+# to read out. A whole multi-day offer set read back in full buries the customer
+# and pushes the reply toward the round budget; eight covers the near-term
+# choices a visitor actually picks from.
+AVAILABILITY_WINDOW: Final = 8
+
 # The citation marker the `dispatch-system@3` prompt asks for:
 # [evidence:<source_id>]. The source id is an index chunk id, so the same
 # charset as an Elasticsearch document id.
@@ -1433,6 +1439,10 @@ class DispatchNodes:
             "slot": command.slot,
             "customer_name": command.customer_name,
             "address": command.address,
+            # The visitor is approving the storage of this contact, so the
+            # question must show it: `display` is the canonical form the
+            # booking will carry, not the as-typed string the model echoed.
+            "contact": command.contact.display,
         }
         if state["workflow_id"]:
             await self._deps.workflows.transition(
@@ -2166,7 +2176,14 @@ class DispatchNodes:
             )
         slots = await self._deps.availability.offered_slots(policy.tenant_id, service.slug)
         slot_labels = [slot.label for slot in slots]
-        formatted = "\n".join(f"{i}. {label}" for i, label in enumerate(slot_labels, 1))
+        listed, rest = slot_labels[:AVAILABILITY_WINDOW], slot_labels[AVAILABILITY_WINDOW:]
+        formatted = "\n".join(f"{i}. {label}" for i, label in enumerate(listed, 1))
+        if rest:
+            formatted += f"\n…and {len(rest)} more later times available; ask to see more"
+        # `slots` stays complete while the prose is capped: the model passes a
+        # label back to book_appointment and the domain validates it against the
+        # full offer set, so shrinking the array would strand the later times
+        # the tail itself points at.
         return _payload(
             service=service.display_name,
             slots=slot_labels,

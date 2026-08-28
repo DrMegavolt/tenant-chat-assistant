@@ -20,11 +20,12 @@ function toTitle(text: string): string {
  *
  * Nothing is booked or captured until the visitor approves. The details are
  * echoed from what will actually happen (`PendingConfirmation`), not from what
- * the visitor believes they said. Approving submits the visitor's name,
- * address, and contact, so it is gated on the same consent the old contact
- * form required — contact details never leave the browser behind an unticked
- * box. A lead confirmation asks the same consent the booking card does, since
- * a callback request also stores contact data.
+ * the visitor believes they said — including the contact, which the visitor is
+ * approving for storage. Approving submits the visitor's name, address, and
+ * contact, so it is gated on the same consent the old contact form required —
+ * contact details never leave the browser behind an unticked box. A lead
+ * confirmation asks the same consent the booking card does, since a callback
+ * request also stores contact data.
  */
 export function BookingConfirmation({
   pending,
@@ -97,6 +98,12 @@ export function BookingConfirmation({
               <dt>Address</dt>
               <dd>{pending.address}</dd>
             </div>
+            {pending.contact && (
+              <div>
+                <dt>Contact</dt>
+                <dd>{pending.contact}</dd>
+              </div>
+            )}
           </>
         )}
       </dl>

@@ -71,7 +71,8 @@ export const AVAILABILITY_REPLY = {
     service: "HVAC",
     slot: "Tomorrow 09:00",
     customer_name: "Dana Ruiz",
-    address: "12 Alder Court, Portland, OR 97205"
+    address: "12 Alder Court, Portland, OR 97205",
+    contact: "(555) 222-1919"
   },
   committed: [],
   provenance: {

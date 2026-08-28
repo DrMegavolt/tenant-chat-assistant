@@ -14,7 +14,11 @@ import json
 from collections.abc import Mapping
 
 from tenantchat.orchestration.model import ModelResponse, ToolCall
-from tenantchat.orchestration.nodes import MAX_TOOL_ROUNDS, unanswered_tool_calls
+from tenantchat.orchestration.nodes import (
+    AVAILABILITY_WINDOW,
+    MAX_TOOL_ROUNDS,
+    unanswered_tool_calls,
+)
 from tests.agent_runtime.conftest import (
     BOOKING_TENANT,
     LEAD_TENANT,
@@ -71,6 +75,34 @@ def test_availability_returns_only_what_the_tenant_is_offering() -> None:
         payload = tool_payloads(harness)[0]
         assert payload["service"] == "HVAC"
         assert OFFERED_SLOT in payload["slots"]  # type: ignore[operator]
+
+    asyncio.run(scenario())
+
+
+def test_availability_prose_lists_a_bounded_window_and_points_at_the_rest() -> None:
+    """The prose the model reads out is capped, and the tail names the overflow.
+
+    A full multi-day offer set enumerated back to the visitor produces a wall of
+    text and burns the round budget, so the `formatted` field lists only the
+    near-term window and ends with an explicit count of what is left. The
+    `slots` array stays complete: the model passes a label back to
+    book_appointment and the domain validates it against the whole offer set,
+    so a later slot the tail promises must remain nameable and bookable.
+    """
+    harness = build_harness([calling(tool_call("get_availability", service="HVAC")), ANSWER])
+
+    async def scenario() -> None:
+        await harness.runtime.send(BOOKING_TENANT, "s-avail-window", "when can you come?")
+
+        payload = tool_payloads(harness)[0]
+        slots = list(payload["slots"])  # type: ignore[call-overload]
+        assert len(slots) > AVAILABILITY_WINDOW
+        formatted = str(payload["formatted"])
+        listed = [line for line in formatted.splitlines() if line[:1].isdigit()]
+        assert len(listed) == AVAILABILITY_WINDOW
+        assert formatted.endswith(
+            f"…and {len(slots) - AVAILABILITY_WINDOW} more later times available; ask to see more"
+        )
 
     asyncio.run(scenario())
 
