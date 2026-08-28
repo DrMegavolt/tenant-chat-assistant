@@ -237,12 +237,14 @@ spec:
                   key: database
           readinessProbe:
             exec:
+              # Resolved from the same secret-backed env the server itself
+              # uses, so the probe can never disagree with the deployed
+              # role/database the way a hardcoded `-U chat_app` would if the
+              # credential were ever rotated.
               command:
-                - pg_isready
-                - -U
-                - chat_app
-                - -d
-                - chat_app
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
             initialDelaySeconds: 10
             periodSeconds: 10
           volumeMounts:
@@ -337,6 +339,16 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 10
             failureThreshold: 18
+          livenessProbe:
+            # /health never touches the model, so liveness cannot fire during
+            # the (minutes-long) load /ready gates; it only fails when the
+            # process itself is wedged.
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
           volumeMounts:
             - name: model-cache
               mountPath: /home/tenantchat/.cache/huggingface
@@ -769,6 +781,17 @@ spec:
           volumeMounts:
             - name: knowledge-storage
               mountPath: /data/knowledge
+          resources:
+            # R-23. The API holds the LangGraph runtime, the streaming LLM
+            # client, and the retrieval fan-out; idle RSS sits near 150Mi and
+            # the model runs off-box, so the limit is headroom for bursts of
+            # concurrent turns, not model weights (that is embedding-service).
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 1Gi
+              cpu: "1"
           readinessProbe:
             httpGet:
               path: /readyz
@@ -786,9 +809,11 @@ spec:
           persistentVolumeClaim:
             claimName: knowledge-upload-storage
 ---
-# REL-003 durable outbox worker. It shares the immutable API image but has no
-# listener or Service: only PostgreSQL can feed it work. SIGTERM stops new
-# leases and lets the bounded in-flight batch finish before the grace period.
+# REL-003 durable outbox worker. It shares the immutable API image but serves
+# no application route: work arrives from PostgreSQL. The one HTTP listener is
+# the metrics plane on 8005 (Service `job-worker` + ServiceMonitor); readiness
+# is the exec probe below, not an HTTP endpoint. SIGTERM stops new leases and
+# lets the bounded in-flight batch finish before the grace period.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

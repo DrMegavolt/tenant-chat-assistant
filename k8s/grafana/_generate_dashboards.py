@@ -166,6 +166,12 @@ OUTCOME_OVERRIDES = [
 RATE = "$__rate_interval"
 
 
+def zero_line(expr: str, label: str) -> str:
+    """Healthy-zero fallback (L-O05): a counter with no series yet renders as a
+    0 line under the synthetic ``none`` class instead of "No data"."""
+    return f'{expr} or label_replace(vector(0), "{label}", "none", "", "")'
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD 1 — TURN OUTCOMES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -198,7 +204,7 @@ TURN_OUTCOMES = dash(
             10,
             6,
             6,
-            f'sum(rate(tenantchat_turn_outcomes_total{{outcome="answered"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_turn_outcomes_total{{outcome="answered"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "red"},
                 {"color": "orange", "value": 70.0},
@@ -212,7 +218,7 @@ TURN_OUTCOMES = dash(
             10,
             6,
             6,
-            f'sum(rate(tenantchat_turn_outcomes_total{{outcome="abstained"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_turn_outcomes_total{{outcome="abstained"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 5.0},
@@ -226,7 +232,7 @@ TURN_OUTCOMES = dash(
             10,
             6,
             6,
-            f'sum(rate(tenantchat_turn_outcomes_total{{outcome="clarified"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_turn_outcomes_total{{outcome="clarified"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "blue", "value": 5.0},
@@ -240,7 +246,7 @@ TURN_OUTCOMES = dash(
             10,
             6,
             6,
-            f'sum(rate(tenantchat_turn_outcomes_total{{outcome=~"answer_refused|turn_failed"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_turn_outcomes_total{{outcome=~"answer_refused|turn_failed"}}[{RATE}])) / sum(rate(tenantchat_turn_outcomes_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 1.0},
@@ -370,7 +376,7 @@ RETRIEVAL_ROUTING = dash(
             10,
             4,
             3,
-            f'sum(rate(tenantchat_routing_decisions_total{{outcome="clarify"}}[{RATE}])) / sum(rate(tenantchat_routing_decisions_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_routing_decisions_total{{outcome="clarify"}}[{RATE}])) / sum(rate(tenantchat_routing_decisions_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 5.0},
@@ -396,8 +402,8 @@ RETRIEVAL_ROUTING = dash(
                     "refId": "B",
                 },
             ],
-            unit="percentunit",
-            desc="L5 dependency: metric tenantchat_router_confidence does not exist yet. Panel will resolve once L5 emits the histogram.",
+            unit="none",
+            desc="Router confidence is a raw routing score (direct threshold 4.0, clarify 2.5), not a 0-1 ratio — rendered as a plain number, not a percentage.",
         ),
         ts_panel(
             5,
@@ -469,7 +475,7 @@ RETRIEVAL_ROUTING = dash(
             17,
             6,
             4,
-            f'sum(rate(tenantchat_citation_validation_total{{verdict="invalid"}}[{RATE}])) / sum(rate(tenantchat_citation_validation_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_citation_validation_total{{verdict="invalid"}}[{RATE}])) / sum(rate(tenantchat_citation_validation_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 5.0},
@@ -544,7 +550,7 @@ LLM_OPS = dash(
             10,
             4,
             4,
-            f'sum(rate(tenantchat_llm_calls_total{{status="error"}}[{RATE}])) / sum(rate(tenantchat_llm_calls_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_llm_calls_total{{status="error"}}[{RATE}])) / sum(rate(tenantchat_llm_calls_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 1.0},
@@ -558,7 +564,7 @@ LLM_OPS = dash(
             10,
             4,
             4,
-            f'sum(rate(tenantchat_llm_calls_total{{status="timeout"}}[{RATE}])) / sum(rate(tenantchat_llm_calls_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_llm_calls_total{{status="timeout"}}[{RATE}])) / sum(rate(tenantchat_llm_calls_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 1.0},
@@ -572,7 +578,7 @@ LLM_OPS = dash(
             10,
             4,
             4,
-            f"sum(rate(tenantchat_model_fallbacks_total[{RATE}])) / sum(rate(tenantchat_llm_calls_total[{RATE}])) * 100",
+            f"sum(rate(tenantchat_model_fallbacks_total[{RATE}])) / sum(rate(tenantchat_llm_calls_total[{RATE}])) * 100 or vector(0)",
             thresholds=[
                 {"color": "green"},
                 {"color": "orange", "value": 1.0},
@@ -586,7 +592,7 @@ LLM_OPS = dash(
             10,
             4,
             4,
-            f'sum(rate(tenantchat_response_cache_total{{result="hit"}}[{RATE}])) / sum(rate(tenantchat_response_cache_total[{RATE}])) * 100',
+            f'sum(rate(tenantchat_response_cache_total{{result="hit"}}[{RATE}])) / sum(rate(tenantchat_response_cache_total[{RATE}])) * 100 or vector(0)',
             thresholds=[
                 {"color": "red", "value": None},
                 {"color": "green"},
@@ -787,7 +793,9 @@ SAFETY = dash(
             8,
             [
                 {
-                    "expr": f"sum by (reason) (rate(tenantchat_policy_blocks_total[{RATE}]))",
+                    "expr": zero_line(
+                        f"sum by (reason) (rate(tenantchat_policy_blocks_total[{RATE}]))", "reason"
+                    ),
                     "legendFormat": "{{reason}}",
                     "refId": "A",
                 }
@@ -801,7 +809,7 @@ SAFETY = dash(
             0,
             4,
             4,
-            f'sum(rate(tenantchat_policy_blocks_total{{reason="budget_exhausted"}}[{RATE}]))',
+            f'sum(rate(tenantchat_policy_blocks_total{{reason="budget_exhausted"}}[{RATE}])) or vector(0)',
             unit="reqps",
             decimals=3,
             thresholds=[
@@ -817,7 +825,7 @@ SAFETY = dash(
             4,
             4,
             4,
-            f'sum(rate(tenantchat_policy_blocks_total{{reason=~"input_too_long|input_binary|output_too_long"}}[{RATE}]))',
+            f'sum(rate(tenantchat_policy_blocks_total{{reason=~"input_too_long|input_binary|output_too_long"}}[{RATE}])) or vector(0)',
             unit="reqps",
             decimals=3,
             thresholds=[{"color": "green"}, {"color": "orange", "value": 0.01}],
@@ -831,7 +839,10 @@ SAFETY = dash(
             7,
             [
                 {
-                    "expr": f"sum by (reason) (rate(tenantchat_model_fallbacks_total[{RATE}]))",
+                    "expr": zero_line(
+                        f"sum by (reason) (rate(tenantchat_model_fallbacks_total[{RATE}]))",
+                        "reason",
+                    ),
                     "legendFormat": "{{reason}}",
                     "refId": "A",
                 }
@@ -846,7 +857,9 @@ SAFETY = dash(
             7,
             [
                 {
-                    "expr": f"sum by (level) (rate(tenantchat_budget_alerts_total[{RATE}]))",
+                    "expr": zero_line(
+                        f"sum by (level) (rate(tenantchat_budget_alerts_total[{RATE}]))", "level"
+                    ),
                     "legendFormat": "{{level}}",
                     "refId": "A",
                 }
@@ -876,7 +889,10 @@ SAFETY = dash(
             6,
             [
                 {
-                    "expr": f"sum by (rating) (rate(tenantchat_feedback_submitted_total[{RATE}]))",
+                    "expr": zero_line(
+                        f"sum by (rating) (rate(tenantchat_feedback_submitted_total[{RATE}]))",
+                        "rating",
+                    ),
                     "legendFormat": "{{rating}}",
                     "refId": "A",
                 }
@@ -905,7 +921,9 @@ SAFETY = dash(
             6,
             [
                 {
-                    "expr": f"sum by (result) (rate(tenantchat_response_cache_total[{RATE}]))",
+                    "expr": zero_line(
+                        f"sum by (result) (rate(tenantchat_response_cache_total[{RATE}]))", "result"
+                    ),
                     "legendFormat": "{{result}}",
                     "refId": "A",
                 }
@@ -934,7 +952,10 @@ SAFETY = dash(
             6,
             [
                 {
-                    "expr": f"sum by (dependency) (rate(tenantchat_dependency_retries_total[{RATE}]))",
+                    "expr": zero_line(
+                        f"sum by (dependency) (rate(tenantchat_dependency_retries_total[{RATE}]))",
+                        "dependency",
+                    ),
                     "legendFormat": "{{dependency}}",
                     "refId": "A",
                 }
@@ -949,7 +970,10 @@ SAFETY = dash(
             8,
             [
                 {
-                    "expr": f'sum by (status) (rate(tenantchat_business_actions_total{{operation="booking"}}[{RATE}]))',
+                    "expr": zero_line(
+                        f'sum by (status) (rate(tenantchat_business_actions_total{{operation="booking"}}[{RATE}]))',
+                        "status",
+                    ),
                     "legendFormat": "{{status}}",
                     "refId": "A",
                 },
@@ -985,7 +1009,10 @@ SAFETY = dash(
             8,
             [
                 {
-                    "expr": f'sum by (tool) (rate(tenantchat_tool_calls_total{{outcome="failed"}}[{RATE}]))',
+                    "expr": zero_line(
+                        f'sum by (tool) (rate(tenantchat_tool_calls_total{{outcome="failed"}}[{RATE}]))',
+                        "tool",
+                    ),
                     "legendFormat": "{{tool}}",
                     "refId": "A",
                 }

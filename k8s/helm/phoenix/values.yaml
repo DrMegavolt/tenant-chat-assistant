@@ -19,7 +19,12 @@ persistence:
   enabled: false
 
 auth:
-  enableAuth: true
+  # DB-3: auth is disabled for the demo. The initial admin password was
+  # consumed at first login and never re-recorded, so every fresh session hit
+  # a login wall with no recoverable credential. The collector's bearer header
+  # is tolerated when auth is off, so the exporter needed no change. This is a
+  # demo-cluster posture, not the production shape.
+  enableAuth: false
   # The secret is operator-created, so `helm upgrade` cannot regenerate
   # PHOENIX_SECRET and invalidate every stored credential.
   createSecret: false

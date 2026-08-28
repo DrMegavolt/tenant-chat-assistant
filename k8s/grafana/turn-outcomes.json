@@ -188,7 +188,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=\"answered\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=\"answered\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -238,7 +238,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=\"abstained\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=\"abstained\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -288,7 +288,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=\"clarified\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=\"clarified\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -338,7 +338,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=~\"answer_refused|turn_failed\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_turn_outcomes_total{outcome=~\"answer_refused|turn_failed\"}[$__rate_interval])) / sum(rate(tenantchat_turn_outcomes_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
