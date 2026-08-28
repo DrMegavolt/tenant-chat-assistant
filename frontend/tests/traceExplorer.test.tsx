@@ -60,6 +60,8 @@ function stubTraceBackend(
   overrides: {
     records?: unknown[];
     readFailure?: { status: number } | null;
+    /** Search pages by requested offset, for pagination specs (R-36). */
+    pages?: Record<number, { records: unknown[]; total: number }>;
   } = {}
 ) {
   const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
@@ -83,7 +85,14 @@ function stubTraceBackend(
       return jsonResponse(wireTraceContent(turnId, READ_BY_TURN[turnId]!));
     }
     if (url.includes("/api/admin/traces?")) {
-      return jsonResponse({ records: overrides.records ?? [RECORD_WIRE] });
+      const params = new URLSearchParams(url.split("?")[1]);
+      const offset = Number(params.get("offset") ?? "0");
+      if (overrides.pages) {
+        const page = overrides.pages[offset] ?? { records: [], total: 0 };
+        return jsonResponse({ ...page, offset, limit: 100 });
+      }
+      const records = overrides.records ?? [RECORD_WIRE];
+      return jsonResponse({ records, total: records.length, offset, limit: 100 });
     }
     throw new Error(`unexpected request: ${url}`);
   });
@@ -218,6 +227,67 @@ describe("the trace explorer filters", () => {
     fireEvent.click(submit);
 
     await screen.findByText(/tool error/i, { selector: ".session-preview" });
+  });
+});
+
+describe("the trace explorer pagination (R-36)", () => {
+  test("a truncated page says so and load more appends the next offset", async () => {
+    const fetchMock = stubTraceBackend({
+      pages: {
+        0: { records: [RECORD_WIRE], total: 2 },
+        1: { records: [V3_RECORD_WIRE], total: 2 }
+      }
+    });
+    renderExplorer();
+
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    await screen.findByText(/tool error/i, { selector: ".session-preview" });
+    expect(screen.getByText("Showing 1 of 2 turns")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load 1 more" }));
+    await screen.findByRole("button", { name: /Turn 4/i });
+
+    // The count is the match set's, and the second page asked for the offset
+    // where the loaded rows end — the two pages never repeat a row.
+    expect(screen.getByText("Showing 2 of 2 turns")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Load .* more/ })).toBeNull();
+    const searchUrls = fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes("/api/admin/traces?"));
+    expect(searchUrls).toHaveLength(2);
+    expect(new URLSearchParams(searchUrls[1]!.split("?")[1]).get("offset")).toBe("1");
+  });
+
+  test("a page holding the whole match set offers no load more", async () => {
+    stubTraceBackend({ records: [RECORD_WIRE, V3_RECORD_WIRE] });
+    renderExplorer();
+
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    await screen.findByText(/tool error/i, { selector: ".session-preview" });
+
+    expect(screen.getByText("Showing 2 of 2 turns")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Load/ })).toBeNull();
+  });
+
+  test("a new search replaces the loaded pages instead of appending", async () => {
+    stubTraceBackend({
+      pages: {
+        0: { records: [RECORD_WIRE], total: 2 },
+        1: { records: [V3_RECORD_WIRE], total: 2 }
+      }
+    });
+    renderExplorer();
+
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    await screen.findByText(/tool error/i, { selector: ".session-preview" });
+    fireEvent.click(screen.getByRole("button", { name: "Load 1 more" }));
+    await screen.findByRole("button", { name: /Turn 4/i });
+
+    fireEvent.change(screen.getByLabelText("Outcome"), { target: { value: "answered" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    await screen.findByText("Showing 1 of 2 turns");
+
+    expect(screen.queryByRole("button", { name: /Turn 4/i })).toBeNull();
   });
 });
 

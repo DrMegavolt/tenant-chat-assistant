@@ -528,7 +528,16 @@ def create_app(
             )
         effective_model = instrumented_models[0]
         if len(instrumented_models) > 1:
-            effective_model = FallbackChatModel(instrumented_models, metrics=METRICS)
+            # The chain's configured model ids name each hop in the turn record
+            # (R-38); without them a hop would be identifiable only by position.
+            effective_model = FallbackChatModel(
+                instrumented_models,
+                metrics=METRICS,
+                names=(
+                    resolved.llm_model or "unknown",
+                    resolved.llm_fallback_model or "unknown",
+                ),
+            )
     elif effective_model is not None:
         # Injected models are used by tests and local compositions. They still
         # get one logical model span, with an explicit unknown request model

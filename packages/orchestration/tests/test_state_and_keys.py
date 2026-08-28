@@ -9,10 +9,12 @@ import pytest
 from tenantchat.orchestration.checkpoints import checkpoint_connection_string
 from tenantchat.orchestration.runtime import thread_id
 from tenantchat.orchestration.state import (
+    CommittedAction,
     DispatchState,
     initial_state,
     next_turn,
     reduce_model_invocations,
+    reduce_turn_committed,
 )
 
 
@@ -56,6 +58,24 @@ def test_a_new_turn_clears_prior_model_invocations_but_rounds_accumulate() -> No
         *previous,
         {"round": 2},
     ]
+
+
+def test_the_turn_scoped_commit_channel_resets_with_the_turn() -> None:
+    """The trace's per-turn view of committed effects lives on its own channel.
+
+    An empty update is the next turn's reset; a non-empty update appends, so
+    the committed booking this turn caused is visible without dragging every
+    earlier turn's effects into the record.
+    """
+    prior: list[CommittedAction] = [
+        {"action": "handoff_to_human", "reference": "H-1", "replayed": False, "key": "k0"}
+    ]
+    fresh: list[CommittedAction] = [
+        {"action": "book_appointment", "reference": "b-1", "replayed": False, "key": "k1"}
+    ]
+    assert reduce_turn_committed(prior, []) == []
+    assert reduce_turn_committed([], fresh) == fresh
+    assert next_turn("again")["turn_committed"] == []
 
 
 def test_a_transcript_entry_always_carries_both_optional_fields() -> None:

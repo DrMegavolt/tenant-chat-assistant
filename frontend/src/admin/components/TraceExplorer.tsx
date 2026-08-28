@@ -14,6 +14,7 @@ import {
   type GoldCase,
   type TraceRead,
   type TraceSearchFilters,
+  type TraceSearchPage,
   type TraceSearchRecord
 } from "src/admin/traceTypes";
 
@@ -27,6 +28,18 @@ function toIso(localDateTime: string): string {
   if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(localDateTime)) return localDateTime;
   const date = new Date(localDateTime);
   return Number.isNaN(date.getTime()) ? localDateTime : date.toISOString();
+}
+
+/** The filters as the API accepts them: present fields only, datetimes in UTC. */
+function wiredFilters(filters: TraceSearchFilters): TraceSearchFilters {
+  const wired: TraceSearchFilters = {};
+  if (filters.since) wired.since = toIso(filters.since);
+  if (filters.until) wired.until = toIso(filters.until);
+  if (filters.outcome) wired.outcome = filters.outcome;
+  if (filters.cause) wired.cause = filters.cause;
+  if (filters.diagnosisStatus) wired.diagnosisStatus = filters.diagnosisStatus;
+  if (filters.manifestHash) wired.manifestHash = filters.manifestHash;
+  return wired;
 }
 
 /** Backend trace timestamps are ISO strings, unlike the queue's unix seconds. */
@@ -71,6 +84,10 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   const [tenantId, setTenantId] = useState(initialTenantId ?? tenants[0]?.tenantId ?? "");
   const [filters, setFilters] = useState<TraceSearchFilters>(EMPTY_FILTERS);
   const [records, setRecords] = useState<TraceSearchRecord[]>([]);
+  // The unbounded match count the backend reports beside each page, so the
+  // explorer can say "showing N of M" and offer more without pretending a
+  // truncated page was everything (R-36).
+  const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<TraceSearchRecord | null>(null);
   const [gold, setGold] = useState<GoldCase[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -105,27 +122,43 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   };
 
   const runSearch = async (overrides?: TraceSearchFilters) => {
-    const active = { ...filters, ...overrides };
-    const wired: TraceSearchFilters = {};
-    if (active.since) wired.since = toIso(active.since);
-    if (active.until) wired.until = toIso(active.until);
-    if (active.outcome) wired.outcome = active.outcome;
-    if (active.cause) wired.cause = active.cause;
-    if (active.diagnosisStatus) wired.diagnosisStatus = active.diagnosisStatus;
-    if (active.manifestHash) wired.manifestHash = active.manifestHash;
+    const wired = wiredFilters({ ...filters, ...overrides });
     const generation = claimGeneration();
     const isCurrent = () => generation === generationRef.current;
     takeLoading(generation);
     setError(null);
     setSelected(null);
     try {
-      const rows = await api.searchTraces(tenantId, wired);
+      const page: TraceSearchPage = await api.searchTraces(tenantId, wired, 0);
       if (!isCurrent()) return;
-      setRecords(rows);
+      setRecords(page.records);
+      setTotal(page.total);
       setHasSearched(true);
     } catch {
       if (!isCurrent()) return;
       setError("Could not reach the trace surface. Try the search again.");
+    } finally {
+      settleLoading(generation);
+    }
+  };
+
+  const loadMore = async () => {
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    takeLoading(generation);
+    setError(null);
+    try {
+      const page: TraceSearchPage = await api.searchTraces(
+        tenantId,
+        wiredFilters(filters),
+        records.length
+      );
+      if (!isCurrent()) return;
+      setRecords((loaded) => [...loaded, ...page.records]);
+      setTotal(page.total);
+    } catch {
+      if (!isCurrent()) return;
+      setError("Could not load more turns. Try again.");
     } finally {
       settleLoading(generation);
     }
@@ -184,6 +217,7 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
     claimGeneration();
     setTenantId(next);
     setRecords([]);
+    setTotal(0);
     setHasSearched(false);
     setLookupTrace(null);
     setSelected(null);
@@ -256,35 +290,52 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
       )}
 
       {records.length > 0 && (
-        <div className="trace-results" role="group" aria-label="Turn search results">
-          {records.map((record) => (
+        <>
+          <p className="muted-copy" role="status">
+            Showing {records.length} of {total} turn{total === 1 ? "" : "s"}
+          </p>
+          <div className="trace-results" role="group" aria-label="Turn search results">
+            {records.map((record) => (
+              <button
+                key={record.turnId}
+                type="button"
+                className={`session-item${selected?.turnId === record.turnId ? " selected" : ""}`}
+                aria-current={selected?.turnId === record.turnId ? "true" : undefined}
+                onClick={() => open(record)}
+              >
+                <span className="session-row">
+                  <strong>
+                    Turn {record.turnIndex} · {OUTCOME_LABELS[record.outcome] ?? record.outcome}
+                  </strong>
+                  <span className="session-meta">{relativeTraceTime(record.recordedAt)}</span>
+                </span>
+                <span className="session-preview">
+                  {record.diagnosisCauses.length
+                    ? record.diagnosisCauses
+                        .map((cause) => DIAGNOSIS_CAUSE_LABELS[cause] ?? cause)
+                        .join(" · ")
+                    : "No diagnosis"}
+                  {record.diagnosisStatuses.some(isUncertainStatus) && (
+                    <span className="uncertain-chip">uncertain</span>
+                  )}
+                </span>
+                <span className="session-meta mono">
+                  {record.componentManifestHash.slice(0, 12)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {records.length < total && (
             <button
-              key={record.turnId}
               type="button"
-              className={`session-item${selected?.turnId === record.turnId ? " selected" : ""}`}
-              aria-current={selected?.turnId === record.turnId ? "true" : undefined}
-              onClick={() => open(record)}
+              className="ghost-button"
+              disabled={isLoading}
+              onClick={() => void loadMore()}
             >
-              <span className="session-row">
-                <strong>
-                  Turn {record.turnIndex} · {OUTCOME_LABELS[record.outcome] ?? record.outcome}
-                </strong>
-                <span className="session-meta">{relativeTraceTime(record.recordedAt)}</span>
-              </span>
-              <span className="session-preview">
-                {record.diagnosisCauses.length
-                  ? record.diagnosisCauses
-                      .map((cause) => DIAGNOSIS_CAUSE_LABELS[cause] ?? cause)
-                      .join(" · ")
-                  : "No diagnosis"}
-                {record.diagnosisStatuses.some(isUncertainStatus) && (
-                  <span className="uncertain-chip">uncertain</span>
-                )}
-              </span>
-              <span className="session-meta mono">{record.componentManifestHash.slice(0, 12)}</span>
+              {isLoading ? "Loading…" : `Load ${total - records.length} more`}
             </button>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       {selected && (

@@ -57,15 +57,20 @@ prompt, evidence, and reasoning the operational plane deliberately excludes
 
 ## L5 dependency notes
 
-Two panels reference metrics that do not exist yet in the confirmed inventory:
+The Router Confidence Distribution panel consumes
+`tenantchat_router_confidence` — a confirmed inventory metric (`MetricName.
+ROUTER_CONFIDENCE`, a raw-score histogram with no labels, emitted by the
+routing node per decision), so it resolves with no further work.
+
+One panel still references a metric that does not exist yet in the confirmed
+inventory:
 
 | Panel | Metric needed | Lane |
 |---|---|---|
-| Router Confidence Distribution (p50/p95) | `tenantchat_router_confidence` histogram with `le` buckets | L5 |
 | Diagnosis Causes Distribution | `tenantchat_diagnosis_causes_total` counter by `cause` label | L4/L5 |
 
-The panel descriptions state the dependency explicitly. Once the emitting code
-lands, the panels resolve with zero configuration change. Diagnosis causes are
+The panel description states the dependency explicitly. Once the emitting code
+lands, the panel resolves with zero configuration change. Diagnosis causes are
 currently stored in `turn_records.diagnosis_causes` (Postgres array) and are not
 exposed as Prometheus metrics. Exposing them as a counter with a `cause` label
 matching `DiagnosisCause` values (`stale_source`, `ingestion_or_index_error`,
@@ -132,6 +137,7 @@ All panels in dashboards 1–5 resolve against these metrics:
 `tenantchat_llm_calls_total` (counter, `status`, `template`)  
 `tenantchat_llm_latency_seconds` (histogram, `status`, `template`)  
 `tenantchat_llm_tokens_total` (counter, `kind`, `template`)  
+`tenantchat_router_confidence` (histogram, no labels — raw routing score)  
 `tenantchat_retrieval_runs_total` (counter, `status`, `verdict`)  
 `tenantchat_retrieval_latency_seconds` (histogram, `status`)  
 `tenantchat_retrieval_candidates_total` (counter)  

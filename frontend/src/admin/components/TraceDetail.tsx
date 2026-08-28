@@ -234,17 +234,26 @@ function graphSources(content: TraceRead["content"]): GraphSource[] {
 
   const toolCalls = content.tools?.toolCalls ?? [];
   const modelCalled = Boolean(content.model?.name);
+  // Provenance, shown beside the serving model: a cache-served answer must not
+  // read as a fresh zero-token completion (R-37), and a fallback chain is the
+  // outage story behind the answering call (R-38).
+  const hops = content.model?.fallbackHops ?? [];
+  const provenance = [
+    ...(content.model?.cacheHit ? ["served from cache"] : []),
+    ...hops.map((hop) => `${hop.modelName || "unknown model"} failed (${hop.reason})`)
+  ];
   sources.push({
     label: modelCalled
       ? `Model · ${content.model?.name} · ${content.outcome?.rounds ?? 1} round(s)`
       : "Model",
     storedField: "model.name / outcome.rounds",
     detail: modelCalled
-      ? toolCalls.length
-        ? `${toolCalls.length} tool call(s) attempted`
-        : "one completion"
+      ? [
+          toolCalls.length ? `${toolCalls.length} tool call(s) attempted` : "one completion",
+          ...provenance
+        ].join(", ")
       : "no model call (recorded as abstained/clarified)",
-    status: modelCalled ? "ok" : "skipped"
+    status: modelCalled ? (hops.length > 0 ? "uncertain" : "ok") : "skipped"
   });
 
   for (const call of toolCalls) {

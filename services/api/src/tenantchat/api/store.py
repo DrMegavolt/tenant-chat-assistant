@@ -1300,6 +1300,19 @@ class TurnRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class TraceSearchPage:
+    """One bounded page of the `OBS-004` attribution search (R-36).
+
+    ``total`` is the number of records the filters match in full, independent
+    of the page's ``limit`` — the honest count a "load more" control needs, so
+    a truncated list cannot read as everything there is.
+    """
+
+    records: tuple[TurnRecord, ...]
+    total: int
+
+
+@dataclass(frozen=True, slots=True)
 class TurnRecordProjection:
     """A derived dataset pinned to the turn record it was built from.
 
@@ -1598,14 +1611,16 @@ class TurnRecordStore(Protocol):
         until: datetime | None = None,
         limit: int = 50,
         generation_ids: tuple[uuid.UUID, ...] = (),
-    ) -> tuple[TurnRecord, ...]:
+        offset: int = 0,
+    ) -> TraceSearchPage:
         """The tenant's records matching the content-free filters, newest first.
 
         This is the `OBS-004` attribution query surface: filter by the
         component-manifest hash (what build answered), by diagnosis causes or
         statuses (what failed, and how certain the record is), by outcome, by
         recorded time, or by the index generations the retrieval cited —
-        bounded to *limit*.
+        bounded to *limit*, starting *offset* records into the match set, with
+        the unbounded match count as ``total`` (R-36).
         """
 
     async def projections_for_turn(
@@ -1933,7 +1948,8 @@ class InMemoryTurnRecordStore:
         until: datetime | None = None,
         limit: int = 50,
         generation_ids: tuple[uuid.UUID, ...] = (),
-    ) -> tuple[TurnRecord, ...]:
+        offset: int = 0,
+    ) -> TraceSearchPage:
         wanted_causes = set(causes)
         wanted_statuses = set(statuses)
         wanted_generations = set(generation_ids)
@@ -1956,7 +1972,8 @@ class InMemoryTurnRecordStore:
                 )
             ]
         records.sort(key=lambda record: record.recorded_at, reverse=True)
-        return tuple(records[:limit])
+        start = max(offset, 0)
+        return TraceSearchPage(records=tuple(records[start : start + limit]), total=len(records))
 
     async def projections_for_turn(
         self, tenant_id: str, turn_id: uuid.UUID

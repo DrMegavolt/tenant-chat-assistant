@@ -15,6 +15,7 @@ from tenantchat.core.metrics import MetricName
 from tenantchat.orchestration.model import (
     AssembledMessage,
     AssembledPrompt,
+    FallbackHop,
     MessageRole,
     ModelResponse,
     PromptRegion,
@@ -141,6 +142,39 @@ class TestCacheHits:
 
         assert first.usage["total_tokens"] == 34
         assert second.usage == {}
+
+    def test_a_hit_is_marked_and_a_miss_is_not(self) -> None:
+        """The record must tell a served-from-cache answer from a fresh one.
+
+        Without the flag, a cache-served turn reads as a fresh completion that
+        cost zero tokens — spend attribution and cache-hit auditing both lie.
+        """
+        inner = _CountingModel(ModelResponse(content="Open until 7pm."))
+        cache = CachingChatModel(inner)
+
+        first = _run(cache, _prompt(), ())
+        second = _run(cache, _prompt(), ())
+
+        assert first.cache_hit is False
+        assert second.cache_hit is True
+
+    def test_a_hit_carries_no_stale_fallback_chain(self) -> None:
+        """The stored response's original hops describe the turn that computed
+        it. The serving turn made no provider attempts, so its record must not
+        borrow the earlier turn's outage story."""
+        inner = _CountingModel(
+            ModelResponse(
+                content="Open until 7pm.",
+                fallback_hops=(FallbackHop(model_name="primary", reason="timeout"),),
+            )
+        )
+        cache = CachingChatModel(inner)
+
+        _run(cache, _prompt(), ())
+        second = _run(cache, _prompt(), ())
+
+        assert second.cache_hit is True
+        assert second.fallback_hops == ()
 
 
 class TestCacheBounds:

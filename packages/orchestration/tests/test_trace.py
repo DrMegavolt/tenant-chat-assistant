@@ -170,7 +170,7 @@ def test_the_trace_carries_the_schema_version_and_turn_index() -> None:
     """The shape version is the reader's contract; the index the query key."""
     trace = build_turn_trace(_answered(), pending=None)
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "4"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "5"
     assert trace["turn_index"] == 1
 
 
@@ -488,6 +488,14 @@ def test_a_spent_round_budget_is_recorded_as_escalated_not_answered() -> None:
                     "key": "key-1",
                 }
             ],
+            turn_committed=[
+                {
+                    "action": "handoff_to_human",
+                    "reference": "H-1",
+                    "replayed": False,
+                    "key": "key-1",
+                }
+            ],
         ),
         pending=None,
     )
@@ -758,6 +766,14 @@ def test_committed_effects_carry_their_idempotency_keys() -> None:
                     "key": "ik-1",
                 }
             ],
+            turn_committed=[
+                {
+                    "action": "book_appointment",
+                    "reference": "b-1",
+                    "replayed": False,
+                    "key": "ik-1",
+                }
+            ],
         ),
         pending=None,
     )
@@ -778,6 +794,192 @@ def test_committed_effects_carry_their_idempotency_keys() -> None:
     ]
 
 
+def test_the_tools_section_holds_this_turn_s_calls_not_the_whole_thread() -> None:
+    """A record describes one turn (R-35).
+
+    The transcript is the whole thread, so scanning it whole made every turn
+    record repeat every earlier turn's tool calls and results — quadratic in
+    the number of turns. The turn's slice starts at its own visitor message;
+    earlier turns stay readable in their own records.
+    """
+    transcript = [
+        {
+            "role": "user",
+            "content": "Do you cover Clearview?",
+            "tool_calls": [],
+            "tool_call_id": "",
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"call_id": "old-1", "name": "check_service_area", "arguments_json": "{}"}
+            ],
+            "tool_call_id": "",
+        },
+        {"role": "tool", "content": '{"covered": true}', "tool_call_id": "old-1"},
+        {
+            "role": "assistant",
+            "content": "Yes, we cover Clearview.",
+            "tool_calls": [],
+            "tool_call_id": "",
+        },
+        {
+            "role": "user",
+            "content": "Book the slot.",
+            "tool_calls": [],
+            "tool_call_id": "",
+        },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"call_id": "new-1", "name": "book_appointment", "arguments_json": "{}"}
+            ],
+            "tool_call_id": "",
+        },
+        {"role": "tool", "content": '{"receipt": "b-2"}', "tool_call_id": "new-1"},
+        {
+            "role": "assistant",
+            "content": "Booked. [evidence:doc-1]",
+            "tool_calls": [],
+            "tool_call_id": "",
+        },
+    ]
+    trace = build_turn_trace(_answered(transcript=transcript, rounds=2), pending=None)
+
+    assert _section(trace, "tools")["tool_calls"] == [
+        {"call_id": "new-1", "name": "book_appointment", "arguments": {}}
+    ]
+    assert _section(trace, "tools")["tool_results"] == [
+        {"call_id": "new-1", "result": '{"receipt": "b-2"}'}
+    ]
+
+
+def test_committed_effects_are_this_turn_s_not_the_thread_s() -> None:
+    """The thread-wide ``committed`` channel accumulates for resumed runs; the
+    record reads the turn-scoped ``turn_committed`` twin, so a turn does not
+    re-claim every earlier turn's booking as its own."""
+    transcript = [
+        {
+            "role": "user",
+            "content": "Book the slot.",
+            "tool_calls": [],
+            "tool_call_id": "",
+        },
+        {
+            "role": "assistant",
+            "content": "Booked. [evidence:doc-1]",
+            "tool_calls": [],
+            "tool_call_id": "",
+        },
+    ]
+    trace = build_turn_trace(
+        _answered(
+            transcript=transcript,
+            committed=[
+                {"action": "book_appointment", "reference": "old", "replayed": False, "key": "k0"},
+                {"action": "book_appointment", "reference": "new", "replayed": False, "key": "k1"},
+            ],
+            turn_committed=[
+                {"action": "book_appointment", "reference": "new", "replayed": False, "key": "k1"}
+            ],
+        ),
+        pending=None,
+    )
+
+    assert _section(trace, "tools")["committed"] == [
+        {
+            "action": "book_appointment",
+            "reference": "new",
+            "replayed": False,
+            "idempotency_key": "k1",
+        }
+    ]
+
+
+def test_the_thread_wide_commit_channel_never_reaches_the_record() -> None:
+    """The record reads the turn-scoped channel only (R-35).
+
+    The thread-wide ``committed`` list accumulates across turns so a resumed
+    run can see what it did; a trace built from it would re-claim every
+    earlier turn's effects. A state whose channel is empty — including a
+    legacy checkpoint resumed under this build, which LangGraph initializes
+    empty — records no effects, and its own commits land on the channel.
+    """
+    trace = build_turn_trace(
+        _answered(
+            committed=[
+                {"action": "book_appointment", "reference": "b-1", "replayed": True, "key": "ik"}
+            ],
+        ),
+        pending=None,
+    )
+
+    assert _section(trace, "tools")["committed"] == []
+
+
+def test_a_cache_served_answer_is_marked_in_the_model_section() -> None:
+    """A cache hit must not read as a fresh zero-token completion (R-37).
+
+    The served content is the original answer, but the spend, and therefore
+    the provenance, belong to the turn that computed it.
+    """
+    state = _answered(
+        model_invocations=[
+            {
+                "round": 1,
+                "model_name": "scripted",
+                "usage": {},
+                "prompt_assembly": _prompt(),
+                "produced_content": True,
+                "cache_hit": True,
+                "fallback_hops": [],
+            }
+        ],
+        model_usage={},
+    )
+    trace = build_turn_trace(state, pending=None)
+
+    model = _section(trace, "model")
+    assert model["cache_hit"] is True
+    assert model["fallback_hops"] == []
+    invocations = trace["model_invocations"]
+    assert isinstance(invocations, list)
+    assert invocations[0]["cache_hit"] is True
+
+
+def test_a_fallback_chain_is_recorded_as_hops() -> None:
+    """The answering call names the chain that bought it (R-38).
+
+    Each hop is the tried model's configured name plus the bounded outage
+    reason — the same vocabulary the MODEL_FALLBACKS metric uses — and never
+    the provider's failure text.
+    """
+    hops = [
+        {"model_name": "primary-7", "reason": "timeout"},
+        {"model_name": "llama3-8b", "reason": "unavailable"},
+    ]
+    state = _answered(
+        model_invocations=[
+            {
+                "round": 1,
+                "model_name": "fallback-2",
+                "usage": {"total_tokens": 9},
+                "prompt_assembly": _prompt(),
+                "produced_content": True,
+                "cache_hit": False,
+                "fallback_hops": hops,
+            }
+        ]
+    )
+    trace = build_turn_trace(state, pending=None)
+
+    model = _section(trace, "model")
+    assert model["fallback_hops"] == hops
+    assert model["cache_hit"] is False
+
+
 def test_a_pending_confirmation_pauses_the_turn() -> None:
     trace = build_turn_trace(
         _answered(model_name=""),
@@ -791,7 +993,12 @@ def test_a_turn_without_a_model_call_has_no_model_section_and_no_diagnoses() -> 
     """The abstention that skipped the call still has an honest model record."""
     trace = build_turn_trace(_state(evidence_meta=_evidence_meta(sufficient=False)), pending=None)
 
-    assert _section(trace, "model") == {"name": "", "usage": {}}
+    assert _section(trace, "model") == {
+        "name": "",
+        "usage": {},
+        "cache_hit": False,
+        "fallback_hops": [],
+    }
     assert _section(trace, "outcome") == {"status": "abstained", "rounds": 0, "failure": None}
     assert _diagnoses(trace) == [
         _diagnosis(
@@ -865,14 +1072,14 @@ def _executed_section(**overrides: object) -> dict[str, object]:
     } | overrides
 
 
-def test_a_captured_executed_graph_section_is_recorded_under_schema_version_4() -> None:
+def test_a_captured_executed_graph_section_is_recorded_under_schema_version_5() -> None:
     """The `OBS-006` capture lands in the trace beside the derived content."""
     trace = build_turn_trace(
         _answered(executed_graph=_executed_section()),
         pending=None,
     )
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "4"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "5"
     assert _section(trace, "executed_graph") == _executed_section()
 
 
