@@ -70,6 +70,68 @@ def redact_tree(value: object) -> object:
     return value
 
 
+# Attributes logging itself owns on every record. Everything else in
+# ``record.__dict__`` arrived through ``extra=`` and is caller-supplied content
+# until proven otherwise, so it is scrubbed too.
+_RECORD_OWNED_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "args",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+    }
+)
+
+# Structured extras: content-free identifiers, codes, enums, and shapes that a
+# line is allowed to carry verbatim. Redacting them would corrupt them — the
+# phone pattern matches any run of ten digits, so a hex trace id would come out
+# mangled. Every key on the formatter's published allowlist except ``detail``
+# is here; ``detail`` is the one published field whose value is free text and
+# is therefore scrubbed like the message. A test pins the two sets together, so
+# extending the allowlist forces a decision about which side of the boundary
+# the new key sits on.
+_STRUCTURED_EXTRA_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "request_id",
+        "trace_id",
+        "tenant",
+        "code",
+        "error_code",
+        "path",
+        "method",
+        "status",
+        "duration_ms",
+        "job_id",
+        "scope",
+        "attempt",
+        "subject",
+        "role",
+        "required_role",
+        "effective_role",
+        "graph_version",
+        "prompt_version",
+        "committed_actions",
+    }
+)
+
+
 class PiiLogFilter(logging.Filter):
     """Strip phone numbers and email addresses from every log record.
 
@@ -78,6 +140,12 @@ class PiiLogFilter(logging.Filter):
     ``args``, and the formatted traceback are scrubbed before any handler
     formats them, so the record that reaches the sink never carries a dialable
     number or an address.
+
+    ``extra=`` fields are scrubbed selectively: the structured identifiers on
+    :data:`_STRUCTURED_EXTRA_KEYS` pass verbatim (redaction would corrupt a hex
+    trace id), and every other extra — ``detail`` above all, which may quote
+    what a caller sent — is treated as content and scrubbed. Unrecognized
+    extras fail closed toward redaction, never toward the sink.
 
     Installed on the root logger's *handlers* by the composition root, not on
     the logger itself: a logger consults its own filters only for records
@@ -97,6 +165,13 @@ class PiiLogFilter(logging.Filter):
                 key: redact_text(value) if isinstance(value, str) else value
                 for key, value in args.items()
             }
+        for key, value in list(record.__dict__.items()):
+            if key in _RECORD_OWNED_KEYS or key in _STRUCTURED_EXTRA_KEYS:
+                continue
+            if isinstance(value, str):
+                record.__dict__[key] = redact_text(value)
+            elif isinstance(value, Mapping | list):
+                record.__dict__[key] = redact_tree(value)
         if record.exc_info is not None:
             # A traceback can quote the exception message, which for an
             # unexpected failure routinely contains a contact or a credential.

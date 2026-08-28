@@ -7,10 +7,12 @@ one place for a test to substitute a fake.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -72,7 +74,7 @@ from tenantchat.api.problems import (
     transport_problem,
 )
 from tenantchat.api.redaction import install_pii_log_filter
-from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry
+from tenantchat.api.registry import SYSTEM_TENANT_ID, DemoAvailabilityProvider, TenantRegistry
 from tenantchat.api.retrieval import HybridRetrieverConfig
 from tenantchat.api.routers import (
     admin,
@@ -141,6 +143,11 @@ from tenantchat.orchestration.providers.openai_compatible import OpenAICompatibl
 from tenantchat.orchestration.providers.recording import MetricRecordingChatModel
 
 ADMIN_PATH_PREFIX = "/api/admin/"
+
+# How often the idempotency working set is swept (R-10). The sweep itself is a
+# single bounded DELETE; hourly is far below the retention window and far above
+# request noise.
+_IDEMPOTENCY_SWEEP_INTERVAL_SECONDS = float(timedelta(hours=1).total_seconds())
 
 _CORS_RESPONSE_HEADERS = (
     "access-control-allow-origin",
@@ -254,6 +261,7 @@ async def _handle_api_fault(request: Request, exc: Exception) -> JSONResponse:
         title=type(exc).__name__,
         detail=exc.message,
         request_id=request_id,
+        **exc.extensions,
     )
 
 
@@ -810,12 +818,42 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(running: FastAPI) -> AsyncIterator[None]:
+        sweep_stop = asyncio.Event()
+
+        async def sweep_idempotency() -> None:
+            # R-10: expired in-flight claims are also recovered lazily on
+            # claim; the periodic pass is what keeps the table a working set
+            # without waiting for every key to be retried.
+            while not sweep_stop.is_set():
+                try:
+                    await idempotency_store.sweep()
+                except Exception:
+                    logger.warning(
+                        "idempotency sweep failed",
+                        extra={"error_code": "idempotency_sweep_failed"},
+                    )
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        sweep_stop.wait(), timeout=_IDEMPOTENCY_SWEEP_INTERVAL_SECONDS
+                    )
+
+        async def stop_sweep() -> None:
+            sweep_stop.set()
+            sweep_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sweep_task
+
         async with AsyncExitStack() as closing:
             if database is not None:
                 closing.push_async_callback(database.dispose)
                 await database.synchronize_tenants(
-                    (record.policy.tenant_id, record.policy.name)
-                    for record in resolved_registry.all().values()
+                    [
+                        (record.policy.tenant_id, record.policy.name)
+                        for record in resolved_registry.all().values()
+                    ]
+                    # The audit plane's "no tenant" stand-in must exist before a
+                    # refusal against an unknown tenant tries to write under it.
+                    + [(SYSTEM_TENANT_ID, "Platform (system)")]
                 )
                 # Seed the database-backed fake provider now that tenant rows
                 # exist; idempotent, so a restart does not duplicate slots.
@@ -842,6 +880,8 @@ def create_app(
                     postgres_checkpointer(resolved.database_url)
                 )
                 running.state.conversation_runtime = compose_runtime(saver, effective_model)
+            sweep_task = asyncio.create_task(sweep_idempotency())
+            closing.push_async_callback(stop_sweep)
             closing.push_async_callback(_shutdown_otel)
             yield
 
@@ -872,6 +912,7 @@ def create_app(
     app.state.trace_access_store = trace_access_store
     app.state.feedback_store = feedback_store
     app.state.review_store = review_store
+    app.state.workflow_store = workflow_store
     app.state.knowledge_store = knowledge_store
     app.state.generation_findings = generation_findings
     app.state.object_store = object_store

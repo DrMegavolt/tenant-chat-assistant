@@ -13,7 +13,7 @@ import re
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Final, Protocol
 
@@ -80,6 +80,12 @@ def _reference(prefix: str) -> str:
     # The full UUID hex, matching the "HO-<uuid.hex>" form the Postgres stores
     # build, so the queue's public identifier is the same shape in every store.
     return f"{prefix}-{uuid.uuid4().hex.upper()}"
+
+
+# How long an idempotency claim lives, mirroring the PostgreSQL store's
+# RETENTION: the fake must expire crashed claims on the same clock the real
+# one does, or a hermetic test proves a recovery the database would refuse.
+IDEMPOTENCY_RETENTION: Final = timedelta(days=7)
 
 
 class MessageRole(StrEnum):
@@ -205,6 +211,7 @@ AUDIT_ACTIONS: Final = frozenset(
         "knowledge.version_expired",
         "knowledge.version_published",
         "knowledge.version_reindexed",
+        "jobs.read",
         "membership_assigned",
         "membership_revoked",
         "permissions.read",
@@ -274,7 +281,14 @@ class ConversationStore(Protocol):
         content: str,
         model_name: str | None = None,
         metadata: dict[str, object] | None = None,
-    ) -> MessageRecord: ...
+        audit_event: AuditEvent | None = None,
+    ) -> MessageRecord:
+        """Append one message.
+
+        ``audit_event``, when given, is persisted in the same transaction as
+        the message (R-39): the staff reply and the row that vouches for it
+        commit together or not at all.
+        """
 
     async def transcript(
         self, tenant_id: str, session_id: uuid.UUID
@@ -287,6 +301,22 @@ class ConversationStore(Protocol):
         opened and abandoned before the visitor typed, or one of the write-only
         rows a booking or lead correlates against, and neither is a transcript
         an operator can act on.
+        """
+        ...
+
+    async def message_counts(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        """Message counts per conversation, for the queue's stat strip."""
+        ...
+
+    async def last_messages(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, MessageRecord]:
+        """Each conversation's most recent message, for the queue preview.
+
+        Missing sessions are absent from the result; the preview is a
+        convenience over the transcript, never a second system of record.
         """
         ...
 
@@ -345,13 +375,45 @@ class BookingStore(Protocol):
         """
         ...
 
-    async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]: ...
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[BookingRecord, ...]:
+        """Confirmed bookings, oldest first, bounded to *limit*."""
+        ...
+
+    async def count_for_tenant(self, tenant_id: str) -> int:
+        """Every confirmed booking the tenant holds, for console pagination."""
+        ...
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[BookingRecord, ...]:
+        """The bookings confirmed in one conversation, oldest first."""
+        ...
+
+    async def counts_by_session(
+        self, tenant_id: str, session_ids: Collection[str]
+    ) -> dict[str, int]:
+        """Booking counts per conversation, for the queue's stat strip."""
+        ...
 
 
 class LeadStore(Protocol):
     async def record(self, command: LeadCommand, *, session_id: str) -> LeadRecord: ...
 
-    async def for_tenant(self, tenant_id: str) -> tuple[LeadRecord, ...]: ...
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[LeadRecord, ...]:
+        """Captured leads, oldest first, bounded to *limit*."""
+        ...
+
+    async def count_for_tenant(self, tenant_id: str) -> int:
+        """Every lead the tenant holds, for console pagination."""
+        ...
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[LeadRecord, ...]:
+        """The leads captured in one conversation, oldest first."""
+        ...
+
+    async def counts_by_session(
+        self, tenant_id: str, session_ids: Collection[str]
+    ) -> dict[str, int]:
+        """Lead counts per conversation, for the queue's stat strip."""
+        ...
 
 
 class HandoffStore(Protocol):
@@ -382,6 +444,13 @@ class HandoffStore(Protocol):
         Resolved and cancelled rows are history, not work.
         """
 
+    async def get(self, tenant_id: str, handoff_id: str) -> HandoffRecord:
+        """One handoff row, tenant-qualified.
+
+        Raises:
+            NotFoundError: no such handoff, or it belongs to another tenant.
+        """
+
     async def for_session(self, tenant_id: str, session_id: str) -> HandoffRecord | None:
         """The most recent handoff for one conversation, or ``None``.
 
@@ -390,8 +459,18 @@ class HandoffStore(Protocol):
         ``status``.
         """
 
-    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
+    async def accept(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        audit_event: AuditEvent | None = None,
+    ) -> HandoffRecord:
         """Assign an unowned handoff to one staff member, atomically.
+
+        ``audit_event``, when given, is persisted in the same transaction as
+        the transition (R-39).
 
         Raises:
             NotFoundError: no such handoff, or it belongs to another tenant.
@@ -405,6 +484,7 @@ class HandoffStore(Protocol):
         *,
         principal_id: str,
         administrative: bool = False,
+        audit_event: AuditEvent | None = None,
     ) -> HandoffRecord:
         """Release an assigned handoff back to the queue and resume the agent.
 
@@ -425,6 +505,7 @@ class HandoffStore(Protocol):
         *,
         principal_id: str,
         administrative: bool = False,
+        audit_event: AuditEvent | None = None,
     ) -> HandoffRecord:
         """Close an open handoff and mark the conversation closed.
 
@@ -535,14 +616,27 @@ class IdempotencyStore(Protocol):
         """
         ...
 
+    async def sweep(self) -> int:
+        """Drop rows past retention (finished answers, crashed claims).
+
+        Returns the number of rows removed, so the caller can observe the
+        working set actually shrinking.
+        """
+        ...
+
 
 class InMemoryConversationStore:
-    """A concurrency-safe fake; production composition never constructs it."""
+    """A concurrency-safe fake; production composition never constructs it.
 
-    def __init__(self) -> None:
+    ``audit`` is where an ``append``-carried audit row lands (R-39); the
+    hermetic tests wire the same ``InMemoryAuditStore`` their assertions read.
+    """
+
+    def __init__(self, *, audit: InMemoryAuditStore | None = None) -> None:
         self._sessions: dict[tuple[str, uuid.UUID], ConversationRecord] = {}
         self._messages: dict[tuple[str, uuid.UUID], list[MessageRecord]] = {}
         self._lock = asyncio.Lock()
+        self._audit = audit
 
     async def create(self, tenant_id: str) -> ConversationRecord:
         now = datetime.now(UTC)
@@ -578,6 +672,7 @@ class InMemoryConversationStore:
         content: str,
         model_name: str | None = None,
         metadata: dict[str, object] | None = None,
+        audit_event: AuditEvent | None = None,
     ) -> MessageRecord:
         async with self._lock:
             key = (tenant_id, session_id)
@@ -600,6 +695,8 @@ class InMemoryConversationStore:
             self._sessions[key] = replace(
                 session, version=session.version + 1, last_activity_at=now
             )
+        if audit_event is not None and self._audit is not None:
+            await self._audit.record(audit_event)
         return replace(record, metadata=dict(record.metadata))
 
     async def transcript(self, tenant_id: str, session_id: uuid.UUID) -> tuple[MessageRecord, ...]:
@@ -619,6 +716,26 @@ class InMemoryConversationStore:
             ]
         conversations.sort(key=lambda record: record.last_activity_at, reverse=True)
         return tuple(conversations[:limit])
+
+    async def message_counts(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        async with self._lock:
+            counts = {
+                session_id: len(self._messages.get((tenant_id, session_id), ()))
+                for session_id in session_ids
+            }
+        return counts
+
+    async def last_messages(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, MessageRecord]:
+        async with self._lock:
+            return {
+                session_id: self._messages[(tenant_id, session_id)][-1]
+                for session_id in session_ids
+                if self._messages.get((tenant_id, session_id))
+            }
 
 
 class InMemoryBookingStore:
@@ -708,8 +825,32 @@ class InMemoryBookingStore:
             created_at=datetime.now(UTC),
         )
 
-    async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]:
-        return tuple(record for record in self._records if record.tenant_id == tenant_id)
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[BookingRecord, ...]:
+        ordered = tuple(record for record in self._records if record.tenant_id == tenant_id)
+        return ordered[:limit]
+
+    async def count_for_tenant(self, tenant_id: str) -> int:
+        return sum(1 for record in self._records if record.tenant_id == tenant_id)
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[BookingRecord, ...]:
+        return tuple(
+            record
+            for record in self._records
+            if record.tenant_id == tenant_id and record.session_id == session_id
+        )
+
+    async def counts_by_session(
+        self, tenant_id: str, session_ids: Collection[str]
+    ) -> dict[str, int]:
+        wanted = set(session_ids)
+        return {
+            session_id: sum(
+                1
+                for record in self._records
+                if record.tenant_id == tenant_id and record.session_id == session_id
+            )
+            for session_id in wanted
+        }
 
 
 class InMemoryLeadStore:
@@ -735,8 +876,32 @@ class InMemoryLeadStore:
         self._records.append(lead)
         return lead
 
-    async def for_tenant(self, tenant_id: str) -> tuple[LeadRecord, ...]:
-        return tuple(record for record in self._records if record.tenant_id == tenant_id)
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[LeadRecord, ...]:
+        ordered = tuple(record for record in self._records if record.tenant_id == tenant_id)
+        return ordered[:limit]
+
+    async def count_for_tenant(self, tenant_id: str) -> int:
+        return sum(1 for record in self._records if record.tenant_id == tenant_id)
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[LeadRecord, ...]:
+        return tuple(
+            record
+            for record in self._records
+            if record.tenant_id == tenant_id and record.session_id == session_id
+        )
+
+    async def counts_by_session(
+        self, tenant_id: str, session_ids: Collection[str]
+    ) -> dict[str, int]:
+        wanted = set(session_ids)
+        return {
+            session_id: sum(
+                1
+                for record in self._records
+                if record.tenant_id == tenant_id and record.session_id == session_id
+            )
+            for session_id in wanted
+        }
 
 
 def _handoff_not_found() -> NotFoundError:
@@ -773,11 +938,19 @@ class InMemoryHandoffStore:
     the atomic conditional update the Postgres store runs. A hermetic test can
     therefore race two accepts and observe one winner — the same guarantee the
     repository specification asserts against the real database.
+
+    ``audit`` is where a transition's audit row lands (R-39); the hermetic
+    tests wire the same ``InMemoryAuditStore`` their assertions read.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, audit: InMemoryAuditStore | None = None) -> None:
         self._records: list[HandoffRecord] = []
         self._lock = asyncio.Lock()
+        self._audit = audit
+
+    async def _settle_audit(self, event: AuditEvent | None) -> None:
+        if event is not None and self._audit is not None:
+            await self._audit.record(event)
 
     async def record(self, command: HandoffCommand, *, session_id: str) -> HandoffRecord:
         handoff = HandoffRecord(
@@ -803,6 +976,12 @@ class InMemoryHandoffStore:
         ]
         return tuple(open_rows[:limit])
 
+    async def get(self, tenant_id: str, handoff_id: str) -> HandoffRecord:
+        for record in self._records:
+            if record.tenant_id == tenant_id and record.handoff_id == handoff_id:
+                return record
+        raise _handoff_not_found()
+
     async def for_session(self, tenant_id: str, session_id: str) -> HandoffRecord | None:
         matches = [
             record
@@ -811,7 +990,14 @@ class InMemoryHandoffStore:
         ]
         return matches[-1] if matches else None
 
-    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
+    async def accept(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        audit_event: AuditEvent | None = None,
+    ) -> HandoffRecord:
         async with self._lock:
             for index, record in enumerate(self._records):
                 if record.tenant_id != tenant_id or record.handoff_id != handoff_id:
@@ -826,6 +1012,7 @@ class InMemoryHandoffStore:
                     released_at=None,
                 )
                 self._records[index] = accepted
+                await self._settle_audit(audit_event)
                 return accepted
         raise _handoff_not_found()
 
@@ -836,6 +1023,7 @@ class InMemoryHandoffStore:
         *,
         principal_id: str,
         administrative: bool = False,
+        audit_event: AuditEvent | None = None,
     ) -> HandoffRecord:
         async with self._lock:
             for index, record in enumerate(self._records):
@@ -853,6 +1041,7 @@ class InMemoryHandoffStore:
                     released_at=datetime.now(UTC),
                 )
                 self._records[index] = released
+                await self._settle_audit(audit_event)
                 return released
         raise _handoff_not_found()
 
@@ -863,6 +1052,7 @@ class InMemoryHandoffStore:
         *,
         principal_id: str,
         administrative: bool = False,
+        audit_event: AuditEvent | None = None,
     ) -> HandoffRecord:
         async with self._lock:
             for index, record in enumerate(self._records):
@@ -883,6 +1073,7 @@ class InMemoryHandoffStore:
                     resolved_by_principal_id=principal_id,
                 )
                 self._records[index] = resolved
+                await self._settle_audit(audit_event)
                 return resolved
         raise _handoff_not_found()
 
@@ -971,14 +1162,22 @@ class InMemoryAuditStore:
 class _Attempt:
     fingerprint: str
     response: dict[str, object] | None
+    expires_at: datetime
 
 
 class InMemoryIdempotencyStore:
-    """A concurrency-safe fake with the same claim-then-complete semantics."""
+    """A concurrency-safe fake with the same claim-then-complete semantics.
 
-    def __init__(self) -> None:
+    Claims expire like the PostgreSQL store's: a crashed in-flight attempt
+    stops blocking its key once past retention, a finished answer serves its
+    retries until it is swept, and :meth:`sweep` drops rows past retention —
+    so a test can prove the recovery without a database.
+    """
+
+    def __init__(self, *, now: Callable[[], datetime] | None = None) -> None:
         self._attempts: dict[tuple[str, str, str], _Attempt] = {}
         self._lock = asyncio.Lock()
+        self._now = now or (lambda: datetime.now(UTC))
 
     async def begin(
         self,
@@ -991,14 +1190,29 @@ class InMemoryIdempotencyStore:
         async with self._lock:
             index = (tenant_id, scope, key.value)
             existing = self._attempts.get(index)
-            if existing is None:
-                self._attempts[index] = _Attempt(fingerprint=fingerprint, response=None)
-                return None
-            if existing.fingerprint != fingerprint:
+            # Same refusal order as the PostgreSQL store: a fingerprint
+            # mismatch is a key-reuse conflict regardless of expiry, a finished
+            # answer serves its retries until the sweep drops it, and only an
+            # expired in-flight row — a crashed attempt — is reclaimable.
+            if existing is not None and existing.fingerprint != fingerprint:
                 raise ConflictError(detail=f"idempotency key reused for a different {scope}")
-            if existing.response is None:
-                raise ConflictError(detail=f"an earlier {scope} attempt is still in flight")
-            return dict(existing.response)
+            if (
+                existing is not None
+                and existing.response is None
+                and existing.expires_at <= self._now()
+            ):
+                del self._attempts[index]
+                existing = None
+            if existing is None:
+                self._attempts[index] = _Attempt(
+                    fingerprint=fingerprint,
+                    response=None,
+                    expires_at=self._now() + IDEMPOTENCY_RETENTION,
+                )
+                return None
+            if existing.response is not None:
+                return dict(existing.response)
+            raise ConflictError(detail=f"an earlier {scope} attempt is still in flight")
 
     async def complete(
         self,
@@ -1014,8 +1228,21 @@ class InMemoryIdempotencyStore:
             if existing is None:
                 raise NotFoundError(detail=f"no claimed {scope} attempt for this key")
             self._attempts[index] = _Attempt(
-                fingerprint=existing.fingerprint, response=dict(response)
+                fingerprint=existing.fingerprint,
+                response=dict(response),
+                expires_at=existing.expires_at,
             )
+
+    async def sweep(self) -> int:
+        async with self._lock:
+            expired = [
+                index
+                for index, attempt in self._attempts.items()
+                if attempt.expires_at <= self._now()
+            ]
+            for index in expired:
+                del self._attempts[index]
+            return len(expired)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1333,6 +1560,15 @@ class TurnRecordStore(Protocol):
     ) -> tuple[TurnRecord, ...]:
         """The session's turn records, oldest first, bounded to *limit*."""
 
+    async def for_turn_ids(
+        self, tenant_id: str, turn_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, TurnRecord]:
+        """Batch the queue's turn fetches into one `id = ANY(...)` query.
+
+        Missing ids are absent from the result, never an error: a queue row
+        whose turn was purged must not take the whole page down.
+        """
+
     async def for_trace_id(self, tenant_id: str, trace_id: str) -> TurnRecord:
         """The one record the correlation trace id names, tenant-qualified.
 
@@ -1501,8 +1737,18 @@ class ReviewQueueStore(Protocol):
         capped by the formula, not by this count.
         """
 
-    async def take(self, tenant_id: str, review_id: uuid.UUID, *, reviewer: str) -> ReviewCase:
+    async def take(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        reviewer: str,
+        audit_event: AuditEvent | None = None,
+    ) -> ReviewCase:
         """Mark an open case as in review by one operator.
+
+        ``audit_event``, when given, is persisted in the same transaction as
+        the transition (R-39).
 
         Raises:
             NotFoundError: no such case, or it belongs to another tenant.
@@ -1521,6 +1767,7 @@ class ReviewQueueStore(Protocol):
         proposed_fix: str | None,
         status: str,
         diagnoses: tuple[ReviewDiagnosis, ...],
+        audit_event: AuditEvent | None = None,
     ) -> ReviewCase:
         """Record the reviewer's decision and move the case to its destination.
 
@@ -1528,7 +1775,8 @@ class ReviewQueueStore(Protocol):
         review can be corrected only by resubmitting, and the audit trail
         preserves every submission. The destination is ``awaiting_fix`` or
         ``rejected``; ``resolved`` is reachable only through
-        :meth:`record_eval_pass`.
+        :meth:`record_eval_pass`. ``audit_event`` commits with the decision
+        (R-39).
 
             Raises:
                 NotFoundError: no such case, or it belongs to another tenant.
@@ -1640,6 +1888,17 @@ class InMemoryTurnRecordStore:
             ]
         records.sort(key=lambda record: record.recorded_at)
         return tuple(records[:limit])
+
+    async def for_turn_ids(
+        self, tenant_id: str, turn_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, TurnRecord]:
+        async with self._lock:
+            return {
+                turn_id: replace(record, content=dict(record.content))
+                for turn_id in turn_ids
+                if (record := self._records.get(turn_id)) is not None
+                and record.tenant_id == tenant_id
+            }
 
     async def for_trace_id(self, tenant_id: str, trace_id: str) -> TurnRecord:
         async with self._lock:
@@ -1764,12 +2023,21 @@ class InMemoryTurnFeedbackStore:
 
 
 class InMemoryReviewQueueStore:
-    """A concurrency-safe fake with the same closed status machine."""
+    """A concurrency-safe fake with the same closed status machine.
 
-    def __init__(self) -> None:
+    ``audit`` is where a decision's audit row lands (R-39); the hermetic tests
+    wire the same ``InMemoryAuditStore`` their assertions read.
+    """
+
+    def __init__(self, *, audit: InMemoryAuditStore | None = None) -> None:
         self._cases: dict[uuid.UUID, ReviewCase] = {}
         self._diagnoses: dict[uuid.UUID, list[ReviewDiagnosis]] = {}
         self._lock = asyncio.Lock()
+        self._audit = audit
+
+    async def _settle_audit(self, event: AuditEvent | None) -> None:
+        if event is not None and self._audit is not None:
+            await self._audit.record(event)
 
     @staticmethod
     def _touch(case: ReviewCase) -> ReviewCase:
@@ -1863,7 +2131,14 @@ class InMemoryReviewQueueStore:
                 if case.tenant_id == tenant_id and case.manifest_hash == manifest_hash
             )
 
-    async def take(self, tenant_id: str, review_id: uuid.UUID, *, reviewer: str) -> ReviewCase:
+    async def take(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        reviewer: str,
+        audit_event: AuditEvent | None = None,
+    ) -> ReviewCase:
         async with self._lock:
             case = self._cases.get(review_id)
             if case is None or case.tenant_id != tenant_id:
@@ -1874,7 +2149,8 @@ class InMemoryReviewQueueStore:
                 case, status="in_review", reviewer_subject=reviewer, updated_at=datetime.now(UTC)
             )
             self._cases[review_id] = updated
-            return updated
+        await self._settle_audit(audit_event)
+        return updated
 
     async def submit(
         self,
@@ -1888,6 +2164,7 @@ class InMemoryReviewQueueStore:
         proposed_fix: str | None,
         status: str,
         diagnoses: tuple[ReviewDiagnosis, ...],
+        audit_event: AuditEvent | None = None,
     ) -> ReviewCase:
         now = datetime.now(UTC)
         async with self._lock:
@@ -1912,7 +2189,8 @@ class InMemoryReviewQueueStore:
             )
             self._cases[review_id] = updated
             self._diagnoses[review_id] = list(diagnoses)
-            return updated
+        await self._settle_audit(audit_event)
+        return updated
 
     async def record_eval_pass(
         self,

@@ -7,7 +7,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from tenantchat.api.dependencies import Jobs, Memberships, RequestId, get_settings
+from tenantchat.api.dependencies import (
+    Audit,
+    Jobs,
+    Memberships,
+    RequestId,
+    get_settings,
+)
 from tenantchat.api.identity import (
     AdminIdentity,
     authorize_tenant_access,
@@ -23,6 +29,7 @@ from tenantchat.api.schemas import (
     AdminJobsResponse,
     JobControlRequest,
 )
+from tenantchat.api.store import AuditActorType, AuditEvent
 
 router = APIRouter(tags=["admin-jobs"])
 
@@ -53,16 +60,43 @@ async def _authorize_mutation(
     )
 
 
+async def _audit_read(
+    audit: Audit,
+    *,
+    identity: AdminIdentity,
+    tenant_id: str,
+    request_id: str,
+    job_id: uuid.UUID | None = None,
+) -> None:
+    """Every privileged read self-audits; jobs were the one surface that did
+    not (R-58). The row carries the filter's shape, never a payload."""
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="jobs.read",
+            resource_type="background_job",
+            resource_id=job_id,
+            request_id=request_id,
+            details={"job_id": str(job_id) if job_id is not None else None},
+        )
+    )
+
+
 @router.get("/api/admin/jobs", response_model=AdminJobsResponse)
 async def list_jobs(
     identity: TenantReader,
     tenant_id: TenantIdQuery,
     jobs: Jobs,
+    audit: Audit,
+    request_id: RequestId,
     status: JobStatus | None = None,
     limit: PageSize = 100,
 ) -> AdminJobsResponse:
     """Inspect safe metadata for one authorized tenant; payloads stay private."""
     records = await jobs.for_tenant(tenant_id, status=status, limit=limit)
+    await _audit_read(audit, identity=identity, tenant_id=tenant_id, request_id=request_id)
     return AdminJobsResponse(jobs=[AdminJob.of(record) for record in records], limit=limit)
 
 
@@ -72,10 +106,15 @@ async def read_job(
     job_id: uuid.UUID,
     tenant_id: TenantIdQuery,
     jobs: Jobs,
+    audit: Audit,
+    request_id: RequestId,
 ) -> AdminJobDetailResponse:
     """Inspect one job and its immutable lifecycle events, tenant-qualified."""
     record = await jobs.get(tenant_id, job_id)
     events = await jobs.events(tenant_id, job_id)
+    await _audit_read(
+        audit, identity=identity, tenant_id=tenant_id, request_id=request_id, job_id=job_id
+    )
     return AdminJobDetailResponse(
         job=AdminJob.of(record),
         events=[AdminJobEvent.of(event) for event in events],

@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from tenantchat.api.actions import (
     RecordedBookingService,
     RecordedHandoffService,
     RecordedLeadService,
+)
+from tenantchat.api.persistence.repositories import (
+    _booking_integrity_error,
+    _ReservationLostError,
 )
 from tenantchat.api.registry import DemoAvailabilityProvider, TenantRegistry, demo_offered_slots
 from tenantchat.api.store import (
@@ -424,3 +430,53 @@ class TestIdempotencyStoreContract:
             )
 
         asyncio.run(scenario())
+
+
+class _FakeDriverError(Exception):
+    """A stand-in for asyncpg's error object: the constraint name lives in `diag`."""
+
+    def __init__(self, constraint: str) -> None:
+        super().__init__(constraint)
+        self.diag = SimpleNamespace(constraint_name=constraint)
+
+
+class TestBookingIntegrityDiscrimination:
+    """R-41: not every booking-insert IntegrityError is a slot race.
+
+    The PostgreSQL insert can fail on several constraints; only the one-slot
+    rule (and a slot row that vanished mid-transaction) means "someone else got
+    the slot". Relabelling a session foreign-key failure as a slot race told a
+    visitor to retry a conversation that does not exist, and an unknown
+    constraint is schema drift that must surface as the database error it is."""
+
+    @staticmethod
+    def _integrity_error(constraint: str) -> IntegrityError:
+        # The DBAPI exception SQLAlchemy wraps carries the constraint name in
+        # its `diag`; the fake stands in for asyncpg's error object.
+        return IntegrityError("INSERT INTO bookings", {}, _FakeDriverError(constraint))
+
+    def test_the_one_booking_per_slot_rule_is_a_lost_slot_race(self) -> None:
+        error = self._integrity_error("uq_bookings_one_confirmed_per_slot")
+        mapped = _booking_integrity_error(error, tenant_id="t1", service_slug="hvac")
+        assert isinstance(mapped, _ReservationLostError)
+        assert mapped.tenant_id == "t1"
+        assert mapped.service_slug == "hvac"
+
+    def test_a_vanished_slot_row_is_a_lost_slot_race(self) -> None:
+        error = self._integrity_error("fk_bookings_slot")
+        mapped = _booking_integrity_error(error, tenant_id="t1", service_slug="hvac")
+        assert isinstance(mapped, _ReservationLostError)
+
+    def test_a_session_foreign_key_failure_is_not_a_slot_race(self) -> None:
+        error = self._integrity_error("fk_bookings_session")
+        mapped = _booking_integrity_error(error, tenant_id="t1", service_slug="hvac")
+        assert isinstance(mapped, NotFoundError)
+        assert mapped.detail is not None
+        assert "slot" not in mapped.detail.lower()
+
+    def test_an_unknown_constraint_surfaces_as_the_database_error(self) -> None:
+        """A constraint this build does not know about means the schema moved
+        without the mapping; silently calling it a slot race would hide that."""
+        error = self._integrity_error("fk_bookings_future_constraint")
+        mapped = _booking_integrity_error(error, tenant_id="t1", service_slug="hvac")
+        assert mapped is error

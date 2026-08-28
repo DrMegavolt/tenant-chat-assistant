@@ -21,12 +21,15 @@ class TransportError(Exception):
     Every attribute is a class constant. A fault carries no per-request text
     because that text is published to an unauthenticated caller, and the
     specifics — which header was missing, which role was presented — belong in
-    the log line the handler writes instead.
+    the log line the handler writes instead. ``extensions`` are the typed
+    members a client can act on (field locations, never values), published in
+    the problem document like a domain error's are.
     """
 
     status: ClassVar[int]
     code: ClassVar[str]
     message: ClassVar[str]
+    extensions: ClassVar[dict[str, object]] = {}
 
 
 class UnauthenticatedError(TransportError):
@@ -108,3 +111,21 @@ class StorageUnavailableError(TransportError):
     status = 503
     code = "storage_unavailable"
     message = "This deployment has no knowledge upload storage."
+
+
+class EmptyUploadError(TransportError):
+    """An upload arrived with no bytes to store.
+
+    A 422 with the failing field named, rather than the 500 the database's
+    ``byte_size > 0`` check used to produce: the operator sees which form
+    field to fix, and the malformed version never reaches the system of
+    record. The shape mirrors the request-validation document's
+    ``invalidFields``.
+    """
+
+    status = 422
+    code = "empty_upload"
+    message = "The uploaded document is empty."
+    extensions: ClassVar[dict[str, object]] = {
+        "invalidFields": [{"location": "file", "rule": "not_empty"}]
+    }

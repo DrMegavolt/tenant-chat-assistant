@@ -443,12 +443,16 @@ class ElasticsearchSearchIndex:
         await self._client.aclose()
 
     async def ready(self) -> None:
-        """Require the embedding process and pinned model to be ready."""
-        response = await self._client.get(f"{self._base_url}/ready")
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict) or payload.get("status") != "ready":
-            raise EmbeddingUnavailableError("embedding provider is not ready")
+        """Prove the Elasticsearch cluster itself answers.
+
+        The index is a derived store, so its readiness is the cluster's: the
+        cluster root names the deployment and answers even when this index is
+        empty. This probe must hit the search cluster — the embedding
+        service's ``/ready`` lives on a different host entirely.
+        """
+        info = await self._request("GET", f"{self._base_url}/", "", allow_404=False)
+        if not isinstance(info, dict) or "version" not in info:
+            raise SearchIndexOperationError("search index did not answer its cluster info")
 
     async def index_chunks(self, chunks: Sequence[IndexedChunk]) -> int:
         if not chunks:
@@ -782,6 +786,15 @@ class Embedder(Protocol):
         """
         ...
 
+    async def ready(self) -> None:
+        """Prove the provider can embed right now, without embedding.
+
+        Raises:
+            EmbeddingUnavailableError: the provider is unreachable, still
+                loading its model, or reports itself unusable.
+        """
+        ...
+
 
 class EmbeddingUnavailableError(Exception):
     """The embedding provider failed or refused the batch."""
@@ -794,6 +807,10 @@ class ScriptedEmbedder:
         self._model = model
         self._dimensions = dimensions
         self.calls: list[tuple[str, ...]] = []
+        self.ready_calls = 0
+
+    async def ready(self) -> None:
+        self.ready_calls += 1
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         self.calls.append(tuple(texts))
@@ -858,6 +875,25 @@ class EmbeddingServiceClient:
     async def close(self) -> None:
         """Release the underlying connection pool."""
         await self._client.aclose()
+
+    async def ready(self) -> None:
+        """Prove the embedding service is up and its model is loaded.
+
+        Raises:
+            EmbeddingUnavailableError: the service is unreachable, answered
+                anything but its readiness document, or reports that it is
+                still loading the model.
+        """
+        try:
+            response = await self._resilience.run(
+                lambda: self._client.get(f"{self._base_url}/ready", headers=correlation_headers())
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise EmbeddingUnavailableError("embedding provider unreachable") from exc
+        if not isinstance(payload, dict) or payload.get("status") != "ready":
+            raise EmbeddingUnavailableError("embedding provider is not ready")
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         batches: list[tuple[float, ...]] = []

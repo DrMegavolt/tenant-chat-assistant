@@ -103,6 +103,7 @@ export const AUDIT_ACTIONS = [
   "knowledge.version_published",
   "knowledge.version_reindexed",
   "knowledge.version_expired",
+  "jobs.read",
   "privacy.export",
   "privacy.deletion_requested",
   "privacy.erased",

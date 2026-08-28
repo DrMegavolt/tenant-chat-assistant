@@ -20,6 +20,7 @@ import uuid
 from collections.abc import Callable, Set
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Final
 
 from tenantchat.core.budgets import TenantBudget
 from tenantchat.core.catalog import ServiceCatalog, ServiceDefinition
@@ -163,6 +164,18 @@ _CLEARVIEW = TenantRecord(
         ),
     ),
 )
+
+
+SYSTEM_TENANT_ID: Final = "platform"
+"""The bootstrapped tenant that stands in for "no tenant" on audit rows.
+
+``audit_events.tenant_id`` is foreign-keyed to ``tenants``, but some auditable
+events happen before (or without) any tenant being resolved — a trace-read
+refusal where the requested tenant id is empty or names no tenant this
+deployment serves. The row still has to persist, so it is written under this
+tenant, which the composition root bootstraps alongside the seeded tenants and
+which the console can never open (the registry does not serve it).
+"""
 
 
 class TenantRegistry:

@@ -43,7 +43,11 @@ from tenantchat.api.dependencies import (
     SearchIndexes,
     get_settings,
 )
-from tenantchat.api.faults import SearchIndexUnavailableError, StorageUnavailableError
+from tenantchat.api.faults import (
+    EmptyUploadError,
+    SearchIndexUnavailableError,
+    StorageUnavailableError,
+)
 from tenantchat.api.identity import (
     AdminIdentity,
     authorize_tenant_access,
@@ -199,6 +203,11 @@ async def upload_knowledge(
     content = await file.read(_MAX_UPLOAD_BYTES + 1)
     if len(content) > _MAX_UPLOAD_BYTES:
         raise ValidationError(detail="upload exceeds the size budget")
+    if not content:
+        # Refused here rather than at the version table's `byte_size > 0`
+        # check: an empty document is a caller mistake the console can point
+        # at, not a 500 behind a generic banner.
+        raise EmptyUploadError
 
     source = await knowledge.load_source(tenant_id, source_id)
     _check_brand_consistency(registry, tenant_id, "title", title)

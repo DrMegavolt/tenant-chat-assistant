@@ -185,11 +185,14 @@ class RetrievalEvidenceSource:
         ]
 
     async def ready(self, *, tenant_id: str) -> None:
-        """Prove both retrieval dependencies are reachable for readiness."""
+        """Prove both retrieval dependencies are reachable for readiness.
+
+        The embedder's readiness is part of the contract, not an optional
+        attribute: a deployment whose embedding service is still loading its
+        model must report unavailable, not silently pass on the index alone.
+        """
         await self._index.active_chunk_count(tenant_id=tenant_id)
-        ready = getattr(self._embedder, "ready", None)
-        if ready is not None:
-            await ready()
+        await self._embedder.ready()
 
     async def _retrieve(self, tenant_id: str, query: str) -> EvidenceBundle:
         try:

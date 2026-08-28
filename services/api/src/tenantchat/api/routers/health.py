@@ -33,10 +33,9 @@ async def readyz(request: Request, response: Response) -> HealthResponse:
             if evidence is None:
                 raise RuntimeError("required evidence source absent")
             first_tenant = next(iter(request.app.state.registry.all()))
-            ready = getattr(evidence, "ready", None)
-            if ready is None:
-                raise RuntimeError("required evidence source has no readiness contract")
-            await ready(tenant_id=first_tenant)
+            # Retrieval is only as ready as its weaker dependency: the route
+            # proves both the search index and the embedder answer (R-25).
+            await evidence.ready(tenant_id=first_tenant)
     except Exception:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return HealthResponse(status="unavailable")

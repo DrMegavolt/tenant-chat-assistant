@@ -25,8 +25,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Annotated, Final
 
 from fastapi import Depends, Request
@@ -42,6 +44,7 @@ from tenantchat.api.faults import (
     TenantAccessDeniedError,
     UnauthenticatedError,
 )
+from tenantchat.api.registry import SYSTEM_TENANT_ID, TenantRegistry
 from tenantchat.api.settings import Settings
 from tenantchat.api.store import (
     AuditActorType,
@@ -50,12 +53,20 @@ from tenantchat.api.store import (
     MembershipStore,
     TraceAccessStore,
 )
+from tenantchat.core.errors import NotFoundError
 
 GATEWAY_TOKEN_HEADER: Final = "X-TenantChat-Gateway-Token"  # noqa: S105 - a header name
 EMAIL_HEADER: Final = "X-Auth-Email"
 ROLE_HEADER: Final = "X-Auth-Role"
 SUBJECT_HEADER: Final = "X-Auth-Subject"
 CSRF_HEADER: Final = "X-CSRF-Token"
+
+# How long a minted CSRF token may be presented. Long enough for an operator
+# tab that fetched the token once at load and never reloads; short enough that
+# a token copied out of a response cannot be replayed forever.
+CSRF_TOKEN_TTL: Final = timedelta(hours=12)
+# A minting clock slightly ahead of the verifying one must not fail.
+CSRF_CLOCK_SKEW: Final = 60
 
 # Ordered by privilege; each role holds everything the roles before it hold.
 # `platform_admin` is the one role that is also a tenant in its own right: it
@@ -103,6 +114,21 @@ class AdminIdentity:
         return f"AdminIdentity(subject={self.subject!r}, role={self.role!r})"
 
 
+def _constant_time_equals(presented: str, expected: str) -> bool:
+    """Compare two presented secrets without timing or encoding leaks.
+
+    ``hmac.compare_digest`` raises ``TypeError`` on strings holding non-ASCII
+    codepoints, and HTTP headers decode as latin-1 — so a header carrying a
+    raw byte ≥ 0x80 would turn a 401 into a 500. Comparing the UTF-8 bytes
+    keeps the same equality (equal strings encode equally) and never raises;
+    an encoding failure is contained as "did not match".
+    """
+    try:
+        return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+
+
 def authenticate(request: Request, settings: Settings) -> AdminIdentity:
     """Read the operator identity the gateway established.
 
@@ -125,7 +151,7 @@ def authenticate(request: Request, settings: Settings) -> AdminIdentity:
     # configuration mistake that turns the admin API into an open one.
     gateway_ok = False
     if expected is not None:
-        gateway_ok = hmac.compare_digest(presented, expected)
+        gateway_ok = _constant_time_equals(presented, expected)
     if not gateway_ok and not settings.dev_auth:
         raise UnauthenticatedError
 
@@ -256,8 +282,18 @@ def tenant_scoped(
     return dependency
 
 
+def _csrf_digest(secret: str, subject: str, issued_at: int) -> str:
+    message = f"{subject}:{issued_at}".encode()
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
 def csrf_token(identity: AdminIdentity, settings: Settings) -> str:
     """Mint the double-submit token for one operator.
+
+    The token binds the operator's subject to the minting instant and expires
+    after :data:`CSRF_TOKEN_TTL`, so each fetch rotates it and a token copied
+    from an old response stops working. It still authorizes nothing alone: a
+    write also demands the role and the tenant membership.
 
     Raises:
         CsrfValidationError: no CSRF secret is configured, so no token this
@@ -266,9 +302,8 @@ def csrf_token(identity: AdminIdentity, settings: Settings) -> str:
     secret = settings.admin_csrf_secret
     if not secret:
         raise CsrfValidationError
-    return hmac.new(
-        secret.encode("utf-8"), identity.subject.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    issued_at = int(time.time())
+    return f"{issued_at}.{_csrf_digest(secret, identity.subject, issued_at)}"
 
 
 def verify_csrf(request: Request, identity: AdminIdentity, settings: Settings) -> None:
@@ -280,12 +315,43 @@ def verify_csrf(request: Request, identity: AdminIdentity, settings: Settings) -
     read from a previous response, which the same-origin policy prevents.
 
     Raises:
-        CsrfValidationError: the token is absent, malformed, or not the one this
-            operator's subject derives.
+        CsrfValidationError: the token is absent, malformed, expired, or not
+            the one this operator's subject derives for its minting instant.
     """
     presented = request.headers.get(CSRF_HEADER, "").strip()
-    if not presented or not hmac.compare_digest(presented, csrf_token(identity, settings)):
+    secret = settings.admin_csrf_secret
+    if not presented or not secret:
         raise CsrfValidationError
+    issued_at_text, separator, digest = presented.partition(".")
+    if not separator or not issued_at_text.isdigit() or not digest:
+        raise CsrfValidationError
+    issued_at = int(issued_at_text)
+    now = int(time.time())
+    expired = now - issued_at > int(CSRF_TOKEN_TTL.total_seconds())
+    not_yet_valid = issued_at - now > CSRF_CLOCK_SKEW
+    if expired or not_yet_valid:
+        raise CsrfValidationError
+    expected = _csrf_digest(secret, identity.subject, issued_at)
+    if not _constant_time_equals(digest, expected):
+        raise CsrfValidationError
+
+
+def _refusal_audit_tenant(request: Request, tenant_id: str) -> str:
+    """The tenant an access-refusal audit row can be written under.
+
+    ``audit_events`` is foreign-keyed to ``tenants``, so a refusal naming an
+    empty or unknown tenant id cannot be recorded verbatim. A tenant this
+    deployment actually serves is recorded under its real id; anything else is
+    recorded under the bootstrapped system tenant, which stands in for "no
+    tenant". The raw id never lands in the row either way, so the refusal
+    stays unusable for tenant enumeration.
+    """
+    registry: TenantRegistry = request.app.state.registry
+    try:
+        registry.get(tenant_id)
+    except NotFoundError:
+        return SYSTEM_TENANT_ID
+    return tenant_id
 
 
 def require_trace_read() -> Callable[..., Awaitable[AdminIdentity]]:
@@ -317,7 +383,7 @@ def require_trace_read() -> Callable[..., Awaitable[AdminIdentity]]:
             return identity
         await audit.record(
             AuditEvent(
-                tenant_id=tenant_id,
+                tenant_id=_refusal_audit_tenant(request, tenant_id),
                 actor_type=AuditActorType.STAFF,
                 principal_id=identity.subject,
                 action="trace.read_refused",

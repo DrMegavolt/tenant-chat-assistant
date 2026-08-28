@@ -23,10 +23,12 @@ from tenantchat.api.correlation import (
     tenant_pseudonym,
 )
 from tenantchat.api.logging_setup import (
+    _EXTRA_FIELDS,
     JsonLogFormatter,
     build_json_handler,
     configure_logging,
 )
+from tenantchat.api.redaction import _STRUCTURED_EXTRA_KEYS
 
 _CONTRACT_FIELDS = (
     "timestamp",
@@ -144,6 +146,78 @@ class TestJsonLine:
         exception = cast(str, line["exception"])
         assert "[email-redacted]" in exception
         assert "[phone-redacted]" in exception
+
+    def test_an_extra_field_never_carries_a_contact_value(self) -> None:
+        """The operator detail rides in ``extra=``; the filter must scrub it too.
+
+        ``problems.py`` logs a domain error's ``detail`` so the request ID can
+        be matched to what the caller sent. That detail may quote visitor
+        input (a phone number inside a rejected command), and ``detail`` is on
+        the formatter's extra allowlist — so redaction has to happen on the
+        record, or the allowlist itself becomes the leak.
+        """
+        stream = io.StringIO()
+        handler = build_json_handler(service="chat-api", environment="test", stream=stream)
+        logger = logging.getLogger("tenantchat.api.obs")
+        logger.addHandler(handler)
+        try:
+            logger.warning(
+                "domain error",
+                extra={
+                    "code": "validation_error",
+                    "detail": "rejected contact dana@example.com / 555-222-1919",
+                },
+            )
+        finally:
+            logger.removeHandler(handler)
+        written = stream.getvalue()
+
+        assert "dana@example.com" not in written
+        assert "555-222-1919" not in written
+        line = json.loads(written.splitlines()[0])
+        assert line["detail"] == "rejected contact [email-redacted] / [phone-redacted]"
+
+    def test_structured_extras_pass_through_untouched(self) -> None:
+        """A hex trace id is an identifier, not prose; the filter must not mangle it.
+
+        The phone pattern matches any run of ten digits, so redacting every
+        string extra would corrupt the correlation fields themselves — a
+        32-hex trace id would log as ``[phone-redacted]abcdef…`` and the
+        access line could never be joined back to a trace. Structured extras
+        pass verbatim; only free-text extras are scrubbed.
+        """
+        stream = io.StringIO()
+        handler = build_json_handler(service="chat-api", environment="test", stream=stream)
+        logger = logging.getLogger("tenantchat.api.obs")
+        logger.addHandler(handler)
+        trace_id = "1234567890abcdef1234567890abcdef"
+        try:
+            logger.warning(
+                "request completed",
+                extra={"trace_id": trace_id, "job_id": "9f8e7d6c", "detail": "call 555-222-1919"},
+            )
+        finally:
+            logger.removeHandler(handler)
+        line = json.loads(stream.getvalue().splitlines()[0])
+
+        assert line["trace_id"] == trace_id
+        assert line["job_id"] == "9f8e7d6c"
+        assert "[phone-redacted]" in line["detail"]
+
+
+class TestExtraAllowlistBoundary:
+    def test_the_published_allowlist_is_partitioned_by_the_filter(self) -> None:
+        """Every published extra is either structured or the scrubbed ``detail``.
+
+        The formatter's allowlist and the redaction filter's structured set
+        are two halves of one boundary: a key published to a line is either a
+        content-free identifier (passes verbatim) or free text (scrubbed).
+        Adding a key to the allowlist without classifying it here would leave
+        the new field's fate to whatever the filter defaults to, so this test
+        fails until the decision is made on both sides.
+        """
+        structured = _STRUCTURED_EXTRA_KEYS | {"detail"}
+        assert structured == _EXTRA_FIELDS
 
 
 class TestConfiguration:

@@ -1,10 +1,13 @@
 import os
+import threading
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import torch  # type: ignore[import-not-found]
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
@@ -24,8 +27,23 @@ INTERNAL_CREDENTIALS = load_internal_credentials(
     }
 )
 
-app = FastAPI(title="Qwen3 Embedding Service")
+
+@asynccontextmanager
+async def _lifespan(running: FastAPI) -> AsyncIterator[None]:
+    # The load must start here, not on the first /ready probe: an orchestrator
+    # gates traffic on readiness, so a readiness-triggered load would never be
+    # reached and the pod would report "loading" forever. The thread is a
+    # daemon because a half-downloaded model is worthless at shutdown.
+    loader = threading.Thread(target=get_model, name="embedding-model-load", daemon=True)
+    loader.start()
+    yield
+
+
+app = FastAPI(title="Qwen3 Embedding Service", lifespan=_lifespan)
 MODEL: SentenceTransformer | None = None
+# The load takes minutes and the sync endpoints run in a threadpool, so two
+# concurrent first callers would each start a download without a lock.
+_MODEL_LOCK = threading.Lock()
 
 REQUESTS = Counter("embedding_requests_total", "Embedding requests", ["endpoint"])
 TEXTS = Counter("embedding_texts_total", "Embedded text count")
@@ -51,20 +69,27 @@ def require_embedding_caller(authorization: str | None = Header(default=None)) -
         )
 
 
+def _load_model() -> SentenceTransformer:
+    # Qwen3-Embedding's weights are published in bfloat16; on a CPU
+    # deployment the matmul then fails ("expected m1 and m2 to have the
+    # same dtype, but got: float != c10::BFloat16") because the inputs
+    # stay fp32. Load fp32 so weights and inputs agree.
+    return SentenceTransformer(
+        MODEL_NAME,
+        device=DEVICE,
+        revision=MODEL_REVISION,
+        trust_remote_code=False,
+        model_kwargs={"torch_dtype": torch.float32},
+    )
+
+
 def get_model() -> SentenceTransformer:
+    """Load the model once, serializing concurrent first callers."""
     global MODEL
     if MODEL is None:
-        # Qwen3-Embedding's weights are published in bfloat16; on a CPU
-        # deployment the matmul then fails ("expected m1 and m2 to have the
-        # same dtype, but got: float != c10::BFloat16") because the inputs
-        # stay fp32. Load fp32 so weights and inputs agree.
-        MODEL = SentenceTransformer(
-            MODEL_NAME,
-            device=DEVICE,
-            revision=MODEL_REVISION,
-            trust_remote_code=False,
-            model_kwargs={"torch_dtype": torch.float32},
-        )
+        with _MODEL_LOCK:
+            if MODEL is None:
+                MODEL = _load_model()
     return MODEL
 
 
@@ -79,8 +104,18 @@ def health() -> dict[str, object]:
 
 
 @app.get("/ready")
-def ready() -> dict[str, object]:
-    get_model()
+def ready() -> Any:
+    """Report readiness without triggering the load itself.
+
+    A multi-minute download started by a readiness probe would keep the pod
+    out of rotation *and* burn the probe's timeout; the orchestrator needs the
+    honest "still loading" answer until the model is resident.
+    """
+    if MODEL is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "loading", "modelLoaded": False, "model": MODEL_NAME},
+        )
     return {"status": "ready", "modelLoaded": True, "model": MODEL_NAME}
 
 

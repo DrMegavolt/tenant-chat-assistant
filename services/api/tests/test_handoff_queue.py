@@ -81,10 +81,10 @@ def staff_console() -> (
     just the response it got back. The model is returned unwrapped so a test
     can assert how many turns the graph actually ran.
     """
-    conversations = InMemoryConversationStore()
-    consent = InMemoryConsentStore()
-    handoffs = InMemoryHandoffStore()
     audit = InMemoryAuditStore()
+    conversations = InMemoryConversationStore(audit=audit)
+    consent = InMemoryConsentStore()
+    handoffs = InMemoryHandoffStore(audit=audit)
     memberships = InMemoryMembershipStore()
     for tenant in ("clearview", "apex"):
         for subject in (OPERATOR, SECOND_OPERATOR):

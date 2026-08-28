@@ -12,6 +12,7 @@ rather than being silently dropped and treated as absent.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -384,9 +385,153 @@ class VisitorSessionResponse(ChatSessionResponse):
 
 
 class AdminSessionsResponse(BaseModel):
-    sessions: list[ChatSessionSummary]
+    sessions: list[AdminChatSessionSummary]
     # Echoed so a caller can tell a full page from the end of the list.
     limit: int
+
+
+_LAST_MESSAGE_PREVIEW_CHARS = 200
+
+
+class SessionLastMessage(BaseModel):
+    """A bounded preview of a conversation's most recent message.
+
+    The queue row advertises recency without carrying the transcript: the
+    content is truncated to the preview budget, and the full text stays behind
+    the audited detail read.
+    """
+
+    role: str
+    content: str
+    created_at: datetime
+
+    @classmethod
+    def of(cls, record: MessageRecord) -> SessionLastMessage:
+        return cls(
+            role=record.role.value,
+            content=record.content[:_LAST_MESSAGE_PREVIEW_CHARS],
+            created_at=record.created_at,
+        )
+
+
+class AdminChatSessionSummary(ChatSessionSummary):
+    """A conversation row as the operator queue reads it, with its counts.
+
+    ``message_count`` and ``lead_count`` are what the console's stat strip
+    sums (L-A10) and what the queue row shows beside the last-message preview
+    (L-A09); both are counts of rows that already exist, never content.
+    """
+
+    message_count: int = 0
+    lead_count: int = 0
+    last_message: SessionLastMessage | None = None
+
+    @classmethod
+    def of(
+        cls,
+        record: ConversationRecord,
+        *,
+        message_count: int = 0,
+        lead_count: int = 0,
+        last_message: MessageRecord | None = None,
+    ) -> AdminChatSessionSummary:
+        return cls(
+            session_id=record.session_id,
+            tenant_id=record.tenant_id,
+            status=record.status,
+            outcome=record.outcome,
+            started_at=record.started_at,
+            last_activity_at=record.last_activity_at,
+            message_count=message_count,
+            lead_count=lead_count,
+            last_message=None if last_message is None else SessionLastMessage.of(last_message),
+        )
+
+
+class SessionLeadView(BaseModel):
+    """One lead captured in one conversation, for the session-detail card."""
+
+    lead_id: str
+    customer_name: str
+    contact: str
+    service: str
+    urgency: str
+    summary: str
+
+    @classmethod
+    def of(cls, record: LeadRecord) -> SessionLeadView:
+        return cls(
+            lead_id=record.lead_id,
+            customer_name=record.customer_name,
+            contact=record.contact.display,
+            service=record.service,
+            urgency=record.urgency.value,
+            summary=record.summary,
+        )
+
+
+class SessionBookingView(BaseModel):
+    """One booking confirmed in one conversation, for the session-detail card."""
+
+    booking_id: str
+    customer_name: str
+    contact: str
+    service: str
+    slot: str
+    address: str
+
+    @classmethod
+    def of(cls, record: BookingRecord) -> SessionBookingView:
+        return cls(
+            booking_id=record.booking_id,
+            customer_name=record.customer_name,
+            contact=record.contact.display,
+            service=record.service_name,
+            slot=record.slot,
+            address=record.address,
+        )
+
+
+class SessionToolEventView(BaseModel):
+    """One tool result recorded on the conversation's workflow.
+
+    ``result`` is the payload the model was shown, parsed back into its JSON
+    shape when it parses (the console renders it verbatim); a non-JSON payload
+    is passed through as the string it was.
+    """
+
+    name: str
+    result: object
+
+    @classmethod
+    def of(cls, tool_result: Mapping[str, object]) -> SessionToolEventView:
+        raw = tool_result.get("result")
+        parsed: object
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = raw
+        else:
+            parsed = raw
+        return cls(name=str(tool_result.get("name", "")), result=parsed)
+
+
+class AdminChatSessionResponse(BaseModel):
+    """A conversation, its transcript, and the business records it produced.
+
+    The leads, bookings, and tool events are what the session-detail side
+    cards render (L-A01); each is the tenant-scoped, authenticated view of a
+    record that already exists — the same shapes the list surfaces publish,
+    bounded to one conversation.
+    """
+
+    session: AdminChatSessionSummary
+    messages: list[TranscriptMessage]
+    pending: PendingConfirmation | None = None
+    leads: list[SessionLeadView] = []
+    bookings: list[SessionBookingView] = []
+    tool_events: list[SessionToolEventView] = []
 
 
 class AdminTenantSummary(BaseModel):
@@ -440,6 +585,10 @@ class AdminLead(BaseModel):
 
 class AdminLeadsResponse(BaseModel):
     leads: list[AdminLead]
+    # Echoed so a caller can tell a full page from the end of the list.
+    limit: int
+    # The tenant's full lead count, so the console can page past the bound.
+    total: int
 
 
 class AdminBooking(BaseModel):
@@ -470,6 +619,10 @@ class AdminBooking(BaseModel):
 
 class AdminBookingsResponse(BaseModel):
     bookings: list[AdminBooking]
+    # Echoed so a caller can tell a full page from the end of the list.
+    limit: int
+    # The tenant's full booking count, so the console can page past the bound.
+    total: int
 
 
 class AdminHandoff(BaseModel):
@@ -1704,7 +1857,10 @@ class ReviewSummaryResponse(BaseModel):
     turn_id: uuid.UUID
     session_id: uuid.UUID | None
     recorded_at: datetime | None
-    outcome: str
+    # ``None`` when the turn record was purged under its retention policy while
+    # the case was still open: the row stays visible (and actionable) rather
+    # than vanishing from the queue or taking the page down.
+    outcome: str | None
     source: str
     status: str
     priority: int
@@ -1722,13 +1878,15 @@ class ReviewSummaryResponse(BaseModel):
     turn_index: int = 0
 
     @classmethod
-    def of(cls, case: ReviewCase, turn: TurnRecord) -> ReviewSummaryResponse:
+    def of(cls, case: ReviewCase, turn: TurnRecord | None) -> ReviewSummaryResponse:
+        # A purged turn leaves the case without its content-free columns; the
+        # row renders with what the queue itself knows (R-27).
         return cls(
             review_id=case.review_id,
             turn_id=case.turn_id,
-            session_id=turn.session_id,
-            recorded_at=turn.recorded_at,
-            outcome=turn.outcome,
+            session_id=turn.session_id if turn is not None else None,
+            recorded_at=turn.recorded_at if turn is not None else None,
+            outcome=turn.outcome if turn is not None else None,
             source=case.source,
             status=case.status,
             priority=case.priority,
@@ -1738,12 +1896,12 @@ class ReviewSummaryResponse(BaseModel):
             novel_manifest=case.novel_manifest,
             case_id=case.case_id,
             verdict=case.verdict,
-            diagnosis_causes=list(turn.diagnosis_causes),
-            diagnosis_statuses=list(turn.diagnosis_statuses),
+            diagnosis_causes=list(turn.diagnosis_causes) if turn is not None else [],
+            diagnosis_statuses=list(turn.diagnosis_statuses) if turn is not None else [],
             closing_eval_run_id=case.closing_eval_run_id,
             closing_eval_case_id=case.closing_eval_case_id,
             created_at=case.created_at,
-            turn_index=turn.turn_index,
+            turn_index=turn.turn_index if turn is not None else 0,
         )
 
 
@@ -1754,7 +1912,9 @@ class ReviewPageResponse(BaseModel):
     def of(
         cls, cases: tuple[ReviewCase, ...], turns: Mapping[uuid.UUID, TurnRecord]
     ) -> ReviewPageResponse:
-        return cls(reviews=[ReviewSummaryResponse.of(case, turns[case.turn_id]) for case in cases])
+        return cls(
+            reviews=[ReviewSummaryResponse.of(case, turns.get(case.turn_id)) for case in cases]
+        )
 
 
 class ReviewDiagnosisDecisionRequest(_Request):

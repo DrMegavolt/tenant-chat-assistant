@@ -611,3 +611,22 @@ def test_upload_with_own_brand_in_title_is_allowed(
 
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "draft"
+
+
+def test_an_empty_upload_is_refused_as_a_field_error(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+) -> None:
+    """L-A07: an upload with no bytes is a caller mistake the console can
+    point at — a 422 naming the field, not the 500 the version table's
+    ``byte_size > 0`` check used to produce behind a generic banner."""
+    _grant(client, membership_store, "clearview")
+    headers = _mutation_headers(client, operator_headers)
+
+    response = _upload(client, headers, content=b"")
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "empty_upload"
+    assert body["invalidFields"] == [{"location": "file", "rule": "not_empty"}]

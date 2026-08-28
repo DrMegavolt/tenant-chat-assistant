@@ -592,3 +592,107 @@ class TestForeignDocuments:
                 await index.close()
 
         assert asyncio.run(invoke()) == ("chunk-1",)
+
+
+class TestReadinessProbes:
+    """R-25: readiness is a real signal, not a misdirected request.
+
+    The index's probe used to hit the embedding server's ``/ready`` path on
+    the Elasticsearch host, and the embedder client had no probe at all — so
+    deployment readiness proved neither dependency. The index now probes its
+    own cluster root and the client probes the embedding service."""
+
+    def test_the_index_readiness_probe_hits_the_search_cluster_root(self) -> None:
+        probed: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            probed.append(f"{request.method} {request.url.path}")
+            return httpx.Response(200, json={"version": {"number": "8.11.0"}})
+
+        index = _index(httpx.MockTransport(handler), applied=policy())
+
+        async def invoke() -> None:
+            try:
+                await index.ready()
+            finally:
+                await index.close()
+
+        asyncio.run(invoke())
+        assert probed == ["GET /"]
+
+    def test_a_cluster_that_answers_without_its_identity_is_not_ready(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"status": "ok"})
+
+        index = _index(httpx.MockTransport(handler), applied=policy())
+
+        async def invoke() -> Exception:
+            try:
+                await index.ready()
+            except Exception as exc:
+                return exc
+            finally:
+                await index.close()
+            raise AssertionError("ready() should have failed")
+
+        assert isinstance(asyncio.run(invoke()), SearchIndexOperationError)
+
+    def _client(self, handler: httpx.MockTransport) -> EmbeddingServiceClient:
+        return EmbeddingServiceClient(
+            base_url="http://embed:8000",
+            token=None,
+            policy=policy(),
+            transport=handler,
+        )
+
+    def test_the_embedder_readiness_probe_hits_the_embedding_service(self) -> None:
+        probed: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            probed.append(f"{request.method} {request.url.path}")
+            return httpx.Response(200, json={"status": "ready", "modelLoaded": True})
+
+        client = self._client(httpx.MockTransport(handler))
+
+        async def invoke() -> None:
+            try:
+                await client.ready()
+            finally:
+                await client.close()
+
+        asyncio.run(invoke())
+        assert probed == ["GET /ready"]
+
+    def test_an_embedding_service_still_loading_is_not_ready(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={"status": "loading", "modelLoaded": False})
+
+        client = self._client(httpx.MockTransport(handler))
+
+        async def invoke() -> Exception:
+            try:
+                await client.ready()
+            except Exception as exc:
+                return exc
+            finally:
+                await client.close()
+            raise AssertionError("ready() should have failed")
+
+        assert isinstance(asyncio.run(invoke()), EmbeddingUnavailableError)
+
+    def test_an_unreachable_embedding_service_is_not_ready(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        client = self._client(httpx.MockTransport(handler))
+
+        async def invoke() -> Exception:
+            try:
+                await client.ready()
+            except Exception as exc:
+                return exc
+            finally:
+                await client.close()
+            raise AssertionError("ready() should have failed")
+
+        assert isinstance(asyncio.run(invoke()), EmbeddingUnavailableError)

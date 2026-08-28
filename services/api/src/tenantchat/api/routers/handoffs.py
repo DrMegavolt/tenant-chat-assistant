@@ -22,7 +22,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Request, status
 
 from tenantchat.api.dependencies import (
-    Audit,
     Handoffs,
     Memberships,
     Registry,
@@ -151,7 +150,6 @@ async def accept_handoff(
     registry: Registry,
     handoffs: Handoffs,
     memberships: Memberships,
-    audit: Audit,
     request_id: RequestId,
 ) -> HandoffActionResponse:
     """Take ownership of an unowned handoff.
@@ -168,16 +166,22 @@ async def accept_handoff(
     """
     registry.get(tenant_id)
     await _worker_authorization(request, identity, tenant_id, memberships)
-    record = await handoffs.accept(tenant_id, str(handoff_id), principal_id=identity.subject)
-    await audit.record(
-        _audit_event(
+    # Each transition and its audit row commit together (R-39), so a refused
+    # transition never leaves an audit row and an accepted one is never
+    # separated from its accountability record.
+    existing = await handoffs.get(tenant_id, str(handoff_id))
+    record = await handoffs.accept(
+        tenant_id,
+        str(handoff_id),
+        principal_id=identity.subject,
+        audit_event=_audit_event(
             tenant_id=tenant_id,
             principal_id=identity.subject,
             action="handoff.accepted",
             handoff_id=handoff_id,
-            session_id=record.session_id,
+            session_id=existing.session_id,
             request_id=request_id,
-        )
+        ),
     )
     return HandoffActionResponse(handoff=AdminHandoff.of(record))
 
@@ -195,7 +199,6 @@ async def release_handoff(
     registry: Registry,
     handoffs: Handoffs,
     memberships: Memberships,
-    audit: Audit,
     request_id: RequestId,
 ) -> HandoffActionResponse:
     """Release an assigned handoff back to the queue and resume the assistant.
@@ -213,19 +216,21 @@ async def release_handoff(
     administrative, identity = await _worker_authorization(
         request, identity, tenant_id, memberships
     )
+    existing = await handoffs.get(tenant_id, str(handoff_id))
     record = await handoffs.release(
-        tenant_id, str(handoff_id), principal_id=identity.subject, administrative=administrative
-    )
-    await audit.record(
-        _audit_event(
+        tenant_id,
+        str(handoff_id),
+        principal_id=identity.subject,
+        administrative=administrative,
+        audit_event=_audit_event(
             tenant_id=tenant_id,
             principal_id=identity.subject,
             action="handoff.released",
             handoff_id=handoff_id,
-            session_id=record.session_id,
+            session_id=existing.session_id,
             request_id=request_id,
             details={"administrative": administrative},
-        )
+        ),
     )
     return HandoffActionResponse(handoff=AdminHandoff.of(record))
 
@@ -243,7 +248,6 @@ async def resolve_handoff(
     registry: Registry,
     handoffs: Handoffs,
     memberships: Memberships,
-    audit: Audit,
     request_id: RequestId,
 ) -> HandoffActionResponse:
     """Close an open handoff and mark the conversation closed.
@@ -261,18 +265,20 @@ async def resolve_handoff(
     administrative, identity = await _worker_authorization(
         request, identity, tenant_id, memberships
     )
+    existing = await handoffs.get(tenant_id, str(handoff_id))
     record = await handoffs.resolve(
-        tenant_id, str(handoff_id), principal_id=identity.subject, administrative=administrative
-    )
-    await audit.record(
-        _audit_event(
+        tenant_id,
+        str(handoff_id),
+        principal_id=identity.subject,
+        administrative=administrative,
+        audit_event=_audit_event(
             tenant_id=tenant_id,
             principal_id=identity.subject,
             action="handoff.resolved",
             handoff_id=handoff_id,
-            session_id=record.session_id,
+            session_id=existing.session_id,
             request_id=request_id,
             details={"administrative": administrative},
-        )
+        ),
     )
     return HandoffActionResponse(handoff=AdminHandoff.of(record))

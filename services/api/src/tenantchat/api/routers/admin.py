@@ -40,6 +40,7 @@ from tenantchat.api.dependencies import (
     Registry,
     RequestId,
     TraceAccess,
+    Workflows,
     get_settings,
 )
 from tenantchat.api.faults import ForbiddenError
@@ -56,17 +57,20 @@ from tenantchat.api.schemas import (
     AdminAuditResponse,
     AdminBooking,
     AdminBookingsResponse,
+    AdminChatSessionResponse,
+    AdminChatSessionSummary,
     AdminLead,
     AdminLeadsResponse,
     AdminPermissionsResponse,
     AdminSessionsResponse,
     AdminTenantsResponse,
     AdminTenantSummary,
-    ChatSessionResponse,
-    ChatSessionSummary,
     CsrfTokenResponse,
     MembershipRequest,
     MembershipResponse,
+    SessionBookingView,
+    SessionLeadView,
+    SessionToolEventView,
     StaffMessageRequest,
     StaffMessageResponse,
     TranscriptMessage,
@@ -240,41 +244,77 @@ async def list_chats(
     tenant_id: TenantIdQuery,
     registry: Registry,
     conversations: Conversations,
+    leads: Leads,
     limit: PageSize = 50,
 ) -> AdminSessionsResponse:
     """Conversations for one tenant, most recently active first.
 
-    Summaries only. Listing is how an operator finds work, and a list endpoint
-    that returned transcripts would put every customer's words into a response
-    nobody asked for.
+    Summaries plus the counts the queue's stat strip sums (L-A10) and a
+    bounded last-message preview (L-A09). Listing is how an operator finds
+    work, and a list endpoint that returned transcripts would put every
+    customer's words into a response nobody asked for.
 
     Raises:
         NotFoundError: no such tenant.
     """
     registry.get(tenant_id)
     records = await conversations.for_tenant(tenant_id, limit=limit)
+    session_ids = [record.session_id for record in records]
+    message_counts = await conversations.message_counts(tenant_id, session_ids)
+    lead_counts = await leads.counts_by_session(tenant_id, [str(v) for v in session_ids])
+    last_messages = await conversations.last_messages(tenant_id, session_ids)
     return AdminSessionsResponse(
-        sessions=[ChatSessionSummary.of(record) for record in records], limit=limit
+        sessions=[
+            AdminChatSessionSummary.of(
+                record,
+                message_count=message_counts.get(record.session_id, 0),
+                lead_count=lead_counts.get(str(record.session_id), 0),
+                last_message=last_messages.get(record.session_id),
+            )
+            for record in records
+        ],
+        limit=limit,
     )
 
 
-@router.get("/api/admin/chats/{session_id}", response_model=ChatSessionResponse)
+@router.get("/api/admin/chats/{session_id}", response_model=AdminChatSessionResponse)
 async def read_chat(
     identity: TenantReader,
     session_id: uuid.UUID,
     tenant_id: TenantIdQuery,
     conversations: Conversations,
-) -> ChatSessionResponse:
-    """One conversation and its full transcript.
+    leads: Leads,
+    bookings: Bookings,
+    workflows: Workflows,
+) -> AdminChatSessionResponse:
+    """One conversation, its transcript, and what it produced.
+
+    The side cards read the conversation's own leads, bookings, and tool
+    events (L-A01): the same tenant-scoped views the list surfaces publish,
+    bounded to this one conversation. The tool events come from the durable
+    workflow record — the model-facing payloads it already stores.
 
     Raises:
         NotFoundError: no such conversation, or it belongs to another tenant.
     """
     record = await conversations.get(tenant_id, session_id)
     messages = await conversations.transcript(tenant_id, session_id)
-    return ChatSessionResponse(
-        session=ChatSessionSummary.of(record),
+    session_leads = await leads.for_session(tenant_id, str(session_id))
+    session_bookings = await bookings.for_session(tenant_id, str(session_id))
+    workflow = await workflows.current(tenant_id, str(session_id))
+    recorded_results = workflow.tool_results if workflow is not None else ()
+    tool_events = [SessionToolEventView.of(item) for item in recorded_results]
+    return AdminChatSessionResponse(
+        session=AdminChatSessionSummary.of(
+            record,
+            message_count=len(messages),
+            lead_count=len(session_leads),
+            last_message=messages[-1] if messages else None,
+        ),
         messages=[TranscriptMessage.of(message) for message in messages],
+        leads=[SessionLeadView.of(item) for item in session_leads],
+        bookings=[SessionBookingView.of(item) for item in session_bookings],
+        tool_events=tool_events,
     )
 
 
@@ -284,20 +324,26 @@ async def list_leads(
     tenant_id: TenantIdQuery,
     registry: Registry,
     leads: Leads,
+    limit: PageSize = 100,
 ) -> AdminLeadsResponse:
-    """Captured leads for one tenant, oldest first.
+    """Captured leads for one tenant, oldest first, bounded to *limit*.
 
     The visitor write side has no read counterpart: contact values are PII, and
     this is the only surface that publishes them. It is the reason the backlog
     kept the prototype's authenticated lead read out of the cutover — it needs
-    the tenant membership check this route now enforces.
+    the tenant membership check this route now enforces. ``total`` counts the
+    tenant's full lead set so the console can page past the bound.
 
     Raises:
         NotFoundError: no such tenant.
     """
     registry.get(tenant_id)
+    records = await leads.for_tenant(tenant_id, limit=limit)
+    total = await leads.count_for_tenant(tenant_id)
     return AdminLeadsResponse(
-        leads=[AdminLead.of(record) for record in await leads.for_tenant(tenant_id)]
+        leads=[AdminLead.of(record) for record in records],
+        limit=limit,
+        total=total,
     )
 
 
@@ -307,15 +353,20 @@ async def list_bookings(
     tenant_id: TenantIdQuery,
     registry: Registry,
     bookings: Bookings,
+    limit: PageSize = 100,
 ) -> AdminBookingsResponse:
-    """Confirmed bookings for one tenant, oldest first.
+    """Confirmed bookings for one tenant, oldest first, bounded to *limit*.
 
     Raises:
         NotFoundError: no such tenant.
     """
     registry.get(tenant_id)
+    records = await bookings.for_tenant(tenant_id, limit=limit)
+    total = await bookings.count_for_tenant(tenant_id)
     return AdminBookingsResponse(
-        bookings=[AdminBooking.of(record) for record in await bookings.for_tenant(tenant_id)]
+        bookings=[AdminBooking.of(record) for record in records],
+        limit=limit,
+        total=total,
     )
 
 
@@ -330,7 +381,6 @@ async def send_staff_message(
     payload: StaffMessageRequest,
     conversations: Conversations,
     handoffs: Handoffs,
-    audit: Audit,
     request_id: RequestId,
 ) -> StaffMessageResponse:
     """Say something to the customer as a person.
@@ -366,23 +416,22 @@ async def send_staff_message(
         and handoff.assigned_principal_id != identity.subject
     ):
         raise ForbiddenError
+    # The reply and the audit row that vouches for it commit together (R-39).
     record = await conversations.append(
         payload.tenant_id,
         session_id,
         role=MessageRole.STAFF,
         content=payload.content,
         metadata={"operator_subject": identity.subject},
-    )
-    await audit.record(
-        _audit_event(
+        audit_event=_audit_event(
             tenant_id=payload.tenant_id,
             principal_id=identity.subject,
             action="staff_reply_sent",
             resource_type="chat_session",
             resource_id=session_id,
             request_id=request_id,
-            details={"message_id": str(record.message_id)},
-        )
+            details={},
+        ),
     )
     logger.info(
         "staff reply recorded",
