@@ -70,6 +70,9 @@ def _settings() -> Settings:
 class _UniformEmbedder:
     """Every text embeds to the same vector, so lexical signal decides."""
 
+    async def ready(self) -> None:
+        return None
+
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         vectors = [(1.0, 0.0, 0.0, 0.0)] * len(texts)
         return EmbeddingResult(model="scripted-embedder.v1", dimensions=4, vectors=vectors)

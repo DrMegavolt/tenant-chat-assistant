@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -144,3 +145,145 @@ def test_database_outage_pauses_delivery_without_crashing_or_logging_secrets(
         getattr(record, "error_code", None) == "job_store_unavailable" for record in caplog.records
     )
     assert "password=private" not in caplog.text
+
+
+def test_a_failed_heartbeat_does_not_prevent_settling_a_successful_job(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R-26: the heartbeat runs in the handler's ``finally`` shadow — if its
+    exception unwound there, a lease-renewal blip would skip the ack and the
+    job would be redelivered after an effect that already committed."""
+    lease_duration = timedelta(seconds=0.15)
+
+    class BrokenRenewals(InMemoryJobStore):
+        async def renew(
+            self, job_id: uuid.UUID, *, worker_id: str, lease_for: timedelta
+        ) -> JobRecord:
+            raise RuntimeError("connection reset during renew")
+
+    async def scenario() -> None:
+        store = BrokenRenewals()
+        job = await store.enqueue(
+            "clearview",
+            kind=JobKind.WEBHOOK,
+            payload={"event_id": "event-1"},
+            idempotency_key="event-1",
+        )
+
+        async def handler(_job: JobRecord) -> None:
+            await asyncio.sleep(0.12)
+
+        processed = await run_once(
+            store,
+            {JobKind.WEBHOOK: handler},
+            WorkerSettings(
+                worker_id="worker-test",
+                batch_size=1,
+                lease_duration=lease_duration,
+            ),
+        )
+        assert processed == 1
+        settled = await store.get("clearview", job.job_id)
+        assert settled.status is JobStatus.SUCCEEDED
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(scenario())
+    assert any(
+        getattr(record, "error_code", None) == "heartbeat_failed" for record in caplog.records
+    )
+
+
+def test_a_failed_heartbeat_does_not_prevent_failing_the_job() -> None:
+    """The failure path settles too: the handler's error must reach the store
+    even when the lease could not be renewed meanwhile."""
+    lease_duration = timedelta(seconds=0.15)
+
+    class BrokenRenewals(InMemoryJobStore):
+        async def renew(
+            self, job_id: uuid.UUID, *, worker_id: str, lease_for: timedelta
+        ) -> JobRecord:
+            raise RuntimeError("connection reset during renew")
+
+    async def scenario() -> None:
+        store = BrokenRenewals()
+        job = await store.enqueue(
+            "clearview",
+            kind=JobKind.WEBHOOK,
+            payload={"event_id": "event-1"},
+            idempotency_key="event-1",
+            max_attempts=1,
+        )
+
+        async def broken_handler(_job: JobRecord) -> None:
+            await asyncio.sleep(0.12)
+            raise RuntimeError("receiver refused the webhook")
+
+        await run_once(
+            store,
+            {JobKind.WEBHOOK: broken_handler},
+            WorkerSettings(
+                worker_id="worker-test",
+                batch_size=1,
+                lease_duration=lease_duration,
+            ),
+        )
+        settled = await store.get("clearview", job.job_id)
+        assert settled.status is JobStatus.DEAD_LETTERED
+        assert settled.last_error_code == "handler_unexpected"
+
+    asyncio.run(scenario())
+
+
+def test_one_jobs_settlement_failure_does_not_orphan_the_batch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R-26: a bare ``gather`` would propagate the first settlement failure and
+    strand the surviving tasks detached while the worker leases the next batch
+    on top of them. Every job must settle, and the failure must be visible."""
+    broken_job_id: uuid.UUID | None = None
+
+    class BrokenAck(InMemoryJobStore):
+        async def succeed(self, job_id: uuid.UUID, *, worker_id: str) -> JobRecord:
+            if job_id == broken_job_id:
+                raise RuntimeError("ack write failed")
+            return await super().succeed(job_id, worker_id=worker_id)
+
+    async def scenario() -> None:
+        nonlocal broken_job_id
+        store = BrokenAck()
+        first = await store.enqueue(
+            "clearview",
+            kind=JobKind.WEBHOOK,
+            payload={"event_id": "event-1"},
+            idempotency_key="event-1",
+        )
+        second = await store.enqueue(
+            "clearview",
+            kind=JobKind.WEBHOOK,
+            payload={"event_id": "event-2"},
+            idempotency_key="event-2",
+        )
+        broken_job_id = first.job_id
+
+        async def handler(_job: JobRecord) -> None:
+            return None
+
+        processed = await run_once(
+            store,
+            {JobKind.WEBHOOK: handler},
+            WorkerSettings(
+                worker_id="worker-test",
+                batch_size=2,
+                lease_duration=timedelta(seconds=30),
+            ),
+        )
+        assert processed == 2
+        assert (await store.get("clearview", second.job_id)).status is JobStatus.SUCCEEDED
+        stranded = await store.get("clearview", first.job_id)
+        assert stranded.status is not JobStatus.SUCCEEDED
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(scenario())
+    assert any(
+        getattr(record, "error_code", None) == "job_settlement_failed" for record in caplog.records
+    )

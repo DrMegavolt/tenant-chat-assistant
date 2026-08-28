@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Collection
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
@@ -112,6 +113,44 @@ def _audit_event(row: object) -> AuditEvent:
     )
 
 
+_INSERT_AUDIT_SQL = text(
+    """
+    INSERT INTO audit_events
+        (tenant_id, actor_type, principal_id, action,
+         resource_type, resource_id, request_id, details)
+    VALUES
+        (:tenant_id, :actor_type, :principal_id, :action,
+         :resource_type, :resource_id, :request_id, :details)
+    RETURNING occurred_at
+    """
+).bindparams(bindparam("details", type_=JSONB))
+
+
+async def _insert_audit_event(connection: AsyncConnection, event: AuditEvent) -> datetime:
+    """Write one audit row on the caller's transaction, not its own.
+
+    An audit row that vouches for a mutation must commit with it (R-39): a
+    separate transaction can produce a mutation with no audit, or an audit for
+    a mutation that rolled back. Stores that own a transaction pass their
+    connection here so the two writes are atomic.
+    """
+    result = await connection.execute(
+        _INSERT_AUDIT_SQL,
+        {
+            "tenant_id": event.tenant_id,
+            "actor_type": event.actor_type.value,
+            "principal_id": event.principal_id,
+            "action": event.action,
+            "resource_type": event.resource_type,
+            "resource_id": event.resource_id,
+            "request_id": event.request_id,
+            "details": dict(event.details),
+        },
+    )
+    occurred_at: datetime = result.scalar_one()
+    return occurred_at
+
+
 def _booking_from_row(row: object) -> BookingRecord:
     mapping = row._mapping  # type: ignore[attr-defined]
     return BookingRecord(
@@ -191,12 +230,40 @@ async def _offered_labels_on_new(
 
 
 class _ReservationLostError(Exception):
-    """Internal rollback sentinel for a lost reservation slot race."""
+    """Internal: the slot raced. The caller re-reads the current offers."""
 
     def __init__(self, tenant_id: str, service_slug: str) -> None:
+        super().__init__(f"slot lost for {tenant_id}/{service_slug}")
         self.tenant_id = tenant_id
         self.service_slug = service_slug
-        super().__init__()
+
+
+def _integrity_constraint(error: IntegrityError) -> str | None:
+    """The PostgreSQL constraint name behind an integrity failure, if named."""
+    diag = getattr(error.orig, "diag", None) if error.orig is not None else None
+    return getattr(diag, "constraint_name", None)
+
+
+def _booking_integrity_error(
+    error: IntegrityError, *, tenant_id: str, service_slug: str
+) -> Exception:
+    """Map a booking-insert integrity failure to the error that caused it.
+
+    Only the one-confirmed-booking-per-slot rule (and a slot row that vanished
+    mid-transaction) means "someone else got the slot". A session foreign key
+    failure is an authorization boundary, not a slot race, and relabelling it
+    would tell the visitor to retry a conversation that does not exist. Any
+    constraint this build does not know about is a schema drift bug and must
+    surface as one.
+    """
+    constraint = _integrity_constraint(error)
+    if constraint == "uq_bookings_one_confirmed_per_slot":
+        return _ReservationLostError(tenant_id, service_slug)
+    if constraint == "fk_bookings_slot":
+        return _ReservationLostError(tenant_id, service_slug)
+    if constraint == "fk_bookings_session":
+        return NotFoundError(detail="conversation absent or outside tenant")
+    return error
 
 
 async def _action_session(
@@ -481,6 +548,7 @@ class PostgresConversationStore:
         content: str,
         model_name: str | None = None,
         metadata: dict[str, object] | None = None,
+        audit_event: AuditEvent | None = None,
     ) -> MessageRecord:
         message_id = uuid.uuid4()
         insert_message = text(
@@ -537,6 +605,14 @@ class PostgresConversationStore:
             )
             if updated.rowcount != 1:
                 raise ConflictError(detail="conversation version changed while row was locked")
+            if audit_event is not None:
+                # The staff reply and the row that vouches for it commit or
+                # roll back together (R-39), and the row names the message it
+                # vouches for: the id exists only once this insert owns it.
+                stamped = replace(
+                    audit_event, details={**audit_event.details, "message_id": str(message_id)}
+                )
+                await _insert_audit_event(connection, stamped)
             return _message(inserted.one())
 
     async def transcript(self, tenant_id: str, session_id: uuid.UUID) -> tuple[MessageRecord, ...]:
@@ -593,6 +669,48 @@ class PostgresConversationStore:
                 {"tenant_id": tenant_id, "limit": limit},
             )
             return tuple(_conversation(row) for row in result.all())
+
+    async def message_counts(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, int]:
+        """Message counts per conversation, for the queue's stat strip."""
+        if not session_ids:
+            return {}
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT chat_session_id, count(*) AS messages
+                    FROM messages
+                    WHERE tenant_id = :tenant_id AND chat_session_id = ANY(:session_ids)
+                    GROUP BY chat_session_id
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_ids": list(session_ids)},
+            )
+            return {row.chat_session_id: int(row.messages) for row in result.all()}
+
+    async def last_messages(
+        self, tenant_id: str, session_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, MessageRecord]:
+        """Each conversation's most recent message, in one query."""
+        if not session_ids:
+            return {}
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (chat_session_id)
+                           id, tenant_id, chat_session_id, sequence_number, role,
+                           content, model_name, metadata, created_at
+                    FROM messages
+                    WHERE tenant_id = :tenant_id AND chat_session_id = ANY(:session_ids)
+                    ORDER BY chat_session_id, sequence_number DESC
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_ids": list(session_ids)},
+            )
+            return {row.chat_session_id: _message(row) for row in result.all()}
 
 
 class PostgresLeadStore:
@@ -651,7 +769,7 @@ class PostgresLeadStore:
             created_at=created_at,
         )
 
-    async def for_tenant(self, tenant_id: str) -> tuple[LeadRecord, ...]:
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[LeadRecord, ...]:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
@@ -662,9 +780,10 @@ class PostgresLeadStore:
                     FROM leads
                     WHERE tenant_id = :tenant_id
                     ORDER BY created_at, id
+                    LIMIT :limit
                     """
                 ),
-                {"tenant_id": tenant_id},
+                {"tenant_id": tenant_id, "limit": limit},
             )
             rows = result.all()
         return tuple(
@@ -683,6 +802,72 @@ class PostgresLeadStore:
             )
             for row in rows
         )
+
+    async def count_for_tenant(self, tenant_id: str) -> int:
+        """Every lead the tenant holds, so the console can page past its limit."""
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text("SELECT count(*) FROM leads WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_id},
+            )
+            return int(result.scalar_one())
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[LeadRecord, ...]:
+        """The leads captured in one conversation, oldest first."""
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT id, tenant_id, chat_session_id, customer_name,
+                           contact_value, service_label, service_slug, summary,
+                           address_or_zip, urgency, created_at
+                    FROM leads
+                    WHERE tenant_id = :tenant_id AND chat_session_id = :session_id
+                    ORDER BY created_at, id
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_id": uuid.UUID(session_id)},
+            )
+            rows = result.all()
+        return tuple(
+            LeadRecord(
+                lead_id=f"LD-{row.id.hex.upper()}",
+                tenant_id=row.tenant_id,
+                session_id=str(row.chat_session_id),
+                customer_name=row.customer_name,
+                contact=Contact.parse(row.contact_value),
+                service=row.service_label,
+                service_slug=row.service_slug,
+                summary=row.summary,
+                address_or_zip=row.address_or_zip or "",
+                urgency=_lead_urgency(row.urgency),
+                created_at=row.created_at,
+            )
+            for row in rows
+        )
+
+    async def counts_by_session(
+        self, tenant_id: str, session_ids: Collection[str]
+    ) -> dict[str, int]:
+        """Lead counts per conversation, for the queue's stat strip."""
+        if not session_ids:
+            return {}
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT chat_session_id, count(*) AS leads
+                    FROM leads
+                    WHERE tenant_id = :tenant_id AND chat_session_id = ANY(:session_ids)
+                    GROUP BY chat_session_id
+                    """
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "session_ids": [uuid.UUID(value) for value in session_ids],
+                },
+            )
+            return {str(row.chat_session_id): int(row.leads) for row in result.all()}
 
 
 class PostgresHandoffStore:
@@ -779,6 +964,20 @@ class PostgresHandoffStore:
             rows = result.all()
         return tuple(_handoff(row) for row in rows)
 
+    async def get(self, tenant_id: str, handoff_id: str) -> HandoffRecord:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    _HANDOFF_SELECT
+                    + " FROM handoffs WHERE tenant_id = :tenant_id AND id = :handoff_id"
+                ),
+                {"tenant_id": tenant_id, "handoff_id": _handoff_id_uuid(handoff_id)},
+            )
+            row = result.first()
+        if row is None:
+            raise NotFoundError(detail="handoff absent or outside tenant")
+        return _handoff(row)
+
     async def for_session(self, tenant_id: str, session_id: str) -> HandoffRecord | None:
         async with self._engine.begin() as connection:
             result = await connection.execute(
@@ -792,7 +991,14 @@ class PostgresHandoffStore:
             row = result.first()
         return None if row is None else _handoff(row)
 
-    async def accept(self, tenant_id: str, handoff_id: str, *, principal_id: str) -> HandoffRecord:
+    async def accept(
+        self,
+        tenant_id: str,
+        handoff_id: str,
+        *,
+        principal_id: str,
+        audit_event: AuditEvent | None = None,
+    ) -> HandoffRecord:
         async with self._engine.begin() as connection:
             row = (
                 await connection.execute(
@@ -823,6 +1029,8 @@ class PostgresHandoffStore:
                 ),
                 {"tenant_id": tenant_id, "session_id": row.chat_session_id},
             )
+            if audit_event is not None:
+                await _insert_audit_event(connection, audit_event)
         return _handoff(row)
 
     async def release(
@@ -832,6 +1040,7 @@ class PostgresHandoffStore:
         *,
         principal_id: str,
         administrative: bool = False,
+        audit_event: AuditEvent | None = None,
     ) -> HandoffRecord:
         async with self._engine.begin() as connection:
             row = (
@@ -864,6 +1073,8 @@ class PostgresHandoffStore:
                 ),
                 {"tenant_id": tenant_id, "session_id": row.chat_session_id},
             )
+            if audit_event is not None:
+                await _insert_audit_event(connection, audit_event)
         return _handoff(row)
 
     async def resolve(
@@ -873,6 +1084,7 @@ class PostgresHandoffStore:
         *,
         principal_id: str,
         administrative: bool = False,
+        audit_event: AuditEvent | None = None,
     ) -> HandoffRecord:
         async with self._engine.begin() as connection:
             row = (
@@ -906,6 +1118,8 @@ class PostgresHandoffStore:
                 ),
                 {"tenant_id": tenant_id, "session_id": row.chat_session_id},
             )
+            if audit_event is not None:
+                await _insert_audit_event(connection, audit_event)
         return _handoff(row)
 
     async def _state_change(
@@ -1038,7 +1252,12 @@ class PostgresBookingStore:
                         "expires_at": datetime.now(UTC) + self._RETENTION,
                     },
                 )
-                if claimed.scalar_one_or_none() is None:
+                claimed_id = claimed.scalar_one_or_none()
+                if claimed_id is None and await self._reclaim_expired_claim(
+                    connection, attempt, key_hash
+                ):
+                    claimed_id = uuid.uuid4()
+                if claimed_id is None:
                     existing = await connection.execute(
                         text(
                             """
@@ -1128,7 +1347,11 @@ class PostgresBookingStore:
                         },
                     )
                 except IntegrityError as error:
-                    raise _ReservationLostError(attempt.tenant_id, command.service.slug) from error
+                    raise _booking_integrity_error(
+                        error,
+                        tenant_id=attempt.tenant_id,
+                        service_slug=command.service.slug,
+                    ) from error
 
                 created_at = result.scalar_one()
                 await connection.execute(
@@ -1178,7 +1401,38 @@ class PostgresBookingStore:
                 offered=offers, detail="that slot was just reserved by another customer"
             ) from None
 
-    async def for_tenant(self, tenant_id: str) -> tuple[BookingRecord, ...]:
+    async def _reclaim_expired_claim(
+        self, connection: AsyncConnection, attempt: BookingAttempt, key_hash: str
+    ) -> bool:
+        """Take over a crashed attempt's claim, atomically.
+
+        The booking write commits in the same transaction as the claim, so an
+        in-flight row past its window can only be a crashed attempt that
+        committed nothing — reclaiming it cannot double-book. The conditional
+        update decides the race between concurrent claimants.
+        """
+        reclaimed = await connection.execute(
+            text(
+                """
+                UPDATE idempotency_keys
+                SET request_hash = :request_hash, status = 'in_progress',
+                    response = NULL, completed_at = NULL, expires_at = :expires_at
+                WHERE tenant_id = :tenant_id AND scope = :scope AND key_hash = :key_hash
+                  AND status = 'in_progress' AND expires_at <= now()
+                RETURNING id
+                """
+            ),
+            {
+                "tenant_id": attempt.tenant_id,
+                "scope": attempt.scope,
+                "key_hash": key_hash,
+                "request_hash": attempt.request_hash,
+                "expires_at": datetime.now(UTC) + self._RETENTION,
+            },
+        )
+        return reclaimed.scalar_one_or_none() is not None
+
+    async def for_tenant(self, tenant_id: str, *, limit: int = 200) -> tuple[BookingRecord, ...]:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(
@@ -1190,12 +1444,65 @@ class PostgresBookingStore:
                     FROM bookings
                     WHERE tenant_id = :tenant_id
                     ORDER BY created_at, id
+                    LIMIT :limit
                     """
                 ),
-                {"tenant_id": tenant_id},
+                {"tenant_id": tenant_id, "limit": limit},
             )
             rows = result.all()
         return tuple(_booking_from_row(row) for row in rows)
+
+    async def count_for_tenant(self, tenant_id: str) -> int:
+        """Every confirmed booking the tenant holds, for console pagination."""
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text("SELECT count(*) FROM bookings WHERE tenant_id = :tenant_id"),
+                {"tenant_id": tenant_id},
+            )
+            return int(result.scalar_one())
+
+    async def for_session(self, tenant_id: str, session_id: str) -> tuple[BookingRecord, ...]:
+        """The bookings confirmed in one conversation, oldest first."""
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT reference, tenant_id, chat_session_id, customer_name,
+                           contact_value, service_address, service_slug,
+                           service_label, slot_label, slot_id, slot_start, slot_end,
+                           created_at
+                    FROM bookings
+                    WHERE tenant_id = :tenant_id AND chat_session_id = :session_id
+                    ORDER BY created_at, id
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_id": uuid.UUID(session_id)},
+            )
+            rows = result.all()
+        return tuple(_booking_from_row(row) for row in rows)
+
+    async def counts_by_session(
+        self, tenant_id: str, session_ids: Collection[str]
+    ) -> dict[str, int]:
+        """Booking counts per conversation, for the queue's stat strip."""
+        if not session_ids:
+            return {}
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT chat_session_id, count(*) AS bookings
+                    FROM bookings
+                    WHERE tenant_id = :tenant_id AND chat_session_id = ANY(:session_ids)
+                    GROUP BY chat_session_id
+                    """
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "session_ids": [uuid.UUID(value) for value in session_ids],
+                },
+            )
+            return {str(row.chat_session_id): int(row.bookings) for row in result.all()}
 
     async def replay(self, tenant_id: str, scope: str, key: str) -> BookingRecord | None:
         async with self._engine.begin() as connection:
@@ -1315,30 +1622,7 @@ class PostgresAuditStore:
 
     async def record(self, event: AuditEvent) -> AuditEvent:
         async with self._engine.begin() as connection:
-            result = await connection.execute(
-                text(
-                    """
-                    INSERT INTO audit_events
-                        (tenant_id, actor_type, principal_id, action,
-                         resource_type, resource_id, request_id, details)
-                    VALUES
-                        (:tenant_id, :actor_type, :principal_id, :action,
-                         :resource_type, :resource_id, :request_id, :details)
-                    RETURNING occurred_at
-                    """
-                ).bindparams(bindparam("details", type_=JSONB)),
-                {
-                    "tenant_id": event.tenant_id,
-                    "actor_type": event.actor_type.value,
-                    "principal_id": event.principal_id,
-                    "action": event.action,
-                    "resource_type": event.resource_type,
-                    "resource_id": event.resource_id,
-                    "request_id": event.request_id,
-                    "details": dict(event.details),
-                },
-            )
-            occurred_at = result.scalar_one()
+            occurred_at = await _insert_audit_event(connection, event)
         return replace(event, occurred_at=occurred_at)
 
     async def for_tenant(

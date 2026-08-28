@@ -17,7 +17,7 @@ the calling route, and orthogonal to transcript memberships.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
 
 from sqlalchemy import bindparam, text
@@ -193,6 +193,29 @@ class PostgresTurnRecordStore:
                 {"tenant_id": tenant_id, "session_id": session_id, "limit": bounded},
             )
             return tuple(_turn_record(row) for row in result.all())
+
+    async def for_turn_ids(
+        self, tenant_id: str, turn_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, TurnRecord]:
+        """Batch the queue's turn fetches into one `id = ANY(...)` query.
+
+        The review queue names up to 200 turns per page; fetching them one
+        transaction each made the list view quadratic. Missing ids are absent
+        from the result, never an error: a queue row whose turn was purged
+        must not take the whole page down.
+        """
+        if not turn_ids:
+            return {}
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    _TRACE_SELECT
+                    + " FROM turn_records WHERE tenant_id = :tenant_id AND id = ANY(:turn_ids)"
+                ),
+                {"tenant_id": tenant_id, "turn_ids": list(turn_ids)},
+            )
+            records = (_turn_record(row) for row in result.all())
+            return {record.turn_id: record for record in records}
 
     async def for_trace_id(self, tenant_id: str, trace_id: str) -> TurnRecord:
         async with self._engine.begin() as connection:

@@ -184,13 +184,13 @@ def _review_app(
         admin_csrf_secret="csrf-secret-for-review-tests",
         visitor_credential_signing_key="visitor-signing-key-for-review-tests-" + "x" * 16,
     )
-    conversations = InMemoryConversationStore()
+    audit = InMemoryAuditStore()
+    conversations = InMemoryConversationStore(audit=audit)
     consent = InMemoryConsentStore()
     turns = InMemoryTurnRecordStore()
     grants = InMemoryTraceAccessStore()
-    audit = InMemoryAuditStore()
     feedback = InMemoryTurnFeedbackStore()
-    reviews = InMemoryReviewQueueStore()
+    reviews = InMemoryReviewQueueStore(audit=audit)
     membership = InMemoryMembershipStore()
     for tenant_id in (TRACE_TENANT, OTHER_TENANT):
         asyncio.run(membership.assign(tenant_id=tenant_id, subject=SUBJECT, role="support_agent"))
@@ -240,6 +240,9 @@ def _review_app(
 
 class _UniformEmbedder:
     """Every text embeds to the same vector; only the envelope is read here."""
+
+    async def ready(self) -> None:
+        return None
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         vectors = [(1.0, 0.0, 0.0, 0.0)] * len(texts)
@@ -1009,3 +1012,45 @@ def _submit_confirmed(client: TestClient, headers: dict[str, str], review_id: uu
         },
     )
     assert response.status_code == 200, response.text
+
+
+def test_taking_a_case_is_audited_to_the_reviewer(review_app: tuple[Any, ...]) -> None:
+    client, turns, _grants, audit, _feedback, _reviews = review_app
+    review_id = TestReviewWorkflow()._open_case(client, turns)
+    headers = _admin_headers(client)
+
+    response = client.post(
+        f"/api/admin/reviews/{review_id}/take?tenant_id={TRACE_TENANT}", headers=headers
+    )
+    assert response.status_code == 200, response.text
+
+    events = asyncio.run(audit.for_tenant(TRACE_TENANT))
+    taken = [event for event in events if event.action == "review.taken"]
+    assert len(taken) == 1
+    assert taken[0].principal_id == SUBJECT
+    assert taken[0].resource_id == review_id
+
+
+def test_the_queue_page_survives_a_turn_purged_from_the_record_store(
+    review_app: tuple[Any, ...],
+) -> None:
+    """R-27: the page fetches its turn records in one batch whose missing ids
+    are absent from the result — a queue row whose turn was purged under the
+    retention policy must render (with the record's columns unknown) rather
+    than take the whole page down with a KeyError."""
+    client, turns, _grants, _audit, _feedback, _reviews = review_app
+    review_id = TestReviewWorkflow()._open_case(client, turns)
+    case = asyncio.run(reviews_store_for(client).get(TRACE_TENANT, review_id))
+    assert turns._records.pop(case.turn_id, None) is not None
+
+    response = client.get(
+        f"/api/admin/reviews?tenant_id={TRACE_TENANT}&reason=quality_review",
+        headers=_operator({}),
+    )
+
+    assert response.status_code == 200, response.text
+    [row] = response.json()["reviews"]
+    assert row["review_id"] == str(review_id)
+    assert row["outcome"] is None
+    assert row["session_id"] is None
+    assert row["diagnosis_causes"] == []

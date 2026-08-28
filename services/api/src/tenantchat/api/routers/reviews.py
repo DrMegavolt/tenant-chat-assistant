@@ -98,7 +98,9 @@ async def list_reviews(
     cases = await reviews.search(
         tenant_id, statuses=(review_status,) if review_status else (), limit=limit
     )
-    records = {case.turn_id: await turns.get(tenant_id, case.turn_id) for case in cases}
+    # One batched fetch for the page: the per-case read made a 200-row queue
+    # cost 200 transactions (R-27).
+    records = await turns.for_turn_ids(tenant_id, [case.turn_id for case in cases])
     await audit.record(
         AuditEvent(
             tenant_id=tenant_id,
@@ -173,7 +175,6 @@ async def take_review(
     tenant_id: TenantIdQuery,
     registry: Registry,
     reviews: Reviews,
-    audit: Audit,
     request_id: RequestId,
     request: Request,
 ) -> ReviewDecisionResponse:
@@ -181,7 +182,7 @@ async def take_review(
 
     The double-submit token protects the mutation; the audit row names the
     operator who took the case, so two reviewers cannot silently work the same
-    row.
+    row. The audit commits with the transition, not beside it (R-39).
 
     Raises:
         ForbiddenError: the operator holds no trace-read grant for the tenant.
@@ -190,20 +191,23 @@ async def take_review(
     """
     registry.get(tenant_id)
     _with_csrf(request, identity)
-    case = await reviews.take(tenant_id, review_id, reviewer=identity.subject)
-    await audit.record(
-        AuditEvent(
+    case = await reviews.get(tenant_id, review_id)
+    taken = await reviews.take(
+        tenant_id,
+        review_id,
+        reviewer=identity.subject,
+        audit_event=AuditEvent(
             tenant_id=tenant_id,
             actor_type=AuditActorType.STAFF,
             principal_id=identity.subject,
             action="review.taken",
             resource_type="review_queue",
-            resource_id=case.review_id,
+            resource_id=review_id,
             request_id=request_id,
             details={"turn_id": str(case.turn_id)},
-        )
+        ),
     )
-    return ReviewDecisionResponse.of(case)
+    return ReviewDecisionResponse.of(taken)
 
 
 @router.post(
@@ -217,7 +221,6 @@ async def submit_review_decision(
     registry: Registry,
     reviews: Reviews,
     turns: TurnRecords,
-    audit: Audit,
     request_id: RequestId,
     request: Request,
 ) -> ReviewDecisionResponse:
@@ -226,7 +229,8 @@ async def submit_review_decision(
     The submission is validated against the turn's actual automatic diagnosis
     set (every record confirmed, rejected, or amended — acceptance 4), the
     corrected answer is stored beside the immutable trace, and the decision is
-    audited with the verdict and destination state.
+    audited with the verdict and destination state. The audit commits with the
+    decision it vouches for (R-39).
 
     Raises:
         ForbiddenError: the operator holds no trace-read grant for the tenant.
@@ -244,33 +248,33 @@ async def submit_review_decision(
         corrected_answer=payload.corrected_answer,
         proposed_fix=payload.proposed_fix,
     )
-    case = await submit_review(
+    case = await reviews.get(payload.tenant_id, review_id)
+    audit_event = AuditEvent(
+        tenant_id=payload.tenant_id,
+        actor_type=AuditActorType.STAFF,
+        principal_id=identity.subject,
+        action="review.decided",
+        resource_type="review_queue",
+        resource_id=review_id,
+        request_id=request_id,
+        details={
+            "turn_id": str(case.turn_id),
+            "verdict": payload.verdict,
+            "status": payload.status,
+            "has_corrected_answer": payload.corrected_answer is not None,
+            "has_proposed_fix": payload.proposed_fix is not None,
+        },
+    )
+    decided = await submit_review(
         reviews,
         turns,
         payload.tenant_id,
         review_id,
         reviewer=identity.subject,
         submission=submission,
+        audit_event=audit_event,
     )
-    await audit.record(
-        AuditEvent(
-            tenant_id=payload.tenant_id,
-            actor_type=AuditActorType.STAFF,
-            principal_id=identity.subject,
-            action="review.decided",
-            resource_type="review_queue",
-            resource_id=case.review_id,
-            request_id=request_id,
-            details={
-                "turn_id": str(case.turn_id),
-                "verdict": payload.verdict,
-                "status": payload.status,
-                "has_corrected_answer": payload.corrected_answer is not None,
-                "has_proposed_fix": payload.proposed_fix is not None,
-            },
-        )
-    )
-    return ReviewDecisionResponse.of(case)
+    return ReviewDecisionResponse.of(decided)
 
 
 @router.post(

@@ -24,8 +24,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from tenantchat.api.persistence.repositories import _insert_audit_event
 from tenantchat.api.persistence.tenancy import require_active_tenant
-from tenantchat.api.store import ReviewCase, ReviewDiagnosis, TurnFeedback
+from tenantchat.api.store import AuditEvent, ReviewCase, ReviewDiagnosis, TurnFeedback
 from tenantchat.core.errors import NotFoundError, ReviewTransitionError
 
 _MAX_REVIEW_SEARCH_LIMIT = 200
@@ -355,7 +356,14 @@ class PostgresReviewQueueStore:
             )
             return tuple(_review(row) for row in result.all())
 
-    async def take(self, tenant_id: str, review_id: uuid.UUID, *, reviewer: str) -> ReviewCase:
+    async def take(
+        self,
+        tenant_id: str,
+        review_id: uuid.UUID,
+        *,
+        reviewer: str,
+        audit_event: AuditEvent | None = None,
+    ) -> ReviewCase:
         async with self._engine.begin() as connection:
             result = await connection.execute(
                 text(_TAKE_SQL),
@@ -364,6 +372,9 @@ class PostgresReviewQueueStore:
             row = result.first()
             if row is None:
                 await self._raise_transition(connection, tenant_id, review_id, allowed="open")
+            if audit_event is not None:
+                # The decision and its accountability row commit together (R-39).
+                await _insert_audit_event(connection, audit_event)
             return _review(row)
 
     async def count_for_manifest(self, tenant_id: str, manifest_hash: str) -> int:
@@ -389,6 +400,7 @@ class PostgresReviewQueueStore:
         proposed_fix: str | None,
         status: str,
         diagnoses: tuple[ReviewDiagnosis, ...],
+        audit_event: AuditEvent | None = None,
     ) -> ReviewCase:
         async with self._engine.begin() as connection:
             result = await connection.execute(
@@ -450,6 +462,8 @@ class PostgresReviewQueueStore:
                         "created_at": datetime.now(UTC),
                     },
                 )
+            if audit_event is not None:
+                await _insert_audit_event(connection, audit_event)
             return _review(row)
 
     async def record_eval_pass(

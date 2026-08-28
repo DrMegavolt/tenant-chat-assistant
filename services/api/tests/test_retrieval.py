@@ -14,6 +14,7 @@ from collections.abc import Callable, Sequence
 
 import pytest
 
+from tenantchat.api.evidence import RetrievalEvidenceSource
 from tenantchat.api.parsing.tokens import count_tokens
 from tenantchat.api.retrieval import (
     RERANKER_NAME,
@@ -33,7 +34,14 @@ from tenantchat.api.retrieval import (
     lexical_overlap,
     rank_chunks,
 )
-from tenantchat.api.search import Embedder, EmbeddingResult, IndexedChunk, InMemorySearchIndex
+from tenantchat.api.search import (
+    Embedder,
+    EmbeddingResult,
+    EmbeddingUnavailableError,
+    IndexedChunk,
+    InMemorySearchIndex,
+)
+from tenantchat.api.store import InMemoryKnowledgeStore
 
 QUERY_VECTOR = (1.0, 0.0, 0.0, 0.0)
 
@@ -43,6 +51,9 @@ class _FixedEmbedder:
 
     def __init__(self, vector: tuple[float, ...] = QUERY_VECTOR) -> None:
         self._vector = vector
+
+    async def ready(self) -> None:
+        return None
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         vectors = [self._vector] * len(texts)
@@ -463,3 +474,51 @@ class TestConfigAndManifest:
     ) -> None:
         with pytest.raises(ValueError):
             invalid()
+
+
+class _NotReadyEmbedder:
+    """An embedder whose provider is still loading; the readiness probe fails."""
+
+    def __init__(self) -> None:
+        self.probed = 0
+
+    async def ready(self) -> None:
+        self.probed += 1
+        raise EmbeddingUnavailableError("embedding provider is not ready")
+
+    async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
+        vectors = [(1.0, 0.0, 0.0, 0.0)] * len(texts)
+        return EmbeddingResult(model="scripted-embedder.v1", dimensions=4, vectors=vectors)
+
+
+class _ReadyEmbedder(_NotReadyEmbedder):
+    async def ready(self) -> None:
+        self.probed += 1
+
+
+class TestReadinessContract:
+    """R-25: readiness must prove both retrieval dependencies, not just one.
+
+    The probe used to test ``getattr(embedder, "ready", None)`` — an attribute
+    the real client never had — so a deployment whose embedding service was
+    down or still loading reported ready and served degraded answers."""
+
+    @staticmethod
+    def _source(embedder: Embedder) -> RetrievalEvidenceSource:
+        return RetrievalEvidenceSource(
+            index=InMemorySearchIndex(),
+            embedder=embedder,
+            knowledge=InMemoryKnowledgeStore(),
+            config=HybridRetrieverConfig(),
+        )
+
+    def test_readiness_probes_the_embedder(self) -> None:
+        source = self._source(_ReadyEmbedder())
+        asyncio.run(source.ready(tenant_id="apex"))
+
+    def test_an_embedder_that_is_not_ready_makes_the_source_not_ready(self) -> None:
+        embedder = _NotReadyEmbedder()
+        source = self._source(embedder)
+        with pytest.raises(EmbeddingUnavailableError):
+            asyncio.run(source.ready(tenant_id="apex"))
+        assert embedder.probed == 1

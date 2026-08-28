@@ -152,6 +152,40 @@ def _authorized_grants(request: Request) -> AdminIdentity:
 
 
 GrantsAdmin = Annotated[AdminIdentity, Depends(_authorized_grants)]
+# Reading the grant list is a GET like every other trace read: the double-submit
+# token defends state-changing requests, and sibling trace GETs carry no CSRF
+# requirement, so this one aligns with them.
+GrantsReader = Annotated[AdminIdentity, Depends(_grants_access)]
+
+
+async def _audit_replay(
+    audit: Audit,
+    *,
+    identity: AdminIdentity,
+    tenant_id: str,
+    action: str,
+    turn_id: uuid.UUID,
+    request_id: str,
+    details: dict[str, object],
+) -> None:
+    """One accountability row for a replay attempt, success or failure (R-40).
+
+    A replay that blew up must leave the same trail as one that answered, so
+    the caller records twice on the failure path: once with ``outcome:
+    "failed"``, once — after success — with the result's content-free fields.
+    """
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action=action,
+            resource_type="turn_record",
+            resource_id=turn_id,
+            request_id=request_id,
+            details=details,
+        )
+    )
 
 
 @router.get(
@@ -159,7 +193,7 @@ GrantsAdmin = Annotated[AdminIdentity, Depends(_authorized_grants)]
     response_model=TraceAccessesResponse,
 )
 async def list_trace_access(
-    identity: GrantsAdmin,
+    identity: GrantsReader,
     tenant_id: TenantIdQuery,
     registry: Registry,
     grants: TraceAccess,
@@ -459,29 +493,43 @@ async def replay_turn_record(
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
     settings = get_settings(request)
-    result = await replay_turn(
-        record=record,
-        model=model,
-        retriever=retriever,
-        replay_timeout_seconds=settings.replay_timeout_seconds,
-    )
-    await audit.record(
-        AuditEvent(
-            tenant_id=tenant_id,
-            actor_type=AuditActorType.STAFF,
-            principal_id=identity.subject,
-            action="trace.replay",
-            resource_type="turn_record",
-            resource_id=record.turn_id,
-            request_id=request_id,
-            details={
-                "reason": reason.value,
-                "manifest_changed": result.manifest_changed,
-                "changed_components": [
-                    component.name for component in result.components if component.changed
-                ],
-            },
+    # Every replay attempt is audited, not only the ones that land: the
+    # operator probing a replay that fails must leave the same trail as one
+    # that succeeds.
+    details: dict[str, object] = {"reason": reason.value, "outcome": "failed"}
+    try:
+        result = await replay_turn(
+            record=record,
+            model=model,
+            retriever=retriever,
+            replay_timeout_seconds=settings.replay_timeout_seconds,
         )
+    except Exception:
+        await _audit_replay(
+            audit,
+            identity=identity,
+            tenant_id=tenant_id,
+            action="trace.replay",
+            turn_id=record.turn_id,
+            request_id=request_id,
+            details=details,
+        )
+        raise
+    details |= {
+        "outcome": "replayed",
+        "manifest_changed": result.manifest_changed,
+        "changed_components": [
+            component.name for component in result.components if component.changed
+        ],
+    }
+    await _audit_replay(
+        audit,
+        identity=identity,
+        tenant_id=tenant_id,
+        action="trace.replay",
+        turn_id=record.turn_id,
+        request_id=request_id,
+        details=details,
     )
     return result
 
@@ -527,31 +575,46 @@ async def replay_turn_trials(
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
     settings = get_settings(request)
-    result = await replay_trials(
-        record=record,
-        model=model,
-        retriever=retriever,
-        trials=payload.trials,
-        replay_timeout_seconds=settings.replay_timeout_seconds,
-    )
-    await audit.record(
-        AuditEvent(
-            tenant_id=tenant_id,
-            actor_type=AuditActorType.STAFF,
-            principal_id=identity.subject,
-            action="trace.replay_trials",
-            resource_type="turn_record",
-            resource_id=record.turn_id,
-            request_id=request_id,
-            details={
-                "reason": reason.value,
-                "manifest_changed": result.manifest_changed,
-                "changed_components": [
-                    component.name for component in result.components if component.changed
-                ],
-                "trials": result.trial_count,
-            },
+    details: dict[str, object] = {
+        "reason": reason.value,
+        "outcome": "failed",
+        "trials": payload.trials,
+    }
+    try:
+        result = await replay_trials(
+            record=record,
+            model=model,
+            retriever=retriever,
+            trials=payload.trials,
+            replay_timeout_seconds=settings.replay_timeout_seconds,
         )
+    except Exception:
+        await _audit_replay(
+            audit,
+            identity=identity,
+            tenant_id=tenant_id,
+            action="trace.replay_trials",
+            turn_id=record.turn_id,
+            request_id=request_id,
+            details=details,
+        )
+        raise
+    details |= {
+        "outcome": "replayed",
+        "manifest_changed": result.manifest_changed,
+        "changed_components": [
+            component.name for component in result.components if component.changed
+        ],
+        "trials": result.trial_count,
+    }
+    await _audit_replay(
+        audit,
+        identity=identity,
+        tenant_id=tenant_id,
+        action="trace.replay_trials",
+        turn_id=record.turn_id,
+        request_id=request_id,
+        details=details,
     )
     return result
 
@@ -624,6 +687,13 @@ async def replay_turn_retrieval(
             {"source_id": item.source_id, "text": item.text} for item in payload.gold_evidence
         ]
 
+    details: dict[str, object] = {
+        "reason": reason.value,
+        "generation_id": generation_id_str,
+        "generation_exists": generation_exists,
+        "gold_evidence_count": len(gold_evidence) if gold_evidence else 0,
+        "outcome": "failed",
+    }
     try:
         retrieved_evidence: list[dict[str, str]] | None = None
         if generation_exists and gold_evidence is None and gen_uuid is not None:
@@ -647,24 +717,27 @@ async def replay_turn_retrieval(
             gold_evidence=gold_evidence,
             replay_timeout_seconds=settings.replay_timeout_seconds,
         )
-    finally:
-        await audit.record(
-            AuditEvent(
-                tenant_id=tenant_id,
-                actor_type=AuditActorType.STAFF,
-                principal_id=identity.subject,
-                action="trace.replay_retrieval",
-                resource_type="turn_record",
-                resource_id=record.turn_id,
-                request_id=request_id,
-                details={
-                    "reason": reason.value,
-                    "generation_id": generation_id_str,
-                    "generation_exists": generation_exists,
-                    "gold_evidence_count": len(gold_evidence) if gold_evidence else 0,
-                },
-            )
+    except Exception:
+        await _audit_replay(
+            audit,
+            identity=identity,
+            tenant_id=tenant_id,
+            action="trace.replay_retrieval",
+            turn_id=record.turn_id,
+            request_id=request_id,
+            details=details,
         )
+        raise
+    details["outcome"] = "replayed"
+    await _audit_replay(
+        audit,
+        identity=identity,
+        tenant_id=tenant_id,
+        action="trace.replay_retrieval",
+        turn_id=record.turn_id,
+        request_id=request_id,
+        details=details,
+    )
     return result
 
 
@@ -708,32 +781,47 @@ async def replay_turn_template(
     evidence = request.app.state.evidence_source
     retriever = evidence.retriever_manifest if hasattr(evidence, "retriever_manifest") else None
     settings = get_settings(request)
-    result = await replay_with_template(
-        record=record,
-        model=model,
-        retriever=retriever,
-        template_version=payload.template_version,
-        replay_timeout_seconds=settings.replay_timeout_seconds,
-    )
-    await audit.record(
-        AuditEvent(
-            tenant_id=tenant_id,
-            actor_type=AuditActorType.STAFF,
-            principal_id=identity.subject,
-            action="trace.replay_template",
-            resource_type="turn_record",
-            resource_id=record.turn_id,
-            request_id=request_id,
-            details={
-                "reason": reason.value,
-                "manifest_changed": result.manifest_changed,
-                "changed_components": [
-                    component.name for component in result.components if component.changed
-                ],
-                "template_ref": result.template_ref,
-                "template_matches_current": result.template_matches_current,
-            },
+    details: dict[str, object] = {
+        "reason": reason.value,
+        "outcome": "failed",
+        "template_version": payload.template_version,
+    }
+    try:
+        result = await replay_with_template(
+            record=record,
+            model=model,
+            retriever=retriever,
+            template_version=payload.template_version,
+            replay_timeout_seconds=settings.replay_timeout_seconds,
         )
+    except Exception:
+        await _audit_replay(
+            audit,
+            identity=identity,
+            tenant_id=tenant_id,
+            action="trace.replay_template",
+            turn_id=record.turn_id,
+            request_id=request_id,
+            details=details,
+        )
+        raise
+    details |= {
+        "outcome": "replayed",
+        "manifest_changed": result.manifest_changed,
+        "changed_components": [
+            component.name for component in result.components if component.changed
+        ],
+        "template_ref": result.template_ref,
+        "template_matches_current": result.template_matches_current,
+    }
+    await _audit_replay(
+        audit,
+        identity=identity,
+        tenant_id=tenant_id,
+        action="trace.replay_template",
+        turn_id=record.turn_id,
+        request_id=request_id,
+        details=details,
     )
     return result
 

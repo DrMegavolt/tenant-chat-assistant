@@ -26,6 +26,7 @@ from typing import Final
 from uuid import UUID
 
 from tenantchat.api.store import (
+    AuditEvent,
     ReviewCase,
     ReviewDiagnosis,
     ReviewQueueStore,
@@ -108,6 +109,7 @@ async def submit_review(
     *,
     reviewer: str,
     submission: ReviewSubmission,
+    audit_event: AuditEvent | None = None,
 ) -> ReviewCase:
     """Record a review decision, binding it to the automatic diagnosis set.
 
@@ -116,7 +118,7 @@ async def submit_review(
     the reviewer's records are stored as separate rows that reference the
     originals by index — the detector's records inside the turn content are
     never mutated, so automatic and reviewer diagnoses can always be shown
-    side by side.
+    side by side. ``audit_event`` commits with the decision (R-39).
 
     Raises:
         ValidationError: the decisions do not cover the automatic set.
@@ -139,6 +141,7 @@ async def submit_review(
         proposed_fix=submission.proposed_fix,
         status=submission.status.value,
         diagnoses=rows,
+        audit_event=audit_event,
     )
 
 

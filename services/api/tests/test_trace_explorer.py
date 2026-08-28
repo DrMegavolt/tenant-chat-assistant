@@ -57,7 +57,7 @@ from tenantchat.api.store import (
     InMemoryTurnRecordStore,
 )
 from tenantchat.orchestration.checkpoints import InMemorySaver
-from tenantchat.orchestration.model import ModelResponse
+from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolSpec
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
 from tenantchat.orchestration.trace import reconstruct_prompt
 
@@ -628,6 +628,9 @@ class _UniformEmbedder:
     """Every text embeds to the same vector, so nothing here needs real
     vectors: the replay comparison only reads the source's static envelope."""
 
+    async def ready(self) -> None:
+        return None
+
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         vectors = [(1.0, 0.0, 0.0, 0.0)] * len(texts)
         return EmbeddingResult(model="scripted-embedder.v1", dimensions=4, vectors=vectors)
@@ -1054,6 +1057,7 @@ class TestReplay:
         assert str(replays[0].resource_id) == _planted_turn_id(turns, case)
         assert replays[0].details == {
             "reason": READ_REASON,
+            "outcome": "replayed",
             "manifest_changed": False,
             "changed_components": [],
         }
@@ -1859,3 +1863,69 @@ class TestExecutedGraphSection:
         assert [node["name"] for node in nodes] == ["route", "model"]
         assert nodes[-1]["status"] == "error"
         assert "finalize" not in [node["name"] for node in nodes]
+
+
+class _ExplodingModel:
+    """A provider that fails mid-call, standing in for a replay-time outage."""
+
+    async def complete(
+        self, _prompt: AssembledPrompt, *, tools: Sequence[ToolSpec]
+    ) -> ModelResponse:
+        raise RuntimeError("provider exploded")
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "action"),
+    [
+        ("/replay", None, "trace.replay"),
+        ("/replay/trials", {"trials": 2}, "trace.replay_trials"),
+        ("/replay/template", {"template_version": None}, "trace.replay_template"),
+    ],
+)
+class TestReplayFailureIsAudited:
+    """R-40: a replay that blew up leaves the same accountability row as one
+    that answered — one row, marked failed, content-free."""
+
+    def test_the_failure_is_audited(
+        self,
+        path: str,
+        body: dict[str, object] | None,
+        action: str,
+    ) -> None:
+        client, turns, _grants, audit, _model = self._replay_client()
+        case = _seeded_cases()[0]
+        _plant(turns, case)
+        app = cast(FastAPI, client.app)
+        app.state.chat_model = _ExplodingModel()
+        headers = _operator()
+        headers[CSRF_HEADER] = _csrf(client, headers)
+
+        response = client.post(
+            f"/api/admin/traces/{_planted_turn_id(turns, case)}{path}",
+            params={"tenant_id": case.tenant_id, "reason": READ_REASON},
+            json=body,
+            headers=headers,
+        )
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "replay_model_unavailable"
+        rows = [event for event in audit._events if event.action == action]
+        assert len(rows) == 1
+        assert rows[0].details["outcome"] == "failed"
+        assert rows[0].principal_id == "operator-7"
+        assert rows[0].request_id
+
+    @staticmethod
+    def _replay_client() -> (
+        tuple[
+            TestClient,
+            InMemoryTurnRecordStore,
+            InMemoryTraceAccessStore,
+            InMemoryAuditStore,
+            ScriptedModel,
+        ]
+    ):
+        model = ScriptedModel([ModelResponse(content="unused", model_name="scripted")])
+        client, turns, grants, audit, _ = _explorer_app(model=model)
+        asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+        return client, turns, grants, audit, model

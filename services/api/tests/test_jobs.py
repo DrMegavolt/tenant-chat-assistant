@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -90,3 +90,38 @@ def test_job_routes_require_an_authenticated_operator(client: TestClient) -> Non
     response = client.get("/api/admin/jobs?tenant_id=clearview")
     assert response.status_code == 401
     assert response.json()["code"] == "unauthenticated"
+
+
+def test_a_jobs_read_is_itself_audited(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    membership_store: InMemoryMembershipStore,
+    audit_store: Any,
+) -> None:
+    """R-58: the jobs surface reads privileged metadata, so reads leave the
+    same accountability trail every other privileged read writes. The row
+    carries the filter's shape — never a payload."""
+    asyncio.run(
+        membership_store.assign(tenant_id="clearview", subject="operator-7", role="tenant_admin")
+    )
+    store = cast(InMemoryJobStore, cast(FastAPI, client.app).state.job_store)
+    job = asyncio.run(
+        store.enqueue(
+            "clearview",
+            kind=JobKind.WEBHOOK,
+            payload={"event_id": "event-1"},
+            idempotency_key="webhook-1",
+        )
+    )
+    headers = operator_headers(role="tenant_admin")
+
+    listed = client.get("/api/admin/jobs?tenant_id=clearview", headers=headers)
+    detail = client.get(f"/api/admin/jobs/{job.job_id}?tenant_id=clearview", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert detail.status_code == 200, detail.text
+
+    events = asyncio.run(audit_store.for_tenant("clearview"))
+    reads = [event for event in events if event.action == "jobs.read"]
+    assert len(reads) == 2
+    assert {event.principal_id for event in reads} == {"operator-7"}
+    assert {event.resource_id for event in reads} == {None, job.job_id}

@@ -40,6 +40,7 @@ from tenantchat.api.store import (
     InMemoryLeadStore,
     InMemoryMembershipStore,
     InMemoryPrivacyStore,
+    InMemoryReviewQueueStore,
 )
 from tenantchat.api.visitor import VISITOR_CREDENTIAL_HEADER
 from tenantchat.core.privacy import ConsentPurpose
@@ -165,7 +166,7 @@ def client(
     """A client over a freshly built app, so stored records never leak between tests."""
     # `raise_server_exceptions=False` returns the 500 an operator would see
     # instead of re-raising, which would hide whether the handler ran at all.
-    conversations = InMemoryConversationStore()
+    conversations = InMemoryConversationStore(audit=audit_store)
     consent = InMemoryConsentStore()
 
     async def grant_fixture_session() -> None:
@@ -186,7 +187,7 @@ def client(
             booking_store=InMemoryBookingStore(),
             lead_store=InMemoryLeadStore(),
             conversation_store=conversations,
-            handoff_store=InMemoryHandoffStore(),
+            handoff_store=InMemoryHandoffStore(audit=audit_store),
             idempotency_store=InMemoryIdempotencyStore(),
             membership_store=membership_store,
             audit_store=audit_store,
@@ -198,6 +199,7 @@ def client(
                 InMemoryHandoffStore(),
                 consent,
             ),
+            review_store=InMemoryReviewQueueStore(audit=audit_store),
             chat_model=model,
             checkpointer=InMemorySaver(),
         ),
@@ -214,13 +216,14 @@ def modelless_client(
     """The deployment `AI-001` has not reached yet: stores, but no model."""
     conversations = InMemoryConversationStore()
     consent = InMemoryConsentStore()
+    audit_store = InMemoryAuditStore()
     with TestClient(
         create_app(
             settings,
             booking_store=InMemoryBookingStore(),
             lead_store=InMemoryLeadStore(),
             conversation_store=conversations,
-            handoff_store=InMemoryHandoffStore(),
+            handoff_store=InMemoryHandoffStore(audit=audit_store),
             idempotency_store=InMemoryIdempotencyStore(),
             membership_store=membership_store,
             consent_store=consent,
@@ -231,7 +234,8 @@ def modelless_client(
                 InMemoryHandoffStore(),
                 consent,
             ),
-            audit_store=InMemoryAuditStore(),
+            audit_store=audit_store,
+            review_store=InMemoryReviewQueueStore(audit=audit_store),
         ),
         raise_server_exceptions=False,
     ) as test_client:

@@ -9,6 +9,14 @@ without the index would let both through.
 Keys are stored hashed. The derived keys are already digests, but a
 caller-supplied one is not, and a table holding raw keys becomes a table that
 can be read to replay someone else's action.
+
+In-flight claims are not forever. A worker that crashes between claiming and
+completing leaves a row whose answer will never arrive; :data:`RETENTION` bounds
+how long such a row blocks its key. The store reclaims an expired in-flight
+claim lazily on the next :meth:`PostgresIdempotencyStore.begin`, and
+:meth:`PostgresIdempotencyStore.sweep` deletes finished rows past retention so
+the table stays a working set. The composition root runs the sweep periodically;
+there is no separate sweeper process.
 """
 
 from __future__ import annotations
@@ -26,9 +34,11 @@ from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.core.errors import ConflictError, NotFoundError
 from tenantchat.core.ports import IdempotencyKey
 
-# How long a key keeps its answer. Long enough to cover any retry a resumed
-# conversation could make, short enough that the table stays a working set
-# rather than an archive. `PRIV-001` owns the sweeper that enforces it.
+# How long a key keeps its answer, and how long a crashed in-flight claim keeps
+# blocking its key. Long enough to cover any retry a resumed conversation could
+# make, short enough that the table stays a working set rather than an archive.
+# The store itself enforces both: lazily on claim, and through the periodic
+# sweep the composition root runs.
 RETENTION: Final = timedelta(days=7)
 
 
@@ -52,10 +62,13 @@ class PostgresIdempotencyStore:
     ) -> dict[str, object] | None:
         """Claim the key, or return the completed response it already carries.
 
+        A crashed attempt's claim is reclaimable once it expires, so the caller
+        may be handed the key again instead of being conflict-blocked forever.
+
         Raises:
             NotFoundError: the tenant does not exist or is not active.
-            ConflictError: an attempt with this key is still in flight, or the
-                key was used for a materially different request.
+            ConflictError: a live attempt with this key is still in flight, or
+                the key was used for a materially different request.
         """
         key_hash = _hashed(key.value)
         async with self._engine.begin() as connection:
@@ -87,7 +100,7 @@ class PostgresIdempotencyStore:
             existing = await connection.execute(
                 text(
                     """
-                    SELECT request_hash, status, response
+                    SELECT request_hash, status, response, expires_at
                     FROM idempotency_keys
                     WHERE tenant_id = :tenant_id AND scope = :scope AND key_hash = :key_hash
                     """
@@ -96,11 +109,40 @@ class PostgresIdempotencyStore:
             )
             row = existing.one()
 
-        if row.request_hash != fingerprint:
-            raise ConflictError(detail=f"idempotency key reused for a different {scope}")
-        if row.status != "completed" or row.response is None:
-            raise ConflictError(detail=f"an earlier {scope} attempt is still in flight")
-        return dict(row.response)
+            if row.request_hash != fingerprint:
+                raise ConflictError(detail=f"idempotency key reused for a different {scope}")
+            if row.status == "completed" and row.response is not None:
+                return dict(row.response)
+
+            # An expired in-flight row is a crashed attempt: reclaim it
+            # atomically, so a race between two claimants still admits exactly
+            # one. The conditional update is the arbiter, not the read above.
+            if row.status == "in_progress" and row.expires_at <= datetime.now(UTC):
+                reclaimed = await connection.execute(
+                    text(
+                        """
+                        UPDATE idempotency_keys
+                        SET request_hash = :request_hash, status = 'in_progress',
+                            response = NULL, completed_at = NULL,
+                            expires_at = :expires_at
+                        WHERE tenant_id = :tenant_id AND scope = :scope
+                          AND key_hash = :key_hash
+                          AND status = 'in_progress' AND expires_at <= now()
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "scope": scope,
+                        "key_hash": key_hash,
+                        "request_hash": fingerprint,
+                        "expires_at": datetime.now(UTC) + RETENTION,
+                    },
+                )
+                if reclaimed.scalar_one_or_none() is not None:
+                    return None
+
+        raise ConflictError(detail=f"an earlier {scope} attempt is still in flight")
 
     async def complete(
         self,
@@ -137,3 +179,22 @@ class PostgresIdempotencyStore:
             )
             if updated.rowcount != 1:
                 raise NotFoundError(detail=f"no claimed {scope} attempt for this key")
+
+    async def sweep(self) -> int:
+        """Delete rows past retention; returns how many were removed.
+
+        A completed row's answer has served its retries once its window closes,
+        and an in-flight row that outlived its window belongs to a crashed
+        attempt whose key :meth:`begin` can then re-claim fresh. Deletes rather
+        than updates: the table is a working set, not an archive.
+        """
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    DELETE FROM idempotency_keys
+                    WHERE expires_at <= now()
+                    """
+                )
+            )
+            return int(result.rowcount)

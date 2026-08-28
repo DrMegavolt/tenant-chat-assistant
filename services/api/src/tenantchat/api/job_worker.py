@@ -245,7 +245,22 @@ async def execute_job(
         error_code = "handler_unexpected"
     finally:
         stopped.set()
-        await heartbeat
+        try:
+            await heartbeat
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The heartbeat dying must not unwind before the outcome is
+            # settled: a lease that could not be renewed is reclaimed by its
+            # expiry, and the handler result is still worth acking or failing.
+            logger.warning(
+                "job lease heartbeat failed",
+                extra={
+                    "job_id": str(job.job_id),
+                    "error_code": "heartbeat_failed",
+                    **context_extra(),
+                },
+            )
 
     if error_code is None:
         await jobs.succeed(job.job_id, worker_id=settings.worker_id)
@@ -276,7 +291,26 @@ async def run_once(
         limit=settings.batch_size,
         lease_for=settings.lease_duration,
     )
-    await asyncio.gather(*(execute_job(jobs, job, handlers, settings) for job in leased))
+    # `return_exceptions=True` keeps one job's settlement failure from
+    # orphaning the rest of the batch: a bare gather would leave the surviving
+    # tasks running detached while the worker leases the next batch on top of
+    # them. Every failure is logged with its job and the batch still settles.
+    outcomes = await asyncio.gather(
+        *(execute_job(jobs, job, handlers, settings) for job in leased),
+        return_exceptions=True,
+    )
+    for job, outcome in zip(leased, outcomes, strict=True):
+        if isinstance(outcome, asyncio.CancelledError):
+            raise outcome
+        if isinstance(outcome, BaseException):
+            logger.error(
+                "background job settlement failed",
+                extra={
+                    "job_id": str(job.job_id),
+                    "error_code": "job_settlement_failed",
+                    **context_extra(),
+                },
+            )
     return len(leased)
 
 

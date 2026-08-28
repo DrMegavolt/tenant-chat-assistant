@@ -33,6 +33,7 @@ from tenantchat.api.store import (
     TraceAccessStore,
     TurnFeedbackStore,
     TurnRecordStore,
+    WorkflowStore,
 )
 from tenantchat.core.ports import AvailabilityProvider, BookingService, ConversationRuntime
 
@@ -140,6 +141,17 @@ def get_review_queue_store(request: Request) -> ReviewQueueStore:
     return store
 
 
+def get_workflow_store(request: Request) -> WorkflowStore:
+    """The durable routing/workflow records (`AGENT-001`).
+
+    The session-detail surface reads the conversation's tool results through
+    this; a deployment always composes one (in-memory for explicit-store
+    test compositions).
+    """
+    store: WorkflowStore = request.app.state.workflow_store
+    return store
+
+
 def get_job_store(request: Request) -> JobStore:
     store: JobStore = request.app.state.job_store
     return store
@@ -197,6 +209,7 @@ TurnRecords = Annotated[TurnRecordStore, Depends(get_turn_record_store)]
 TraceAccess = Annotated[TraceAccessStore, Depends(get_trace_access_store)]
 Feedback = Annotated[TurnFeedbackStore, Depends(get_turn_feedback_store)]
 Reviews = Annotated[ReviewQueueStore, Depends(get_review_queue_store)]
+Workflows = Annotated[WorkflowStore, Depends(get_workflow_store)]
 Jobs = Annotated[JobStore, Depends(get_job_store)]
 Knowledge = Annotated[KnowledgeStore, Depends(get_knowledge_store)]
 ObjectStores = Annotated[ObjectStore | None, Depends(get_object_store)]
