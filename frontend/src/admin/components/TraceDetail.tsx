@@ -26,6 +26,9 @@ export interface TraceDetailProps {
   tenantId: string;
   record: TraceSearchRecord;
   gold: GoldCase[];
+  /** An audited read of this record already performed by the caller (an id
+   * lookup), so the drill-in renders it without a second read (review R-19). */
+  preloadedTrace?: TraceRead | undefined;
 }
 
 /**
@@ -34,7 +37,7 @@ export interface TraceDetailProps {
  * rendered element carries its stored trace field, so nothing here can be
  * mistaken for an idealized graph.
  */
-export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
+export function TraceDetail({ api, tenantId, record, gold, preloadedTrace }: TraceDetailProps) {
   // The audited read can load, be absent (another tenant's or a removed
   // record), or fail — collapsing those into one falsy value is what let a
   // 404 render "Opening…" forever (review R-18).
@@ -43,7 +46,7 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
     | { status: "loaded"; trace: TraceRead }
     | { status: "absent" }
     | { status: "error" }
-  >({ status: "loading" });
+  >(preloadedTrace ? { status: "loaded", trace: preloadedTrace } : { status: "loading" });
   const [replay, setReplay] = useState<ReplayResult | null>(null);
   const [replayTrials, setReplayTrials] = useState<ReplayTrialsResult | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
@@ -52,6 +55,9 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
 
   const [reload, setReload] = useState(0);
   useEffect(() => {
+    // A preloaded record was read once for this click already; reading it
+    // again would be a second audited row for the same operator action.
+    if (preloadedTrace) return;
     let cancelled = false;
     void fetchTrace(api, tenantId, record.turnId).then(
       (loaded) => {
@@ -65,9 +71,10 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
     return () => {
       cancelled = true;
     };
-  }, [api, tenantId, record.turnId, reload]);
+  }, [api, tenantId, record.turnId, reload, preloadedTrace]);
 
   const retry = () => {
+    if (preloadedTrace) return;
     setLoad({ status: "loading" });
     setReload((n) => n + 1);
   };
@@ -307,7 +314,10 @@ function formatScore(score: number | null | undefined): string {
 }
 
 /** The stored decision in one line: the winning intent (or the explicit
- * clarify decision), its confidence, and the threshold it was judged against. */
+ * no-choice decision), its confidence, and the threshold it was judged
+ * against. A null chosen means different things per outcome — clarify asks the
+ * visitor again, the bounded_clarify handoff escalates to a human — so the
+ * wording follows the stored outcome instead of assuming one of them. */
 function routingDecisionDetail(routing: RoutingSection): string {
   const confidence = formatScore(routing.confidence);
   const threshold = comparedThreshold(routing);
@@ -318,9 +328,15 @@ function routingDecisionDetail(routing: RoutingSection): string {
         : ` at confidence ${confidence}`;
     return `chose ${routing.chosen} (${routing.rule ?? "recorded"})${judged}`;
   }
-  return `no intent chosen — asked for clarification (${routing.rule ?? "recorded"}) at confidence ${confidence} against the clarify threshold ${formatScore(
-    routing.clarifyThreshold
-  )}`;
+  if (routing.outcome === "handoff") {
+    return `no intent chosen — escalated to a human after a prior clarification (${routing.rule ?? "recorded"}) at confidence ${confidence}`;
+  }
+  if (routing.outcome === "clarify") {
+    return `no intent chosen — asked for clarification (${routing.rule ?? "recorded"}) at confidence ${confidence} against the clarify threshold ${formatScore(
+      routing.clarifyThreshold
+    )}`;
+  }
+  return `no intent chosen (${routing.rule ?? "recorded"}) at confidence ${confidence}`;
 }
 
 const STATUS_LABELS: Record<GraphSource["status"], string> = {

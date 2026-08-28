@@ -6,6 +6,8 @@ import { AdminApi } from "src/admin/adminApi";
 import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { jsonResponse } from "tests/support/backend";
 import {
+  BOUNDED_CLARIFY_READ_WIRE_CONTENT,
+  BOUNDED_RECORD_WIRE,
   CAPTURED_READ_WIRE_CONTENT,
   CRASHED_READ_WIRE_CONTENT,
   FABRICATED_READ_WIRE_CONTENT,
@@ -50,7 +52,8 @@ const READ_BY_TURN: Record<string, Record<string, unknown>> = {
   "turn-4": CAPTURED_READ_WIRE_CONTENT,
   "turn-5": UNSUPPORTED_CLAIMS_READ_WIRE_CONTENT,
   "turn-6": NO_RETRIEVAL_READ_WIRE_CONTENT,
-  "turn-7": SUSPECTED_READ_WIRE_CONTENT
+  "turn-7": SUSPECTED_READ_WIRE_CONTENT,
+  "turn-9": BOUNDED_CLARIFY_READ_WIRE_CONTENT
 };
 
 function stubTraceBackend(
@@ -177,6 +180,25 @@ describe("the trace explorer filters", () => {
     for (const [url] of fetchMock.mock.calls) {
       expect(String(url)).toContain("tenant_id=clearview");
     }
+  });
+
+  test("opening a turn by id performs exactly one audited trace read", async () => {
+    const fetchMock = stubTraceBackend();
+    renderExplorer();
+
+    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+      target: { value: "trace-gateb-8" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
+    await screen.findByRole("heading", { name: /Turn 8/ });
+
+    // The lookup's read is handed to the detail: a second read of the same
+    // record would be a second audit row for one operator action.
+    const readUrls = fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes("/api/admin/traces/"));
+    expect(readUrls).toHaveLength(1);
+    expect(readUrls[0]).toContain("/by-trace-id/trace-gateb-8");
   });
 
   test("the filters are keyboard operable end to end", async () => {
@@ -319,6 +341,27 @@ describe("the routing panel states the decision (R-01/L-A04)", () => {
     const panel = screen.getByRole("heading", { name: "Routing" }).closest("section")!;
     expect(within(panel).getByText(/no intent chosen — asked for clarification/)).toBeTruthy();
     expect(within(panel).getByText(/clarify threshold 2\.5/)).toBeTruthy();
+    expect(within(panel).queryByText("chosen")).toBeNull();
+  });
+
+  test("a bounded clarification is stated as an escalation, not another question", async () => {
+    // routing.py's bounded_clarify keeps chosen=null but flips the outcome to
+    // handoff: the visitor is not asked again, the turn goes to a human.
+    stubTraceBackend({ records: [BOUNDED_RECORD_WIRE] });
+    renderExplorer();
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    await screen.findByText(/routing error/i, { selector: ".session-preview" });
+    fireEvent.click(screen.getByRole("button", { name: /Turn 9/i }));
+    await screen.findByRole("heading", { name: /Turn 9/ });
+
+    const panel = screen.getByRole("heading", { name: "Routing" }).closest("section")!;
+    expect(
+      within(panel).getByText(/escalated to a human after a prior clarification/)
+    ).toBeTruthy();
+    expect(within(panel).queryByText(/asked for clarification/)).toBeNull();
+    // The handoff was not a threshold comparison; claiming one would be a
+    // fabricated fact.
+    expect(within(panel).queryByText(/clarify threshold/)).toBeNull();
     expect(within(panel).queryByText("chosen")).toBeNull();
   });
 
@@ -705,6 +748,52 @@ describe("stale responses cannot clobber fresh state (R-20)", () => {
 
     await waitFor(() => expect(screen.queryByText("clearview-window-fabricated")).toBeNull());
     expect(screen.getByText("fresh-case", { selector: "code" })).toBeTruthy();
+  });
+
+  test("a superseded lookup still settles the loading state (R-20)", async () => {
+    let slowLookup: ReturnType<typeof deferredResponse> | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("/api/admin/traces/by-trace-id/")) {
+          if (!slowLookup) {
+            slowLookup = deferredResponse();
+            return slowLookup.promise;
+          }
+          return jsonResponse(wireTraceContent("turn-1", TRACE_READ_WIRE_CONTENT));
+        }
+        if (url.includes("/api/admin/traces/")) {
+          return jsonResponse(wireTraceContent("turn-1", TRACE_READ_WIRE_CONTENT));
+        }
+        if (url.includes("/api/admin/traces?")) return jsonResponse({ records: [RECORD_WIRE] });
+        if (url.includes("/gold-cases")) return jsonResponse(GOLD_WIRE);
+        if (url.includes("/api/admin/csrf-token")) return jsonResponse({ csrf_token: "t" });
+        throw new Error(`unexpected request: ${url}`);
+      })
+    );
+    renderExplorer();
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    await screen.findByText(/tool error/i, { selector: ".session-preview" });
+
+    // A lookup in flight owns the loading flag: both buttons disable.
+    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+      target: { value: "trace-gateb-8" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
+    expect(screen.getByRole("button", { name: "Opening…" })).toBeTruthy();
+
+    // A result click supersedes the lookup — the newer generation must not
+    // inherit the busy state once the lookup settles.
+    fireEvent.click(screen.getByRole("button", { name: /Turn 8/i }));
+    await screen.findByRole("heading", { name: /Turn 8/ });
+    slowLookup!.resolve(jsonResponse(wireTraceContent("turn-1", TRACE_READ_WIRE_CONTENT)));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Search turns" }).hasAttribute("disabled")).toBe(
+        false
+      )
+    );
+    expect(screen.getByRole("button", { name: "Open turn" })).toBeTruthy();
   });
 });
 

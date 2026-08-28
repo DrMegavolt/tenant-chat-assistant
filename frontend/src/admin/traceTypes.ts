@@ -278,41 +278,6 @@ export interface ReplayTrialsResult {
   elapsedSeconds: number;
 }
 
-export interface ReplayRetrievalResult {
-  turnId: string;
-  recordedAt: string;
-  manifestHash: string;
-  currentManifestHash: string | null;
-  manifestChanged: boolean;
-  stochastic: boolean;
-  components: ComponentVersionSnapshot[];
-  original: { contentHash: string; modelName: string; outputRaw: string };
-  replayed: { contentHash: string; modelName: string; outputRaw: string };
-  generationAvailable: boolean;
-  generationId: string | null;
-  goldEvidenceCount: number;
-  constant: string;
-  variable: string;
-  elapsedSeconds: number;
-}
-
-export interface ReplayTemplateResult {
-  turnId: string;
-  recordedAt: string;
-  manifestHash: string;
-  currentManifestHash: string | null;
-  manifestChanged: boolean;
-  stochastic: boolean;
-  components: ComponentVersionSnapshot[];
-  original: { contentHash: string; modelName: string; outputRaw: string };
-  replayed: { contentHash: string; modelName: string; outputRaw: string };
-  templateRef: string;
-  templateMatchesCurrent: boolean;
-  constant: string;
-  variable: string;
-  elapsedSeconds: number;
-}
-
 export interface GoldChunk {
   sourceId: string;
   text: string;

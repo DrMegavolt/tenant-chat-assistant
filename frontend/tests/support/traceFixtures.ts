@@ -1280,6 +1280,113 @@ export const UNSUPPORTED_CLAIMS_READ_WIRE_CONTENT = {
   }
 };
 
+/** A bounded clarification: outcome=handoff with chosen=null (routing.py bounded_clarify). */
+export const BOUNDED_CLARIFY_READ_WIRE_CONTENT = {
+  component_manifest: {
+    agents: "agents@1",
+    graph: "dispatch@3",
+    model: {
+      id: null,
+      parameters: {}
+    },
+    prompt_template: {
+      ref: "dispatch-system@4"
+    },
+    retriever: null,
+    routing_policy: "intent-routing@1",
+    tools: "tools@1"
+  },
+  diagnoses: [
+    {
+      cause: "routing_error",
+      confidence: "low",
+      detector_version: "diagnosis@1",
+      evidence: ["routing.rule:bounded_clarify"],
+      role: "primary",
+      stage: "routing",
+      status: "suspected"
+    }
+  ],
+  manifest_hash: "4ae02de80f00d9b483529c3c36ebda9b9c311ece519c5e72ae7c4c18868a2adf",
+  model: {
+    name: "",
+    usage: {}
+  },
+  model_invocations: [],
+  outcome: {
+    failure: null,
+    rounds: 0,
+    status: "escalated"
+  },
+  output: {
+    answer: "",
+    claims: [],
+    raw: ""
+  },
+  prompt: null,
+  retrieval: null,
+  routing: {
+    candidates: [
+      {
+        intent: "service_area",
+        matched_signals: ["coverage"],
+        score: 3.0
+      },
+      {
+        intent: "booking",
+        matched_signals: ["service-work"],
+        score: 2.0
+      },
+      {
+        intent: "general",
+        matched_signals: [],
+        score: 0.0
+      },
+      {
+        intent: "availability",
+        matched_signals: [],
+        score: 0.0
+      },
+      {
+        intent: "lead",
+        matched_signals: [],
+        score: 0.0
+      },
+      {
+        intent: "handoff",
+        matched_signals: [],
+        score: 0.0
+      },
+      {
+        intent: "cancel",
+        matched_signals: [],
+        score: 0.0
+      }
+    ],
+    chosen: null,
+    clarify_threshold: 2.5,
+    confidence: 3.0,
+    conflict_gap: 2.0,
+    direct_threshold: 4.0,
+    outcome: "handoff",
+    policy_version: "intent-routing@1",
+    rule: "bounded_clarify"
+  },
+  schema_version: "3",
+  tools: {
+    committed: [],
+    tool_calls: [],
+    tool_results: []
+  },
+  turn_index: 9,
+  verdicts: {
+    citation_invalid: [],
+    citations: [],
+    claims_invalid: [],
+    refused_tools: []
+  }
+};
+
 /** (c) A clarified turn: no retrieval ran, so the record carries no retrieval section. */
 export const NO_RETRIEVAL_READ_WIRE_CONTENT = {
   component_manifest: {
@@ -1638,6 +1745,20 @@ export const SUSPECTED_RECORD_WIRE = {
   diagnosis_statuses: ["suspected"],
   turn_index: 7,
   trace_schema_version: "1"
+};
+
+/** The content-free search row the store envelope carries for the record above. */
+export const BOUNDED_RECORD_WIRE = {
+  turn_id: "turn-9",
+  session_id: "session-1",
+  trace_id: "trace-gateb-9",
+  recorded_at: "2026-08-03T20:00:00+00:00",
+  outcome: "escalated",
+  component_manifest_hash: "4ae02de80f00d9b483529c3c36ebda9b9c311ece519c5e72ae7c4c18868a2adf",
+  diagnosis_causes: ["routing_error"],
+  diagnosis_statuses: ["suspected"],
+  turn_index: 9,
+  trace_schema_version: "3"
 };
 
 export function wireTraceContent(turnId: string, content: Record<string, unknown>) {

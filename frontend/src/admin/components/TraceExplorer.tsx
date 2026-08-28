@@ -36,8 +36,8 @@ function relativeTraceTime(recordedAt: string): string {
 }
 
 /** A record-shaped index entry for a turn opened by id, so the drill-in renders
- * it exactly like a search hit; nothing here is shown except through
- * TraceDetail's own audited read of the same record. */
+ * it exactly like a search hit; the content itself is the trace the lookup
+ * already read, never a re-fetch. */
 function recordFromTrace(trace: TraceRead): TraceSearchRecord {
   return {
     turnId: trace.turnId,
@@ -78,15 +78,31 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   const [error, setError] = useState<string | null>(null);
   const [lookupId, setLookupId] = useState("");
   const [lookupError, setLookupError] = useState<string | null>(null);
+  /** The record an id lookup already read, handed to the detail so the id
+   * path costs one audited read like every other path. */
+  const [lookupTrace, setLookupTrace] = useState<TraceRead | null>(null);
 
   // A slower earlier response must not land last and win: every read claims a
   // generation before its first await and publishes only while still newest —
   // the same architecture useAdminConsole established (review R-20).
   const generationRef = useRef(0);
-  const claimGeneration = useCallback(() => {
-    const generation = (generationRef.current += 1);
-    return () => generation === generationRef.current;
+  const claimGeneration = useCallback((): number => {
+    generationRef.current += 1;
+    return generationRef.current;
   }, []);
+
+  // `isLoading` is owned by the operation that set it: its cleanup settles the
+  // flag unless a newer operation has taken ownership. Checking ownership
+  // instead of generation currency is what keeps a superseded lookup from
+  // leaving both submit buttons disabled forever (review R-20 follow-up).
+  const loadingOwnerRef = useRef(0);
+  const takeLoading = (generation: number) => {
+    loadingOwnerRef.current = generation;
+    setLoading(true);
+  };
+  const settleLoading = (generation: number) => {
+    if (loadingOwnerRef.current === generation) setLoading(false);
+  };
 
   const runSearch = async (overrides?: TraceSearchFilters) => {
     const active = { ...filters, ...overrides };
@@ -97,8 +113,9 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
     if (active.cause) wired.cause = active.cause;
     if (active.diagnosisStatus) wired.diagnosisStatus = active.diagnosisStatus;
     if (active.manifestHash) wired.manifestHash = active.manifestHash;
-    const isCurrent = claimGeneration();
-    setLoading(true);
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    takeLoading(generation);
     setError(null);
     setSelected(null);
     try {
@@ -110,12 +127,14 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
       if (!isCurrent()) return;
       setError("Could not reach the trace surface. Try the search again.");
     } finally {
-      if (isCurrent()) setLoading(false);
+      settleLoading(generation);
     }
   };
 
   const open = (record: TraceSearchRecord) => {
-    const isCurrent = claimGeneration();
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    setLookupTrace(null);
     setSelected(record);
     // No trace read here: TraceDetail performs the one audited read for this
     // click, so a drill-in costs a single trace.read (review R-19).
@@ -132,8 +151,9 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   const openById = async () => {
     const value = lookupId.trim();
     if (!value) return;
-    const isCurrent = claimGeneration();
-    setLoading(true);
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    takeLoading(generation);
     setLookupError(null);
     setError(null);
     try {
@@ -148,12 +168,15 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
         return;
       }
       setLookupId("");
+      // The audited read this lookup performed is handed to the detail, which
+      // must not read the same record a second time (review R-19).
+      setLookupTrace(detail);
       setSelected(recordFromTrace(detail));
     } catch {
       if (!isCurrent()) return;
       setLookupError("Could not reach the trace surface. Try again.");
     } finally {
-      if (isCurrent()) setLoading(false);
+      settleLoading(generation);
     }
   };
 
@@ -162,6 +185,7 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
     setTenantId(next);
     setRecords([]);
     setHasSearched(false);
+    setLookupTrace(null);
     setSelected(null);
   };
 
@@ -270,6 +294,7 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
           tenantId={tenantId}
           record={selected}
           gold={gold}
+          preloadedTrace={lookupTrace?.turnId === selected.turnId ? lookupTrace : undefined}
         />
       )}
     </section>
