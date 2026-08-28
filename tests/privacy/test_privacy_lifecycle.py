@@ -617,10 +617,32 @@ def plant_turn_records(
 ) -> uuid.UUID:
     """One inference-plane record naming the subject, via the `OBS-004` seam.
 
-    Written through ``PostgresTurnRecordStore`` exactly as the trace
-    finalizer will write it, so the retention and erasure tests pin the
-    repository's contract, not a test's private INSERT.
+    Written through ``PostgresTurnRecordStore`` in the shape the trace
+    finalizer writes (schema 4): the subject's contact lives where
+    conversation content lives — the retrieval section's copy of the visitor's
+    message — while the record's metadata carries the *other* demo subject's
+    phone digits inside the manifest hash. Every test using this fixture thus
+    also pins that digit runs inside metadata can never select a session for
+    export or erasure; only recognized contact content can.
     """
+    other_digits = BORIS_PHONE if contact == DANA_PHONE else DANA_PHONE
+    content: dict[str, object] = {
+        "schema_version": "4",
+        "turn_index": 3,
+        "retrieval": {
+            "query": f"Please call {contact} back",
+            "original_message": f"Please call {contact} back",
+            "sufficient": True,
+        },
+        "output": {"answer": "Noted, thank you.", "raw": ""},
+        # A sha-shaped hex string that embeds the other subject's ten digits:
+        # the exact carrier the whole-JSON digit scan false-matched on.
+        "manifest_hash": f"9d{'0' * 24}{other_digits}{'a' * 24}",
+        "executed_graph": {
+            "started_at": "2026-08-28T17:55:52+00:00",
+            "duration_ms": 173,
+        },
+    }
     database = Database.connect(database_url, TEST_POOL)
     try:
         turn = asyncio.run(
@@ -628,11 +650,7 @@ def plant_turn_records(
                 tenant_id,
                 uuid.UUID(session_id),
                 trace_id="trace-for-privacy-tests",
-                content={
-                    "prompt": f"Please call {contact} back",
-                    "evidence": ["document-1"],
-                    "output": "Noted, thank you.",
-                },
+                content=content,
                 recorded_at=recorded_at,
             )
         )
@@ -692,7 +710,7 @@ def test_an_export_includes_turn_records_and_their_projections(
     assert {item["session_id"] for item in body["turn_records"]} == {dana_session}
     exported = by_id[str(dana_turn)]
     assert exported["trace_id"] == "trace-for-privacy-tests"
-    assert DANA_PHONE in exported["content"]["prompt"]
+    assert DANA_PHONE in str(exported["content"]["retrieval"]["original_message"])
     assert [item["kind"] for item in body["projections"]] == ["eval_dataset"]
     assert body["projections"][0]["turn_record_id"] == str(dana_turn)
 
@@ -720,6 +738,86 @@ def test_a_session_is_found_through_turn_record_content_only(
 
     assert {item["turn_id"] for item in body["turn_records"]} == {str(turn)}
     assert session_id in {item["session_id"] for item in body["sessions"]}
+
+
+def test_digits_in_trace_metadata_select_no_session_for_export_or_erasure(
+    client: TestClient, privacy_database_url: str
+) -> None:
+    """The subject probe as a digit run inside trace metadata matches nothing.
+
+    Dana's planted turn record embeds Boris's ten digits in its manifest hash
+    — the carrier the whole-JSON digit scan false-matched on, pulling
+    unrelated sessions into export and erasure. Boris's rights request must
+    select only Boris's own session: the export names no session of Dana's,
+    and erasing Boris leaves Dana's transcript, booking, and inference-plane
+    records untouched.
+    """
+    dana_session, _ = plant_subject(client, BOOKING_TENANT, DANA_PHONE)
+    boris_session, _ = plant_subject(client, BOOKING_TENANT, BORIS_PHONE)
+    dana_turn = plant_turn_records(
+        privacy_database_url, BOOKING_TENANT, dana_session, contact=DANA_PHONE
+    )
+
+    export = client.post(
+        "/api/admin/privacy/export",
+        headers=_csrf_headers(client, "tenant_admin"),
+        json={"tenant_id": BOOKING_TENANT, "contact": BORIS_PHONE},
+    )
+    assert export.status_code == 200, export.text
+    body = export.json()
+    exported_sessions = {item["session_id"] for item in body["sessions"]}
+    assert exported_sessions == {boris_session}
+    assert {item["session_id"] for item in body["turn_records"]} == {boris_session}
+
+    filed = client.post(
+        "/api/admin/privacy/deletion-requests",
+        headers=_csrf_headers(client, "platform_admin"),
+        json={"tenant_id": BOOKING_TENANT, "contact": BORIS_PHONE},
+    )
+    assert filed.status_code == 201, filed.text
+
+    database = Database.connect(privacy_database_url, TEST_POOL)
+    try:
+
+        async def worker_pass() -> int:
+            privacy = PostgresPrivacyStore(database.engine, database.engine)
+            return await run_once(
+                PostgresJobStore(database.engine),
+                {
+                    JobKind.PRIVACY_DELETION: privacy_deletion_handler(
+                        privacy, PostgresAuditStore(database.engine)
+                    )
+                },
+                WorkerSettings(
+                    worker_id="privacy-worker-test",
+                    batch_size=1,
+                    lease_duration=timedelta(seconds=30),
+                ),
+            )
+
+        completed = asyncio.run(worker_pass())
+    finally:
+        asyncio.run(_dispose(database))
+    assert completed == 1
+
+    with psycopg.connect(_libpq(privacy_database_url)) as connection:
+        dana_surviving = _row(
+            connection,
+            """
+            SELECT
+                (SELECT count(*) FROM chat_sessions WHERE id = %s),
+                (SELECT count(*) FROM turn_records WHERE id = %s),
+                (SELECT count(*) FROM bookings WHERE chat_session_id = %s)
+            """,
+            (uuid.UUID(dana_session), dana_turn, uuid.UUID(dana_session)),
+        )
+        assert dana_surviving == (1, 1, 1)
+        boris_surviving = _scalar(
+            connection,
+            "SELECT count(*) FROM chat_sessions WHERE id = %s",
+            (uuid.UUID(boris_session),),
+        )
+        assert boris_surviving == 0
 
 
 def test_an_erasure_request_removes_turn_records_and_derived_projections(
