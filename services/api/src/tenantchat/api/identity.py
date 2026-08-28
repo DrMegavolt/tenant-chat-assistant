@@ -323,7 +323,10 @@ def verify_csrf(request: Request, identity: AdminIdentity, settings: Settings) -
     if not presented or not secret:
         raise CsrfValidationError
     issued_at_text, separator, digest = presented.partition(".")
-    if not separator or not issued_at_text.isdigit() or not digest:
+    # isdecimal, not isdigit: the superscript digits pass isdigit but int()
+    # refuses them, and a header value is attacker-controlled text — the
+    # same non-ASCII hazard R-08 fixed for the token comparison.
+    if not separator or not issued_at_text.isdecimal() or not digest:
         raise CsrfValidationError
     issued_at = int(issued_at_text)
     now = int(time.time())

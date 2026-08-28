@@ -607,8 +607,12 @@ class PostgresConversationStore:
                 raise ConflictError(detail="conversation version changed while row was locked")
             if audit_event is not None:
                 # The staff reply and the row that vouches for it commit or
-                # roll back together (R-39).
-                await _insert_audit_event(connection, audit_event)
+                # roll back together (R-39), and the row names the message it
+                # vouches for: the id exists only once this insert owns it.
+                stamped = replace(
+                    audit_event, details={**audit_event.details, "message_id": str(message_id)}
+                )
+                await _insert_audit_event(connection, stamped)
             return _message(inserted.one())
 
     async def transcript(self, tenant_id: str, session_id: uuid.UUID) -> tuple[MessageRecord, ...]:

@@ -705,6 +705,35 @@ def test_a_fresh_csrf_token_still_authorizes_the_mutation(
     assert asyncio.run(grants.has_access(TRACE_TENANT, "operator-7"))
 
 
+@pytest.mark.security
+def test_a_superscript_digit_csrf_token_is_refused_not_a_server_error(
+    trace_app: TraceApp,
+) -> None:
+    """R-08's hazard class, one layer deeper: ``str.isdigit`` accepts the
+    superscript digits (``"²"``) whose ``int()`` raises ValueError, so a
+    header of ``².x`` used to surface as a 500 instead of the 403 it is. A
+    legitimate minted token still passes alongside it."""
+    client, _turns, _grants, _audit = trace_app
+    headers = _operator(role="platform_admin")
+    granted = client.post(
+        "/api/admin/trace-access",
+        json={"tenant_id": TRACE_TENANT, "subject": "operator-7"},
+        headers=headers | {CSRF_HEADER: _csrf(client, headers)},
+    )
+    assert granted.status_code == 201, granted.text
+
+    refused = client.post(
+        "/api/admin/trace-access",
+        json={"tenant_id": TRACE_TENANT, "subject": "operator-9"},
+        # Raw bytes, as the wire carries them: the server decodes latin-1 and
+        # sees the superscript digit str-side.
+        headers=_bytes_headers(headers) | {CSRF_HEADER.encode(): "².x".encode("latin-1")},
+    )
+
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "csrf_validation_failed"
+
+
 def test_listing_trace_grants_needs_no_csrf_token(trace_app: TraceApp) -> None:
     """R-57: the grant list is a GET like every other trace-plane read — the
     double-submit token defends state-changing requests, and demanding CSRF on

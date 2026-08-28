@@ -3,11 +3,13 @@
 ``services/embedding/app.py`` cannot be imported hermetically — its model
 runtime is a multi-gigabyte dependency the gate deliberately does not install —
 so these specifications read the module's syntax tree the way the audit
-taxonomy test reads the console source. Three properties are load-bearing: a
+taxonomy test reads the console source. Four properties are load-bearing: a
 readiness probe must never trigger the multi-minute model load (an orchestrator
 gates traffic on readiness, so a probe-triggered load would never be reached
 and the pod would report "loading" forever), concurrent first callers must
-serialize into one load, and the process must start the load itself at startup.
+serialize into one load, the process must start the load itself at startup,
+and a failed load must fail the process — a daemon thread whose load dies
+leaves a pod that is never ready and never restarted.
 """
 
 from __future__ import annotations
@@ -87,30 +89,36 @@ def test_concurrent_first_callers_serialize_behind_a_lock() -> None:
     )
 
 
-def test_startup_begins_loading_the_model() -> None:
-    """The complement to the probe fix: nothing else would ever start the
-    load on a readiness-gated deployment, so the lifespan must."""
+def _thread_target() -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """The function the startup thread runs, refusing an unnamed target."""
     tree = _module()
-    loaders = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _calls(node, "Thread")
-    ]
-    assert loaders, "no startup path starts the model load in a background thread"
-
-    lifespan_targeted = False
-    for loader in loaders:
-        for call in _calls(loader, "Thread"):
-            if any(
-                isinstance(keyword.value, ast.Name) and keyword.value.id == "get_model"
-                for keyword in call.keywords
-                if keyword.arg == "target"
-            ):
-                lifespan_targeted = True
-    assert lifespan_targeted, (
-        "the background thread must load the model (target=get_model), not " "merely exist"
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) or not _calls(
+            node, "Thread"
+        ):
+            continue
+        for call in _calls(node, "Thread"):
+            for keyword in call.keywords:
+                if keyword.arg == "target" and isinstance(keyword.value, ast.Name):
+                    return _function(tree, keyword.value.id)
+    raise AssertionError(
+        "the module defines no background thread with a named load function: "
+        "nothing would ever start the model load on a readiness-gated deployment"
     )
 
+
+def test_startup_begins_loading_the_model() -> None:
+    """The complement to the probe fix: nothing else would ever start the
+    load on a readiness-gated deployment, so the lifespan must — through a
+    named loader that actually calls the model load."""
+    loader = _thread_target()
+
+    assert _calls(loader, "get_model"), (
+        "the startup thread must load the model (its target must call "
+        "get_model), not merely exist"
+    )
+
+    tree = _module()
     app_constructor = next(
         (node for node in tree.body if isinstance(node, ast.Assign) and _targets_app(node)),
         None,
@@ -124,6 +132,40 @@ def test_startup_begins_loading_the_model() -> None:
         if keyword.arg == "lifespan"
     ]
     assert lifespan_kw, "the FastAPI app must register the lifespan that starts the load"
+
+
+def test_a_failed_model_load_fails_the_process() -> None:
+    """A load error must kill the process, not strand the pod unready forever.
+
+    The load thread is a daemon: when its work raises, the default excepthook
+    writes stderr and the interpreter carries on, so a download refusal or an
+    OOM left the pod reporting "loading" until a human noticed. k8s restarts a
+    crashed process, so exiting is the honest failure — the loader must call
+    ``os._exit`` on the failure path, and that path must guard the load call
+    itself.
+    """
+    loader = _thread_target()
+
+    exits = _calls(loader, "_exit")
+    assert exits, (
+        "the startup loader must fail the process when the load raises: a "
+        "silently dead daemon thread leaves the pod unready forever"
+    )
+    assert all(
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "os"
+        for call in exits
+    ), "the failure path must exit the process hard (os._exit), not raise"
+    assert _calls(loader, "get_model"), "the exit guard must wrap the load call itself"
+    # The guard is a try/except around the load, not an unconditional exit.
+    guarded = any(
+        isinstance(child, ast.Try)
+        and _calls(child, "get_model")
+        and any(_calls(handler, "_exit") for handler in child.handlers)
+        for child in ast.walk(loader)
+    )
+    assert guarded, "os._exit must sit in the failure handler of the load call's try"
 
 
 def _targets_app(node: ast.Assign) -> bool:

@@ -486,7 +486,8 @@ def test_a_staff_reply_is_audited_with_the_reply(
 ) -> None:
     """R-39: the row that vouches for a staff reply commits with it, so an
     audit read never shows a reply the audit cannot account for (or the
-    reverse)."""
+    reverse) — and it names the message it vouches for, so the accountability
+    record and the persisted reply join on the id."""
     session_id = open_session()
     headers = operator_headers()
 
@@ -497,10 +498,12 @@ def test_a_staff_reply_is_audited_with_the_reply(
     )
 
     assert response.status_code == 201
+    message_id = response.json()["message"]["message_id"]
     events = asyncio.run(audit_store.for_tenant(BOOKING_TENANT))
     replies = [event for event in events if event.action == "staff_reply_sent"]
     assert len(replies) == 1
     assert str(replies[0].resource_id) == session_id
+    assert replies[0].details["message_id"] == message_id
     assert replies[0].principal_id == "operator-7"
     assert replies[0].request_id
 

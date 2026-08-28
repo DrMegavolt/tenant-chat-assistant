@@ -287,7 +287,9 @@ class ConversationStore(Protocol):
 
         ``audit_event``, when given, is persisted in the same transaction as
         the message (R-39): the staff reply and the row that vouches for it
-        commit together or not at all.
+        commit together or not at all. The row names the message it vouches
+        for: the store records the persisted id under ``message_id`` in the
+        event's details, so the event can be built before the id exists.
         """
 
     async def transcript(
@@ -696,7 +698,12 @@ class InMemoryConversationStore:
                 session, version=session.version + 1, last_activity_at=now
             )
         if audit_event is not None and self._audit is not None:
-            await self._audit.record(audit_event)
+            # Same contract as the PostgreSQL store: the row names the message
+            # it vouches for.
+            stamped = replace(
+                audit_event, details={**audit_event.details, "message_id": str(record.message_id)}
+            )
+            await self._audit.record(stamped)
         return replace(record, metadata=dict(record.metadata))
 
     async def transcript(self, tenant_id: str, session_id: uuid.UUID) -> tuple[MessageRecord, ...]:

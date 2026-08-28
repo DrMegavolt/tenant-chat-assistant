@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -13,6 +14,8 @@ from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
 
 from internal_auth import authenticate_internal_bearer, load_internal_credentials
+
+logger = logging.getLogger("embedding")
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
 MODEL_REVISION = os.environ.get(
@@ -34,7 +37,9 @@ async def _lifespan(running: FastAPI) -> AsyncIterator[None]:
     # gates traffic on readiness, so a readiness-triggered load would never be
     # reached and the pod would report "loading" forever. The thread is a
     # daemon because a half-downloaded model is worthless at shutdown.
-    loader = threading.Thread(target=get_model, name="embedding-model-load", daemon=True)
+    loader = threading.Thread(
+        target=_load_model_in_thread, name="embedding-model-load", daemon=True
+    )
     loader.start()
     yield
 
@@ -91,6 +96,19 @@ def get_model() -> SentenceTransformer:
             if MODEL is None:
                 MODEL = _load_model()
     return MODEL
+
+
+def _load_model_in_thread() -> None:
+    # A failed load (a refused download, OOM) must kill the process: the
+    # daemon thread's default excepthook only writes stderr, so the pod would
+    # otherwise sit unready forever with no probe to restart it. k8s restarts
+    # a crashed process, which is the honest state for a service whose one
+    # job cannot start.
+    try:
+        get_model()
+    except Exception:
+        logger.exception("model load failed; exiting so the orchestrator restarts the pod")
+        os._exit(1)
 
 
 @app.get("/health")

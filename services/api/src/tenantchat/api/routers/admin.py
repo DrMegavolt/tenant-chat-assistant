@@ -416,7 +416,9 @@ async def send_staff_message(
         and handoff.assigned_principal_id != identity.subject
     ):
         raise ForbiddenError
-    # The reply and the audit row that vouches for it commit together (R-39).
+    # The event is built before the append and the store stamps the persisted
+    # message's id into its details, so the reply and the audit row that
+    # vouches for it — naming it — commit together (R-39).
     record = await conversations.append(
         payload.tenant_id,
         session_id,
