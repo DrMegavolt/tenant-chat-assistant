@@ -10,6 +10,9 @@
 import { OUTCOMES } from "src/admin/types";
 import type {
   AdminMessage,
+  AdminToolEvent,
+  Booking,
+  Lead,
   Outcome,
   SessionDetail,
   SessionSummary,
@@ -137,18 +140,30 @@ export class AdminApi {
     const payload = (await response.json()) as {
       session?: Record<string, unknown>;
       messages?: unknown[];
+      pending?: unknown;
+      leads?: unknown;
+      bookings?: unknown;
+      tool_events?: unknown;
     };
     if (!payload.session) return null;
     const summary = sessionSummaryFromWire(payload.session, this.tenantNames);
     const messages = (payload.messages ?? []).map((wire) =>
       adminMessageFromWire(wire as Record<string, unknown>)
     );
-    const last = messages[messages.length - 1];
+    const leads = listOrNull(payload.leads);
+    const bookings = listOrNull(payload.bookings);
+    const toolEvents = listOrNull(payload.tool_events);
+    const pending = pendingFromWire(payload.pending);
     return {
       ...summary,
-      messageCount: messages.length,
-      ...(last ? { lastMessage: { content: last.content } } : {}),
-      messages
+      messages,
+      ...(leads ? { leads: leads.map(leadFromWire) } : {}),
+      ...(bookings ? { bookings: bookings.map(bookingFromWire) } : {}),
+      ...(toolEvents ? { toolEvents: toolEvents.map(toolEventFromWire) } : {}),
+      // `pending` joins SessionDetail with the widgets branch's types, whose
+      // pending card reads it; carrying it here lights that card up at merge
+      // without a second adapter change.
+      ...(pending ? { pending } : {})
     };
   }
 
@@ -713,6 +728,22 @@ function adminMessageFromWire(wire: Record<string, unknown>): AdminMessage {
   };
 }
 
+/**
+ * The visitor decision a paused conversation waits on: a booking confirmation
+ * carries the slot and address, a lead confirmation the contact and summary.
+ * Rides beside `SessionDetail` under its wire-declared name until the widgets
+ * branch's types (which declare it) merge.
+ */
+interface PendingConfirmationView {
+  awaiting: string;
+  service: string;
+  slot: string;
+  customerName: string;
+  address: string;
+  contact: string;
+  summary: string;
+}
+
 function sessionSummaryFromWire(
   wire: Record<string, unknown>,
   tenantNames: Map<string, string>
@@ -720,6 +751,7 @@ function sessionSummaryFromWire(
   const tenantId = str(wire.tenant_id);
   const status = str(wire.status);
   const outcome = str(wire.outcome);
+  const lastMessage = section(wire.last_message);
   return {
     sessionId: str(wire.session_id),
     // Falls back to the id so a tenant added since the console loaded its
@@ -730,8 +762,90 @@ function sessionSummaryFromWire(
     // `none` is the store's resting value and is not one of the console's
     // outcomes; leaving the key off lets `outcomeOf` apply its own default.
     ...(OUTCOMES.includes(outcome as Outcome) ? { outcome: outcome as Outcome } : {}),
+    // The queue-row counts (the stat strip sums them) and the bounded
+    // last-message preview: optional on the type so a bare summary renders
+    // without them rather than inventing a zero.
+    ...(typeof wire.message_count === "number" ? { messageCount: wire.message_count } : {}),
+    ...(typeof wire.lead_count === "number" ? { leadCount: wire.lead_count } : {}),
+    ...(lastMessage ? { lastMessage: lastMessageFromWire(lastMessage) } : {}),
     updatedAt: epochSeconds(wire.last_activity_at)
   };
+}
+
+/** The bounded queue-row preview, plus who wrote it and when — the detail
+ * carries the same shape untruncated, so one mapping serves both sides. */
+function lastMessageFromWire(wire: Record<string, unknown>): {
+  role: string;
+  content: string;
+  createdAt: number;
+} {
+  return {
+    role: str(wire.role),
+    content: str(wire.content),
+    createdAt: epochSeconds(wire.created_at)
+  };
+}
+
+function leadFromWire(wire: Record<string, unknown>): Lead {
+  return {
+    customerName: str(wire.customer_name),
+    contact: str(wire.contact),
+    service: str(wire.service),
+    urgency: str(wire.urgency),
+    summary: str(wire.summary)
+  };
+}
+
+function bookingFromWire(wire: Record<string, unknown>): Booking {
+  return {
+    customerName: str(wire.customer_name),
+    contact: str(wire.contact),
+    service: str(wire.service),
+    slot: str(wire.slot),
+    address: str(wire.address)
+  };
+}
+
+/** One recorded tool result. The store keeps the model-facing payload, so a
+ * JSON string is parsed back into the shape the console renders; a payload
+ * that is not JSON passes through as the string it was. */
+function toolEventFromWire(wire: Record<string, unknown>): AdminToolEvent {
+  const raw = wire.result;
+  let result: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      result = JSON.parse(raw) as unknown;
+    } catch {
+      result = raw;
+    }
+  }
+  return { name: str(wire.name), result };
+}
+
+/** The visitor decision a paused conversation waits on, camelCased for the
+ * detail's pending card; null when the record carries none. */
+function pendingFromWire(value: unknown): PendingConfirmationView | null {
+  const wire = section(value);
+  if (!wire) return null;
+  return {
+    awaiting: str(wire.awaiting),
+    service: str(wire.service),
+    slot: str(wire.slot),
+    customerName: str(wire.customer_name),
+    address: str(wire.address),
+    contact: str(wire.contact),
+    summary: str(wire.summary)
+  };
+}
+
+/** The wire list when the field is present (empty included); null when absent,
+ * so a bare payload maps without inventing empty side cards. */
+function listOrNull(value: unknown): Record<string, unknown>[] | null {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> => typeof item === "object" && item !== null
+      )
+    : null;
 }
 
 function searchRecordFromWire(wire: Record<string, unknown>): TraceSearchRecord {
