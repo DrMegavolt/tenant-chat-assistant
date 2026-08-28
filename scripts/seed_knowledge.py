@@ -85,8 +85,16 @@ def _admin_headers(*, csrf: str = "") -> dict[str, str]:
 
 
 def _csrf_token() -> str:
+    """The server's token format: ``issued_at.HMAC(secret, subject:issued_at)``.
+
+    It expires after the server-side TTL, so this must stay in lockstep with
+    ``identity.csrf_token`` — the script runs inside one deploy window, well
+    under the expiry.
+    """
     secret = _require("ADMIN_CSRF_SECRET")
-    return hmac.new(secret.encode(), _OPERATOR_SUBJECT.encode(), hashlib.sha256).hexdigest()
+    issued_at = int(time.time())
+    message = f"{_OPERATOR_SUBJECT}:{issued_at}".encode()
+    return f"{issued_at}.{hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()}"
 
 
 def _connect(url: str) -> tuple[http.client.HTTPConnection, str]:
