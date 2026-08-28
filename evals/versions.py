@@ -86,9 +86,10 @@ def component_manifest(
 ) -> dict[str, Any]:
     """One deterministic manifest entry for a run's report.
 
-    ``corpus_digest`` is the content-free fingerprint of the indexed corpus
-    (a SHA-256 over chunk ids and the embedding model), so a corpus edit
-    shows up in the manifest diff without any text leaving the dataset.
+    ``corpus_digest`` is the fingerprint of the indexed corpus (a SHA-256
+    over each chunk's id, text, and active flag, plus the embedding model),
+    so any corpus edit — rewording or a soft delete — shows up in the
+    manifest diff without any text leaving the dataset.
     """
     return {
         "build": {
@@ -133,9 +134,23 @@ def manifest_hash(components: Mapping[str, object]) -> str:
 
 
 def corpus_digest(corpus: FixtureCorpus) -> str:
-    """The content-free fingerprint of a fixture corpus, stable across runs."""
+    """The content fingerprint of a fixture corpus, stable across runs.
+
+    Covers every input the retrieval results depend on — each chunk's id,
+    text, and active flag, plus the embedding model — because waivers and
+    run ids bind to the manifest hash this feeds: a digest blind to text or
+    activity let a reviewed waiver silently apply to edited or deactivated
+    chunks no reviewer had seen (R-15). Chunks serialize sorted by id under
+    canonical compact JSON, so neither corpus order nor the interpreter's
+    hash seed can move the value.
+    """
+    entries = [
+        {"active": chunk.active, "chunk_id": chunk.chunk_id, "text": chunk.text}
+        for chunk in sorted(corpus.chunks, key=lambda chunk: chunk.chunk_id)
+    ]
     canonical = json.dumps(
-        [sorted(chunk.chunk_id for chunk in corpus.chunks), corpus.embedding_model],
+        {"chunks": entries, "embedding_model": corpus.embedding_model},
         sort_keys=True,
+        separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
