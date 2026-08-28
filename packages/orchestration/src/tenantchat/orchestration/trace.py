@@ -80,9 +80,14 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 # original user message; a ``3`` record carries both the raw message and the
 # planner's resolved standalone query, exposed by the retrieval funnel when they
 # differ.
-TRACE_SCHEMA_VERSION: Final = "3"
+#
+# ``4`` added the ``output_invalid`` key to ``verdicts`` and the ``cancelled``
+# outcome value. Both are additive: a reader of an older record finds no such
+# key and no such status, and both stay absent until the output validator and
+# the runtime's cancelled-turn path first write them.
+TRACE_SCHEMA_VERSION: Final = "4"
 
-DETECTOR_VERSION: Final = "diagnosis@1"
+DETECTOR_VERSION: Final = "diagnosis@2"
 
 
 class DiagnosisCause(StrEnum):

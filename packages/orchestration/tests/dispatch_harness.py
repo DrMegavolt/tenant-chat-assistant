@@ -76,6 +76,9 @@ CLAIM_REFUSAL_REPLY = (
     "I cannot confirm some of the details in what I was about to say, so I "
     "will not say it. The team can confirm it — call (555) 816-4420."
 )
+LEAK_REFUSAL_REPLY = (
+    "I was not able to finish that reply. Please ask again, or call (555) 816-4420."
+)
 ESCALATION_REPLY = (
     "I am not able to finish this myself, so I have passed it to the team. "
     "You can also reach them on (555) 816-4420."

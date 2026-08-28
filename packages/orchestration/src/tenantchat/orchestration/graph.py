@@ -31,7 +31,7 @@ from tenantchat.orchestration.nodes import (
 )
 from tenantchat.orchestration.state import DispatchState
 
-GRAPH_VERSION: Final = "dispatch@3"
+GRAPH_VERSION: Final = "dispatch@4"
 
 
 DispatchGraph = StateGraph[DispatchState, None, DispatchState, DispatchState]

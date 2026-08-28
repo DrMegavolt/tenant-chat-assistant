@@ -133,20 +133,19 @@ _CALLBACK_PROMISE_RE = re.compile(
 # label value.
 UNKNOWN_TOOL_LABEL = "unknown"
 
-# Markers of a tool call the model wrote into its *text* instead of emitting as
-# a structured tool call. `<tool_call>`/`<function=`/`<parameter=` are provider
-# chat-template syntax; none of them can occur in a legitimate answer, so a
-# match is proof the model leaked its raw call syntax (review 2026-08-27,
-# DB-1) — text that was
-# about to be published verbatim to the visitor, contact details and all.
-_TOOL_CALL_MARKUP_RE = re.compile(r"</?tool_call>|</?function[=>]|</?parameter[=>]", re.IGNORECASE)
+# Markers of a tool call the model wrote into its *text* instead of emitting
+# as a structured tool call: provider chat-template tags (`<tool_call>`, and
+# the `=`-attribute forms of `<function>`/`<parameter>`), plus a graph tool
+# written as a call with the paren adjacent. Deliberately narrow — prose about
+# "the <function> element" or a spaced mention like "check_service_area
+# (ZIP 97205)" must not refuse an honest answer — because the cost asymmetry
+# runs both ways and only the adjacent-paren call shape is the leak. A code
+# snippet that really calls a tool by name still matches, and that class is
+# indistinguishable from the leak, so refusing it is the safe direction
+# (review 2026-08-27, DB-1).
+_TOOL_CALL_MARKUP_RE = re.compile(r"</?tool_call>|</?function=|</?parameter=", re.IGNORECASE)
 
-# The same leak in a second costume: a known tool written as a source-level
-# call, e.g. `create_lead(name="Jane Tester", phone=...)`. Restricted to the
-# graph's own tool names so ordinary prose never trips it.
-_TOOL_NAME_CALL_RE = re.compile(
-    rf"\b(?:{'|'.join(re.escape(spec.name) for spec in TOOL_SPECS)})\s*\("
-)
+_TOOL_NAME_CALL_RE = re.compile(rf"\b(?:{'|'.join(re.escape(spec.name) for spec in TOOL_SPECS)})\(")
 
 # A leaked-syntax verdict carries one line of the model's output, bounded: the
 # trace is the inference plane, so echoing the model's own text is allowed, but
@@ -179,10 +178,10 @@ def strip_citation_markers(text: str) -> str:
 def _leaked_tool_syntax(content: str) -> str | None:
     """The first line of raw tool-call syntax in an answer, or ``None``.
 
-    Deterministic and conservative: a provider's chat-template markup or a
-    graph tool written as source code cannot be part of a legitimate answer,
-    so a match classifies the whole answer as an invalid model response rather
-    than something to validate the content of.
+    Deterministic, and deliberately narrow: only chat-template markup and an
+    adjacent-paren call of a graph tool count, so a match classifies the whole
+    answer as an invalid model response rather than something to validate the
+    content of.
     """
     for line in content.splitlines():
         if _TOOL_CALL_MARKUP_RE.search(line) or _TOOL_NAME_CALL_RE.search(line):
@@ -383,6 +382,18 @@ def _claim_refusal_reply(policy: TenantPolicy) -> str:
         "I cannot confirm some of the details in what I was about to say, so I "
         f"will not say it. The team can confirm it — call {policy.phone}."
     )
+
+
+def _leak_refusal_reply(policy: TenantPolicy) -> str:
+    """The deterministic refusal for an answer that is raw tool-call syntax.
+
+    Distinct from the claim refusal on purpose: nothing the visitor asked for
+    was unsupported — the assistant failed to finish saying anything at all —
+    and the reply should say that, not imply their question was the problem.
+    Server-written like every refusal: the model's own output is the thing
+    being withheld.
+    """
+    return f"I was not able to finish that reply. Please ask again, or call {policy.phone}."
 
 
 def _uncommitted_promise_refusal(policy: TenantPolicy) -> str:
@@ -1977,7 +1988,7 @@ class DispatchNodes:
                         labels={"outcome": TurnOutcome.ANSWER_REFUSED.value},
                     )
                     return {
-                        "answer": _claim_refusal_reply(policy),
+                        "answer": _leak_refusal_reply(policy),
                         "turn_outcome": TurnStatus.REFUSED.value,
                         "citations": [],
                         "citation_invalid": [],

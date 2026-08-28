@@ -142,7 +142,7 @@ def _diagnosis(
         "status": status.value,
         "confidence": confidence.value,
         "evidence": list(evidence),
-        "detector_version": "diagnosis@1",
+        "detector_version": "diagnosis@2",
     }
 
 
@@ -170,7 +170,7 @@ def test_the_trace_carries_the_schema_version_and_turn_index() -> None:
     """The shape version is the reader's contract; the index the query key."""
     trace = build_turn_trace(_answered(), pending=None)
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "3"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "4"
     assert trace["turn_index"] == 1
 
 
@@ -823,7 +823,7 @@ def test_a_diagnosis_record_serializes_to_the_store_shape() -> None:
         "status": "detected",
         "confidence": "high",
         "evidence": ["retrieval.sufficient:false"],
-        "detector_version": "diagnosis@1",
+        "detector_version": "diagnosis@2",
     }
 
 
@@ -865,14 +865,14 @@ def _executed_section(**overrides: object) -> dict[str, object]:
     } | overrides
 
 
-def test_a_captured_executed_graph_section_is_recorded_under_schema_version_3() -> None:
+def test_a_captured_executed_graph_section_is_recorded_under_schema_version_4() -> None:
     """The `OBS-006` capture lands in the trace beside the derived content."""
     trace = build_turn_trace(
         _answered(executed_graph=_executed_section()),
         pending=None,
     )
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "3"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "4"
     assert _section(trace, "executed_graph") == _executed_section()
 
 

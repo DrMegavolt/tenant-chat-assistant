@@ -197,7 +197,7 @@ class ExecutedGraphListener:
             started_at=timestamp,
             # Replay is a checkpoint-resume fact, not an attempt count: a fresh
             # second round of a tool loop runs the node again for new work, and
-            # labelling it `replayed` conflated the two (review 2026-08-27, R-06).
+            # the label must not spend the resume signal on it.
             replayed=self._resumed and not self._order,
         )
         self._by_task[task_id] = run

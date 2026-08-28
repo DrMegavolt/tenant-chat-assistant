@@ -15,9 +15,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 
+import pytest
+
 from packages.orchestration.tests.dispatch_harness import (
-    CLAIM_REFUSAL_REPLY,
     ESCALATION_REPLY,
+    LEAK_REFUSAL_REPLY,
     TENANT_ID,
     build_harness,
     overlong_budget_policy,
@@ -80,7 +82,7 @@ def test_leaked_tool_call_markup_is_refused_diagnosed_and_never_answered() -> No
         harness.model.script = [ModelResponse(content=leaked, model_name="scripted")]
         result = await harness.runtime.send(TENANT_ID, "s-leak-markup", "What are your hours?")
 
-        assert result.answer == CLAIM_REFUSAL_REPLY
+        assert result.answer == LEAK_REFUSAL_REPLY
         assert result.answer != leaked
         assert _outcome(result.trace) == {"status": "refused", "rounds": 1, "failure": None}
         assert _verdicts(result.trace)["output_invalid"] == [
@@ -113,7 +115,7 @@ def test_a_source_style_tool_call_leak_is_refused_the_same_way() -> None:
         harness.model.script = [ModelResponse(content=leaked, model_name="scripted")]
         result = await harness.runtime.send(TENANT_ID, "s-leak-call", "What are your hours?")
 
-        assert result.answer == CLAIM_REFUSAL_REPLY
+        assert result.answer == LEAK_REFUSAL_REPLY
         assert _outcome(result.trace)["status"] == "refused"
         assert _verdicts(result.trace)["output_invalid"] == [
             {"kind": "raw_tool_call", "value": leaked}
@@ -122,21 +124,33 @@ def test_a_source_style_tool_call_leak_is_refused_the_same_way() -> None:
     asyncio.run(scenario())
 
 
-def test_an_answer_without_tool_call_syntax_still_publishes() -> None:
-    """The leak detector is conservative: prose that names no tool call passes.
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "We are open until 7pm.",
+        # Reviewer false positives: generic markup talk and a spaced mention
+        # of a tool name are prose, and refusing them costs the visitor their
+        # answer for nothing.
+        "Wrap the handler in a <function> element.",
+        "The <parameter> element is optional, but useful.",
+        "The agent may call check_service_area (ZIP 97205) first.",
+    ],
+    ids=["plain", "markup-word-function", "markup-word-parameter", "spaced-tool-mention"],
+)
+def test_an_answer_without_leaked_call_syntax_still_publishes(answer: str) -> None:
+    """The leak detector is conservative: legitimate prose is never refused.
 
-    A refusal is only safe when it cannot fire on ordinary answers — the
-    detector matches provider markup and the graph's own tool names, and an
-    answer that has neither is published untouched.
+    Only chat-template tags with their `=` attributes and an adjacent-paren
+    call of a graph tool count. A bare "<function>" in a sentence about
+    markup, or a tool name followed by a spaced parenthetical, must publish —
+    a detector that fires on those turns every honest answer into a refusal.
     """
-    harness = build_harness(
-        [ModelResponse(content="We are open until 7pm.", model_name="scripted")]
-    )
+    harness = build_harness([ModelResponse(content=answer, model_name="scripted")])
 
     async def scenario() -> None:
         result = await harness.runtime.send(TENANT_ID, "s-clean", "What are your hours?")
 
-        assert result.answer == "We are open until 7pm."
+        assert result.answer == answer
         assert _outcome(result.trace)["status"] == "answered"
         assert _verdicts(result.trace)["output_invalid"] == []
         assert _diagnoses(result.trace) == []
