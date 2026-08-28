@@ -149,6 +149,28 @@ METRIC_DEFINITIONS: Final[Mapping[MetricName, tuple[MetricKind, str]]] = {
 }
 
 
+# Latency-bucket ceilings must exceed real traffic, or p95 quantiles
+# saturate at the top edge and render a flat line (observed: model latency
+# reaches ~33s against the prometheus_client default ceiling of 10s).
+# Only the turn/LLM histograms are widened; ROUTER_CONFIDENCE is a raw-score
+# distribution whose dashboards are calibrated to the default le<=10 edges.
+WIDE_LATENCY_BUCKETS: Final[tuple[float, ...]] = (
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0,
+    6.0,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+    45.0,
+    60.0,
+    90.0,
+)
+
+
 class PrometheusMetrics:
     """Implements :class:`MetricsReporter` over one collector registry.
 
@@ -243,6 +265,14 @@ class PrometheusMetrics:
             return Counter(name.value, help_text, label_names, registry=self.registry)
         if kind is MetricKind.GAUGE:
             return Gauge(name.value, help_text, label_names, registry=self.registry)
+        if name in (MetricName.TURN_LATENCY, MetricName.LLM_LATENCY):
+            return Histogram(
+                name.value,
+                help_text,
+                label_names,
+                buckets=WIDE_LATENCY_BUCKETS,
+                registry=self.registry,
+            )
         return Histogram(name.value, help_text, label_names, registry=self.registry)
 
     @staticmethod

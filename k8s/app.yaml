@@ -798,6 +798,9 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            # /readyz now genuinely probes the embedder (R-25); the resilience
+            # client's retries need more than k8s' 1s default probe timeout.
+            timeoutSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz

@@ -75,10 +75,17 @@ TEMPLATE_REF = "dispatch-system@4"
 def _histogram_bucket_boundaries() -> frozenset[str]:
     """The ``le`` values the histograms in this inventory can emit.
 
-    The adapter builds every histogram with the library's default buckets, so
-    the closed set of boundary labels is the library constant itself.
+    Most histograms use the library's default buckets; the turn/LLM latency
+    histograms use the adapter's widened set whose ceiling exceeds real model
+    latency. The closed set of boundary labels is the union.
     """
-    return frozenset(str(boundary) for boundary in Histogram.DEFAULT_BUCKETS) | {"+Inf"}
+    from tenantchat.api.metrics import WIDE_LATENCY_BUCKETS
+
+    return (
+        frozenset(str(boundary) for boundary in Histogram.DEFAULT_BUCKETS)
+        | frozenset(str(boundary) for boundary in WIDE_LATENCY_BUCKETS)
+        | {"+Inf"}
+    )
 
 
 def _reachable_vocabulary() -> frozenset[str]:
