@@ -38,6 +38,7 @@ from tenantchat.api.store import (
     TurnRecord,
     TurnRecordProjection,
 )
+from tenantchat.api.subject_match import text_holds_contact, trace_holds_contact
 from tenantchat.core.commands import HandoffReason, LeadUrgency
 from tenantchat.core.contact import Contact, ContactKind
 from tenantchat.core.privacy import (
@@ -49,6 +50,13 @@ from tenantchat.core.privacy import (
 )
 
 CHECKPOINT_TABLES: Final = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
+
+# Row prefilters that narrow which rows the subject matchers read (see
+# :mod:`tenantchat.api.subject_match` for the policy they apply). Over-fetching
+# is harmless; skipping a row a match could live in is not, so these are
+# loosenings of the domain recognition, never re-implementations of it.
+_PHONE_TEXT_PREFILTER: Final = r"{column} ~ '(\D*\d){10}'"
+_EMAIL_TEXT_PREFILTER: Final = "{column} LIKE '%@%'"
 
 
 def _consent_purpose(value: str) -> ConsentPurpose:
@@ -324,59 +332,88 @@ class PostgresPrivacyStore:
         return f"ARRAY[{ids}]::uuid[]"
 
     async def sessions_for_contact(self, tenant_id: str, contact: Contact) -> tuple[uuid.UUID, ...]:
-        # The canonical phone form (+15552221919) never appears verbatim in a
-        # message; compare the digits instead. Turn-record content is matched
-        # the same way over its JSON text: a subject's details can live in the
-        # inference plane without ever entering the transcript's message table.
-        if contact.kind is ContactKind.PHONE:
-            probe = contact.value.removeprefix("+1")
-            message_match = "regexp_replace(m.content, '[^0-9]', '', 'g') LIKE '%' || :probe || '%'"
-            trace_match = (
-                "regexp_replace(tr.content::text, '[^0-9]', '', 'g') LIKE '%' || :probe || '%'"
-            )
-        else:
-            probe = contact.value.casefold()
-            message_match = "m.content ILIKE '%' || :probe || '%'"
-            trace_match = "tr.content::text ILIKE '%' || :probe || '%'"
+        """Every session holding a record for this contact, newest first.
+
+        Lead and booking rows store the canonical contact value and match it
+        exactly. Transcript content and turn-record content are matched by
+        :mod:`tenantchat.api.subject_match`: recognition over the fields that
+        can legitimately carry contact data, then exact comparison of the
+        canonical values — never a scan of serialized JSON, where timestamps,
+        hashes, and scores can carry a phone-shaped digit run they do not
+        mean.
+        """
+        # SQL only narrows the rows the Python-side matchers read, so a
+        # prefilter may over-fetch but must never skip a possible match: any
+        # ten digits anywhere bounds every formatting a NANP number can take
+        # (ten digits, eleven with the country code), and an email address
+        # always carries its "@". The matcher decides; the prefilter cannot.
+        # Literal substitution: the phone bound carries regex braces that
+        # str.format would read as replacement fields.
+        prefilter_source = (
+            _PHONE_TEXT_PREFILTER if contact.kind is ContactKind.PHONE else _EMAIL_TEXT_PREFILTER
+        )
+        message_prefilter = prefilter_source.replace("{column}", "m.content")
+        trace_prefilter = prefilter_source.replace("{column}", "tr.content::text")
+        candidates: set[uuid.UUID] = set()
         async with self._read.begin() as connection:
-            result = await connection.execute(
+            exact = await connection.execute(
+                text(
+                    """
+                    SELECT l.chat_session_id
+                    FROM leads l
+                    WHERE l.tenant_id = :tenant_id AND l.contact_value = :value
+                    UNION
+                    SELECT b.chat_session_id
+                    FROM bookings b
+                    WHERE b.tenant_id = :tenant_id AND b.contact_value = :value
+                    """
+                ),
+                {"tenant_id": tenant_id, "value": contact.value},
+            )
+            candidates.update(row.chat_session_id for row in exact.all())
+            message_rows = await connection.execute(
+                text(
+                    f"""
+                    SELECT m.chat_session_id, m.content
+                    FROM messages m
+                    WHERE m.tenant_id = :tenant_id
+                      AND {message_prefilter}
+                    """  # noqa: S608 - the prefilter is a module constant, not caller text
+                ),
+                {"tenant_id": tenant_id},
+            )
+            for row in message_rows.mappings():
+                if text_holds_contact(str(row["content"]), contact):
+                    candidates.add(row["chat_session_id"])
+            trace_rows = await connection.execute(
+                text(
+                    f"""
+                    SELECT tr.chat_session_id, tr.content
+                    FROM turn_records tr
+                    WHERE tr.tenant_id = :tenant_id
+                      AND {trace_prefilter}
+                    """  # noqa: S608 - the prefilter is a module constant, not caller text
+                ),
+                {"tenant_id": tenant_id},
+            )
+            for row in trace_rows.mappings():
+                if trace_holds_contact(row["content"], contact):
+                    candidates.add(row["chat_session_id"])
+            if not candidates:
+                return ()
+            ordered = await connection.execute(
                 text(
                     f"""
                     SELECT s.id
                     FROM chat_sessions s
                     WHERE s.tenant_id = :tenant_id
-                      AND (
-                          EXISTS (
-                              SELECT 1 FROM messages m
-                              WHERE m.tenant_id = s.tenant_id
-                                AND m.chat_session_id = s.id
-                                AND {message_match}
-                          )
-                          OR EXISTS (
-                              SELECT 1 FROM turn_records tr
-                              WHERE tr.tenant_id = s.tenant_id
-                                AND tr.chat_session_id = s.id
-                                AND {trace_match}
-                          )
-                          OR EXISTS (
-                              SELECT 1 FROM leads l
-                              WHERE l.tenant_id = s.tenant_id
-                                AND l.chat_session_id = s.id
-                                AND l.contact_value = :value
-                          )
-                          OR EXISTS (
-                              SELECT 1 FROM bookings b
-                              WHERE b.tenant_id = s.tenant_id
-                                AND b.chat_session_id = s.id
-                                AND b.contact_value = :value
-                          )
-                      )
+                      AND s.id = ANY({self._session_ids_any(candidates)})
                     ORDER BY s.last_activity_at DESC, s.id
-                    """  # noqa: S608 - message_match/trace_match are module-built predicates
+                    """  # noqa: S608 - candidate ids are uuid.UUID literals, not caller text
                 ),
-                {"tenant_id": tenant_id, "probe": probe, "value": contact.value},
+                {"tenant_id": tenant_id},
             )
-            return tuple(row.id for row in result.all())
+            return tuple(row.id for row in ordered.all())
 
     async def subject_records(
         self, tenant_id: str, session_ids: Collection[uuid.UUID]

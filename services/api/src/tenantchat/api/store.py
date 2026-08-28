@@ -9,7 +9,6 @@ the fakes in this module are injected only by hermetic tests.
 from __future__ import annotations
 
 import asyncio
-import re
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -17,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Final, Protocol
 
+from tenantchat.api.subject_match import text_holds_contact, trace_holds_contact
 from tenantchat.core.commands import (
     BookingCommand,
     HandoffCommand,
@@ -24,7 +24,7 @@ from tenantchat.core.commands import (
     LeadCommand,
     LeadUrgency,
 )
-from tenantchat.core.contact import Contact, ContactKind
+from tenantchat.core.contact import Contact
 from tenantchat.core.errors import (
     ConflictError,
     HandoffOwnershipError,
@@ -2382,8 +2382,11 @@ class PrivacyStore(Protocol):
     async def sessions_for_contact(self, tenant_id: str, contact: Contact) -> tuple[uuid.UUID, ...]:
         """Every session that holds a record for this contact, newest first.
 
-        Matches on the canonical contact value across leads, bookings, and
-        transcript content.
+        Matches on the canonical contact value across leads and bookings, and
+        on recognized contact data in transcript and turn-record content (see
+        :mod:`tenantchat.api.subject_match`). Record metadata — timestamps,
+        hashes, scores, identifiers — never matches, and content whose
+        structure is unrecognized is treated as holding nothing.
         """
 
     async def subject_records(
@@ -2461,11 +2464,10 @@ class InMemoryPrivacyStore:
 
     @staticmethod
     def _matches(contact: Contact, text: str) -> bool:
-        # The canonical phone form (+15552221919) never appears verbatim in a
-        # message; compare the digits instead.
-        if contact.kind is ContactKind.PHONE:
-            return contact.value.removeprefix("+1") in re.sub(r"\D", "", text)
-        return contact.value.casefold() in text.casefold()
+        # The same recognition-and-canonical-comparison policy the PostgreSQL
+        # store applies, so the hermetic fakes cannot drift from production
+        # discovery.
+        return text_holds_contact(text, contact)
 
     async def sessions_for_contact(self, tenant_id: str, contact: Contact) -> tuple[uuid.UUID, ...]:
         async with self._conversations._lock:
@@ -2480,13 +2482,14 @@ class InMemoryPrivacyStore:
             }
         async with self._turn_records._lock:
             for record in self._turn_records._records.values():
-                if record.tenant_id == tenant_id and self._matches(contact, str(record.content)):
+                if record.tenant_id == tenant_id and trace_holds_contact(record.content, contact):
                     sessions.add(record.session_id)
         for booking in self._bookings._records:
-            if booking.tenant_id == tenant_id and self._matches(contact, booking.contact.value):
+            # Stored contact values are canonical, so subjects compare exactly.
+            if booking.tenant_id == tenant_id and booking.contact == contact:
                 sessions.add(uuid.UUID(booking.session_id))
         for lead in self._leads._records:
-            if lead.tenant_id == tenant_id and self._matches(contact, lead.contact.value):
+            if lead.tenant_id == tenant_id and lead.contact == contact:
                 sessions.add(uuid.UUID(lead.session_id))
         return tuple(sorted(sessions, key=str))
 
