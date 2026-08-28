@@ -78,6 +78,35 @@ def test_a_second_listener_on_the_same_port_is_an_error(
     assert any("duplicate server listener" in error for error in errors)
 
 
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param("server {\n    listen 8080 default_server;\n}\n", id="trailing-parameter"),
+        pytest.param("server {\n    listen [::]:8080;\n}\n", id="ipv6-host"),
+        pytest.param(
+            "server {\n    location / {\n        return 404;\n    }\n}\n",
+            id="no-listen-at-all",
+        ),
+    ],
+)
+def test_a_server_block_without_a_bare_port_listen_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block: str
+) -> None:
+    """R-63: a `listen` the checked pattern cannot parse — trailing
+    parameters, an IPv6 host, or none at all, where nginx binds its default
+    port — used to leave a `server {` block invisible to both the duplicate
+    check and the single-8080 assertion. The valid block ahead of it is what
+    made that dangerous: the assertions passed on the visible block alone,
+    reviewing a configuration that differed from what ships. The gate must
+    refuse every block it cannot pin to a port."""
+    _write_template(tmp_path, monkeypatch, "server {\n    listen 8080;\n}\n" + block)
+    errors: list[str] = []
+
+    verify_web_gateway(errors)
+
+    assert any("without a bare `listen <port>;`" in error for error in errors)
+
+
 def test_a_duplicate_location_declaration_is_an_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

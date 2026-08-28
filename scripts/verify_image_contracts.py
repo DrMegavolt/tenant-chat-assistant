@@ -186,6 +186,13 @@ def web_server_blocks() -> dict[int, list[str]]:
     listened port stays visible to the caller instead of silently winning the
     parse: nginx refuses duplicate default servers, and the gateway checks must
     refuse the template rather than review whichever block parsed last.
+
+    Raises:
+        ValueError: a `server {` block carries no bare `listen <port>;`
+            directive. Trailing parameters (`default_server`), an IPv6 host, or
+            no listen at all — where nginx binds its default port — all take a
+            block out of the port checks below (R-63), so the template is
+            refused instead of the block going silently unreviewed.
     """
     text = WEB_SITE_TEMPLATE.read_text(encoding="utf-8")
     blocks: dict[int, list[str]] = {}
@@ -197,8 +204,10 @@ def web_server_blocks() -> dict[int, list[str]]:
             index += 1
         body = text[start : index - 1]
         listen = re.search(r"^\s*listen\s+(\d+)\s*;", body, re.MULTILINE)
-        if listen is not None:
-            blocks.setdefault(int(listen.group(1)), []).append(body)
+        if listen is None:
+            snippet = " ".join(body.split())[:80]
+            raise ValueError(f"server block without a bare `listen <port>;` directive: {snippet!r}")
+        blocks.setdefault(int(listen.group(1)), []).append(body)
     return blocks
 
 
@@ -258,7 +267,11 @@ def verify_web_gateway(errors: list[str]) -> None:
             got = ", ".join(sorted(roots[root])) or "nothing"
             errors.append(f"{dockerfile}: {root} must be built from exactly {expected}, got {got}")
 
-    blocks = web_server_blocks()
+    try:
+        blocks = web_server_blocks()
+    except ValueError as error:
+        errors.append(f"{template}: {error}")
+        return
     duplicated_ports = sorted(port for port, bodies in blocks.items() if len(bodies) > 1)
     if duplicated_ports:
         errors.append(f"{template}: duplicate server listener(s) {duplicated_ports}")
