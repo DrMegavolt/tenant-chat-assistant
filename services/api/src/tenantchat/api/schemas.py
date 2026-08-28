@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from datetime import datetime
 from typing import Literal
 
@@ -325,21 +326,85 @@ class ChatTurnResponse(BaseModel):
         )
 
 
+def _metadata_enrichment(
+    metadata: Mapping[str, object],
+) -> tuple[uuid.UUID | None, list[CitationSummary], list[CommittedActionSummary]]:
+    """The visitor-visible enrichments one transcript row carries, parsed.
+
+    A resumed conversation must render what the live turn that produced the
+    row already showed: the turn record id its rating targets, the citations
+    the answer was grounded in, and the actions it committed. The append that
+    stored the answer wrote exactly the public view into the row's metadata,
+    so this never reads the inference plane (`ADR-0010`). Anything the parser
+    cannot make sense of — rows stored before enrichment existed, or a shape a
+    previous deployment wrote — degrades to a bare row, the one shape every
+    client must already handle.
+    """
+    raw_turn_id = metadata.get("turn_id")
+    turn_id: uuid.UUID | None = None
+    if isinstance(raw_turn_id, str):
+        with suppress(ValueError):
+            turn_id = uuid.UUID(raw_turn_id)
+    citations: list[CitationSummary] = []
+    raw_citations = metadata.get("citations")
+    if isinstance(raw_citations, list):
+        for entry in raw_citations:
+            if isinstance(entry, Mapping):
+                with suppress(ValueError):
+                    citations.append(CitationSummary.model_validate(dict(entry)))
+    committed: list[CommittedActionSummary] = []
+    raw_committed = metadata.get("committed")
+    if isinstance(raw_committed, list):
+        for entry in raw_committed:
+            if not isinstance(entry, Mapping):
+                continue
+            action = entry.get("action")
+            reference = entry.get("reference")
+            if not isinstance(action, str) or not action:
+                continue
+            if not isinstance(reference, str) or not reference:
+                continue
+            replayed = entry.get("replayed")
+            # Rows written before ``replayed`` was recorded meant "not a
+            # retry"; the widget's normalizer defaults the same way.
+            committed.append(
+                CommittedActionSummary(
+                    action=action,
+                    reference=reference,
+                    replayed=replayed if isinstance(replayed, bool) else False,
+                )
+            )
+    return turn_id, citations, committed
+
+
 class TranscriptMessage(BaseModel):
-    """One stored message, as either the visitor or an operator reads it."""
+    """One stored message, as either the visitor or an operator reads it.
+
+    ``turn_id``, ``citations``, and ``committed`` are the row's enrichments,
+    published when the row carries them: the same views the live turn response
+    returned for the answer this row stores. Visitor rows, staff replies, and
+    anything stored before enrichment existed carry none and serialize bare.
+    """
 
     message_id: uuid.UUID
     role: str
     content: str
     created_at: datetime
+    turn_id: uuid.UUID | None = None
+    citations: list[CitationSummary] = []
+    committed: list[CommittedActionSummary] = []
 
     @classmethod
     def of(cls, record: MessageRecord) -> TranscriptMessage:
+        turn_id, citations, committed = _metadata_enrichment(record.metadata)
         return cls(
             message_id=record.message_id,
             role=record.role.value,
             content=record.content,
             created_at=record.created_at,
+            turn_id=turn_id,
+            citations=citations,
+            committed=committed,
         )
 
 

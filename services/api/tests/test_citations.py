@@ -310,6 +310,52 @@ def test_a_citation_in_the_answers_context_is_published_and_resolves() -> None:
     }
 
 
+def test_a_resumed_transcript_restores_the_citations_the_live_turn_published() -> None:
+    """Resume publishes the enrichment beside the row, not only on the turn.
+
+    A reloaded conversation is rebuilt from ``GET /api/chat/session``; a row
+    that did not carry the citations and the turn id would render its answer
+    bare — no source chips, no rating control — while the live turn had shown
+    both. The row's projection is the same curated public view, read from the
+    business record's metadata, never from the inference plane.
+    """
+    knowledge = InMemoryKnowledgeStore()
+    version = _published_version(knowledge, title="Clearview hours")
+    chunk = _chunk(
+        "clearview-hvac-2",
+        "Clearview is open daily from 7 AM to 7 PM. Hours of operation are " "seven days a week.",
+        document_id=version.document_id,
+        version_id=version.version_id,
+    )
+    client, _, _, _ = _client(
+        script=[
+            ModelResponse(
+                content=f"{HOURS_ANSWER}. [evidence:{chunk.chunk_id}]",
+                model_name="scripted",
+            )
+        ],
+        chunks=(chunk,),
+        knowledge=knowledge,
+    )
+    headers = _open_session(client)
+
+    live = client.post("/api/chat", json={"message": HOURS_QUESTION}, headers=headers)
+    assert live.status_code == 200
+    body = live.json()
+    assert body["citations"], "the scripted turn must ground a citation for this proof to bind"
+
+    transcript = client.get("/api/chat/session", headers=headers).json()["messages"]
+
+    answer = transcript[-1]
+    assert answer["role"] == "assistant"
+    assert answer["turn_id"] == body["turn_id"]
+    assert answer["citations"] == body["citations"]
+    assert answer["committed"] == body["committed"] == []
+    question = transcript[0]
+    assert question["turn_id"] is None
+    assert question["citations"] == []
+
+
 def test_a_citation_missing_from_the_context_is_dropped_from_the_public_response() -> None:
     """The missing case: a real, retrievable source the model never saw. The
     citation is not published, the verdict goes to the turn record, and the

@@ -55,6 +55,7 @@ from tenantchat.api.schemas import (
     ChatSessionRequest,
     ChatSessionSummary,
     ChatTurnResponse,
+    CitationSummary,
     ConsentRequest,
     ConsentResponse,
     FeedbackRequest,
@@ -147,6 +148,8 @@ async def _record_answer(
     tenant_id: str,
     session_id: uuid.UUID,
     turn: AssistantTurn,
+    *,
+    turn_id: uuid.UUID | None = None,
 ) -> None:
     """Append the assistant's answer, if this turn produced one.
 
@@ -154,26 +157,35 @@ async def _record_answer(
     would leave a blank assistant message in the transcript the customer is
     looking at while they decide.
 
-    The metadata is version and reference data only. Prompts, retrieved
-    evidence, and model reasoning are content, and `ADR-0010` keeps those in the
-    inference plane rather than beside the business record.
+    The metadata is version and reference data only, and it is the same
+    curated view the live turn response returns: the record id the visitor's
+    rating targets, the public citation view, and the committed actions. A
+    resumed conversation rebuilds its citation chips, feedback controls, and
+    action notes from it without ever reading the inference plane (`ADR-0010`)
+    — prompts, retrieved evidence, and model reasoning stay there.
     """
     if turn.is_paused or not turn.answer:
         return
+    metadata: dict[str, object] = {
+        "graph_version": turn.graph_version,
+        "prompt_version": turn.prompt_version,
+        "citations": [
+            CitationSummary.of(citation).model_dump(mode="json") for citation in turn.citations
+        ],
+        "committed": [
+            {"action": effect.action, "reference": effect.reference, "replayed": effect.replayed}
+            for effect in turn.committed
+        ],
+    }
+    if turn_id is not None:
+        metadata["turn_id"] = str(turn_id)
     await conversations.append(
         tenant_id,
         session_id,
         role=MessageRole.ASSISTANT,
         content=turn.answer,
         model_name=turn.model_name or None,
-        metadata={
-            "graph_version": turn.graph_version,
-            "prompt_version": turn.prompt_version,
-            "committed": [
-                {"action": effect.action, "reference": effect.reference}
-                for effect in turn.committed
-            ],
-        },
+        metadata=metadata,
     )
 
 
@@ -539,8 +551,11 @@ async def send_message(
     started = time.monotonic()
     turn = await runtime.send(tenant_id, str(session_id), payload.message)
     _record_metrics(time.monotonic() - started, turn)
-    await _record_answer(conversations, tenant_id, session_id, turn)
+    # The turn is recorded before the answer is appended so the transcript row
+    # can name the record it belongs to; resume reads that name back to restore
+    # the row's feedback target and enrichments.
     record = await _record_turn(turn_records, tenant_id, session_id, turn)
+    await _record_answer(conversations, tenant_id, session_id, turn, turn_id=record.turn_id)
     await _enqueue_technical_failure(reviews, tenant_id, session_id, record)
     _log_turn(turn)
 
@@ -701,8 +716,10 @@ async def confirm_booking(
     started = time.monotonic()
     turn = await runtime.resume(tenant_id, session_key, approved=payload.decision == "approved")
     _record_metrics(time.monotonic() - started, turn)
-    await _record_answer(conversations, tenant_id, session_id, turn)
+    # Same order as a visitor turn: the record earns its id first, so the
+    # answer row resumes with the feedback target and enrichments attached.
     record = await _record_turn(turn_records, tenant_id, session_id, turn)
+    await _record_answer(conversations, tenant_id, session_id, turn, turn_id=record.turn_id)
     await _enqueue_technical_failure(reviews, tenant_id, session_id, record)
     _log_turn(turn)
 

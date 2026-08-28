@@ -9,7 +9,9 @@ between tenants (SEC-002).
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
@@ -22,6 +24,8 @@ from services.api.tests.conftest import (
     booking_call,
     lead_call,
 )
+from tenantchat.api.schemas import TranscriptMessage
+from tenantchat.api.store import MessageRecord, MessageRole
 from tenantchat.orchestration.model import ModelResponse
 
 VISITOR_TURN = {"message": "What time do you close?"}
@@ -170,6 +174,104 @@ def test_an_approved_booking_commits_once_and_answers(
     assert body["pending"] is None
     assert [action["action"] for action in body["committed"]] == ["book_appointment"]
     assert body["committed"][0]["replayed"] is False
+
+
+def test_a_resumed_transcript_restores_the_committed_actions_and_feedback_target(
+    client: TestClient,
+    model: ScriptedModel,
+    visitor_session: Callable[..., VisitorSession],
+) -> None:
+    """The transcript a returning visitor reads carries what the live turn showed.
+
+    The answer row publishes the same committed-action notes and the same turn
+    id the confirmation response returned, so a reloaded conversation gets its
+    action notes and its rating control back; the visitor's own row stays bare,
+    which is the shape rows without enrichment have always had.
+    """
+    model.script = [
+        ModelResponse(content="", tool_calls=(booking_call(),), model_name="scripted"),
+        ModelResponse(content="You are booked for Monday at 2pm.", model_name="scripted"),
+    ]
+    visitor = visitor_session()
+    client.post("/api/chat", json={"message": "Book HVAC"}, headers=visitor.headers)
+    live = client.post(
+        "/api/chat/confirmation", json={"decision": "approved"}, headers=visitor.headers
+    ).json()
+
+    transcript = client.get("/api/chat/session", headers=visitor.headers).json()["messages"]
+
+    answer = transcript[-1]
+    assert answer["role"] == "assistant"
+    assert answer["content"] == live["reply"]
+    assert answer["turn_id"] == live["turn_id"]
+    assert answer["committed"] == live["committed"]
+    assert answer["committed"][0]["replayed"] is False
+    question = transcript[0]
+    assert question["role"] == "visitor"
+    assert question["turn_id"] is None
+    assert question["citations"] == []
+    assert question["committed"] == []
+
+
+def test_a_row_stored_before_enrichment_still_shows_its_action_note() -> None:
+    """Pre-enrichment rows recorded committed actions without ``replayed``.
+
+    The resume projection must not drop them — the visitor already saw the
+    booking note — and must not invent a feedback target or a citation the row
+    never carried.
+    """
+    record = MessageRecord(
+        message_id=uuid.uuid4(),
+        tenant_id=BOOKING_TENANT,
+        session_id=uuid.uuid4(),
+        sequence_number=2,
+        role=MessageRole.ASSISTANT,
+        content="You are booked.",
+        model_name="scripted",
+        metadata={
+            "graph_version": "dispatch@4",
+            "prompt_version": "dispatch-system@4",
+            "committed": [{"action": "book_appointment", "reference": "booking-1"}],
+        },
+        created_at=datetime.now(UTC),
+    )
+
+    row = TranscriptMessage.of(record)
+
+    assert row.turn_id is None
+    assert row.citations == []
+    assert [(action.action, action.reference, action.replayed) for action in row.committed] == [
+        ("book_appointment", "booking-1", False)
+    ]
+
+
+def test_unparseable_enrichment_metadata_degrades_to_a_bare_row() -> None:
+    """Metadata the projection cannot make sense of is dropped, not fatal.
+
+    A transcript read must survive whatever a previous deployment wrote into
+    the row's metadata: the visitor loses the enrichment, never the message.
+    """
+    record = MessageRecord(
+        message_id=uuid.uuid4(),
+        tenant_id=BOOKING_TENANT,
+        session_id=uuid.uuid4(),
+        sequence_number=2,
+        role=MessageRole.ASSISTANT,
+        content="We are open until 7pm.",
+        model_name="scripted",
+        metadata={
+            "turn_id": "not-a-uuid",
+            "citations": [{"source_id": "incomplete"}],
+            "committed": ["book_appointment"],
+        },
+        created_at=datetime.now(UTC),
+    )
+
+    row = TranscriptMessage.of(record)
+
+    assert row.turn_id is None
+    assert row.citations == []
+    assert row.committed == []
 
 
 def test_a_declined_booking_commits_nothing(
