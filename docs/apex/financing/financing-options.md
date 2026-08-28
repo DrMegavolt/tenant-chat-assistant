@@ -2,24 +2,43 @@
 
 ## Overview
 
-Apex Home Services may offer financing options for qualifying HVAC, electrical, and plumbing projects. Financing is provided by third-party lenders and is subject to credit approval, lender underwriting, available plans, and current promotional terms. Apex team members can explain available options and help customers start an application, but Apex cannot guarantee approval.
+Apex Home Services publishes its promotional financing terms in this document. These published
+terms are the only financing figures Apex quotes anywhere: the office gives no prices on the
+phone, and final project pricing comes only from an estimator visit or a written quote.
+Financing is provided by third-party lenders and is subject to credit approval, lender
+underwriting, available plans, and current promotional terms. Apex team members can explain
+the published terms below and help customers start an application, but Apex cannot guarantee
+approval.
 
 ## Eligible Projects
 
-Financing is generally intended for larger repair or replacement projects such as HVAC system replacement, major electrical panel work, heat pump installation, ductwork replacement, and qualifying plumbing repairs. Small service calls, diagnostic visits, maintenance visits, and emergency dispatch fees may not qualify unless they are bundled into an approved project.
+The promotional financing plan applies to qualifying HVAC system replacement projects. Major
+electrical panel work, heat pump installation, ductwork replacement, and qualifying plumbing
+repairs may also qualify when they are bundled into an approved project. Small service calls,
+diagnostic visits, maintenance visits, and emergency dispatch fees do not qualify unless they
+are bundled into an approved project.
 
-## Promotional Financing
+## Published Promotional Terms
 
-Some customers may qualify for promotional financing plans such as deferred-interest or reduced-payment options. Promotional plans can change and may require minimum purchase amounts. If a promotional plan is available, customers should review the lender disclosure carefully, including when interest begins, how deferred interest is calculated, and whether payments must be made during the promotional period.
-
-## Monthly Payment Plans
-
-Monthly payment plans may be available for qualifying projects. The actual monthly payment depends on the final project price, selected plan, lender approval, interest rate, term length, and any fees. The assistant should not estimate a monthly payment unless a current lender calculator or approved quote is available.
+For a qualifying HVAC system replacement, the current promotional plan is $0 down and
+$89/month for 72 months, on approved credit. Replacing an older system with a qualifying
+high-efficiency model also earns a $4,500 system credit, applied to the financed amount.
+These are the only financing figures Apex publishes. The plan requires lender credit
+approval, and the lender's application disclosure governs interest, payments, and all other
+details.
 
 ## Credit Approval
 
-Approval is not guaranteed. The lender may review credit history, income, debt obligations, identity, project amount, and other underwriting criteria. Customers with questions about eligibility should be connected with the Apex office or the lender application process.
+Approval is not guaranteed. The lender may review credit history, income, debt obligations,
+identity, project amount, and other underwriting criteria. A customer who does not qualify
+for the promotional plan can still complete a standard lender application through the Apex
+office.
 
 ## Customer Guidance
 
-When a customer asks about financing, explain that financing may be available for qualifying projects and that terms are subject to lender approval. Offer to create a follow-up lead so the team can confirm current plans. Do not promise zero percent APR, no credit check, guaranteed approval, exact monthly payments, or specific lender terms unless those details are present in the current approved financing document.
+When a customer asks about financing, quote the published terms exactly as written: $0 down,
+$89/month for 72 months, and the $4,500 system credit for qualifying high-efficiency
+replacements. Do not estimate, round, reformat, or derive any other amount, rate, or term,
+and do not quote a price for the project itself — final project pricing comes from an
+estimator visit. Offer to create a follow-up lead so the team can confirm the current plan
+and start an application.
