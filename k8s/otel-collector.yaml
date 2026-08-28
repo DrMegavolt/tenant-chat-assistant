@@ -45,16 +45,27 @@ spec:
       # and readiness-probe noise for near-zero diagnostic value, drowning the
       # ~dozens of application spans a demo day produces. Dropped here, ahead
       # of redaction and every exporter, keyed on what only the noise spans
-      # carry: database-client semantic-convention attributes, and HTTP server
-      # spans for the health/probe/metrics routes. Application spans —
-      # tenantchat turn traffic, LLM calls, tool executions, admin reads —
-      # match neither condition and pass untouched.
+      # carry: database-client semantic-convention attributes, HTTP server
+      # spans for the health/probe/metrics routes, and bare-method "POST"
+      # client spans. The OTLP exporter is an instrumented httpx client whose
+      # suppressed self-export surfaces as an attribute-less "POST" client
+      # span every batch, self-perpetuating at ~6/min. httpx names client
+      # spans by method alone, so real outbound POSTs share that name — but
+      # they reach exporters with zero allowed attributes (URL and headers
+      # are content), so only a duration is lost, and the parent server span
+      # retains it. Missing-key checks cannot separate trickle from real:
+      # under error_mode: ignore an `== nil` comparison on an absent
+      # attribute errors the whole condition open, which is why the drop
+      # keys on the name alone.
+      # Application spans — tenantchat turn traffic, LLM calls, tool
+      # executions, admin reads — match no condition and pass untouched.
       filter/noise:
         error_mode: ignore
         traces:
           span:
             - 'attributes["db.system"] != nil or attributes["db.system.name"] != nil'
             - 'IsMatch(name, "^(GET|POST|HEAD) /(healthz|readyz|ready|health|ping|metrics)( |$)") or attributes["http.route"] == "/healthz" or attributes["http.route"] == "/readyz" or attributes["http.route"] == "/ready" or attributes["http.route"] == "/health" or attributes["http.route"] == "/ping" or attributes["http.route"] == "/metrics"'
+            - 'name == "POST"'
       # PRIV-002/ADR-0010: the collector is the only fan-out point, and this
       # allowlist runs ahead of every exporter in every pipeline. Only the
       # operational-plane attributes below survive; anything content-bearing —
