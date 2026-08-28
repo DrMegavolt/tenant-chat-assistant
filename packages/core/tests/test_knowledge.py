@@ -144,6 +144,22 @@ class TestValueObjects:
         with pytest.raises(ValidationError):
             KnowledgeDomain.parse(raw)
 
+    def test_domain_rejection_detail_does_not_quote_the_rejected_value(self) -> None:
+        """R-42: the rejected text once passed verbatim into error `detail`.
+
+        The domain value can arrive from a request, so the detail — which
+        reaches operator logs — must name the failure without echoing the
+        value; here it carries a phone number to prove the worst case.
+        """
+        raw = "financing, questions? call 555-222-1919"
+
+        with pytest.raises(ValidationError) as caught:
+            KnowledgeDomain.parse(raw)
+
+        assert caught.value.detail is not None
+        assert "555-222-1919" not in caught.value.detail
+        assert "financing" not in caught.value.detail
+
     def test_value_objects_render_as_their_stored_form(self) -> None:
         """These land in index filters and storage keys, not just in comparisons."""
         assert str(FINANCING) == "financing"

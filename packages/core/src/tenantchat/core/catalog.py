@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -53,22 +54,21 @@ class ServiceDefinition:
 
 @dataclass(frozen=True, slots=True)
 class ServiceCatalog:
-    """A tenant's offered services, indexed for exact-match resolution."""
+    """A tenant's offered services, indexed for exact-match resolution.
+
+    Every construction path validates ambiguity: the index is derived here, in
+    ``__post_init__``, so the public constructor cannot produce a catalog
+    :meth:`from_definitions` would have refused. ``_index`` is excluded from
+    equality and hashing, so a catalog compares and hashes on its definitions
+    alone instead of failing on an unhashable dict field.
+    """
 
     definitions: tuple[ServiceDefinition, ...]
-    _index: Mapping[str, ServiceDefinition]
+    _index: Mapping[str, ServiceDefinition] = field(default_factory=dict, compare=False, repr=False)
 
-    @classmethod
-    def from_definitions(cls, definitions: Iterable[ServiceDefinition]) -> ServiceCatalog:
-        """Build a catalog, rejecting ambiguous configuration at construction time.
-
-        A term that maps to two services is a tenant-configuration bug. Failing
-        here surfaces it when the tenant is published (FEAT-006) rather than
-        mid-conversation, where it would resolve non-deterministically.
-        """
-        ordered = tuple(definitions)
+    def __post_init__(self) -> None:
         index: dict[str, ServiceDefinition] = {}
-        for definition in ordered:
+        for definition in self.definitions:
             for key in definition.match_keys():
                 existing = index.get(key)
                 if existing is not None and existing.slug != definition.slug:
@@ -77,7 +77,21 @@ class ServiceCatalog:
                         f"{existing.slug!r} and {definition.slug!r}"
                     )
                 index[key] = definition
-        return cls(definitions=ordered, _index=index)
+        # Frozen behind a mapping proxy, so a holder cannot mutate their way
+        # past the exact-match guarantee the index was built for.
+        object.__setattr__(self, "_index", MappingProxyType(index))
+
+    @classmethod
+    def from_definitions(cls, definitions: Iterable[ServiceDefinition]) -> ServiceCatalog:
+        """Build a catalog, rejecting ambiguous configuration at construction time.
+
+        A term that maps to two services is a tenant-configuration bug. Failing
+        here surfaces it when the tenant is published (FEAT-006) rather than
+        mid-conversation, where it would resolve non-deterministically. The
+        ambiguity rule itself lives in ``__post_init__``, so this factory and
+        the public constructor enforce one definition of it.
+        """
+        return cls(tuple(definitions))
 
     def resolve(self, raw: str) -> ServiceDefinition | None:
         """Resolve free text to exactly one service, or ``None`` to ask.

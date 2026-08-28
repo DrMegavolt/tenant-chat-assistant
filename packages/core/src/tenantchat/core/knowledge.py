@@ -58,12 +58,15 @@ _MAX_TITLE = 300
 _PUBLISHABLE_FROM = (VersionState.APPROVED, VersionState.PUBLISHED, VersionState.SUPERSEDED)
 
 
-def _require_aware(name: str, moment: datetime) -> datetime:
+def require_aware(name: str, moment: datetime) -> datetime:
     """Reject a naive datetime.
 
     Comparing a naive datetime against an aware one raises, and comparing two
     naive ones silently assumes they share a zone. An effective window that is
     wrong by the deployment's UTC offset publishes content hours early.
+
+    Shared by every domain type that carries a wall-clock bound, so one rule
+    decides what "a real moment" means.
 
     Raises:
         ValidationError: if ``moment`` carries no UTC offset.
@@ -142,7 +145,9 @@ class KnowledgeDomain:
         """
         candidate = raw.strip().lower()
         if not _DOMAIN_RE.match(candidate):
-            raise ValidationError(detail=f"{raw!r} is not a valid knowledge domain slug")
+            # The raw value is the caller's own words, so it is content: the
+            # detail names the failure, never the rejected text (ADR-0010).
+            raise ValidationError(detail="value is not a valid knowledge domain slug")
         return cls(candidate)
 
     def __str__(self) -> str:
@@ -258,9 +263,9 @@ class DocumentVersion:
             self, "storage_key", _require_text("storage_key", self.storage_key, _MAX_STORAGE_KEY)
         )
         if self.effective_at is not None:
-            _require_aware("effective_at", self.effective_at)
+            require_aware("effective_at", self.effective_at)
         if self.expires_at is not None:
-            _require_aware("expires_at", self.expires_at)
+            require_aware("expires_at", self.expires_at)
         if self.state is VersionState.PUBLISHED and self.effective_at is None:
             raise ValidationError(detail="a published version has no effective_at")
         if self.expires_at is not None:
@@ -312,7 +317,7 @@ class RetrievalContext:
     moment: datetime
 
     def __post_init__(self) -> None:
-        _require_aware("moment", self.moment)
+        require_aware("moment", self.moment)
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,7 +537,7 @@ class KnowledgeDocument:
             document_id=self.document_id,
             version_id=version_id,
             approved_by=_require_text("approved_by", approved_by, _MAX_DISPLAY_NAME),
-            approved_at=_require_aware("at", at),
+            approved_at=require_aware("at", at),
         )
 
     def plan_publication(
@@ -571,12 +576,12 @@ class KnowledgeDocument:
                 detail=f"version {version_id} cannot be published from {version.state.value}",
             )
 
-        published_at = _require_aware("at", at)
+        published_at = require_aware("at", at)
         effective = (
-            published_at if effective_at is None else _require_aware("effective_at", effective_at)
+            published_at if effective_at is None else require_aware("effective_at", effective_at)
         )
         if expires_at is not None:
-            _require_aware("expires_at", expires_at)
+            require_aware("expires_at", expires_at)
             if expires_at <= effective:
                 raise ValidationError(detail="expires_at is not after effective_at")
 
@@ -610,7 +615,7 @@ class KnowledgeDocument:
                 permitted=(VersionState.PUBLISHED,),
                 detail=f"version {version_id} cannot expire from {version.state.value}",
             )
-        expires_at = _require_aware("at", at)
+        expires_at = require_aware("at", at)
         # `effective_at` is never None on a published version; __post_init__ rejects it.
         if version.effective_at is not None and expires_at <= version.effective_at:
             raise ValidationError(detail="expires_at is not after effective_at")
@@ -655,7 +660,7 @@ class KnowledgeDocument:
             version_id=version_id,
             approved=approved,
             reviewed_by=_require_text("reviewed_by", reviewed_by, _MAX_DISPLAY_NAME),
-            reviewed_at=_require_aware("at", at),
+            reviewed_at=require_aware("at", at),
         )
 
     def _live_version(self, version_id: uuid.UUID) -> DocumentVersion:

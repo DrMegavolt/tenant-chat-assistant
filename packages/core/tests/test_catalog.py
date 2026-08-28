@@ -116,6 +116,17 @@ class TestConfigurationValidation:
                 ]
             )
 
+    def test_the_public_constructor_validates_ambiguity_too(self) -> None:
+        """R-44: `from_definitions` was the only validated path, so a catalog
+        built through the public constructor could resolve arbitrarily."""
+        with pytest.raises(ValueError, match="ambiguous service term"):
+            ServiceCatalog(
+                (
+                    ServiceDefinition("hvac", "HVAC", frozenset({"repair"})),
+                    ServiceDefinition("electrical", "Electrical", frozenset({"repair"})),
+                )
+            )
+
     def test_alias_colliding_with_another_display_name_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="ambiguous service term"):
             ServiceCatalog.from_definitions(
@@ -132,6 +143,23 @@ class TestConfigurationValidation:
         )
 
         assert built.resolve("hvac") is not None
+
+
+class TestCatalogValueSemantics:
+    def test_a_catalog_is_hashable(self) -> None:
+        """R-44: the dict field once made the frozen dataclass unhashable."""
+        catalog = ServiceCatalog.from_definitions([ServiceDefinition("hvac", "HVAC")])
+
+        assert len({catalog, catalog}) == 1
+        assert hash(catalog) == hash(
+            ServiceCatalog.from_definitions([ServiceDefinition("hvac", "HVAC")])
+        )
+
+    def test_catalogs_with_equal_definitions_are_equal(self) -> None:
+        first = ServiceCatalog.from_definitions([ServiceDefinition("hvac", "HVAC")])
+        second = ServiceCatalog.from_definitions([ServiceDefinition("hvac", "HVAC")])
+
+        assert first == second
 
 
 class TestCatalogInterface:

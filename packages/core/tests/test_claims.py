@@ -40,6 +40,69 @@ def test_fabricated_price_is_unsupported() -> None:
     assert validation.unsupported[0].value == "$89"
 
 
+class TestThousandsSeparators:
+    """R-11: the price regex once stopped at the comma, so "$1,500" became the
+    claim "$1", which substring-grounded on any passage quoting "$1xx"."""
+
+    def test_a_price_with_a_thousands_separator_is_claimed_whole(self) -> None:
+        claims = sensitive_claims("The full replacement is $1,500.")
+
+        assert [claim.value for claim in claims] == ["$1,500"]
+
+    def test_a_comma_price_does_not_ground_on_a_different_price(self) -> None:
+        """The reproduced failure: "$1" grounded on a $120 passage."""
+        validation = validate_sensitive_claims(
+            "The full replacement is $1,500.",
+            evidence_texts=("A diagnostic is $120 per visit.",),
+        )
+
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_a_comma_price_grounds_on_evidence_quoting_the_same_amount(self) -> None:
+        validation = validate_sensitive_claims(
+            "The full replacement is $1,500.",
+            evidence_texts=("A full system replacement is $1,500 installed.",),
+        )
+
+        assert validation.verdict is ClaimVerdict.SUPPORTED
+
+    def test_a_comma_price_grounded_in_trusted_prices_is_supported(self) -> None:
+        validation = validate_sensitive_claims(
+            "The full replacement is $1,500.",
+            evidence_texts=(),
+            trusted_prices=("Full replacement: $1,500",),
+        )
+
+        assert validation.verdict is ClaimVerdict.SUPPORTED
+
+    def test_a_decimal_price_is_claimed_whole(self) -> None:
+        claims = sensitive_claims("The inspection is $89.50.")
+
+        assert [claim.value for claim in claims] == ["$89.50"]
+
+
+class TestWholeTokenGrounding:
+    """Grounding compares complete monetary tokens, never substrings."""
+
+    def test_a_price_does_not_ground_on_a_superset_amount(self) -> None:
+        """A passage quoting $1,500.50 must not vouch for a $1,500 claim."""
+        validation = validate_sensitive_claims(
+            "The replacement is $1,500.",
+            evidence_texts=("It costs $1,500.50 with tax.",),
+        )
+
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+    def test_a_short_price_does_not_ground_inside_a_longer_one(self) -> None:
+        """Substring containment once grounded "$120" on a "$1200" passage."""
+        validation = validate_sensitive_claims(
+            "The visit is $120.",
+            evidence_texts=("The premium repair starts at $1200.",),
+        )
+
+        assert validation.verdict is ClaimVerdict.UNSUPPORTED
+
+
 def test_price_grounded_in_trusted_prices_without_evidence_is_supported() -> None:
     validation = validate_sensitive_claims(
         "Our diagnostic visit is $120.",

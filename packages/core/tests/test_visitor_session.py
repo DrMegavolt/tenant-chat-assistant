@@ -9,6 +9,8 @@ token itself.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -18,6 +20,7 @@ import pytest
 from tenantchat.core.errors import (
     ExpiredVisitorCredentialError,
     InvalidVisitorCredentialError,
+    VisitorCredentialRejection,
 )
 from tenantchat.core.visitor_session import HmacVisitorCredentialSigner, VisitorCredential
 
@@ -100,6 +103,99 @@ class TestExpiry:
         with pytest.raises(InvalidVisitorCredentialError) as excinfo:
             issuer.verify(credential.token[:-2] + "aa", now=NOW)
         assert "signature" not in str(excinfo.value)
+
+
+class TestRejectionDisclosesNothing:
+    """R-47: the implementation once wrote the failing check into `detail`;
+    the contract says the reason travels only in the typed `reason` field,
+    which is operator-facing, and never in `detail` or the message."""
+
+    def _refuse(self, token: str) -> InvalidVisitorCredentialError:
+        issuer, _ = issue_credential()
+        with pytest.raises(InvalidVisitorCredentialError) as caught:
+            issuer.verify(token, now=NOW)
+        return caught.value
+
+    def _signed_payload(self, raw: bytes) -> str:
+        """A token whose signature genuinely verifies but whose payload is
+        broken — an issuer bug, not a forgery — so the payload checks are
+        reached without also failing the signature check."""
+        encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        digest = hmac.new(SIGNING_KEY.encode(), encoded.encode("ascii"), hashlib.sha256).digest()
+        signature = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+        return f"tc.v1.{encoded}.{signature}"
+
+    def _signed_claims(self, claims: dict[str, object]) -> str:
+        return self._signed_payload(
+            json.dumps(claims, sort_keys=True, separators=(",", ":")).encode()
+        )
+
+    def test_no_rejection_path_writes_a_reason_into_detail(self) -> None:
+        """Every refusal — malformed, bad signature, unusable payload, and
+        rejected claims — carries an empty `detail`."""
+        _issuer, credential = issue_credential()
+        flipped = credential.token[:-1] + ("A" if credential.token[-1] == "B" else "B")
+        tokens = (
+            "",
+            "tc.v1." + "x" * 40,
+            flipped,
+            self._signed_payload(b"not json"),
+            self._signed_claims({"v": 1, "tenant": "clearview", "session": str(SESSION_ID)}),
+            self._signed_claims(
+                {
+                    "v": 2,
+                    "tenant": "clearview",
+                    "session": str(SESSION_ID),
+                    "iat": int(NOW.timestamp()),
+                    "exp": int(NOW.timestamp()) + 3600,
+                }
+            ),
+        )
+
+        for token in tokens:
+            error = self._refuse(token)
+
+            assert error.detail is None, token
+
+    def test_each_path_records_its_reason_in_the_bounded_vocabulary(self) -> None:
+        _issuer, credential = issue_credential()
+        flipped = credential.token[:-1] + ("A" if credential.token[-1] == "B" else "B")
+        valid_issued_at = int(NOW.timestamp())
+
+        malformed = self._refuse("tc.v1." + "x" * 40)
+        bad_signature = self._refuse(flipped)
+        unusable = self._refuse(self._signed_payload(b"not json"))
+        claims_rejected = self._refuse(
+            self._signed_claims(
+                {
+                    "v": 1,
+                    "tenant": "clearview",
+                    "session": str(SESSION_ID),
+                    "iat": valid_issued_at + 3600,
+                    "exp": valid_issued_at,
+                }
+            )
+        )
+
+        assert malformed.reason is VisitorCredentialRejection.MALFORMED
+        assert bad_signature.reason is VisitorCredentialRejection.BAD_SIGNATURE
+        assert unusable.reason is VisitorCredentialRejection.UNUSABLE_PAYLOAD
+        assert claims_rejected.reason is VisitorCredentialRejection.CLAIMS_REJECTED
+
+    def test_the_message_is_identical_whichever_check_failed(self) -> None:
+        _issuer, credential = issue_credential()
+        flipped = credential.token[:-1] + ("A" if credential.token[-1] == "B" else "B")
+
+        messages = set()
+        for token in (
+            "",
+            flipped,
+            self._signed_payload(b"not json"),
+            self._signed_claims({"v": 2}),
+        ):
+            messages.add(str(self._refuse(token)))
+
+        assert messages == {InvalidVisitorCredentialError.message}
 
 
 class TestTamperAndForgery:

@@ -10,20 +10,24 @@ from __future__ import annotations
 
 import pytest
 
+import tenantchat.core as facade
 from tenantchat.core.errors import (
     ConflictError,
     DomainError,
     InvalidContactError,
     InvalidVersionTransitionError,
+    InvalidVisitorCredentialError,
     MissingRequiredFieldsError,
     NotFoundError,
     ReviewTransitionError,
     UnknownServiceError,
+    VisitorCredentialRejection,
     WorkflowTransitionError,
 )
 from tenantchat.core.fields import RequiredField
 from tenantchat.core.lifecycle import VersionState
 from tenantchat.core.privacy import ConsentPurpose, ConsentRequiredError
+from tenantchat.core.resilience import Dependency, DependencyUnavailableError
 from tenantchat.core.workflows import WorkflowStatus, WorkflowTransition
 
 # Strings that must never surface in printable output. Modelled on what really
@@ -52,6 +56,7 @@ EXTRA_ARGS: dict[type[DomainError], dict[str, object]] = {
         "permitted": (VersionState.APPROVED,),
     },
     ConsentRequiredError: {"missing_purposes": (ConsentPurpose.BOOKING,)},
+    DependencyUnavailableError: {"dependency": Dependency.LLM},
     WorkflowTransitionError: {
         "current": WorkflowStatus.ACTIVE,
         "transition": WorkflowTransition.RESUME,
@@ -89,8 +94,28 @@ def test_discovery_finds_the_whole_taxonomy() -> None:
     names = {error_type.__name__ for error_type in ALL_ERRORS}
 
     assert len(ALL_ERRORS) >= 10
-    # Spot-check the three subclasses a hand-written list had omitted.
-    assert {"PricingNotPermittedError", "LeadCaptureNotPermittedError", "ConflictError"} <= names
+    # Spot-check the subclasses a hand-written list had omitted, including the
+    # two that live outside errors.py (R-45): the resilience breaker refusal
+    # and the ports retrieval failure.
+    assert {
+        "PricingNotPermittedError",
+        "LeadCaptureNotPermittedError",
+        "ConflictError",
+        "DependencyUnavailableError",
+        "EvidenceUnavailableError",
+    } <= names
+
+
+def test_the_facade_exports_every_taxonomy_error() -> None:
+    """R-48: the facade once exported 15 of the ~21 errors — no half state."""
+    missing = [
+        error_type.__name__
+        for error_type in ALL_ERRORS
+        if error_type.__name__ not in facade.__all__
+        or getattr(facade, error_type.__name__, None) is not error_type
+    ]
+
+    assert not missing, f"facade does not export: {missing}"
 
 
 @pytest.mark.parametrize("error_type", ALL_ERRORS, ids=lambda item: item.__name__)
@@ -223,3 +248,36 @@ class TestSemanticFields:
         assert "permission" not in lowered
         assert "forbidden" not in lowered
         assert "access" not in lowered
+
+
+class TestVisitorCredentialRejectionContract:
+    """R-47: the docstring promises `detail` never carries a rejection reason;
+    these tests pin both halves of the contract on the type itself."""
+
+    def test_the_rejection_reason_is_a_bounded_vocabulary_not_detail(self) -> None:
+        error = InvalidVisitorCredentialError(VisitorCredentialRejection.BAD_SIGNATURE)
+
+        assert error.reason is VisitorCredentialRejection.BAD_SIGNATURE
+        assert error.detail is None
+
+    def test_a_reasonless_rejection_stays_constructible(self) -> None:
+        """Callers outside the signer (a missing credential header) refuse
+        without inventing a reason."""
+        error = InvalidVisitorCredentialError()
+
+        assert error.reason is None
+
+    def test_str_is_the_safe_message_whichever_reason_was_recorded(self) -> None:
+        for reason in VisitorCredentialRejection:
+            assert str(InvalidVisitorCredentialError(reason)) == (
+                InvalidVisitorCredentialError.message
+            )
+
+
+class TestDependencyUnavailableTaxonomy:
+    def test_the_breaker_refusal_reports_only_the_bounded_dependency(self) -> None:
+        error = DependencyUnavailableError(dependency=Dependency.LLM)
+
+        assert error.dependency is Dependency.LLM
+        assert str(error) == DependencyUnavailableError.message
+        assert error.detail == "llm circuit open"
