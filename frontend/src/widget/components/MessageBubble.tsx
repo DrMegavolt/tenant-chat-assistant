@@ -6,6 +6,24 @@ export interface MessageBubbleProps {
   text: string;
 }
 
+/**
+ * Model copy sometimes arrives with a space ahead of sentence punctuation
+ * ("Hello , world !"). Tidying it in the transcript state instead would
+ * corrupt the exact text the transcript merge matches on and the copy the
+ * server stored, so this runs only at render.
+ *
+ * The rule is deliberately narrow: whitespace immediately before
+ * `.`, `!`, `?`, `;`, `:` counts only when the punctuation is itself followed
+ * by whitespace, a quote, or the end of the text. Punctuation inside a URL or
+ * a value like `a.b` has no whitespace before it and is never touched.
+ */
+const STRAY_SPACE_BEFORE_PUNCTUATION = /\s+([.,!?;:])(?=\s|$|["'”’])/g;
+const DOUBLED_SPACES = / {2,}/g;
+
+export function displayCopy(text: string): string {
+  return text.replace(STRAY_SPACE_BEFORE_PUNCTUATION, "$1").replace(DOUBLED_SPACES, " ");
+}
+
 /** The name a listener hears in place of the alignment a reader sees. */
 export function speakerLabel(role: MessageRole, source: MessageSource): string {
   if (source === "admin") return "Staff";
@@ -24,7 +42,7 @@ export function MessageBubble({ role, source, text }: MessageBubbleProps) {
           {label}
         </span>
       )}
-      <span>{text}</span>
+      <span>{displayCopy(text)}</span>
     </div>
   );
 }

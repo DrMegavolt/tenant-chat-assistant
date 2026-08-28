@@ -409,7 +409,15 @@ export class ChatApi {
     return (await response.json()) as ConsentGrantResponse;
   }
 
-  /** Returns null rather than throwing; transcript polling is best effort. */
+  /**
+   * Best-effort transcript read, so polling can simply try again on anything
+   * transient: offline, timeout, backend error all come back as null.
+   * A 401 or 404 is not transient — the credential is dead and presenting it
+   * again would only earn another rejection — so that case raises
+   * `CredentialRejectedError` for the caller to stop on.
+   *
+   * @throws {CredentialRejectedError} when the credential is no longer usable.
+   */
   async session(credential: string): Promise<SessionSnapshot | null> {
     try {
       const response = await fetchWithTimeout(
@@ -417,6 +425,9 @@ export class ChatApi {
         { headers: { [VISITOR_CREDENTIAL_HEADER]: credential } },
         REQUEST_TIMEOUT_MS
       );
+      if (response.status === 401 || response.status === 404) {
+        throw new CredentialRejectedError(response.status);
+      }
       if (!response.ok) return null;
       const wire = (await response.json()) as WireSession;
       const pending: PendingBooking | null = wire.pending
@@ -436,7 +447,8 @@ export class ChatApi {
         messages: normalizeMessages(wire),
         pending
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof CredentialRejectedError) throw error;
       return null;
     }
   }
