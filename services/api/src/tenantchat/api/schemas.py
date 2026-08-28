@@ -165,9 +165,9 @@ class PendingConfirmation(BaseModel):
     """A question the assistant stopped to ask before committing anything.
 
     Echoes the details back so the customer confirms what will actually be
-    booked or captured rather than what they believe they said. A booking
-    confirmation carries the booked slot and address; a lead confirmation
-    carries the contact and summary instead.
+    booked or captured rather than what they believe they said. Both
+    confirmations carry the contact that will be stored; a booking adds the
+    slot and address, a lead the summary.
     """
 
     awaiting: str
