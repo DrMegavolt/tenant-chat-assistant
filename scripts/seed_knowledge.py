@@ -26,7 +26,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import cast
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 _TENANTS = (
     ("apex", "docs/apex/financing/financing-options.md", "Apex financing options"),
@@ -89,6 +89,26 @@ def _csrf_token() -> str:
     return hmac.new(secret.encode(), _OPERATOR_SUBJECT.encode(), hashlib.sha256).hexdigest()
 
 
+def _connect(url: str) -> tuple[http.client.HTTPConnection, str]:
+    """A connection and its request path for an absolute http(s) URL.
+
+    The scheme selects the connection class, and a missing port falls back to
+    each class's own default (80 / 443); a plaintext connection to an https
+    endpoint would otherwise fail confusingly downstream, not here. Same
+    pattern as ``scripts/harness_live.py``.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise ValueError(f"API URL must be an absolute http(s) URL: {url!r}")
+    connection_type = (
+        http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    )
+    uri = parsed.path or "/"
+    if parsed.query:
+        uri = f"{uri}?{parsed.query}"
+    return connection_type(parsed.hostname, parsed.port, timeout=TIMEOUT), uri
+
+
 def _request(
     method: str,
     path: str,
@@ -99,12 +119,7 @@ def _request(
 ) -> tuple[int, dict[str, object]]:
     conn: http.client.HTTPConnection | None = None
     try:
-        url = urljoin(BASE_URL, path)
-        parsed = url.partition("://")
-        netloc_and_path = parsed[2] if parsed[0] else url
-        host, _, port = netloc_and_path.partition("/")[0].partition(":")
-        conn = http.client.HTTPConnection(host, int(port) if port else 80, timeout=TIMEOUT)
-        uri = "/" + netloc_and_path.partition("/")[2]
+        conn, uri = _connect(urljoin(BASE_URL, path))
         hdrs: dict[str, str] = {
             "Content-Type": content_type,
             "Accept": "application/json",

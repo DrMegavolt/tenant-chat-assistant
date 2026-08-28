@@ -12,8 +12,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
+from scripts import verify_image_contracts
 from scripts.verify_image_contracts import (
     ADMIN_PROXY_PATHS,
     API_PATH_TO_GATEWAY,
@@ -36,6 +38,67 @@ def load_documents(path: str) -> list[dict[str, Any]]:
         for document in yaml.safe_load_all((ROOT / path).read_text(encoding="utf-8"))
         if document
     ]
+
+
+def _write_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
+    """Point the contract checks at a template outside the repository tree.
+
+    The checks label violations with paths relative to ROOT, so ROOT moves to
+    the temporary tree and the web Dockerfile gets an identical copy there to
+    keep the document-root check reading real content.
+    """
+    dockerfile_text = verify_image_contracts.WEB_DOCKERFILE.read_text(encoding="utf-8")
+    template = tmp_path / "site.conf.template"
+    template.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(verify_image_contracts, "ROOT", tmp_path)
+    monkeypatch.setattr(verify_image_contracts, "WEB_SITE_TEMPLATE", template)
+    monkeypatch.setattr(verify_image_contracts, "WEB_DOCKERFILE", tmp_path / "Dockerfile")
+    (tmp_path / "Dockerfile").write_text(dockerfile_text, encoding="utf-8")
+    return template
+
+
+def test_a_second_listener_on_the_same_port_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A duplicate `listen 8080` block must fail the gate, not win the parse.
+
+    The template's isolation argument is one public listener; a second block
+    parsed after the reviewed one used to silently replace it as the checked
+    body, so an unauthenticated block could pass behind the reviewed checks.
+    """
+    _write_template(
+        tmp_path,
+        monkeypatch,
+        "server {\n    listen 8080;\n}\nserver {\n    listen 8080;\n}\n",
+    )
+    errors: list[str] = []
+
+    verify_web_gateway(errors)
+
+    assert any("duplicate server listener" in error for error in errors)
+
+
+def test_a_duplicate_location_declaration_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """nginx refuses duplicate locations at parse time; the gate must too.
+
+    A second `location /api/admin/` without auth_request parses after the
+    reviewed one; last-parsed-wins would check the wrong body and pass.
+    """
+    _write_template(
+        tmp_path,
+        monkeypatch,
+        "server {\n    listen 8080;\n"
+        "    location /api/admin/ {\n        auth_request on;\n    }\n"
+        "    location /api/admin/ {\n        proxy_pass http://admin;\n    }\n"
+        "}\n",
+    )
+    errors: list[str] = []
+
+    verify_web_gateway(errors)
+
+    assert any("duplicate location" in error for error in errors)
 
 
 def test_web_gateway_contract_holds() -> None:
@@ -75,7 +138,7 @@ def test_public_listener_forwards_exactly_the_backend_public_api() -> None:
     gateway_keys = {API_PATH_TO_GATEWAY.get(path, path) for path in visitor_paths}
     assert gateway_keys == set(PUBLIC_PROXY_PATHS)
 
-    all_proxy = proxied_locations(web_server_blocks()[8080])
+    all_proxy = proxied_locations(web_server_blocks()[8080][0])
     assert gateway_keys <= all_proxy
     assert all_proxy >= set(PUBLIC_PROXY_PATHS) | set(ADMIN_PROXY_PATHS)
 
@@ -125,15 +188,15 @@ def test_every_public_route_preflights_the_headers_its_request_sends() -> None:
     of eight, and an aggregate union would have passed while consent stayed
     broken.
     """
-    bodies = location_bodies(web_server_blocks()[8080])
+    bodies = location_bodies(web_server_blocks()[8080][0])
 
     assert set(PUBLIC_PREFLIGHT_HEADERS) == set(
         PUBLIC_PROXY_PATHS
     ), "this table and the public proxy allowlist must name the same routes"
     mismatches = {
-        path: (_preflight_allowed_headers(bodies[path]), expected)
+        path: (_preflight_allowed_headers(bodies[path][0]), expected)
         for path, expected in PUBLIC_PREFLIGHT_HEADERS.items()
-        if _preflight_allowed_headers(bodies[path]) != expected
+        if _preflight_allowed_headers(bodies[path][0]) != expected
     }
     assert not mismatches, f"preflight header drift: {mismatches}"
 
@@ -174,7 +237,7 @@ def test_the_embed_keeps_a_stable_cross_origin_url() -> None:
     assert 'entryFileNames: "embed.js"' in config
     assert "codeSplitting: false" in config
 
-    embed = location_bodies(web_server_blocks()[8080])["/embed.js"]
+    embed = location_bodies(web_server_blocks()[8080][0])["/embed.js"][0]
     assert "Access-Control-Allow-Origin $widget_cors_origin" in embed
     assert "proxy_pass" not in embed
 
@@ -185,19 +248,19 @@ def test_single_listener_has_no_separate_admin_port() -> None:
 
     assert set(blocks) == {8080}
     # No separate listen 8081 directive.
-    assert "listen 8081" not in blocks[8080]
+    assert "listen 8081" not in blocks[8080][0]
     assert 8081 not in blocks
 
 
 def test_admin_routes_are_auth_gated() -> None:
     """Admin locations must use auth_request."""
-    block = web_server_blocks()[8080]
+    block = web_server_blocks()[8080][0]
 
     locations = location_bodies(block)
-    admin_section = locations["/admin/"]
+    admin_section = locations["/admin/"][0]
     assert "auth_request" in admin_section
 
-    admin_api_section = locations["/api/admin/"]
+    admin_api_section = locations["/api/admin/"][0]
     assert "auth_request" in admin_api_section
 
 
@@ -227,7 +290,7 @@ def test_oauth_return_target_is_a_relative_path() -> None:
 
 def test_spoofable_identity_headers_are_handled() -> None:
     """Identity must come from oauth2-proxy over an authenticated internal hop."""
-    admin_api = location_bodies(web_server_blocks()[8080])["/api/admin/"]
+    admin_api = location_bodies(web_server_blocks()[8080][0])["/api/admin/"][0]
     assert "$upstream_http_x_auth_request_email" in admin_api
     assert "$upstream_http_x_auth_request_user" in admin_api
     assert "$upstream_http_x_auth_request_groups" in admin_api
@@ -236,14 +299,14 @@ def test_spoofable_identity_headers_are_handled() -> None:
 
 def test_widget_cors_is_not_wildcard() -> None:
     """Widget CORS must never be wildcard."""
-    block = web_server_blocks()[8080]
+    block = web_server_blocks()[8080][0]
     assert "Access-Control-Allow-Origin *" not in block
     assert "Vary Origin" in block
     locations = location_bodies(block)
     for path in PUBLIC_PROXY_PATHS:
-        assert "Access-Control-Allow-Origin $widget_cors_origin" in locations[path]
+        assert "Access-Control-Allow-Origin $widget_cors_origin" in locations[path][0]
     for path in ADMIN_PROXY_PATHS:
-        assert "Access-Control-Allow-Origin" not in locations[path]
+        assert "Access-Control-Allow-Origin" not in locations[path][0]
 
 
 def test_no_kubernetes_route_publishes_a_separate_admin_service() -> None:

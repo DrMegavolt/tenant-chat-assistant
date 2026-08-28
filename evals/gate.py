@@ -30,11 +30,12 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from evals.compare import ComparisonReport, compare_reports
-from evals.dataset import DatasetSpec
+from evals.corpus import FixtureCorpus
+from evals.dataset import DatasetError, DatasetSpec, validate_against_corpus
 from evals.exceptions import ExceptionRegistry
 from evals.runner import build_retriever_entry, dataset_thresholds, resolve_dataset, run_evaluation
 from evals.scorer import EvaluationReport
@@ -42,6 +43,11 @@ from tenantchat.api.review import apply_eval_report
 from tenantchat.api.store import ReviewQueueStore
 
 _DEFAULT_EXCEPTIONS = Path(__file__).parent / "exceptions.json"
+
+# A run over fewer cases gates on almost nothing: a truncated manifest passes
+# every threshold it no longer measures, so below this floor the gate refuses
+# the dataset instead of reporting a vacuous pass.
+_MIN_GATE_CASES = 5
 
 
 async def close_passing_reviews(
@@ -68,8 +74,10 @@ def _run_pair(
     baseline: str,
     candidate: str,
     exceptions: ExceptionRegistry,
+    judge_regressions: Sequence[tuple[str, str]] = (),
 ) -> tuple[ComparisonReport, DatasetSpec]:
     spec, corpus = resolve_dataset(dataset, k)
+    _require_gateable(dataset, spec, corpus)
     thresholds = dataset_thresholds(spec)
     reports: dict[str, EvaluationReport] = {}
     for side, name in (("baseline", baseline), ("candidate", candidate)):
@@ -103,8 +111,30 @@ def _run_pair(
         reports["candidate"],
         spec,
         exceptions=exceptions,
+        judge_regressions=judge_regressions,
     )
     return comparison, spec
+
+
+def _require_gateable(dataset: str, spec: DatasetSpec, corpus: FixtureCorpus) -> None:
+    """Refuse a dataset the gate would otherwise score vacuously.
+
+    A gold chunk id that does not resolve in the corpus scores like a
+    deliberately empty gold set — recall ``None``, the case excluded from the
+    aggregate instead of failing the run — and a manifest truncated to a
+    handful of cases passes every threshold it no longer measures.
+    """
+    missing = validate_against_corpus(spec, [chunk.chunk_id for chunk in corpus.chunks])
+    if missing:
+        raise DatasetError(
+            f"dataset {dataset!r} references chunks the corpus does not index: "
+            f"{', '.join(missing)}"
+        )
+    if len(spec.cases) < _MIN_GATE_CASES:
+        raise DatasetError(
+            f"dataset {dataset!r} carries {len(spec.cases)} cases; "
+            f"the gate requires at least {_MIN_GATE_CASES}"
+        )
 
 
 def _seeded_subprocess_run(args: argparse.Namespace, *, seed: str, out: Path) -> int:
@@ -135,6 +165,8 @@ def _seeded_subprocess_run(args: argparse.Namespace, *, seed: str, out: Path) ->
         "--out",
         str(out),
     ]
+    for entry in args.judge_regression:
+        command.extend(["--judge-regression", entry])
     # Every element is a validated argparse constant; `uv run --frozen` is the
     # pinned toolchain the whole gate runs under, never user input.
     result = subprocess.run(  # noqa: S603
@@ -170,20 +202,37 @@ def main() -> int:
         help="run the pair in two fresh interpreters under PYTHONHASHSEED "
         "1 and 42 and require byte-identical reports",
     )
+    # The hermetic gate invokes no LLM judge itself, so the registry is empty
+    # here by design; measured judge verdicts enter only through this flag, and
+    # evals.judges still refuses an unvalidated judge the gate decision.
+    parser.add_argument(
+        "--judge-regression",
+        action="append",
+        default=[],
+        metavar="JUDGE=CASE",
+        help="a judge scorer's regressed case, repeatable; only a judge with "
+        "measured held-out agreement gates, the rest ride the report",
+    )
     parser.add_argument("--out", default=None, help="write the comparison JSON to a file")
     args = parser.parse_args()
+    judge_regressions = _judge_regressions(parser, args.judge_regression)
 
     if args.verify_determinism:
         return _verify_main(args)
 
     exceptions = ExceptionRegistry.load(Path(args.exceptions))
-    comparison, _ = _run_pair(
-        dataset=args.dataset,
-        k=args.k,
-        baseline=args.baseline_retriever,
-        candidate=args.candidate_retriever,
-        exceptions=exceptions,
-    )
+    try:
+        comparison, _ = _run_pair(
+            dataset=args.dataset,
+            k=args.k,
+            baseline=args.baseline_retriever,
+            candidate=args.candidate_retriever,
+            exceptions=exceptions,
+            judge_regressions=judge_regressions,
+        )
+    except DatasetError as error:
+        sys.stderr.write(f"gate BLOCKED: {error}\n")
+        return 1
     sys.stdout.write(comparison.to_text() + "\n\n")
     sys.stdout.write("determinism: not verified\n\n")
     sys.stdout.write(comparison.to_json() + "\n")
@@ -194,6 +243,19 @@ def main() -> int:
         return 1
     sys.stdout.write("gate passed\n")
     return 0
+
+
+def _judge_regressions(
+    parser: argparse.ArgumentParser, entries: list[str]
+) -> tuple[tuple[str, str], ...]:
+    """Parse each ``JUDGE=CASE`` entry, refusing anything else at the CLI."""
+    parsed: list[tuple[str, str]] = []
+    for entry in entries:
+        judge, separator, case = entry.partition("=")
+        if not separator or not judge or not case:
+            parser.error(f"--judge-regression must be JUDGE=CASE, got {entry!r}")
+        parsed.append((judge, case))
+    return tuple(parsed)
 
 
 def _verify_main(args: argparse.Namespace) -> int:

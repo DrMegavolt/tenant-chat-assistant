@@ -82,7 +82,14 @@ def verify_dockerfiles(errors: list[str]) -> None:
         syntax = text.splitlines()[0]
         if DIGEST.search(syntax) is None:
             errors.append(f"{label}: Dockerfile frontend must use an exact digest")
-        image_args = re.findall(r'^ARG\s+\w+_IMAGE="([^"]+)"', text, re.MULTILINE)
+        # Both ARG spellings are checked: the unquoted form is legal Dockerfile
+        # and would otherwise float to any tag without the gate noticing.
+        image_args = [
+            quoted or unquoted
+            for quoted, unquoted in re.findall(
+                r'^ARG\s+\w+_IMAGE=(?:"([^"]*)"|(\S+))', text, re.MULTILINE
+            )
+        ]
         if not image_args or any(DIGEST.search(image) is None for image in image_args):
             errors.append(f"{label}: every base/tool image ARG must end in an exact digest")
         if path in PYTHON_DOCKERFILES and "uv sync --frozen" not in text:
@@ -172,10 +179,16 @@ def web_document_roots() -> dict[str, set[str]]:
     return roots
 
 
-def web_server_blocks() -> dict[int, str]:
-    """Return the rendered site's `server { ... }` bodies keyed by listen port."""
+def web_server_blocks() -> dict[int, list[str]]:
+    """Return the rendered site's `server { ... }` bodies grouped by listen port.
+
+    Every block is returned in template order, so a second block on an already
+    listened port stays visible to the caller instead of silently winning the
+    parse: nginx refuses duplicate default servers, and the gateway checks must
+    refuse the template rather than review whichever block parsed last.
+    """
     text = WEB_SITE_TEMPLATE.read_text(encoding="utf-8")
-    blocks: dict[int, str] = {}
+    blocks: dict[int, list[str]] = {}
     for start in (match.end() for match in re.finditer(r"^server\s*\{", text, re.MULTILINE)):
         depth = 1
         index = start
@@ -185,18 +198,20 @@ def web_server_blocks() -> dict[int, str]:
         body = text[start : index - 1]
         listen = re.search(r"^\s*listen\s+(\d+)\s*;", body, re.MULTILINE)
         if listen is not None:
-            blocks[int(listen.group(1))] = body
+            blocks.setdefault(int(listen.group(1)), []).append(body)
     return blocks
 
 
-def location_bodies(block: str) -> dict[str, str]:
+def location_bodies(block: str) -> dict[str, list[str]]:
     """Return location bodies using brace balancing, including nested `if`s.
 
     Keys are the matched path: the literal path after `= ` or a bare prefix, and
     the pattern itself for a regex location, so the allowlist can name exactly
-    what nginx will match.
+    what nginx will match. A duplicated path keeps every body: nginx rejects a
+    duplicate location at parse time, and last-parsed-wins would let a second
+    unauthenticated block hide behind the reviewed one's checks.
     """
-    bodies: dict[str, str] = {}
+    bodies: dict[str, list[str]] = {}
     pattern = re.compile(r"location\s+(?:=\s*|\^~\s*|~\s*\*\s*|~\s*)?(\S+)\s*\{")
     for match in pattern.finditer(block):
         depth = 1
@@ -207,13 +222,17 @@ def location_bodies(block: str) -> dict[str, str]:
         if depth == 0:
             # Regex locations are quoted in the template so their quantifier
             # braces do not close the location block; key by the bare pattern.
-            bodies[match.group(1).strip('"')] = block[match.end() : index - 1]
+            bodies.setdefault(match.group(1).strip('"'), []).append(block[match.end() : index - 1])
     return bodies
 
 
 def proxied_locations(block: str) -> set[str]:
     """Return locations whose complete body proxies upstream."""
-    return {path for path, body in location_bodies(block).items() if "proxy_pass" in body}
+    return {
+        path
+        for path, bodies in location_bodies(block).items()
+        if any("proxy_pass" in body for body in bodies)
+    }
 
 
 def verify_web_gateway(errors: list[str]) -> None:
@@ -240,11 +259,17 @@ def verify_web_gateway(errors: list[str]) -> None:
             errors.append(f"{dockerfile}: {root} must be built from exactly {expected}, got {got}")
 
     blocks = web_server_blocks()
+    duplicated_ports = sorted(port for port, bodies in blocks.items() if len(bodies) > 1)
+    if duplicated_ports:
+        errors.append(f"{template}: duplicate server listener(s) {duplicated_ports}")
     if set(blocks) != {8080}:
         errors.append(f"{template}: expected a single 8080 listener")
         return
-    block = blocks[8080]
+    block = blocks[8080][0]
     locations = location_bodies(block)
+    duplicated_locations = sorted(path for path, bodies in locations.items() if len(bodies) > 1)
+    if duplicated_locations:
+        errors.append(f"{template}: duplicate location declaration(s) {duplicated_locations}")
     # Public visitor API paths must proxy upstream.
     all_proxy = proxied_locations(block)
     public_proxy = all_proxy & set(PUBLIC_PROXY_PATHS)
@@ -258,15 +283,16 @@ def verify_web_gateway(errors: list[str]) -> None:
     unexpected = all_proxy - set(PUBLIC_PROXY_PATHS | ADMIN_PROXY_PATHS | AUTH_PROXY_PATHS)
     if unexpected:
         errors.append(f"{template}: unexpected proxied locations {', '.join(sorted(unexpected))}")
-    # Unknown /api/ paths must fail closed.
-    if "location /api/ {" not in block or "return 404" not in block:
+    # Unknown /api/ paths must fail closed: the 404 has to live in the
+    # catch-all location itself, not anywhere in the listener.
+    if "/api/" not in locations or "return 404" not in locations["/api/"][0]:
         errors.append(f"{template}: listener must reject unlisted /api/ paths")
     # Admin location must be auth-gated.
-    admin_block = locations.get("/admin/", "")
+    admin_block = locations.get("/admin/", [""])[0]
     if "auth_request" not in admin_block:
         errors.append(f"{template}: admin location must use auth_request")
     # Admin API must be auth-gated.
-    admin_api_block = locations.get("/api/admin/", "")
+    admin_api_block = locations.get("/api/admin/", [""])[0]
     if "auth_request" not in admin_api_block:
         errors.append(f"{template}: admin API location must use auth_request")
     for directive in (
@@ -278,16 +304,16 @@ def verify_web_gateway(errors: list[str]) -> None:
         if directive not in admin_api_block:
             errors.append(f"{template}: admin API is missing {directive}")
     for path in PUBLIC_PROXY_PATHS:
-        public_body = locations.get(path, "")
+        public_body = locations.get(path, [""])[0]
         if "Access-Control-Allow-Origin $widget_cors_origin" not in public_body:
             errors.append(f"{template}: {path} is missing allowlisted CORS responses")
         if "$request_method = OPTIONS" not in public_body:
             errors.append(f"{template}: {path} is missing CORS preflight handling")
     for path in ADMIN_PROXY_PATHS:
-        if "Access-Control-Allow-Origin" in locations.get(path, ""):
+        if "Access-Control-Allow-Origin" in locations.get(path, [""])[0]:
             errors.append(f"{template}: admin route {path} must not emit CORS permission")
     # The embed is the only static asset a cross-origin customer site fetches.
-    embed_body = locations.get(WEB_EMBED_PATH, "")
+    embed_body = locations.get(WEB_EMBED_PATH, [""])[0]
     if "Access-Control-Allow-Origin $widget_cors_origin" not in embed_body:
         errors.append(f"{template}: {WEB_EMBED_PATH} is missing allowlisted CORS responses")
     vite_config = WEB_VITE_CONFIG.read_text(encoding="utf-8")

@@ -191,6 +191,7 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
     for workload in (
         "chat-backend",
         "embedding-service",
+        "job-worker",
     ):
         found = _document_for(documents, "Deployment", workload)
         if found is None:
@@ -296,7 +297,22 @@ def _check_workload_refs(errors: list[str], documents: list[tuple[Path, str]]) -
             "timeoutSeconds",
         )
 
-    internal_refs: dict[str, dict[str, str]] = {}
+    # The embedding-caller tokens are live wiring in the deployment input (the
+    # embedding server authenticates its callers with them), so the gate
+    # verifies each ref: a dropped secretKeyRef or an inlined token must fail
+    # here, not pass unseen.
+    internal_refs: dict[str, dict[str, str]] = {
+        "embedding-service": {
+            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
+            "CHAT_TO_EMBEDDING_TOKEN": "chat-to-embedding-credentials",
+        },
+        "chat-backend": {
+            "CHAT_TO_EMBEDDING_TOKEN": "chat-to-embedding-credentials",
+        },
+        "job-worker": {
+            "INGESTION_TO_EMBEDDING_TOKEN": "ingestion-to-embedding-credentials",
+        },
+    }
     for workload, references in internal_refs.items():
         internal_document = workload_documents.get(workload)
         if internal_document is None:
