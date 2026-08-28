@@ -120,6 +120,53 @@ spec:
     assert any("CHAT_API_DEV_AUTH must never be enabled" in error for error in errors)
 
 
+def test_an_embedding_caller_token_with_a_literal_value_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The embedding-caller credentials are live manifest wiring, so the gate
+    checks them: the verification loop used to iterate an empty registry, and a
+    deployment that inlined the token or dropped the secretKeyRef passed
+    unseen."""
+    monkeypatch.setattr(security_gate, "ROOT", tmp_path)
+    path = tmp_path / "embedding.yaml"
+    document = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedding-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: embedding-service
+          env:
+            - name: CHAT_TO_EMBEDDING_TOKEN
+              value: committed-token
+"""
+    errors: list[str] = []
+
+    security_gate._check_workload_refs(errors, [(path, document)])
+
+    assert any(
+        "CHAT_TO_EMBEDDING_TOKEN must use secretKeyRef chat-to-embedding-credentials:token" in error
+        for error in errors
+    )
+    assert any(
+        "CHAT_TO_EMBEDDING_TOKEN must not contain a literal value" in error for error in errors
+    )
+
+
+def test_the_shipped_deployment_input_satisfies_the_workload_ref_checks() -> None:
+    """Pins the internal service-token checks to the wiring that actually ships:
+    any manifest edit that drops a secretKeyRef or inlines a token fails here."""
+    errors: list[str] = []
+
+    security_gate._check_workload_refs(errors, security_gate.deployment_documents())
+
+    assert not errors
+
+
 def test_a_manifest_that_enables_content_export_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

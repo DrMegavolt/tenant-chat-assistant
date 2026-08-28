@@ -53,9 +53,10 @@ eval: ## Run the golden offline evaluation harness (baseline + hybrid, hermetic)
 	$(UV_RUN) python -m evals.runner --retriever hybrid
 
 eval-gate: ## Baseline-vs-candidate regression gate over every versioned dataset (RAG-008)
-	$(UV_RUN) python -m evals.gate --dataset golden-v1 --verify-determinism
-	$(UV_RUN) python -m evals.gate --dataset multi-turn-v2 --verify-determinism
-	$(UV_RUN) python -m evals.gate --dataset adversarial-v1 --verify-determinism
+	@for dataset in $$($(UV_RUN) python -c "from evals.dataset import known_datasets; print(' '.join(known_datasets()))"); do \
+		echo "eval-gate: $$dataset"; \
+		$(UV_RUN) python -m evals.gate --dataset $$dataset --verify-determinism || exit 1; \
+	done
 
 dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated output
 	@for f in k8s/grafana/*.json; do \
@@ -66,7 +67,10 @@ dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated ou
 docs-check: ## Verify local links and images in repository Markdown
 	$(UV_RUN) python scripts/check_docs.py
 
-test-cov: ## Run tests with a coverage report
+# test-cov depends on js-build because the public route allowlist is derived
+# from the build output, so an unbuilt frontend makes that specification
+# vacuous; the edge keeps the order correct under `make -j`.
+test-cov: js-build ## Run tests with a coverage report
 	$(UV_RUN) pytest -m "not integration and not chart" --cov --cov-report=term-missing \
 		--cov-report=xml:coverage/python/coverage.xml \
 		--cov-report=html:coverage/python/html \
@@ -154,7 +158,7 @@ seed-knowledge: ## Seed governed knowledge for both demo tenants through the rea
 images-build: ## Build all three deployable images and record local metadata/digests
 	./scripts/build_images.sh
 
-images-smoke: ## Smoke all previously built deployable images as their runtime user
+images-smoke: images-build ## Smoke the built deployable images as their runtime user
 	./scripts/smoke_images.sh
 
 images-check: image-contracts images-build images-smoke ## Build and smoke all release images
@@ -162,10 +166,11 @@ images-check: image-contracts images-build images-smoke ## Build and smoke all r
 deploy-local: ## Build, migrate, and deploy all images to the local MicroK8s cluster
 	./scripts/deploy_local_k8s.sh
 
-# js-build runs before test-cov: the public route allowlist is derived from the
-# build output, so an unbuilt frontend makes that specification vacuous.
-# eval-gate runs the baseline-vs-candidate comparison over every versioned
-# dataset with determinism verification; it is hermetic and takes ~2s.
+# test-cov carries its own js-build dependency: the public route allowlist is
+# derived from the build output, so an unbuilt frontend makes that
+# specification vacuous. eval-gate runs the baseline-vs-candidate comparison
+# over every versioned dataset with determinism verification; it is hermetic
+# and takes ~2s.
 check: lock-check lint format-check typecheck js-lint js-typecheck js-format-check js-build \
 	eval-gate test-cov js-test-cov deployment-security image-contracts dashboard-check docs-check ## Full local and CI quality gate
 	@echo ""

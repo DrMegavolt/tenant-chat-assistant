@@ -60,6 +60,7 @@ class TestCrossProcessDeterminism(unittest.TestCase):
             baseline_retriever="lexical-overlap",
             candidate_retriever="hybrid",
             exceptions="evals/exceptions.json",
+            judge_regression=[],
         )
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "report.json"

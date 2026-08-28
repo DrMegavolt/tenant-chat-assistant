@@ -55,6 +55,49 @@ def test_an_unpinned_base_image_is_rejected(tmp_path: Path) -> None:
     assert any("exact digest" in error for error in errors)
 
 
+def test_an_unquoted_base_image_arg_is_checked_for_a_digest(tmp_path: Path) -> None:
+    """A base-image ARG written without quotes must not bypass digest pinning.
+
+    The check used to match only `ARG X_IMAGE="..."`, so the equally legal
+    unquoted form floated to any tag without the gate noticing.
+    """
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# syntax=docker/dockerfile:1.7@sha256:" + "a" * 64 + "\n"
+        "ARG NGINX_IMAGE=nginx:1.29.8-alpine\n"
+        "FROM ${NGINX_IMAGE}\nUSER 10001:10001\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+    with (
+        patch.object(verify_image_contracts, "ROOT", tmp_path),
+        patch.object(verify_image_contracts, "DOCKERFILES", (dockerfile,)),
+        patch.object(verify_image_contracts, "PYTHON_DOCKERFILES", ()),
+    ):
+        verify_dockerfiles(errors)
+
+    assert any("exact digest" in error for error in errors)
+
+
+def test_an_unquoted_digest_pinned_base_image_arg_passes(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# syntax=docker/dockerfile:1.7@sha256:" + "a" * 64 + "\n"
+        "ARG NGINX_IMAGE=nginx:1.29.8-alpine@sha256:" + "b" * 64 + "\n"
+        "FROM ${NGINX_IMAGE}\nUSER 10001:10001\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+    with (
+        patch.object(verify_image_contracts, "ROOT", tmp_path),
+        patch.object(verify_image_contracts, "DOCKERFILES", (dockerfile,)),
+        patch.object(verify_image_contracts, "PYTHON_DOCKERFILES", ()),
+    ):
+        verify_dockerfiles(errors)
+
+    assert errors == []
+
+
 def test_kubernetes_uses_images_as_immutable_artifacts() -> None:
     errors: list[str] = []
     verify_manifests(errors)
