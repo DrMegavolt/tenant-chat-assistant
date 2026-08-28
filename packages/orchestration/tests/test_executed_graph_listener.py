@@ -161,7 +161,13 @@ def _task_list_triggers(task_id: str, name: str, triggers: list[str]) -> dict[st
     }
 
 
-def test_a_tool_loop_records_attempt_numbers() -> None:
+def test_a_second_round_of_a_tool_loop_records_an_attempt_not_a_replay() -> None:
+    """Attempt numbers count fresh executions; ``replayed`` is resume only.
+
+    Conflating the two mislabelled every ordinary multi-round turn as a
+    replayed one, and hid the signal a checkpoint resume is supposed to carry.
+    A second round runs new work — it is attempt 2 and nothing else.
+    """
     listener = ExecutedGraphListener()
     for task_id in ("a", "b"):
         listener.on_event(_task(task_id, "model", ("branch:to:model",)))
@@ -171,7 +177,7 @@ def test_a_tool_loop_records_attempt_numbers() -> None:
     assert section is not None
 
     assert [node["attempt"] for node in _nodes(section)] == [1, 2]
-    assert _nodes(section)[1]["replayed"] is True
+    assert all(node["replayed"] is False for node in _nodes(section))
 
 
 def test_an_interrupted_node_is_marked_but_ok() -> None:

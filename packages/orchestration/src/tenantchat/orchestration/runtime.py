@@ -21,11 +21,16 @@ listener failure is caught here so the run degrades to the derived trace view
 instead of failing the turn. A graph that raises mid-run is turned into a
 recorded failed turn (outcome ``failed``, diagnosis ``application_error``) whose
 executed-graph section ends at the node that crashed, so the failure is
-inspectable rather than a silent 500 — and never an idealized completion.
+inspectable rather than a silent 500 — and never an idealized completion. A run
+that is cancelled mid-turn (a visitor closing the widget, a shutdown) is turned
+into a recorded cancelled turn the same way: nothing is answered or committed,
+but the turn is not simply missing from the record.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 from collections.abc import Mapping
@@ -34,20 +39,21 @@ from datetime import datetime
 from typing import Any, Final, cast
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 
 from tenantchat.core.citations import Citation
 from tenantchat.core.metrics import MetricName, MetricsReporter
 from tenantchat.core.metrics import TurnOutcome as MetricOutcome
 from tenantchat.orchestration.executed import ExecutedGraphListener
 from tenantchat.orchestration.graph import GRAPH_VERSION, CompiledDispatchGraph
-from tenantchat.orchestration.nodes import BookingDecision
+from tenantchat.orchestration.nodes import BookingDecision, unanswered_tool_calls
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
 from tenantchat.orchestration.state import (
     CommittedAction,
     DispatchState,
     initial_state,
     next_turn,
+    tool_entry,
 )
 from tenantchat.orchestration.state import (
     TurnOutcome as TurnStatus,
@@ -74,6 +80,21 @@ _CRASH_REPLY: Final = "I could not finish that because of an unexpected error. P
 # the ``application_error`` diagnosis cause, so a crashed turn reaches the
 # review queue like any other detected technical failure.
 _CRASH_FAILURE: Final = "application_error"
+
+# The server-written tool result a stranded call receives on the next turn.
+# A crash between the model's tool calls and the tools node leaves the calls in
+# the checkpointed transcript with no result, and every provider rejects a
+# conversation that does — so the next turn on the thread would fail before the
+# model was ever asked. Closing the calls here, with a payload no model could
+# mistake for a real result, is what keeps one crash from ending the thread.
+_INTERRUPTED_TOOL_RESULT: Final = json.dumps(
+    {
+        "error": "turn_interrupted",
+        "message": "The assistant was interrupted before this action could run.",
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,11 +182,33 @@ class DispatchRuntime:
         # exists; its input type names the whole state because a *new* thread
         # has to supply all of it.
         update = (
-            cast("DispatchState", next_turn(message))
+            self._continuing_update(existing, message)
             if existing.created_at is not None
             else initial_state(tenant_id, session_id, message)
         )
         return await self._invoke(config, update, resumed=False, tenant_id=tenant_id)
+
+    @staticmethod
+    def _continuing_update(snapshot: StateSnapshot, message: str) -> DispatchState:
+        """The partial update that starts a follow-up turn, transcript healed.
+
+        A run that died between the model's tool calls and their results leaves
+        those calls dangling in the checkpointed transcript, and the next turn
+        would send them to a provider that rejects the whole conversation. The
+        calls are closed here — at the one moment a turn boundary is visible to
+        plain code — so the thread stays usable; a thread still paused at an
+        interrupt is left alone, because its run will produce the real results
+        when it resumes.
+        """
+        update = cast("DispatchState", next_turn(message))
+        stranded = unanswered_tool_calls(cast("DispatchState", dict(snapshot.values)))
+        paused = any(task.interrupts for task in snapshot.tasks)
+        if stranded and not paused:
+            update["transcript"] = [
+                *(tool_entry(call["call_id"], _INTERRUPTED_TOOL_RESULT) for call in stranded),
+                *update["transcript"],
+            ]
+        return update
 
     async def resume(self, tenant_id: str, session_id: str, decision: object) -> TurnResult:
         """Answer the question the graph paused on and run to completion.
@@ -195,12 +238,17 @@ class DispatchRuntime:
         A run that finishes normally returns its result; a run whose graph
         raises mid-way returns a *failed* turn whose trace names the nodes that
         ran and stops — the crash is a recorded, reviewable outcome, never an
-        idealized answer. A capture failure degrades to the derived trace view
-        and the run's outcome is unaffected.
+        idealized answer. A run that is *cancelled* mid-way returns a
+        *cancelled* turn the same way: the caller's request is not answered,
+        but the turn still lands in the record, which re-raising alone could
+        not achieve because the record is written by the caller from this
+        result. A capture failure degrades to the derived trace view and the
+        run's outcome is unaffected.
         """
         listener = ExecutedGraphListener(resumed=resumed)
         final_state: Mapping[str, object] = {}
         crashed = False
+        cancelled = False
         failure_type = ""
         try:
             async for mode, part in self._graph.astream(
@@ -217,6 +265,14 @@ class DispatchRuntime:
                         # section, and readers show the derived view — the
                         # exact pre-`OBS-006` behavior.
                         listener = ExecutedGraphListener(resumed=resumed)
+        except asyncio.CancelledError:
+            cancelled = True
+            failure_type = "cancelled"
+            listener.crash()
+            logger.warning(
+                "dispatcher turn cancelled mid-run",
+                extra={"tenant_id": tenant_id, "failure": failure_type},
+            )
         except Exception as error:
             crashed = True
             failure_type = type(error).__name__
@@ -234,7 +290,11 @@ class DispatchRuntime:
                 1,
                 labels={"outcome": MetricOutcome.FAILED.value},
             )
-        return self._result(final_state, section, crashed=crashed)
+        # A cancelled turn is deliberately absent from the outcome metric: the
+        # partition counts turns the visitor's request completed, and a
+        # cancelled request never reached an answer. The record below is what
+        # keeps it from disappearing instead.
+        return self._result(final_state, section, crashed=crashed, cancelled=cancelled)
 
     @staticmethod
     def _observe_executed(metrics: MetricsReporter, section: Mapping[str, object]) -> None:
@@ -300,6 +360,7 @@ class DispatchRuntime:
         section: Mapping[str, object] | None,
         *,
         crashed: bool,
+        cancelled: bool = False,
     ) -> TurnResult:
         state = dict(raw)
         state["executed_graph"] = section
@@ -310,6 +371,13 @@ class DispatchRuntime:
             # application error, answered with a server-written reply.
             state["turn_outcome"] = TurnStatus.FAILED.value
             state["failure"] = _CRASH_FAILURE
+        elif cancelled:
+            # Same honesty for a cancelled run: the turn stopped mid-graph, the
+            # checkpoint holds no terminal outcome, and the record says so
+            # rather than leaving the turn missing from the thread's history.
+            # No failure is attributed — cancellation is not a system fault —
+            # and the answer stays empty, because nothing was published.
+            state["turn_outcome"] = TurnStatus.CANCELLED.value
         interrupts = state.get(_INTERRUPT_KEY) or ()
         pending = next(
             (entry.value for entry in interrupts if isinstance(entry.value, Mapping)), None
