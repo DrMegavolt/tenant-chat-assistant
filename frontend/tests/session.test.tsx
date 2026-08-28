@@ -577,6 +577,120 @@ describe("the transcript poll under stress", () => {
   });
 });
 
+describe("a credential that stops being valid mid-visit", () => {
+  test("a poll answered 401 stops the loop and the widget says the session ended", async () => {
+    // Every poll that retries a dead credential is another rejection the
+    // backend has to log; after the first one there must be no further calls,
+    // and the visitor must see the honest end state instead of silence.
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    let sessionReads = 0;
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.includes("/api/chat/session") && init?.method !== "POST") {
+        sessionReads += 1;
+        if (sessionReads === 1) {
+          return jsonResponse({
+            session: { session_id: SESSION_ID },
+            messages: [],
+            pending: null,
+            credential: CREDENTIAL
+          });
+        }
+        return jsonResponse({ code: "visitor_credential_expired" }, { ok: false, status: 401 });
+      }
+      return null;
+    });
+    await renderDemo({ awaitReady: false });
+    await tick();
+    expect(sessionReads).toBe(1);
+
+    await tick(2500);
+    expect(sessionReads).toBe(2);
+    expect(inWidget("#assistantStatus")?.textContent).toContain("has ended");
+
+    await tick(2500);
+    await tick(5000);
+    expect(sessionReads).toBe(2);
+    expect(window.sessionStorage.getItem("tenant-chat-credential:apex")).toBeNull();
+  });
+
+  test("a stored credential rejected on resume ends the session before the first poll", async () => {
+    // Hydration discovers the dead token; the poll must never present the
+    // same rejected credential on its own.
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    let sessionReads = 0;
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.includes("/api/chat/session") && init?.method !== "POST") {
+        sessionReads += 1;
+        return jsonResponse({ code: "invalid_visitor_credential" }, { ok: false, status: 401 });
+      }
+      return null;
+    });
+    await renderDemo({ awaitReady: false });
+    await tick();
+    await tick(2500);
+    await tick(2500);
+
+    expect(sessionReads).toBe(1);
+    expect(inWidget("#assistantStatus")?.textContent).toContain("has ended");
+  });
+
+  test("sending after the session ended starts a fresh conversation and polling resumes", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    let sessionReads = 0;
+    let minted = false;
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        minted = true;
+        return jsonResponse({ session: { session_id: SESSION_ID }, credential: CREDENTIAL });
+      }
+      if (url.includes("/api/chat/session")) {
+        sessionReads += 1;
+        if (sessionReads === 1 || minted) {
+          return jsonResponse({
+            session: { session_id: SESSION_ID },
+            messages: [],
+            pending: null,
+            credential: CREDENTIAL
+          });
+        }
+        return jsonResponse({ code: "visitor_credential_expired" }, { ok: false, status: 401 });
+      }
+      if (url.endsWith("/api/chat")) {
+        return jsonResponse({
+          session_id: SESSION_ID,
+          reply: "Fresh start.",
+          pending: null,
+          committed: [],
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
+        });
+      }
+      return null;
+    });
+    await renderDemo({ awaitReady: false });
+    await tick();
+    await tick(2500);
+    expect(inWidget("#assistantStatus")?.textContent).toContain("has ended");
+    expect(sessionReads).toBe(2);
+
+    submitChat("Still here?");
+    await tick();
+
+    expect(inWidget("#messages")?.textContent).toContain("Fresh start.");
+    expect(inWidget("#assistantStatus")?.textContent).not.toContain("has ended");
+    expect(window.sessionStorage.getItem("tenant-chat-credential:apex")).toBe(CREDENTIAL);
+
+    await tick(2500);
+    expect(sessionReads).toBe(3);
+  });
+});
+
 describe("what a failed send says", () => {
   test("a message the backend rejects as too long is told apart from an outage", async () => {
     // A 422 in a hundredth of a second used to borrow the network-failure

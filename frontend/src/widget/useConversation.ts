@@ -39,6 +39,7 @@ function isValidCredential(credential: string | null): credential is string {
 
 const WAITING_STATUS = "Waiting for the assistant to reply.";
 const RESET_STATUS = "This conversation was deleted from your browser and a new one has started.";
+const EXPIRED_STATUS = "This session has ended. Refresh the page to start again.";
 const CHAT_FAILURE = "I could not reach the chat service just now. Please try again in a moment.";
 
 let entrySequence = 0;
@@ -116,6 +117,7 @@ export function useConversation({
   const [status, setStatus] = useState("");
   const [unreadStaffCount, setUnreadStaffCount] = useState(0);
   const [ratings, setRatings] = useState<Record<string, "up" | "down">>({});
+  const [isExpired, setIsExpired] = useState(false);
 
   // A turn has to post the transcript *including* the message just typed, so
   // the sender reads the list it is extending rather than the last render's.
@@ -134,6 +136,9 @@ export function useConversation({
   const proactiveShown = useRef(false);
   const isSendingRef = useRef(false);
   const credentialRef = useRef<string | null>(visitor.existingCredential());
+  // Mirrors `isExpired` so the poll interval can gate on it without the
+  // effect being torn down and rebuilt when the state flips.
+  const isExpiredRef = useRef(false);
 
   const clearProactiveTimer = useCallback(() => {
     if (proactiveTimer.current !== null) {
@@ -143,6 +148,24 @@ export function useConversation({
   }, []);
 
   useEffect(() => clearProactiveTimer, [clearProactiveTimer]);
+
+  const setExpired = useCallback((expired: boolean) => {
+    isExpiredRef.current = expired;
+    setIsExpired(expired);
+  }, []);
+
+  /**
+   * The server rejected this conversation's credential outright, so no
+   * background retry can ever succeed — each further call would only earn
+   * another rejection. Drop the stored token, stop the loop, and say so; a
+   * page reload is what mints a fresh conversation.
+   */
+  const markSessionExpired = useCallback(() => {
+    visitor.clear();
+    credentialRef.current = null;
+    clearProactiveTimer();
+    setExpired(true);
+  }, [clearProactiveTimer, setExpired, visitor]);
 
   useEffect(() => {
     if (hydratedRef.current) return;
@@ -157,25 +180,31 @@ export function useConversation({
     // dropping it would be exactly the loss a returning visitor notices.
     let cancelled = false;
     const hydrate = async () => {
-      const snapshot = await api.session(stored);
-      if (cancelled || !snapshot) return;
-      if ((!snapshot.messages || snapshot.messages.length === 0) && !snapshot.pending) {
-        return;
-      }
+      try {
+        const snapshot = await api.session(stored);
+        if (cancelled || !snapshot) return;
+        if ((!snapshot.messages || snapshot.messages.length === 0) && !snapshot.pending) {
+          return;
+        }
 
-      credentialRef.current = snapshot.credential;
-      visitor.recordCredential(snapshot.credential);
+        credentialRef.current = snapshot.credential;
+        visitor.recordCredential(snapshot.credential);
 
-      for (const message of snapshot.messages ?? []) {
-        seenServerMessageIds.current.add(message.messageId);
+        for (const message of snapshot.messages ?? []) {
+          seenServerMessageIds.current.add(message.messageId);
+        }
+        setEntries((previous) =>
+          mergeTranscript(
+            previous,
+            entriesFromMessages(snapshot.messages ?? []),
+            snapshot.pending ?? null
+          )
+        );
+      } catch (error) {
+        // The stored token was rejected on resume; polling it would only
+        // repeat the rejection every interval.
+        if (!cancelled && error instanceof CredentialRejectedError) markSessionExpired();
       }
-      setEntries((previous) =>
-        mergeTranscript(
-          previous,
-          entriesFromMessages(snapshot.messages ?? []),
-          snapshot.pending ?? null
-        )
-      );
     };
 
     hydrate().catch(() => {
@@ -187,7 +216,7 @@ export function useConversation({
       cancelled = true;
       hydratedRef.current = false;
     };
-  }, [api, setEntries, visitor]);
+  }, [api, markSessionExpired, setEntries, visitor]);
 
   const scheduleProactiveNudge = useCallback(() => {
     if (!config.proactiveLeadCapture || proactiveShown.current) return;
@@ -239,16 +268,20 @@ export function useConversation({
     const session = await api.openSession({ tenantId });
     visitor.recordCredential(session.credential);
     credentialRef.current = session.credential;
+    // A server-issued credential is the proof the conversation is live again,
+    // so a send on an expired session lifts the expired state.
+    setExpired(false);
     return session.credential;
-  }, [api, tenantId, visitor]);
+  }, [api, setExpired, tenantId, visitor]);
 
   /** Replace the stored credential with the one a response reissued. */
   const refreshCredential = useCallback(
     (credential: string) => {
       credentialRef.current = credential;
       visitor.recordCredential(credential);
+      setExpired(false);
     },
-    [visitor]
+    [setExpired, visitor]
   );
 
   /** Append one turn's assistant output (tool events + reply/confirmation). */
@@ -472,11 +505,12 @@ export function useConversation({
     proactiveShown.current = false;
     credentialRef.current = null;
     clearProactiveTimer();
+    setExpired(false);
     setEntries(() => [welcomeEntry(config)]);
     setUnreadStaffCount(0);
     setRatings({});
     setStatus(RESET_STATUS);
-  }, [clearProactiveTimer, config, setEntries, visitor]);
+  }, [clearProactiveTimer, config, setEntries, setExpired, visitor]);
 
   const markRead = useCallback(() => setUnreadStaffCount(0), []);
 
@@ -491,7 +525,9 @@ export function useConversation({
     let inFlight = false;
     let cancelled = false;
     const poll = async () => {
-      if (cancelled || inFlight || document.hidden) return;
+      // An expired conversation is never polled again: the credential was
+      // rejected once, so every further call would only earn another one.
+      if (cancelled || inFlight || isExpiredRef.current || document.hidden) return;
       inFlight = true;
       try {
         const credential = visitor.existingCredential();
@@ -515,6 +551,8 @@ export function useConversation({
           }))
         ]);
         if (!isOpen) setUnreadStaffCount((count) => count + staff.length);
+      } catch (error) {
+        if (error instanceof CredentialRejectedError) markSessionExpired();
       } finally {
         inFlight = false;
       }
@@ -533,12 +571,14 @@ export function useConversation({
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [api, isOpen, refreshCredential, setEntries, visitor]);
+  }, [api, isOpen, markSessionExpired, refreshCredential, setEntries, visitor]);
 
   return {
     entries,
     isSending,
-    status,
+    // An expired session outshouts every transient status: the honest state is
+    // "over, refresh", not whatever turn happened to be in flight.
+    status: isExpired ? EXPIRED_STATUS : status,
     unreadStaffCount,
     ratingFor,
     rate,

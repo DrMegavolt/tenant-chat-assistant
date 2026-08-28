@@ -294,6 +294,46 @@ describe("chat and booking contracts", () => {
   });
 });
 
+describe("how model copy is displayed", () => {
+  test("stray spaces before punctuation are tidied on screen, and the turn stays ratable", async () => {
+    // The tidy-up lives in the render path only: the transcript entry keeps
+    // the raw reply, which is what the transcript merge and the feedback
+    // target are matched against.
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        return jsonResponse({
+          session: { session_id: "session-apex" },
+          messages: [],
+          credential: CREDENTIAL
+        });
+      }
+      if (url.endsWith("/api/chat") && init?.method === "POST") {
+        return jsonResponse({
+          session_id: "session-apex",
+          turn_id: "turn-copy",
+          reply: "Hello , world !  It is ready .",
+          pending: null,
+          committed: [],
+          provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+          credential: CREDENTIAL
+        });
+      }
+      return null;
+    });
+    await renderDemo();
+
+    submitChat("Hi");
+
+    await waitFor(() =>
+      expect(inWidget("#messages")?.textContent).toContain("Hello, world! It is ready.")
+    );
+    expect(inWidget("#messages")?.textContent).not.toContain("world !");
+    // The display-only cleanup left the turn's feedback control intact.
+    expect(allInWidget(".feedback-control")).toHaveLength(1);
+  });
+});
+
 describe("an embed without data-company-id", () => {
   test("no widget starts, and the integrator is told why in the console", async () => {
     // The default-tenant fallback would silently serve one company's bot on
