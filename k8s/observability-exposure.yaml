@@ -69,15 +69,13 @@ spec:
     app.kubernetes.io/instance: tempo
     app.kubernetes.io/name: tempo
   ports:
+    # Query only (R-22): 4317/4318 are Tempo's direct OTLP ingest; publishing
+    # them on the LAN would let a host inject spans around the collector's
+    # redaction fan-out. The collector exports over the ClusterIP service, and
+    # otel-gateway-lb already exposes the LAN ingest that passes redaction.
     - name: query
       port: 3200
       targetPort: 3200
-    - name: otlp-grpc
-      port: 4317
-      targetPort: 4317
-    - name: otlp-http
-      port: 4318
-      targetPort: 4318
 ---
 apiVersion: v1
 kind: Service

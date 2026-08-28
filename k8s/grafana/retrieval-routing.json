@@ -110,7 +110,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_routing_decisions_total{outcome=\"clarify\"}[$__rate_interval])) / sum(rate(tenantchat_routing_decisions_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_routing_decisions_total{outcome=\"clarify\"}[$__rate_interval])) / sum(rate(tenantchat_routing_decisions_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -172,7 +172,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
+          "unit": "none",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -198,7 +198,7 @@
           "sort": "desc"
         }
       },
-      "description": "L5 dependency: metric tenantchat_router_confidence does not exist yet. Panel will resolve once L5 emits the histogram."
+      "description": "Router confidence is a raw routing score (direct threshold 4.0, clarify 2.5), not a 0-1 ratio \u2014 rendered as a plain number, not a percentage."
     },
     {
       "id": 5,
@@ -373,7 +373,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_citation_validation_total{verdict=\"invalid\"}[$__rate_interval])) / sum(rate(tenantchat_citation_validation_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_citation_validation_total{verdict=\"invalid\"}[$__rate_interval])) / sum(rate(tenantchat_citation_validation_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],

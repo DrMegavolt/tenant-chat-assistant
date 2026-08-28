@@ -41,6 +41,31 @@ spec:
             endpoint: 0.0.0.0:4318
 
     processors:
+      # L-O06b: auto-instrumentation emits ~100k spans/day of database-client
+      # and readiness-probe noise for near-zero diagnostic value, drowning the
+      # ~dozens of application spans a demo day produces. Dropped here, ahead
+      # of redaction and every exporter, keyed on what only the noise spans
+      # carry: database-client semantic-convention attributes, HTTP server
+      # spans for the health/probe/metrics routes, and bare-method "POST"
+      # client spans. The OTLP exporter is an instrumented httpx client whose
+      # suppressed self-export surfaces as an attribute-less "POST" client
+      # span every batch, self-perpetuating at ~6/min. httpx names client
+      # spans by method alone, so real outbound POSTs share that name — but
+      # they reach exporters with zero allowed attributes (URL and headers
+      # are content), so only a duration is lost, and the parent server span
+      # retains it. Missing-key checks cannot separate trickle from real:
+      # under error_mode: ignore an `== nil` comparison on an absent
+      # attribute errors the whole condition open, which is why the drop
+      # keys on the name alone.
+      # Application spans — tenantchat turn traffic, LLM calls, tool
+      # executions, admin reads — match no condition and pass untouched.
+      filter/noise:
+        error_mode: ignore
+        traces:
+          span:
+            - 'attributes["db.system"] != nil or attributes["db.system.name"] != nil'
+            - 'IsMatch(name, "^(GET|POST|HEAD) /(healthz|readyz|ready|health|ping|metrics)( |$)") or attributes["http.route"] == "/healthz" or attributes["http.route"] == "/readyz" or attributes["http.route"] == "/ready" or attributes["http.route"] == "/health" or attributes["http.route"] == "/ping" or attributes["http.route"] == "/metrics"'
+            - 'name == "POST"'
       # PRIV-002/ADR-0010: the collector is the only fan-out point, and this
       # allowlist runs ahead of every exporter in every pipeline. Only the
       # operational-plane attributes below survive; anything content-bearing —
@@ -51,6 +76,13 @@ spec:
       # home on it. Content export to a trusted in-cluster viewer is a
       # separate, gated decision (TRACE_CONTENT_EXPORT) made by an operator
       # adding a dedicated pipeline for it — never by widening this allowlist.
+      #
+      # The operational attributes added for exemplar drill-through (L-O07a)
+      # — http.route, error.type, llm.model_name — are route/error/model
+      # names only. The orchestration emitter (otel.py EMITTED_ATTRIBUTES)
+      # sets no message-content attributes, and no tenantchat.* span
+      # attribute exists to admit; if one is added it must be a component or
+      # node name, never text.
       #
       # The operator (0.116.0) pins the collector's own telemetry to the
       # removed `address` schema, so the collector image is the last one that
@@ -69,7 +101,10 @@ spec:
           - url.scheme
           - url.path
           - http.request.method
+          - http.route
           - http.response.status_code
+          - error.type
+          - llm.model_name
           - session.id
           - tenant.id
           - thread.id
@@ -136,7 +171,7 @@ spec:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, redaction, batch]
+          processors: [memory_limiter, filter/noise, redaction, batch]
           exporters: [otlp/tempo, otlphttp/phoenix, otlphttp/mlflow]
         metrics:
           receivers: [otlp]
@@ -161,7 +196,12 @@ spec:
     addK8sUIDAttributes: true
     resourceAttributes:
       service.namespace: llm-chat
-      deployment.environment: test
+      # R-24: resolved by the kubelet against each workload's own APP_ENV at
+      # container start (the injected env lands after the workload env), so a
+      # workload running APP_ENV=production no longer reports the hardcoded
+      # `test`. A workload that omits APP_ENV would carry the literal
+      # `$(APP_ENV)`; every instrumented workload defines it.
+      deployment.environment: $(APP_ENV)
   env:
     - name: OTEL_EXPORTER_OTLP_PROTOCOL
       value: http/protobuf
@@ -183,7 +223,11 @@ spec:
     image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python@sha256:35cffd38fc714f4b9326a94d2ccf118e9f769cb519902c280e01c8cd2aa04fca
     env:
       - name: OTEL_PYTHON_FASTAPI_EXCLUDED_URLS
-        value: /health,/metrics
+        # Health, readiness, and metrics routes never leave the pod usefully;
+        # excluding them here keeps the probe spans from being emitted at all
+        # (the collector's filter/noise is the backstop for anything that
+        # still slips through, e.g. non-FastAPI instrumentation).
+        value: /health,/metrics,/healthz,/readyz,/ready,/ping
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

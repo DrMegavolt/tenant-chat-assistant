@@ -83,7 +83,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_llm_calls_total{status=\"error\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_llm_calls_total{status=\"error\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -133,7 +133,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_llm_calls_total{status=\"timeout\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_llm_calls_total{status=\"timeout\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -183,7 +183,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_model_fallbacks_total[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_model_fallbacks_total[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
@@ -233,7 +233,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(tenantchat_response_cache_total{result=\"hit\"}[$__rate_interval])) / sum(rate(tenantchat_response_cache_total[$__rate_interval])) * 100",
+          "expr": "sum(rate(tenantchat_response_cache_total{result=\"hit\"}[$__rate_interval])) / sum(rate(tenantchat_response_cache_total[$__rate_interval])) * 100 or vector(0)",
           "refId": "A"
         }
       ],
