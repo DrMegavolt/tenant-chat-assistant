@@ -10,6 +10,9 @@
 import { OUTCOMES } from "src/admin/types";
 import type {
   AdminMessage,
+  AdminToolEvent,
+  Booking,
+  Lead,
   Outcome,
   SessionDetail,
   SessionSummary,
@@ -20,8 +23,6 @@ import type {
   GoldCase,
   ReplayResult,
   ReplayTrialsResult,
-  ReplayRetrievalResult,
-  ReplayTemplateResult,
   TraceContent,
   TraceRead,
   TraceSearchFilters,
@@ -82,6 +83,11 @@ export class AdminApi {
   private async request(path: string, init?: RequestInit): Promise<Response> {
     const response = await fetch(`${this.baseUrl}${path}`, init);
     if (response.status === 401) throw new UnauthorizedError();
+    // A rejected mutation may carry a stale token: drop the cache so the next
+    // attempt refetches it instead of resending the same rejected one.
+    if (response.status === 403 && init?.method && init.method !== "GET") {
+      this.invalidateCsrf();
+    }
     return response;
   }
 
@@ -134,18 +140,30 @@ export class AdminApi {
     const payload = (await response.json()) as {
       session?: Record<string, unknown>;
       messages?: unknown[];
+      pending?: unknown;
+      leads?: unknown;
+      bookings?: unknown;
+      tool_events?: unknown;
     };
     if (!payload.session) return null;
     const summary = sessionSummaryFromWire(payload.session, this.tenantNames);
     const messages = (payload.messages ?? []).map((wire) =>
       adminMessageFromWire(wire as Record<string, unknown>)
     );
-    const last = messages[messages.length - 1];
+    const leads = listOrNull(payload.leads);
+    const bookings = listOrNull(payload.bookings);
+    const toolEvents = listOrNull(payload.tool_events);
+    const pending = pendingFromWire(payload.pending);
     return {
       ...summary,
-      messageCount: messages.length,
-      ...(last ? { lastMessage: { content: last.content } } : {}),
-      messages
+      messages,
+      ...(leads ? { leads: leads.map(leadFromWire) } : {}),
+      ...(bookings ? { bookings: bookings.map(bookingFromWire) } : {}),
+      ...(toolEvents ? { toolEvents: toolEvents.map(toolEventFromWire) } : {}),
+      // `pending` joins SessionDetail with the widgets branch's types, whose
+      // pending card reads it; carrying it here lights that card up at merge
+      // without a second adapter change.
+      ...(pending ? { pending } : {})
     };
   }
 
@@ -192,13 +210,34 @@ export class AdminApi {
    * One full content-bearing turn record. Every call is RBAC-gated and
    * audited server-side with this read's reason.
    *
+   * Returns null only when the record does not exist (or is another tenant's):
+   * any other failure throws, so a drill-in can distinguish "absent" from
+   * "loading" and never spin forever (review R-18).
+   *
    * @throws {UnauthorizedError} when the admin session has expired.
    */
   async trace(turnId: string, tenantId: string): Promise<TraceRead | null> {
     const response = await this.request(
       `/api/admin/traces/${encodeURIComponent(turnId)}?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`
     );
-    if (!response.ok) return null;
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Reading the turn record failed with ${response.status}`);
+    return traceReadFromWire((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * The same record, resolved by its trace id for operators who hold the
+   * trace id but not the turn UUID. Same audited read, same absent/failed
+   * split as `trace`.
+   *
+   * @throws {UnauthorizedError} when the admin session has expired.
+   */
+  async traceByTraceId(traceId: string, tenantId: string): Promise<TraceRead | null> {
+    const response = await this.request(
+      `/api/admin/traces/by-trace-id/${encodeURIComponent(traceId)}?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Reading the turn record failed with ${response.status}`);
     return traceReadFromWire((await response.json()) as Record<string, unknown>);
   }
 
@@ -244,56 +283,6 @@ export class AdminApi {
     return replayTrialsFromWire((await response.json()) as Record<string, unknown>);
   }
 
-  /**
-   * Immutable-index retrieval replay with optional gold-evidence substitution.
-   *
-   * @throws {UnauthorizedError} when the admin session has expired.
-   */
-  async replayRetrieval(
-    turnId: string,
-    tenantId: string,
-    goldEvidence?: { sourceId: string; text: string }[]
-  ): Promise<ReplayRetrievalResult> {
-    const response = await this.request(
-      `/api/admin/traces/${encodeURIComponent(turnId)}/replay/retrieval?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": await this.csrf()
-        },
-        body: JSON.stringify({ gold_evidence: goldEvidence ?? null })
-      }
-    );
-    if (!response.ok) throw await this.apiError(response, "Replay retrieval failed");
-    return replayRetrievalFromWire((await response.json()) as Record<string, unknown>);
-  }
-
-  /**
-   * Template-version-pinned replay: model and evidence constant, template pinned.
-   *
-   * @throws {UnauthorizedError} when the admin session has expired.
-   */
-  async replayTemplate(
-    turnId: string,
-    tenantId: string,
-    templateVersion?: number
-  ): Promise<ReplayTemplateResult> {
-    const response = await this.request(
-      `/api/admin/traces/${encodeURIComponent(turnId)}/replay/template?tenant_id=${encodeURIComponent(tenantId)}&reason=quality_review`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": await this.csrf()
-        },
-        body: JSON.stringify({ template_version: templateVersion ?? null })
-      }
-    );
-    if (!response.ok) throw await this.apiError(response, "Replay template failed");
-    return replayTemplateFromWire((await response.json()) as Record<string, unknown>);
-  }
-
   /** The reviewer-labelled gold cases for one tenant (trace-read gated). */
   async goldCases(tenantId: string): Promise<GoldCase[]> {
     const response = await this.request(
@@ -329,15 +318,6 @@ export class AdminApi {
     );
     if (!response.ok) return null;
     return reviewDetailFromWire((await response.json()) as Record<string, unknown>);
-  }
-
-  /** Mark an open case as in review by the current operator. */
-  async takeReview(reviewId: string, tenantId: string): Promise<void> {
-    const response = await this.request(
-      `/api/admin/reviews/${encodeURIComponent(reviewId)}/take?tenant_id=${encodeURIComponent(tenantId)}`,
-      { method: "POST", headers: { "X-CSRF-Token": await this.csrf() } }
-    );
-    if (!response.ok) throw new Error(`Taking the review failed with ${response.status}`);
   }
 
   /** Record the reviewer's decision, correction, and fix. */
@@ -684,13 +664,27 @@ export class AdminApi {
     };
   }
 
+  /**
+   * The CSRF token, fetched once and reused until a mutation is rejected with
+   * 403 (a stale token must be refetched, never silently resent — review
+   * R-52). A failure throws instead of returning "", so a mutation never goes
+   * out with an empty header and pretending to have succeeded is impossible.
+   */
   private async csrf(): Promise<string> {
     if (this.csrfToken) return this.csrfToken;
     const response = await this.request("/api/admin/csrf-token");
-    if (!response.ok) return "";
+    if (!response.ok) {
+      throw new Error(`Could not obtain a CSRF token (failed with ${response.status}).`);
+    }
     const payload = (await response.json()) as { csrf_token?: string };
-    this.csrfToken = payload.csrf_token ?? "";
-    return this.csrfToken;
+    const token = payload.csrf_token ?? "";
+    if (!token) throw new Error("The CSRF endpoint returned no token.");
+    this.csrfToken = token;
+    return token;
+  }
+
+  private invalidateCsrf(): void {
+    this.csrfToken = null;
   }
 }
 
@@ -734,6 +728,22 @@ function adminMessageFromWire(wire: Record<string, unknown>): AdminMessage {
   };
 }
 
+/**
+ * The visitor decision a paused conversation waits on: a booking confirmation
+ * carries the slot and address, a lead confirmation the contact and summary.
+ * Rides beside `SessionDetail` under its wire-declared name until the widgets
+ * branch's types (which declare it) merge.
+ */
+interface PendingConfirmationView {
+  awaiting: string;
+  service: string;
+  slot: string;
+  customerName: string;
+  address: string;
+  contact: string;
+  summary: string;
+}
+
 function sessionSummaryFromWire(
   wire: Record<string, unknown>,
   tenantNames: Map<string, string>
@@ -741,6 +751,7 @@ function sessionSummaryFromWire(
   const tenantId = str(wire.tenant_id);
   const status = str(wire.status);
   const outcome = str(wire.outcome);
+  const lastMessage = section(wire.last_message);
   return {
     sessionId: str(wire.session_id),
     // Falls back to the id so a tenant added since the console loaded its
@@ -751,8 +762,90 @@ function sessionSummaryFromWire(
     // `none` is the store's resting value and is not one of the console's
     // outcomes; leaving the key off lets `outcomeOf` apply its own default.
     ...(OUTCOMES.includes(outcome as Outcome) ? { outcome: outcome as Outcome } : {}),
+    // The queue-row counts (the stat strip sums them) and the bounded
+    // last-message preview: optional on the type so a bare summary renders
+    // without them rather than inventing a zero.
+    ...(typeof wire.message_count === "number" ? { messageCount: wire.message_count } : {}),
+    ...(typeof wire.lead_count === "number" ? { leadCount: wire.lead_count } : {}),
+    ...(lastMessage ? { lastMessage: lastMessageFromWire(lastMessage) } : {}),
     updatedAt: epochSeconds(wire.last_activity_at)
   };
+}
+
+/** The bounded queue-row preview, plus who wrote it and when — the detail
+ * carries the same shape untruncated, so one mapping serves both sides. */
+function lastMessageFromWire(wire: Record<string, unknown>): {
+  role: string;
+  content: string;
+  createdAt: number;
+} {
+  return {
+    role: str(wire.role),
+    content: str(wire.content),
+    createdAt: epochSeconds(wire.created_at)
+  };
+}
+
+function leadFromWire(wire: Record<string, unknown>): Lead {
+  return {
+    customerName: str(wire.customer_name),
+    contact: str(wire.contact),
+    service: str(wire.service),
+    urgency: str(wire.urgency),
+    summary: str(wire.summary)
+  };
+}
+
+function bookingFromWire(wire: Record<string, unknown>): Booking {
+  return {
+    customerName: str(wire.customer_name),
+    contact: str(wire.contact),
+    service: str(wire.service),
+    slot: str(wire.slot),
+    address: str(wire.address)
+  };
+}
+
+/** One recorded tool result. The store keeps the model-facing payload, so a
+ * JSON string is parsed back into the shape the console renders; a payload
+ * that is not JSON passes through as the string it was. */
+function toolEventFromWire(wire: Record<string, unknown>): AdminToolEvent {
+  const raw = wire.result;
+  let result: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      result = JSON.parse(raw) as unknown;
+    } catch {
+      result = raw;
+    }
+  }
+  return { name: str(wire.name), result };
+}
+
+/** The visitor decision a paused conversation waits on, camelCased for the
+ * detail's pending card; null when the record carries none. */
+function pendingFromWire(value: unknown): PendingConfirmationView | null {
+  const wire = section(value);
+  if (!wire) return null;
+  return {
+    awaiting: str(wire.awaiting),
+    service: str(wire.service),
+    slot: str(wire.slot),
+    customerName: str(wire.customer_name),
+    address: str(wire.address),
+    contact: str(wire.contact),
+    summary: str(wire.summary)
+  };
+}
+
+/** The wire list when the field is present (empty included); null when absent,
+ * so a bare payload maps without inventing empty side cards. */
+function listOrNull(value: unknown): Record<string, unknown>[] | null {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> => typeof item === "object" && item !== null
+      )
+    : null;
 }
 
 function searchRecordFromWire(wire: Record<string, unknown>): TraceSearchRecord {
@@ -793,9 +886,9 @@ function traceReadFromWire(wire: Record<string, unknown>): TraceRead {
  * format is the store's; the UI contract is camelCase, so the client owns
  * the mapping and the panels read typed fields only. */
 function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
-  const prompt = obj(wire.prompt);
-  const retrieval = obj(wire.retrieval);
-  const routing = obj(wire.routing);
+  const prompt = section(wire.prompt);
+  const retrieval = section(wire.retrieval);
+  const routing = section(wire.routing);
   const tools = obj(wire.tools);
   const verdicts = obj(wire.verdicts);
   const output = obj(wire.output);
@@ -808,12 +901,18 @@ function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
     routing: routing
       ? {
           ...routing,
-          rule: str(routing.rule),
-          intent: str(routing.intent),
           policyVersion: str(routing.policy_version),
+          outcome: str(routing.outcome),
+          rule: str(routing.rule),
+          chosen: strOrNull(routing.chosen),
+          confidence: numOrNull(routing.confidence),
+          directThreshold: numOrNull(routing.direct_threshold),
+          clarifyThreshold: numOrNull(routing.clarify_threshold),
+          conflictGap: numOrNull(routing.conflict_gap),
           candidates: list(routing.candidates).map((candidate) => ({
             ...candidate,
             intent: str(candidate.intent),
+            score: numOrNull(candidate.score),
             matchedSignals: listStr(candidate.matched_signals)
           }))
         }
@@ -887,8 +986,8 @@ function traceContentFromWire(wire: Record<string, unknown>): TraceContent {
           citationInvalid: listStr(verdicts.citation_invalid),
           refusedTools: listStr(verdicts.refused_tools),
           claimsInvalid: list(verdicts.claims_invalid).map((item) => ({
-            claim: str(item.claim),
-            reason: str(item.reason)
+            kind: str(item.kind),
+            value: str(item.value)
           }))
         }
       : undefined,
@@ -975,6 +1074,25 @@ function obj(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * A trace *section* the serializer may omit (`routing`/`retrieval`/`prompt`
+ * are null in the stored record when nothing ran). Unlike `obj`, absence stays
+ * absent — coercing null to `{}` built truthy empty shells and turned "no
+ * routing decision recorded" into dead code (review R-02).
+ */
+function section(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length > 0
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function numOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function listStr(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
@@ -1040,69 +1158,6 @@ function replayTrialsFromWire(wire: Record<string, unknown>): ReplayTrialsResult
       outputRaw: str(trial.output_raw)
     })),
     trialCount: typeof wire.trial_count === "number" ? wire.trial_count : 0,
-    constant: str(wire.constant),
-    variable: str(wire.variable),
-    elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0
-  };
-}
-
-function replayRetrievalFromWire(wire: Record<string, unknown>): ReplayRetrievalResult {
-  const original = obj(wire.original);
-  const replayed = obj(wire.replayed);
-  return {
-    turnId: str(wire.turn_id),
-    recordedAt: str(wire.recorded_at),
-    manifestHash: str(wire.manifest_hash),
-    currentManifestHash: strOrNull(wire.current_manifest_hash),
-    manifestChanged: wire.manifest_changed === true,
-    stochastic: wire.stochastic === true,
-    components: Array.isArray(wire.components)
-      ? (wire.components as ReplayRetrievalResult["components"])
-      : [],
-    original: {
-      contentHash: str(original.content_hash),
-      modelName: str(original.model_name),
-      outputRaw: str(original.output_raw)
-    },
-    replayed: {
-      contentHash: str(replayed.content_hash),
-      modelName: str(replayed.model_name),
-      outputRaw: str(replayed.output_raw)
-    },
-    generationAvailable: wire.generation_available === true,
-    generationId: strOrNull(wire.generation_id),
-    goldEvidenceCount: typeof wire.gold_evidence_count === "number" ? wire.gold_evidence_count : 0,
-    constant: str(wire.constant),
-    variable: str(wire.variable),
-    elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0
-  };
-}
-
-function replayTemplateFromWire(wire: Record<string, unknown>): ReplayTemplateResult {
-  const original = obj(wire.original);
-  const replayed = obj(wire.replayed);
-  return {
-    turnId: str(wire.turn_id),
-    recordedAt: str(wire.recorded_at),
-    manifestHash: str(wire.manifest_hash),
-    currentManifestHash: strOrNull(wire.current_manifest_hash),
-    manifestChanged: wire.manifest_changed === true,
-    stochastic: wire.stochastic === true,
-    components: Array.isArray(wire.components)
-      ? (wire.components as ReplayTemplateResult["components"])
-      : [],
-    original: {
-      contentHash: str(original.content_hash),
-      modelName: str(original.model_name),
-      outputRaw: str(original.output_raw)
-    },
-    replayed: {
-      contentHash: str(replayed.content_hash),
-      modelName: str(replayed.model_name),
-      outputRaw: str(replayed.output_raw)
-    },
-    templateRef: str(wire.template_ref),
-    templateMatchesCurrent: wire.template_matches_current === true,
     constant: str(wire.constant),
     variable: str(wire.variable),
     elapsedSeconds: typeof wire.elapsed_seconds === "number" ? wire.elapsed_seconds : 0

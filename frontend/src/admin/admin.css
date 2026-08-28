@@ -888,6 +888,13 @@ body {
   background: light-dark(#fdf1e5, #2a1c10);
 }
 
+/* The router's winning candidate: the same positive tint the trustworthy
+ * panels use, so the marked row reads as the decision, not an anomaly. */
+.trace-table tr.routing-winner td {
+  background: light-dark(#e9f3eb, #14261a);
+  font-weight: 600;
+}
+
 /* --- Prompt segments ------------------------------------------------------ */
 
 .prompt-messages {

@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
 
 import type { AdminApi } from "src/admin/adminApi";
 import { TraceDetail } from "src/admin/components/TraceDetail";
@@ -12,11 +12,14 @@ import {
   OUTCOMES,
   OUTCOME_LABELS,
   type GoldCase,
+  type TraceRead,
   type TraceSearchFilters,
   type TraceSearchRecord
 } from "src/admin/traceTypes";
 
 const EMPTY_FILTERS: TraceSearchFilters = {};
+
+const TURN_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A `datetime-local` value (local wall clock) becomes the UTC ISO the API
  * expects, so a filter boundary means the same instant everywhere. */
@@ -30,6 +33,25 @@ function toIso(localDateTime: string): string {
 function relativeTraceTime(recordedAt: string): string {
   const seconds = new Date(recordedAt).getTime() / 1000;
   return relativeTime(Number.isFinite(seconds) ? seconds : undefined);
+}
+
+/** A record-shaped index entry for a turn opened by id, so the drill-in renders
+ * it exactly like a search hit; the content itself is the trace the lookup
+ * already read, never a re-fetch. */
+function recordFromTrace(trace: TraceRead): TraceSearchRecord {
+  return {
+    turnId: trace.turnId,
+    sessionId: trace.sessionId,
+    traceId: trace.traceId,
+    recordedAt: trace.recordedAt,
+    outcome: trace.content.outcome?.status ?? "unknown",
+    componentManifestHash: trace.content.manifestHash ?? "",
+    diagnosisCauses: (trace.content.diagnoses ?? []).map((diagnosis) => diagnosis.cause),
+    diagnosisStatuses: (trace.content.diagnoses ?? []).map((diagnosis) => diagnosis.status),
+    turnIndex: trace.content.turnIndex ?? 0,
+    traceSchemaVersion: trace.content.schemaVersion ?? "",
+    sourceGenerationIds: []
+  };
 }
 
 export interface TraceExplorerProps {
@@ -54,6 +76,33 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   const [hasSearched, setHasSearched] = useState(false);
   const [isLoading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lookupId, setLookupId] = useState("");
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  /** The record an id lookup already read, handed to the detail so the id
+   * path costs one audited read like every other path. */
+  const [lookupTrace, setLookupTrace] = useState<TraceRead | null>(null);
+
+  // A slower earlier response must not land last and win: every read claims a
+  // generation before its first await and publishes only while still newest —
+  // the same architecture useAdminConsole established (review R-20).
+  const generationRef = useRef(0);
+  const claimGeneration = useCallback((): number => {
+    generationRef.current += 1;
+    return generationRef.current;
+  }, []);
+
+  // `isLoading` is owned by the operation that set it: its cleanup settles the
+  // flag unless a newer operation has taken ownership. Checking ownership
+  // instead of generation currency is what keeps a superseded lookup from
+  // leaving both submit buttons disabled forever (review R-20 follow-up).
+  const loadingOwnerRef = useRef(0);
+  const takeLoading = (generation: number) => {
+    loadingOwnerRef.current = generation;
+    setLoading(true);
+  };
+  const settleLoading = (generation: number) => {
+    if (loadingOwnerRef.current === generation) setLoading(false);
+  };
 
   const runSearch = async (overrides?: TraceSearchFilters) => {
     const active = { ...filters, ...overrides };
@@ -64,37 +113,79 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
     if (active.cause) wired.cause = active.cause;
     if (active.diagnosisStatus) wired.diagnosisStatus = active.diagnosisStatus;
     if (active.manifestHash) wired.manifestHash = active.manifestHash;
-    setLoading(true);
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    takeLoading(generation);
     setError(null);
     setSelected(null);
     try {
-      setRecords(await api.searchTraces(tenantId, wired));
+      const rows = await api.searchTraces(tenantId, wired);
+      if (!isCurrent()) return;
+      setRecords(rows);
       setHasSearched(true);
     } catch {
-      setError("Could not reach the trace surface. Retrying…");
+      if (!isCurrent()) return;
+      setError("Could not reach the trace surface. Try the search again.");
     } finally {
-      setLoading(false);
+      settleLoading(generation);
     }
   };
 
-  const open = async (record: TraceSearchRecord) => {
+  const open = (record: TraceSearchRecord) => {
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    setLookupTrace(null);
     setSelected(record);
+    // No trace read here: TraceDetail performs the one audited read for this
+    // click, so a drill-in costs a single trace.read (review R-19).
+    void (async () => {
+      try {
+        const goldCases = await api.goldCases(tenantId);
+        if (isCurrent()) setGold(goldCases);
+      } catch {
+        if (isCurrent()) setError("Could not load the gold cases for this tenant.");
+      }
+    })();
+  };
+
+  const openById = async () => {
+    const value = lookupId.trim();
+    if (!value) return;
+    const generation = claimGeneration();
+    const isCurrent = () => generation === generationRef.current;
+    takeLoading(generation);
+    setLookupError(null);
+    setError(null);
     try {
-      const [detail, goldCases] = await Promise.all([
-        api.trace(record.turnId, tenantId),
-        api.goldCases(tenantId)
-      ]);
-      setGold(goldCases);
-      if (detail) setSelected({ ...record, traceId: detail.traceId ?? record.traceId });
+      // The detail endpoint takes a turn UUID; a trace id resolves through the
+      // by-trace-id read. An unresolvable id is a 404, reported as not found.
+      const detail = TURN_UUID_RE.test(value)
+        ? await api.trace(value, tenantId)
+        : await api.traceByTraceId(value, tenantId);
+      if (!isCurrent()) return;
+      if (!detail) {
+        setLookupError("No turn record found for that id.");
+        return;
+      }
+      setLookupId("");
+      // The audited read this lookup performed is handed to the detail, which
+      // must not read the same record a second time (review R-19).
+      setLookupTrace(detail);
+      setSelected(recordFromTrace(detail));
     } catch {
-      setError("Could not open the turn record.");
+      if (!isCurrent()) return;
+      setLookupError("Could not reach the trace surface. Try again.");
+    } finally {
+      settleLoading(generation);
     }
   };
 
   const switchingTenant = (next: string) => {
+    claimGeneration();
     setTenantId(next);
     setRecords([]);
     setHasSearched(false);
+    setLookupTrace(null);
     setSelected(null);
   };
 
@@ -127,9 +218,36 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
         isLoading={isLoading}
       />
 
+      <form
+        className="trace-filters"
+        aria-label="Open a turn by id"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void openById();
+        }}
+      >
+        <label className="trace-filter trace-filter-wide">
+          <span className="trace-filter-label">Turn id or trace id</span>
+          <input
+            type="text"
+            placeholder="Turn UUID or trace id"
+            value={lookupId}
+            onChange={(event) => setLookupId(event.target.value)}
+          />
+        </label>
+        <button type="submit" className="ghost-button" disabled={isLoading}>
+          {isLoading ? "Opening…" : "Open turn"}
+        </button>
+      </form>
+
       {error && (
         <p className="admin-alert" role="alert">
           {error}
+        </p>
+      )}
+      {lookupError && (
+        <p className="admin-alert" role="alert">
+          {lookupError}
         </p>
       )}
 
@@ -138,14 +256,14 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
       )}
 
       {records.length > 0 && (
-        <div className="trace-results" aria-label="Turn search results">
+        <div className="trace-results" role="group" aria-label="Turn search results">
           {records.map((record) => (
             <button
               key={record.turnId}
               type="button"
               className={`session-item${selected?.turnId === record.turnId ? " selected" : ""}`}
-              aria-current={selected?.turnId === record.turnId}
-              onClick={() => void open(record)}
+              aria-current={selected?.turnId === record.turnId ? "true" : undefined}
+              onClick={() => open(record)}
             >
               <span className="session-row">
                 <strong>
@@ -176,6 +294,7 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
           tenantId={tenantId}
           record={selected}
           gold={gold}
+          preloadedTrace={lookupTrace?.turnId === selected.turnId ? lookupTrace : undefined}
         />
       )}
     </section>
@@ -282,7 +401,6 @@ function TraceFilters({ filters, onFiltersChange, onSearch, isLoading }: TraceFi
         </span>
         <input
           type="text"
-          inputMode="numeric"
           pattern="[0-9a-f]{64}"
           placeholder="64-character SHA-256"
           aria-labelledby={`${formId}-hash`}

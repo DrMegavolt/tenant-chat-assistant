@@ -183,17 +183,59 @@ def _seeded_cases() -> tuple[SeededCase, ...]:
     combination that must find the case, and the drill expectations name the
     trace section the explorer must render for it.
     """
+    # The routing section is the real `_routing_decision_dict` output (from
+    # `ROUTING_POLICY.route("What are your hours?")`), not a hand-typed shape:
+    # a hand-typed `intent/score/threshold` fixture is what let the explorer's
+    # wire contract drift past every gate (review R-01, 2026-08-27).
     answered: dict[str, object] = {
         "routing": {
-            "rule": "answer",
-            "intent": "general",
-            "score": 4.0,
-            "threshold": 2.5,
-            "policy_version": "intent-routing@1",
             "candidates": [
-                {"intent": "general", "score": 4.0, "matched_signals": ["hours"]},
-                {"intent": "booking", "score": 0.0, "matched_signals": []},
+                {
+                    "intent": "general",
+                    "matched_signals": [
+                        "hours",
+                    ],
+                    "score": 4.0,
+                },
+                {
+                    "intent": "service_area",
+                    "matched_signals": [],
+                    "score": 0.0,
+                },
+                {
+                    "intent": "availability",
+                    "matched_signals": [],
+                    "score": 0.0,
+                },
+                {
+                    "intent": "booking",
+                    "matched_signals": [],
+                    "score": 0.0,
+                },
+                {
+                    "intent": "lead",
+                    "matched_signals": [],
+                    "score": 0.0,
+                },
+                {
+                    "intent": "handoff",
+                    "matched_signals": [],
+                    "score": 0.0,
+                },
+                {
+                    "intent": "cancel",
+                    "matched_signals": [],
+                    "score": 0.0,
+                },
             ],
+            "chosen": "general",
+            "clarify_threshold": 2.5,
+            "confidence": 4.0,
+            "conflict_gap": 2.0,
+            "direct_threshold": 4.0,
+            "outcome": "direct",
+            "policy_version": "intent-routing@1",
+            "rule": "matched",
         },
         "retrieval": {
             "query": "What are your hours?",

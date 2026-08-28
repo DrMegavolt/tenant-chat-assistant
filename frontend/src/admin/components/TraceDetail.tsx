@@ -26,6 +26,9 @@ export interface TraceDetailProps {
   tenantId: string;
   record: TraceSearchRecord;
   gold: GoldCase[];
+  /** An audited read of this record already performed by the caller (an id
+   * lookup), so the drill-in renders it without a second read (review R-19). */
+  preloadedTrace?: TraceRead | undefined;
 }
 
 /**
@@ -34,34 +37,67 @@ export interface TraceDetailProps {
  * rendered element carries its stored trace field, so nothing here can be
  * mistaken for an idealized graph.
  */
-export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
-  const [trace, setTrace] = useState<TraceRead | null>(null);
+export function TraceDetail({ api, tenantId, record, gold, preloadedTrace }: TraceDetailProps) {
+  // The audited read can load, be absent (another tenant's or a removed
+  // record), or fail — collapsing those into one falsy value is what let a
+  // 404 render "Opening…" forever (review R-18).
+  const [load, setLoad] = useState<
+    | { status: "loading" }
+    | { status: "loaded"; trace: TraceRead }
+    | { status: "absent" }
+    | { status: "error" }
+  >(preloadedTrace ? { status: "loaded", trace: preloadedTrace } : { status: "loading" });
   const [replay, setReplay] = useState<ReplayResult | null>(null);
   const [replayTrials, setReplayTrials] = useState<ReplayTrialsResult | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
   const [isReplaying, setReplaying] = useState(false);
   const [isReplayingTrials, setReplayingTrials] = useState(false);
 
+  const [reload, setReload] = useState(0);
   useEffect(() => {
+    // A preloaded record was read once for this click already; reading it
+    // again would be a second audited row for the same operator action.
+    if (preloadedTrace) return;
     let cancelled = false;
-    void fetchTrace(api, tenantId, record.turnId).then((loaded) => {
-      if (!cancelled && loaded) setTrace(loaded);
-    });
+    void fetchTrace(api, tenantId, record.turnId).then(
+      (loaded) => {
+        if (cancelled) return;
+        setLoad(loaded ? { status: "loaded", trace: loaded } : { status: "absent" });
+      },
+      () => {
+        if (!cancelled) setLoad({ status: "error" });
+      }
+    );
     return () => {
       cancelled = true;
     };
-  }, [api, tenantId, record.turnId]);
+  }, [api, tenantId, record.turnId, reload, preloadedTrace]);
 
-  if (trace === null) {
+  const retry = () => {
+    if (preloadedTrace) return;
+    setLoad({ status: "loading" });
+    setReload((n) => n + 1);
+  };
+
+  if (load.status !== "loaded") {
     return (
       <p className="muted-copy" role="status">
-        Opening the audited turn record…
+        {load.status === "loading" && "Opening the audited turn record…"}
+        {load.status === "absent" && "No turn record was found for this entry."}
+        {load.status === "error" && "Reading the turn record failed."}{" "}
+        {load.status !== "loading" && (
+          <button type="button" className="ghost-button" onClick={retry}>
+            Retry
+          </button>
+        )}
       </p>
     );
   }
 
+  const trace = load.trace;
   const content = trace.content;
   const goldCase = gold.find((case_) => case_.query === content.retrieval?.query);
+  const traceId = trace.traceId ?? record.traceId ?? record.turnId;
 
   const runReplay = async () => {
     setReplaying(true);
@@ -100,7 +136,7 @@ export function TraceDetail({ api, tenantId, record, gold }: TraceDetailProps) {
         <span className={`outcome-badge outcome-${record.outcome}`}>
           {OUTCOME_LABELS[record.outcome] ?? record.outcome}
         </span>
-        <span className="session-meta mono">{record.traceId ?? record.turnId}</span>
+        <span className="session-meta mono">{traceId}</span>
         <span className="session-meta">
           Manifest {content.manifestHash?.slice(0, 12) ?? "not recorded"} · schema{" "}
           {content.schemaVersion ?? "?"}
@@ -162,11 +198,9 @@ function graphSources(content: TraceRead["content"]): GraphSource[] {
   const sources: GraphSource[] = [];
   const routing = content.routing;
   sources.push({
-    label: routing ? `Routing · ${routing.rule ?? "recorded"}` : "Routing",
+    label: routing ? `Routing · ${routing.rule ?? routing.outcome ?? "recorded"}` : "Routing",
     storedField: "routing",
-    detail: routing
-      ? `intent ${routing.intent ?? "?"} at ${routing.score ?? "?"} (threshold ${routing.threshold ?? "?"})`
-      : "not recorded",
+    detail: routing ? routingDecisionDetail(routing) : "not recorded",
     status: routing ? "ok" : "skipped"
   });
 
@@ -265,6 +299,44 @@ function toolErrorCode(result: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** The score the router actually compared its confidence against, when the
+ * outcome names which threshold that was. */
+function comparedThreshold(routing: RoutingSection): number | null {
+  if (routing.outcome === "direct") return routing.directThreshold ?? null;
+  if (routing.outcome === "clarify") return routing.clarifyThreshold ?? null;
+  return null;
+}
+
+function formatScore(score: number | null | undefined): string {
+  return score === null || score === undefined ? "?" : String(score);
+}
+
+/** The stored decision in one line: the winning intent (or the explicit
+ * no-choice decision), its confidence, and the threshold it was judged
+ * against. A null chosen means different things per outcome — clarify asks the
+ * visitor again, the bounded_clarify handoff escalates to a human — so the
+ * wording follows the stored outcome instead of assuming one of them. */
+function routingDecisionDetail(routing: RoutingSection): string {
+  const confidence = formatScore(routing.confidence);
+  const threshold = comparedThreshold(routing);
+  if (routing.chosen) {
+    const judged =
+      threshold !== null
+        ? ` at confidence ${confidence} against the ${routing.outcome ?? "direct"} threshold ${formatScore(threshold)}`
+        : ` at confidence ${confidence}`;
+    return `chose ${routing.chosen} (${routing.rule ?? "recorded"})${judged}`;
+  }
+  if (routing.outcome === "handoff") {
+    return `no intent chosen — escalated to a human after a prior clarification (${routing.rule ?? "recorded"}) at confidence ${confidence}`;
+  }
+  if (routing.outcome === "clarify") {
+    return `no intent chosen — asked for clarification (${routing.rule ?? "recorded"}) at confidence ${confidence} against the clarify threshold ${formatScore(
+      routing.clarifyThreshold
+    )}`;
+  }
+  return `no intent chosen (${routing.rule ?? "recorded"}) at confidence ${confidence}`;
 }
 
 const STATUS_LABELS: Record<GraphSource["status"], string> = {
@@ -483,7 +555,7 @@ function RoutingPanel({ routing }: { routing: RoutingSection | null | undefined 
   return (
     <section className="trace-panel" aria-labelledby="routingTitle">
       <div className="admin-panel-header">
-        <h3 id="routingTitle">Routing alternatives</h3>
+        <h3 id="routingTitle">Routing</h3>
         <span className="muted-copy">stored in routing</span>
       </div>
       {!routing ? (
@@ -491,25 +563,30 @@ function RoutingPanel({ routing }: { routing: RoutingSection | null | undefined 
       ) : (
         <>
           <p className="muted-copy">
-            Rule <code>{routing.rule ?? "?"}</code> · policy{" "}
-            <code>{routing.policyVersion ?? "?"}</code>
+            {routingDecisionDetail(routing)} · policy <code>{routing.policyVersion ?? "?"}</code>.
           </p>
           <table className="trace-table">
             <thead>
               <tr>
+                <th scope="col">Decision</th>
                 <th scope="col">Intent</th>
                 <th scope="col">Score</th>
                 <th scope="col">Matched signals</th>
               </tr>
             </thead>
             <tbody>
-              {(routing.candidates ?? []).map((candidate, index) => (
-                <tr key={index}>
-                  <td>{candidate.intent ?? "?"}</td>
-                  <td>{candidate.score ?? "?"}</td>
-                  <td>{(candidate.matchedSignals ?? []).join(", ") || "—"}</td>
-                </tr>
-              ))}
+              {(routing.candidates ?? []).map((candidate, index) => {
+                const chosen =
+                  candidate.intent !== undefined && candidate.intent === routing.chosen;
+                return (
+                  <tr key={index} className={chosen ? "routing-winner" : ""}>
+                    <td>{chosen ? "chosen" : "—"}</td>
+                    <td>{candidate.intent ?? "?"}</td>
+                    <td>{formatScore(candidate.score)}</td>
+                    <td>{(candidate.matchedSignals ?? []).join(", ") || "—"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </>
@@ -678,8 +755,8 @@ function VerdictsPanel({
           {(verdicts?.claimsInvalid ?? []).map((item, index) => (
             <li key={`invalid-${index}`}>
               <span className="claim-verdict unsupported">unsupported</span>
-              <code>{item.claim ?? "?"}</code>
-              <span className="muted-copy">{item.reason ?? ""}</span>
+              <code>{item.value || "?"}</code>
+              <span className="muted-copy">{item.kind || "unclassified claim"}</span>
             </li>
           ))}
         </ul>
