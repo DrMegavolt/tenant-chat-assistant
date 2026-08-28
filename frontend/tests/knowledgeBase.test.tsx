@@ -1,9 +1,17 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 
 import { AdminApi } from "src/admin/adminApi";
 import { KnowledgeBase } from "src/admin/components/KnowledgeBase";
 import { jsonResponse } from "tests/support/backend";
+
+/** Let every already-resolved promise settle, without touching timers. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
 
 const TENANTS = [
   { tenantId: "clearview", name: "Clearview Heating" },
@@ -328,14 +336,21 @@ describe("the FEAT-001 knowledge base", () => {
     await screen.findByText(/Related turns require the trace-read grant/i);
   });
 
-  test("deleting a document confirms and sends the tombstone request", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  test("deleting a document confirms in the console's dialog and sends the tombstone request", async () => {
+    // Deletion is irreversible; the confirmation is the console's own
+    // focus-managed dialog now, not a native confirm() this page does not
+    // style or control.
     const { fetchMock } = stubKnowledgeBackend();
     renderKnowledge();
 
     await screen.findByRole("article", { name: /brochures/i });
     const deleteButtons = screen.getAllByRole("button", { name: "Delete document" });
     fireEvent.click(deleteButtons[0]!);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Delete “Plan terms”?");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete document" }));
 
     await screen.findByText(/Deleting “Plan terms” complete/i);
     const call = fetchMock.mock.calls.find(
@@ -346,11 +361,10 @@ describe("the FEAT-001 knowledge base", () => {
     const body = call?.[1]?.body;
     expect(typeof body).toBe("string");
     expect(JSON.parse(body as string)).toEqual({ tenant_id: "clearview" });
-    confirmSpy.mockRestore();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   test("cancelling a document deletion keeps the document", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     const { fetchMock } = stubKnowledgeBackend();
     renderKnowledge();
 
@@ -358,15 +372,91 @@ describe("the FEAT-001 knowledge base", () => {
     const deleteButtons = screen.getAllByRole("button", { name: "Delete document" });
     fireEvent.click(deleteButtons[0]!);
 
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(
-          ([url, init]) =>
-            String(url).includes("/api/admin/knowledge/documents/") && init?.method === "DELETE"
-        )
-      ).toBe(false);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url).includes("/api/admin/knowledge/documents/") && init?.method === "DELETE"
+      )
+    ).toBe(false);
+  });
+
+  test("closing the delete dialog returns focus to the control that opened it", async () => {
+    // A real click focuses the invoking button before the dialog mounts, so
+    // the dialog has an opener to hand focus back to; capturing it after the
+    // dialog had taken focus yielded the detached dialog and dropped the
+    // keyboard operator at <body>.
+    const user = userEvent.setup();
+    stubKnowledgeBackend();
+    renderKnowledge();
+
+    await screen.findByRole("article", { name: /brochures/i });
+    const deleteButtons = screen.getAllByRole("button", { name: "Delete document" });
+    await user.click(deleteButtons[0]!);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const opener = screen.getAllByRole("button", { name: "Delete document" })[0]!;
+    expect(document.activeElement).toBe(opener);
+  });
+
+  test("a stale tenant's tree is dropped when it answers after the new tenant's", async () => {
+    // The old panel fetched through the previous render's closure and also
+    // raced its own refresh: one tenant's documents could land under another
+    // tenant's heading. The generation guard makes the loser a no-op.
+    const pending: Array<{ url: string; release: (body: unknown) => void }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/admin/csrf-token")) {
+          return jsonResponse({ csrf_token: "token-kb" });
+        }
+        return new Promise((resolve) => {
+          pending.push({ url: String(url), release: (body) => resolve(jsonResponse(body)) });
+        });
+      })
+    );
+    render(<KnowledgeBase api={new AdminApi("")} tenants={TENANTS} initialTenantId="clearview" />);
+
+    const release = async (fragment: string, body: unknown) => {
+      await waitFor(() => expect(pending.some((entry) => entry.url.includes(fragment))).toBe(true));
+      pending
+        .splice(
+          pending.findIndex((entry) => entry.url.includes(fragment)),
+          1
+        )[0]!
+        .release(body);
+    };
+    const clearviewTree = { sources: [SOURCE_WIRE] };
+    const apexTree = {
+      sources: [{ ...SOURCE_WIRE, source_id: "source-apex", display_name: "Apex manuals" }]
+    };
+
+    // The mount's clearview reads are left in flight.
+    fireEvent.change(screen.getByLabelText("Knowledge base tenant"), {
+      target: { value: "apex" }
     });
-    confirmSpy.mockRestore();
+    // The newer apex reads resolve first.
+    await release("/api/admin/knowledge?tenant_id=apex", apexTree);
+    await release("/api/admin/knowledge/index-findings?tenant_id=apex", { findings: [] });
+    await screen.findByRole("article", { name: /apex manuals/i });
+
+    // The superseded clearview tree answers last, and must change nothing.
+    await release("/api/admin/knowledge?tenant_id=clearview", clearviewTree);
+    await release("/api/admin/knowledge/index-findings?tenant_id=clearview", {
+      findings: [FINDING_WIRE]
+    });
+    await flush();
+
+    expect(screen.queryByRole("article", { name: /brochures/i })).toBeNull();
+    expect(screen.getByRole("article", { name: /apex manuals/i })).toBeTruthy();
   });
 
   test("expires and reindexes a published version", async () => {

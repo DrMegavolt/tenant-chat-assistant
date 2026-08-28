@@ -364,3 +364,272 @@ describe("browsers that refuse storage", () => {
     expect(visitor.consent()).toBeNull();
   });
 });
+
+/**
+ * The hydration fixtures below are the session snapshot exactly as
+ * `GET /api/chat/session` serves it — transcript rows with their enrichment
+ * when the backend publishes it, `pending` while a decision is awaited.
+ */
+const HYDRATED_MESSAGES = [
+  {
+    message_id: "hm-1",
+    role: "visitor",
+    content: "My furnace is dead.",
+    created_at: "2026-08-26T08:59:00Z"
+  },
+  {
+    message_id: "hm-2",
+    role: "assistant",
+    content: "A technician will call you back.",
+    created_at: "2026-08-26T09:00:00Z"
+  }
+];
+
+/**
+ * Answer the tenant directory, defer the first session reads by hand, and
+ * count every session read so the tests can pin how many were started.
+ */
+function backendWithDeferredSession(transcript: unknown[]) {
+  const deferred: Array<(body: unknown) => void> = [];
+  let sessionReads = 0;
+  let answered = false;
+  stubBackend((url, init) => {
+    if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+    if (url.includes("/api/chat/session") && init?.method !== "POST") {
+      sessionReads += 1;
+      if (answered) {
+        return jsonResponse({
+          session: { session_id: SESSION_ID },
+          messages: transcript,
+          pending: null,
+          credential: CREDENTIAL
+        });
+      }
+      return new Promise((resolve) => {
+        deferred.push((body) => resolve(jsonResponse(body)));
+      });
+    }
+    if (url.endsWith("/api/chat")) {
+      return jsonResponse({
+        session_id: SESSION_ID,
+        turn_id: null,
+        reply: "Hold on.",
+        pending: null,
+        committed: [],
+        provenance: { model_name: "scripted", graph_version: "v1", prompt_version: "v1" },
+        credential: CREDENTIAL
+      });
+    }
+    return null;
+  });
+  return {
+    get sessionReads() {
+      return sessionReads;
+    },
+    releaseSnapshot() {
+      answered = true;
+      deferred.splice(0).forEach((release) =>
+        release({
+          session: { session_id: SESSION_ID },
+          messages: transcript,
+          pending: null,
+          credential: CREDENTIAL
+        })
+      );
+    }
+  };
+}
+
+describe("resuming a conversation after a reload", () => {
+  test("a message typed while the snapshot is still loading survives hydration", async () => {
+    // Hydration replaces nothing wholesale: the snapshot fetch is asynchronous
+    // and the visitor does not stop typing just because it is in flight. The
+    // one-shot hydrate used to delete exactly this message.
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    const backend = backendWithDeferredSession(HYDRATED_MESSAGES);
+    await renderDemo({ awaitReady: false });
+    expect(backend.sessionReads).toBe(1);
+
+    submitChat("And my heat pump clicks loudly.");
+    await tick();
+    expect(inWidget("#messages")?.textContent).toContain("clicks loudly");
+
+    backend.releaseSnapshot();
+    await tick();
+
+    const transcript = inWidget("#messages")?.textContent ?? "";
+    expect(transcript).toContain("My furnace is dead.");
+    expect(transcript).toContain("A technician will call you back.");
+    // The visitor's own mid-hydration message is still there.
+    expect(transcript).toContain("clicks loudly");
+  });
+
+  test("a resumed answer carries the citations, feedback control, and action notes the wire publishes", async () => {
+    // The resume GETs were always 200; the mapper threw the enrichment away.
+    // Whatever the transcript rows publish must render exactly as the live
+    // turn that first showed it did.
+    window.sessionStorage.setItem("tenant-chat-credential:clearview", CREDENTIAL);
+    stubBackend((url) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.includes("/api/chat/session")) {
+        return jsonResponse({
+          session: { session_id: SESSION_ID },
+          messages: [
+            {
+              message_id: "hm-1",
+              role: "visitor",
+              content: "Do you service heat pumps?",
+              created_at: "2026-08-26T08:59:00Z"
+            },
+            {
+              message_id: "hm-2",
+              role: "assistant",
+              content: "Yes — annual tune-ups are included in the maintenance plan.",
+              created_at: "2026-08-26T09:00:00Z",
+              turn_id: "turn-9",
+              citations: [
+                {
+                  source_id: "src-1",
+                  title: "HVAC Maintenance Guide",
+                  source_name: "Clearview Policies",
+                  location: "Maintenance",
+                  revision: 2,
+                  effective_at: "2026-07-01T00:00:00Z"
+                }
+              ],
+              committed: [{ action: "create_lead", reference: "lead-9", replayed: false }]
+            }
+          ],
+          pending: null,
+          credential: CREDENTIAL
+        });
+      }
+      return null;
+    });
+    await renderDemo({ companyId: "clearview" });
+
+    await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("annual tune-ups"));
+    expect(allInWidget(".citation-list")).toHaveLength(1);
+    expect(allInWidget(".action-note")).toHaveLength(1);
+    // The feedback control renders because the row carried its turn id; it is
+    // the same control a live answer gets.
+    expect(allInWidget(".feedback-control")).toHaveLength(1);
+  });
+});
+
+describe("the transcript poll under stress", () => {
+  test("a poll still in flight is not started again by the next tick", async () => {
+    // Two overlapping polls would both read the same transcript and both
+    // register the same unseen staff message, doubling it on screen.
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    const backend = backendWithDeferredSession([]);
+    await renderDemo({ awaitReady: false });
+
+    await tick(2500);
+    expect(backend.sessionReads).toBe(2);
+    await tick(2500);
+    await tick(2500);
+    // The first poll never returned, so the later ticks started nothing.
+    expect(backend.sessionReads).toBe(2);
+  });
+
+  test("a hidden tab does not poll, and returning to it polls at once", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    const backend = backendWithDeferredSession([]);
+    await renderDemo({ awaitReady: false });
+    backend.releaseSnapshot();
+    await tick();
+    expect(backend.sessionReads).toBe(1);
+
+    const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    await tick(7500);
+    expect(backend.sessionReads).toBe(1);
+
+    hiddenSpy.mockRestore();
+    document.dispatchEvent(new Event("visibilitychange"));
+    await tick();
+
+    expect(backend.sessionReads).toBe(2);
+  });
+
+  test("the same staff message is never appended twice across polls", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("tenant-chat-credential:apex", CREDENTIAL);
+    const backend = backendWithDeferredSession([
+      {
+        message_id: "hm-staff",
+        role: "staff",
+        content: "A dispatcher is on the way.",
+        created_at: "2026-08-26T09:01:00Z"
+      }
+    ]);
+    await renderDemo({ awaitReady: false });
+
+    backend.releaseSnapshot();
+    await tick();
+    await tick(2500);
+    await tick(2500);
+
+    expect(allInWidget(".message.admin")).toHaveLength(1);
+  });
+});
+
+describe("what a failed send says", () => {
+  test("a message the backend rejects as too long is told apart from an outage", async () => {
+    // A 422 in a hundredth of a second used to borrow the network-failure
+    // wording and sent visitors hunting for an outage that was not there.
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        return jsonResponse({ session: { session_id: SESSION_ID }, credential: CREDENTIAL });
+      }
+      if (url.endsWith("/api/chat")) {
+        return jsonResponse({ detail: "message too long" }, { ok: false, status: 422 });
+      }
+      return null;
+    });
+    await renderDemo();
+
+    submitChat("x".repeat(5000));
+
+    await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("too long to send"));
+    expect(inWidget("#messages")?.textContent).toContain("4000 characters");
+    expect(inWidget("#messages")?.textContent).not.toContain("could not reach the chat service");
+  });
+
+  test("a chat turn that never comes back times out and gives the composer back", async () => {
+    // No timeouts anywhere in the transport meant a hung POST disabled the
+    // composer for the rest of the visit.
+    vi.useFakeTimers();
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session") && init?.method === "POST") {
+        return jsonResponse({ session: { session_id: SESSION_ID }, credential: CREDENTIAL });
+      }
+      if (url.endsWith("/api/chat")) {
+        // Real fetch honours the abort signal; a hung connection never
+        // settles on its own.
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError"))
+          );
+        });
+      }
+      return null;
+    });
+    await renderDemo({ awaitReady: false });
+
+    submitChat("Anyone there?");
+    await tick();
+    expect(requireInWidget<HTMLInputElement>("#chatInput").disabled).toBe(true);
+
+    await tick(45_000);
+    await tick();
+
+    expect(requireInWidget<HTMLInputElement>("#chatInput").disabled).toBe(false);
+    expect(inWidget("#messages")?.textContent).toContain("could not reach the chat service");
+  });
+});

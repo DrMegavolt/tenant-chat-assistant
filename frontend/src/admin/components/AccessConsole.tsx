@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { AdminApi } from "src/admin/adminApi";
 import {
@@ -10,23 +10,9 @@ import {
   type PermissionsView,
   type TraceGrant
 } from "src/admin/accessTypes";
-import { relativeTime } from "src/admin/time";
+import { relativeIsoTime, toIso } from "src/shared/display";
 
 const EMPTY_FILTERS: AuditFilters = {};
-
-/** A `datetime-local` value (local wall clock) becomes the UTC ISO the API
- * expects, so a filter boundary means the same instant everywhere. */
-function toIso(localDateTime: string): string {
-  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(localDateTime)) return localDateTime;
-  const date = new Date(localDateTime);
-  return Number.isNaN(date.getTime()) ? localDateTime : date.toISOString();
-}
-
-/** Backend audit timestamps are ISO strings, unlike the queue's unix seconds. */
-function relativeAuditTime(occurredAt: string): string {
-  const seconds = new Date(occurredAt).getTime() / 1000;
-  return relativeTime(Number.isFinite(seconds) ? seconds : undefined);
-}
 
 /**
  * Who could have performed an action right now, from the live permissions view.
@@ -78,13 +64,29 @@ export function AccessConsole({ api, tenants, initialTenantId }: AccessConsolePr
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The reads name the tenant through a ref, so the mount effect never depends
+  // on — and never re-runs with — tenant state.
+  const tenantIdRef = useRef(tenantId);
+
+  // Every read claims a generation before its first await and may only publish
+  // while it is still the newest: a permissions/trail read issued before a
+  // tenant switch or a second search would otherwise land last and show one
+  // tenant's audit rows under another's heading.
+  const generationRef = useRef(0);
+  const claimGeneration = useCallback(() => {
+    const generation = (generationRef.current += 1);
+    return () => generation === generationRef.current;
+  }, []);
+
   const refresh = useCallback(
     async (nextTenant: string, active: AuditFilters) => {
+      const isCurrent = claimGeneration();
       try {
         const [view, rows] = await Promise.all([
           api.permissions(nextTenant),
           api.audit(nextTenant, active)
         ]);
+        if (!isCurrent()) return;
         if (view === null || rows === null) {
           setNotFound(true);
           setPermissions(null);
@@ -96,34 +98,31 @@ export function AccessConsole({ api, tenants, initialTenantId }: AccessConsolePr
         setPermissions(view);
         setEvents(rows);
       } catch {
-        setError("Could not reach the access console. Retrying…");
+        if (isCurrent()) setError("Could not reach the access console. Retrying…");
       } finally {
-        setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     },
-    [api]
+    [api, claimGeneration]
   );
 
   const switchingTenant = (next: string) => {
-    if (next === tenantId) return;
+    if (next === tenantIdRef.current) return;
+    tenantIdRef.current = next;
     setTenantId(next);
     setFilters(EMPTY_FILTERS);
     setLoading(true);
+    void refresh(next, EMPTY_FILTERS);
   };
 
-  // Initial load mirrors the other console panels: fetch once on mount. The
-  // effect defers through a promise so the state updates land after the await,
-  // never synchronously inside the effect body.
+  // The one effect-driven read is the mount read; the generation guard drops
+  // whatever the previous tenant's read returns late. No deferral: refresh
+  // only ever writes state after an await, and deferring would let a tenant
+  // switch that happens first claim the older generation and be discarded by
+  // this late read.
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await refresh(tenantId, EMPTY_FILTERS);
-      if (cancelled) return;
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [refresh, tenantId]);
+    void refresh(tenantIdRef.current, EMPTY_FILTERS);
+  }, [refresh]);
 
   const wiredFilters: AuditFilters = {};
   if (filters.since) wiredFilters.since = toIso(filters.since);
@@ -188,7 +187,7 @@ export function AccessConsole({ api, tenants, initialTenantId }: AccessConsolePr
                 ROLE_LABELS[role.role] ?? role.role,
                 role.subject,
                 role.grantedBy ?? "—",
-                relativeAuditTime(role.grantedAt)
+                relativeIsoTime(role.grantedAt)
               ])}
               empty="No roles assigned in this tenant."
             />
@@ -198,8 +197,8 @@ export function AccessConsole({ api, tenants, initialTenantId }: AccessConsolePr
               rows={permissions.grants.map((grant) => [
                 grant.subject,
                 grant.grantedBy,
-                relativeAuditTime(grant.grantedAt),
-                grant.expiresAt ? relativeAuditTime(grant.expiresAt) : "Never"
+                relativeIsoTime(grant.grantedAt),
+                grant.expiresAt ? relativeIsoTime(grant.expiresAt) : "Never"
               ])}
               empty="No trace-read grants in this tenant."
             />
@@ -375,7 +374,7 @@ function AuditTable({ events, permissions }: AuditTableProps) {
             const holders = holdersOf(event.permission, permissions.roles, permissions.grants);
             return (
               <tr key={`${event.requestId}-${event.occurredAt}-${event.action}`}>
-                <td title={event.occurredAt}>{relativeAuditTime(event.occurredAt)}</td>
+                <td title={event.occurredAt}>{relativeIsoTime(event.occurredAt)}</td>
                 <td>
                   <code>{event.action}</code>
                 </td>

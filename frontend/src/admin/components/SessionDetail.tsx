@@ -2,7 +2,12 @@ import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } fro
 
 import { OutcomeBadge } from "src/admin/components/StatBar";
 import { clockTime, isoTime, relativeTime } from "src/admin/time";
-import { outcomeOf, type AdminMessage, type SessionDetail as Session } from "src/admin/types";
+import {
+  outcomeOf,
+  type AdminMessage,
+  type PendingConfirmation,
+  type SessionDetail as Session
+} from "src/admin/types";
 
 function speaker(message: AdminMessage): string {
   if (message.source === "admin") return "Staff";
@@ -21,6 +26,29 @@ function Card({ title, children }: { title: string; children: ReactNode }) {
 
 function Empty({ children }: { children: ReactNode }) {
   return <p className="muted-copy">{children}</p>;
+}
+
+function PendingCard({ pending }: { pending: PendingConfirmation }) {
+  const awaitingBooking = pending.awaiting === "booking_confirmation";
+  return (
+    <Card title="Pending confirmation">
+      <div className="record-item">
+        <strong>{pending.customerName}</strong>
+        <span>
+          {pending.service}
+          {pending.slot ? ` · ${pending.slot}` : ""}
+        </span>
+        {pending.contact && <span>{pending.contact}</span>}
+        {pending.address && <p>{pending.address}</p>}
+        {pending.summary && <p>{pending.summary}</p>}
+        <p className="muted-copy">
+          {awaitingBooking
+            ? "The visitor has not confirmed this appointment yet."
+            : "The visitor has not confirmed this callback request yet."}
+        </p>
+      </div>
+    </Card>
+  );
 }
 
 function Transcript({ messages }: { messages: AdminMessage[] }) {
@@ -145,6 +173,8 @@ export function SessionDetail({ session, isLoading, onSendStaffMessage }: Sessio
         </section>
 
         <aside className="admin-side-stack">
+          {session.pending && <PendingCard pending={session.pending} />}
+
           <Card title="Bookings">
             {session.bookings?.length ? (
               session.bookings.map((booking, index) => (

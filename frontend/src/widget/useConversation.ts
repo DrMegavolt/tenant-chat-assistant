@@ -16,7 +16,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ChatApi } from "src/widget/api";
-import { CredentialRejectedError, SourceUnavailableError } from "src/widget/api";
+import {
+  CredentialRejectedError,
+  MessageRejectedError,
+  SourceUnavailableError
+} from "src/widget/api";
+import { entriesFromMessages, mergeTranscript, serverEntryId } from "src/widget/transcript";
 import type { ChatTurnResponse, SourceView, TenantConfig, TranscriptEntry } from "src/widget/types";
 import type { VisitorData } from "src/widget/visitorData";
 
@@ -46,7 +51,9 @@ function welcomeEntry(config: TenantConfig): TranscriptEntry {
     : `connect you with the team at ${config.phone}`;
   return {
     kind: "message",
-    id: nextId("welcome"),
+    // A stable id, so hydration can recognise the greeting as the placeholder
+    // a real transcript replaces.
+    id: "welcome",
     role: "assistant",
     source: "assistant",
     text:
@@ -144,9 +151,14 @@ export function useConversation({
     const stored = visitor.existingCredential();
     if (!isValidCredential(stored)) return;
 
+    // The snapshot fetch races the visitor's typing and the reply poll, so the
+    // snapshot is merged rather than written over the transcript: a message
+    // sent mid-hydration is a real message the server may not have yet, and
+    // dropping it would be exactly the loss a returning visitor notices.
+    let cancelled = false;
     const hydrate = async () => {
       const snapshot = await api.session(stored);
-      if (!snapshot) return;
+      if (cancelled || !snapshot) return;
       if ((!snapshot.messages || snapshot.messages.length === 0) && !snapshot.pending) {
         return;
       }
@@ -154,34 +166,27 @@ export function useConversation({
       credentialRef.current = snapshot.credential;
       visitor.recordCredential(snapshot.credential);
 
-      const hydrated: TranscriptEntry[] = [];
-      for (const msg of snapshot.messages ?? []) {
-        seenServerMessageIds.current.add(msg.messageId);
-        if (msg.role === "system" || msg.role === "tool") continue;
-
-        hydrated.push({
-          kind: "message",
-          id: `hydrate-${msg.messageId}`,
-          role: msg.role === "visitor" ? "user" : "assistant",
-          source: msg.role === "staff" ? "admin" : msg.role === "visitor" ? "user" : "assistant",
-          text: msg.content
-        });
+      for (const message of snapshot.messages ?? []) {
+        seenServerMessageIds.current.add(message.messageId);
       }
-
-      if (snapshot.pending) {
-        hydrated.push({
-          kind: "booking",
-          id: nextId("booking"),
-          pending: snapshot.pending
-        });
-      }
-
-      setEntries(() => hydrated);
+      setEntries((previous) =>
+        mergeTranscript(
+          previous,
+          entriesFromMessages(snapshot.messages ?? []),
+          snapshot.pending ?? null
+        )
+      );
     };
 
     hydrate().catch(() => {
       /* Hydration failed; stay on the welcome entry. */
     });
+    // StrictMode runs every effect twice; un-claiming here lets the second run
+    // actually hydrate instead of inheriting the abandoned first attempt.
+    return () => {
+      cancelled = true;
+      hydratedRef.current = false;
+    };
   }, [api, setEntries, visitor]);
 
   const scheduleProactiveNudge = useCallback(() => {
@@ -323,6 +328,20 @@ export function useConversation({
               }
             ]);
           }
+        } else if (error instanceof MessageRejectedError) {
+          // The backend refused the message itself (usually the length limit),
+          // which is a different story from a service outage and must not
+          // borrow the outage's wording.
+          setEntries((previous) => [
+            ...previous,
+            {
+              kind: "message",
+              id: nextId("assistant"),
+              role: "assistant",
+              source: "assistant",
+              text: error.message
+            }
+          ]);
         } else {
           setEntries((previous) => [
             ...previous,
@@ -427,23 +446,22 @@ export function useConversation({
 
   /**
    * Rate one turn the assistant answered (`FEAT-008`). Only turns the visitor's
-   * own conversation produced can be rated; the server enforces that. The
-   * rating is best-effort: a network failure leaves the control available.
+   * own conversation produced can be rated; the server enforces that. A failure
+   * propagates to the control that asked for it, which stays enabled and says
+   * so — the retry this promise makes possible has to be deliverable.
    */
   const rate = useCallback(
     async (turnId: string, rating: "up" | "down", reason?: string) => {
       const credential = credentialRef.current;
-      if (!isValidCredential(credential)) return;
-      try {
-        await api.feedback(credential, {
-          turnId,
-          rating,
-          ...(reason ? { reason } : {})
-        });
-        setRatings((current) => ({ ...current, [turnId]: rating }));
-      } catch {
-        // The visitor can retry; nothing here is worth a failure bubble.
+      if (!isValidCredential(credential)) {
+        throw new Error("The conversation is not connected.");
       }
+      await api.feedback(credential, {
+        turnId,
+        rating,
+        ...(reason ? { reason } : {})
+      });
+      setRatings((current) => ({ ...current, [turnId]: rating }));
     },
     [api]
   );
@@ -467,32 +485,54 @@ export function useConversation({
   // `staff` messages are new arrivals: model replies and the visitor's own
   // messages already rendered as part of the turn that produced them.
   useEffect(() => {
+    // Two overlapping polls would both read the same transcript and both
+    // register the same unseen staff messages, doubling them on screen. The
+    // in-flight flag makes a second tick a no-op until the first has landed.
+    let inFlight = false;
+    let cancelled = false;
     const poll = async () => {
-      const credential = visitor.existingCredential();
-      if (!isValidCredential(credential)) return;
-      const session = await api.session(credential);
-      if (session) refreshCredential(session.credential);
-      const staff = (session?.messages ?? []).filter(
-        (message) =>
-          message.role === "staff" && !seenServerMessageIds.current.has(message.messageId)
-      );
-      if (!staff.length) return;
-      for (const message of staff) seenServerMessageIds.current.add(message.messageId);
-      setEntries((previous) => [
-        ...previous,
-        ...staff.map((message): TranscriptEntry => ({
-          kind: "message",
-          id: `staff-${message.messageId}`,
-          role: "assistant",
-          source: "admin",
-          text: message.content
-        }))
-      ]);
-      if (!isOpen) setUnreadStaffCount((count) => count + staff.length);
+      if (cancelled || inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        const credential = visitor.existingCredential();
+        if (!isValidCredential(credential)) return;
+        const session = await api.session(credential);
+        if (session) refreshCredential(session.credential);
+        const staff = (session?.messages ?? []).filter(
+          (message) =>
+            message.role === "staff" && !seenServerMessageIds.current.has(message.messageId)
+        );
+        if (!staff.length) return;
+        for (const message of staff) seenServerMessageIds.current.add(message.messageId);
+        setEntries((previous) => [
+          ...previous,
+          ...staff.map((message): TranscriptEntry => ({
+            kind: "message",
+            id: serverEntryId(message.messageId),
+            role: "assistant",
+            source: "admin",
+            text: message.content
+          }))
+        ]);
+        if (!isOpen) setUnreadStaffCount((count) => count + staff.length);
+      } finally {
+        inFlight = false;
+      }
     };
 
+    // A hidden tab does not poll — a visitor reading something else should not
+    // keep the chat API busy — and re-polls the moment they come back, so a
+    // reply waiting out the hidden period arrives immediately.
+    const onVisibilityChange = () => {
+      if (!document.hidden) void poll();
+    };
     const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [api, isOpen, refreshCredential, setEntries, visitor]);
 
   return {

@@ -16,12 +16,19 @@ const MAX_REASON_LENGTH = 1000;
  * control collapses into a confirmation announced through a status region —
  * never through a change of focus, which would steal the visitor's place in
  * the transcript.
+ *
+ * A failed rating stays on screen and stays enabled, announced through an
+ * alert: a control that disabled itself on a swallowed error would promise a
+ * retry it could never deliver.
  */
 export function FeedbackControl({ rating, onRate }: FeedbackControlProps) {
-  const labelId = useId();
+  const controlIds = useId();
+  const labelId = `${controlIds}-label`;
+  const reasonId = `${controlIds}-reason`;
   const [picking, setPicking] = useState<"up" | "down" | null>(null);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   if (rating !== null) {
     return (
@@ -34,17 +41,19 @@ export function FeedbackControl({ rating, onRate }: FeedbackControlProps) {
   }
 
   const submit = async (choice: "up" | "down") => {
-    if (choice === "up") {
-      setSaving(true);
-      await onRate("up");
-      return;
-    }
-    if (picking === null) {
+    if (choice === "down" && picking === null) {
       setPicking("down");
       return;
     }
     setSaving(true);
-    await onRate("down", reason.trim() || undefined);
+    setFailed(false);
+    try {
+      await onRate(choice, choice === "down" ? reason.trim() || undefined : undefined);
+    } catch {
+      setFailed(true);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -72,6 +81,11 @@ export function FeedbackControl({ rating, onRate }: FeedbackControlProps) {
           Thumbs down
         </button>
       </div>
+      {failed && (
+        <p className="feedback-failure" role="alert">
+          That rating could not be recorded. Please try again.
+        </p>
+      )}
       {picking === "down" && (
         <form
           className="feedback-reason"
@@ -80,10 +94,10 @@ export function FeedbackControl({ rating, onRate }: FeedbackControlProps) {
             void submit("down");
           }}
         >
-          <label htmlFor={labelId}>
+          <label htmlFor={reasonId}>
             <span className="visually-hidden">What went wrong? (optional)</span>
             <textarea
-              id={labelId}
+              id={reasonId}
               value={reason}
               maxLength={MAX_REASON_LENGTH}
               placeholder="What went wrong? (optional)"

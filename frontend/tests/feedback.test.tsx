@@ -114,4 +114,53 @@ describe("FEAT-008 visitor feedback", () => {
     await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("Noted."));
     expect(inWidget(".feedback-control")).toBeNull();
   });
+
+  test("a failed rating stays on screen, says so, and can be retried", async () => {
+    // The control used to set `saving` with no `finally` while the hook
+    // swallowed the error: one failed POST permanently disabled the control
+    // and the retry it promised was impossible.
+    let rejects = true;
+    const fetchMock = stubBackend((url, init) => {
+      if (url.endsWith("/api/chat/feedback")) {
+        if (rejects) return Promise.reject(new Error("offline"));
+        const body = requestBodies(fetchMock, "/api/chat/feedback").at(-1) as Record<
+          string,
+          unknown
+        >;
+        return jsonResponse({
+          turn_id: body.turn_id,
+          rating: body.rating,
+          reason: body.reason ?? null,
+          created_at: "2026-08-27T12:00:00Z"
+        });
+      }
+      if (url.endsWith("/api/chat")) return jsonResponse(SIMPLE_REPLY);
+      return workingBackend()(url, init);
+    });
+    await renderDemo({ companyId: "clearview" });
+
+    submitChat("What are your hours?");
+    await waitFor(() =>
+      expect(inWidget("#messages")?.textContent).toContain("I found one opening.")
+    );
+
+    const thumbsUp = allInWidget(".feedback-button").find(
+      (button) => button.textContent === "Thumbs up"
+    );
+    fireEvent.click(thumbsUp!);
+
+    await waitFor(() => expect(inWidget(".feedback-failure")).not.toBeNull());
+    // The failure is announced through an alert and the control is usable
+    // again — `saving` was cleared.
+    expect(inWidget(".feedback-failure")?.getAttribute("role")).toBe("alert");
+    expect((thumbsUp as HTMLButtonElement).disabled).toBe(false);
+
+    rejects = false;
+    fireEvent.click(thumbsUp!);
+
+    await waitFor(() =>
+      expect(inWidget(".feedback-confirmed")?.textContent).toContain("glad this helped")
+    );
+    expect(inWidget(".feedback-failure")).toBeNull();
+  });
 });

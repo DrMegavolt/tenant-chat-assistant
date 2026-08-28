@@ -94,8 +94,3 @@ export const DIAGNOSIS_RELATIONSHIP_LABELS: Record<string, string> = {
   amends: "Amends detector",
   adds: "Adds new diagnosis"
 };
-
-/** Whether a diagnosis status must never be presented as a confirmed cause. */
-export function isUncertainStatus(status: string | undefined): boolean {
-  return status === "suspected" || status === "inconclusive";
-}

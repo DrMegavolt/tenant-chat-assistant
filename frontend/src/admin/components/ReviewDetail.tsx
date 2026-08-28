@@ -4,12 +4,14 @@ import type { AdminApi } from "src/admin/adminApi";
 import { TraceDetail } from "src/admin/components/TraceDetail";
 import {
   DIAGNOSIS_RELATIONSHIP_LABELS,
+  REVIEW_SOURCE_LABELS,
   REVIEW_STATUS_LABELS,
   REVIEW_VERDICT_LABELS,
   type ReviewDetail as ReviewDetailData,
   type ReviewSummary
 } from "src/admin/reviewTypes";
 import { relativeTime } from "src/admin/time";
+import { shortSubject } from "src/shared/display";
 import {
   DIAGNOSIS_CAUSES,
   DIAGNOSIS_CAUSE_LABELS,
@@ -195,7 +197,7 @@ export function ReviewDetail({ api, tenantId, summary, onChanged }: ReviewDetail
       <div className="admin-panel-header">
         <h3 className="review-title">
           {REVIEW_STATUS_LABELS[review.status] ?? review.status} · priority {review.priority} ·{" "}
-          {REVIEW_SOURCE_LABEL(review.source)}
+          {REVIEW_SOURCE_LABELS[review.source] ?? review.source}
         </h3>
         {review.closingEvalRunId ? (
           <span className="review-closure" role="status">
@@ -420,7 +422,7 @@ export function ReviewDetail({ api, tenantId, summary, onChanged }: ReviewDetail
           {detail?.reviewedAt && (
             <p className="muted-copy">
               {REVIEW_VERDICT_LABELS[review.verdict ?? ""] ?? review.verdict} by{" "}
-              {detail.reviewerSubject ?? "unknown"} ·{" "}
+              {shortSubject(detail.reviewerSubject) || "unknown"} ·{" "}
               {relativeTime(new Date(detail.reviewedAt).getTime() / 1000)}
             </p>
           )}
@@ -440,8 +442,4 @@ export function ReviewDetail({ api, tenantId, summary, onChanged }: ReviewDetail
       <TraceDetail api={api} tenantId={tenantId} record={traceRecord} gold={gold} />
     </article>
   );
-}
-
-function REVIEW_SOURCE_LABEL(source: string): string {
-  return source === "automatic" ? "Automatic failure" : "Visitor feedback";
 }

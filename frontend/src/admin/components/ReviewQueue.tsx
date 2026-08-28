@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { AdminApi } from "src/admin/adminApi";
 import { ReviewDetail } from "src/admin/components/ReviewDetail";
@@ -9,14 +9,8 @@ import {
   REVIEW_VERDICT_LABELS,
   type ReviewSummary
 } from "src/admin/reviewTypes";
-import { relativeTime } from "src/admin/time";
-import { DIAGNOSIS_CAUSE_LABELS, isUncertainStatus, OUTCOME_LABELS } from "src/admin/traceTypes";
-
-function relativeTimeOr(iso: string | null): string {
-  if (!iso) return "";
-  const seconds = new Date(iso).getTime() / 1000;
-  return relativeTime(Number.isFinite(seconds) ? seconds : undefined);
-}
+import { isUncertainStatus, relativeIsoTime } from "src/shared/display";
+import { DIAGNOSIS_CAUSE_LABELS, OUTCOME_LABELS } from "src/admin/traceTypes";
 
 export interface ReviewQueueProps {
   api: AdminApi;
@@ -32,61 +26,84 @@ export interface ReviewQueueProps {
  */
 export function ReviewQueue({ api, tenants, initialTenantId }: ReviewQueueProps) {
   const [tenantId, setTenantId] = useState(initialTenantId ?? tenants[0]?.tenantId ?? "");
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState("");
   const [reviews, setReviews] = useState<ReviewSummary[]>([]);
   const [selected, setSelected] = useState<ReviewSummary | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
-  const [isLoading, setLoading] = useState(false);
+  const [isLoading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (overrides?: { tenantId?: string; status?: string }) => {
-    const tenant = overrides?.tenantId ?? tenantId;
-    const filter = overrides?.status ?? status;
-    setLoading(true);
-    setError(null);
+  // The fetches read the open tenant and filter through refs, so a switch can
+  // never leave a request running for a value the component no longer shows.
+  const tenantIdRef = useRef(tenantId);
+  const statusRef = useRef(status);
+
+  // Refreshes, tenant switches, and detail opens all fetch overlapping state,
+  // and a slower earlier response would otherwise land last and win — showing
+  // one tenant's reviews under another's heading. Every read claims a
+  // generation before its first await and may only publish while it is still
+  // the newest, the same contract the chat queue's console poller uses.
+  const generationRef = useRef(0);
+  const claimGeneration = useCallback(() => {
+    const generation = (generationRef.current += 1);
+    return () => generation === generationRef.current;
+  }, []);
+
+  // Only ever publishes after an await, so the mount effect can start the
+  // first read without touching state synchronously.
+  const run = useCallback(async () => {
+    const tenant = tenantIdRef.current;
+    const filter = statusRef.current;
+    const isCurrent = claimGeneration();
     try {
-      setReviews(await api.listReviews(tenant, filter || undefined));
+      const rows = await api.listReviews(tenant, filter || undefined);
+      if (!isCurrent()) return;
+      setReviews(rows);
       setHasLoaded(true);
     } catch {
-      setError("Could not reach the review queue. Retrying…");
+      if (isCurrent()) setError("Could not reach the review queue. Retrying…");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  };
+  }, [api, claimGeneration]);
+
+  const beginRefresh = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void run();
+  }, [run]);
 
   useEffect(() => {
-    let cancelled = false;
-    api
-      .listReviews(tenantId, undefined)
-      .then((loaded) => {
-        if (cancelled) return;
-        setReviews(loaded);
-        setHasLoaded(true);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Could not reach the review queue. Retrying…");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [api, tenantId]);
+    void run();
+  }, [run]);
 
   const open = async (review: ReviewSummary) => {
+    // A detail read must not invalidate an in-flight list read — the list owns
+    // the loading state, and discarding it would strand the spinner forever.
+    // Reading (not claiming) the token still lets a newer list read or tenant
+    // switch invalidate the detail, so a stale selection never returns.
+    const generation = generationRef.current;
     setSelected(review);
     try {
-      const detail = await api.reviewDetail(review.reviewId, tenantId);
-      if (detail) setSelected({ ...review, ...detail.review });
+      const detail = await api.reviewDetail(review.reviewId, tenantIdRef.current);
+      if (generation === generationRef.current && detail) {
+        setSelected({ ...review, ...detail.review });
+      }
     } catch {
-      setError("Could not open the review.");
+      if (generation === generationRef.current) setError("Could not open the review.");
     }
   };
 
   const switchingTenant = (next: string) => {
+    if (next === tenantIdRef.current) return;
+    tenantIdRef.current = next;
+    statusRef.current = "";
     setTenantId(next);
+    setStatus("");
     setReviews([]);
     setHasLoaded(false);
     setSelected(null);
-    void run({ tenantId: next });
+    beginRefresh();
   };
   return (
     <section className="review-queue" aria-labelledby="reviewTitle">
@@ -98,7 +115,10 @@ export function ReviewQueue({ api, tenants, initialTenantId }: ReviewQueueProps)
             <select
               value={status}
               aria-label="Review status"
-              onChange={(event) => setStatus(event.target.value)}
+              onChange={(event) => {
+                statusRef.current = event.target.value;
+                setStatus(event.target.value);
+              }}
             >
               <option value="">All statuses</option>
               {REVIEW_STATUSES.map((entry) => (
@@ -128,7 +148,7 @@ export function ReviewQueue({ api, tenants, initialTenantId }: ReviewQueueProps)
             type="button"
             className="ghost-button"
             disabled={isLoading}
-            onClick={() => void run()}
+            onClick={beginRefresh}
           >
             {isLoading ? "Refreshing…" : "Refresh"}
           </button>
@@ -161,7 +181,7 @@ export function ReviewQueue({ api, tenants, initialTenantId }: ReviewQueueProps)
                   {REVIEW_STATUS_LABELS[review.status] ?? review.status} · priority{" "}
                   {review.priority}
                 </strong>
-                <span className="session-meta">{relativeTimeOr(review.createdAt)}</span>
+                <span className="session-meta">{relativeIsoTime(review.createdAt)}</span>
               </span>
               <span className="session-preview">
                 {review.diagnosisCauses.length
@@ -197,7 +217,7 @@ export function ReviewQueue({ api, tenants, initialTenantId }: ReviewQueueProps)
           summary={selected}
           onChanged={(updated) => {
             setSelected(updated);
-            void run();
+            beginRefresh();
           }}
         />
       )}
