@@ -230,4 +230,56 @@ describe("merging a snapshot into the live transcript", () => {
     expect(first).toEqual(second);
     expect(first).toHaveLength(2);
   });
+
+  test("a question re-sent while the snapshot loads is not consumed by the historical row of the same text", () => {
+    // The visitor repeats a question that is already in the stored history
+    // while the snapshot is in flight. Matching from the front bound the
+    // re-send to that older row, so the transcript showed the text once, at
+    // its historical position — one bubble short. Matching newest-first binds
+    // the newest local copy to the newest server row, and a local the snapshot
+    // predates always survives.
+    const previous: TranscriptEntry[] = [
+      WELCOME,
+      localMessage("What are your hours?", "user", "user")
+    ];
+    const hydrated = entriesFromMessages([
+      userMessage("What are your hours?", "m1"),
+      {
+        messageId: "m2",
+        role: "assistant",
+        content: "We open at seven.",
+        createdAt: "2026-08-26T09:00:00Z"
+      }
+    ]);
+
+    const merged = mergeTranscript(previous, hydrated, null);
+
+    expect(merged.map((entry) => (entry.kind === "message" ? entry.text : ""))).toEqual([
+      "What are your hours?",
+      "We open at seven.",
+      "What are your hours?"
+    ]);
+    // The survivor is the re-send, appended where the visitor typed it.
+    expect(merged.at(-1)).toMatchObject({ id: "local-What are your hours?" });
+  });
+
+  test("two local copies of one text bind newest-first, and the surplus send survives", () => {
+    // A double-tapped send button leaves two identical local bubbles; the
+    // snapshot holds only the first send. One local binds the server row and
+    // the other survives, so the merge counts both sends — the stored row,
+    // then the copy the snapshot predates.
+    const previous: TranscriptEntry[] = [
+      WELCOME,
+      localMessage("Anyone there?", "user", "user"),
+      localMessage("Anyone there?", "user", "user")
+    ];
+    const hydrated = entriesFromMessages([userMessage("Anyone there?", "m1")]);
+
+    const merged = mergeTranscript(previous, hydrated, null);
+
+    expect(merged.map((entry) => (entry.kind === "message" ? entry.id : ""))).toEqual([
+      "server-m1",
+      "local-Anyone there?"
+    ]);
+  });
 });

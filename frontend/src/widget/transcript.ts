@@ -56,12 +56,17 @@ function isSameMessage(local: TranscriptEntry, server: TranscriptEntry): boolean
  * Merge the in-flight transcript with the snapshot the server just returned.
  *
  * The server's rows are authoritative for every message they contain: a local
- * copy of the same message (matched by author and text, in order) is dropped
- * in favour of the server's, which carries the stable id and any enrichment.
- * Local entries the snapshot does not know about — a message typed during the
- * fetch, a turn still being written — survive untouched, appended after the
- * server's rows in the order the visitor created them. The greeting and any
- * confirmation card are replaced wholesale by what the server reports.
+ * copy of the same message is dropped in favour of the server's, which carries
+ * the stable id and any enrichment. Matching walks both sequences from the
+ * end — newest server row first, newest local copy first — because matching
+ * from the front would let an older historical row consume a local re-send of
+ * the same text (a visitor repeating a question while the snapshot is in
+ * flight), showing the text once at its historical position and silently
+ * dropping the repeat. Locals the snapshot does not know about — a message
+ * typed during the fetch, a turn still being written, a repeat beyond the rows
+ * the server has stored — survive untouched, appended after the server's rows
+ * in the order the visitor created them. The greeting and any confirmation
+ * card are replaced wholesale by what the server reports.
  */
 export function mergeTranscript(
   previous: readonly TranscriptEntry[],
@@ -74,10 +79,14 @@ export function mergeTranscript(
     entry.id === "welcome" ? hydrated.length === 0 : entry.kind !== "booking"
   );
   const matched = new Set<TranscriptEntry>();
-  for (const server of hydrated) {
-    for (const candidate of local) {
-      if (!matched.has(candidate) && isSameMessage(candidate, server)) {
-        matched.add(candidate);
+  let candidate = local.length - 1;
+  for (let index = hydrated.length - 1; index >= 0; index -= 1) {
+    const server = hydrated[index]!;
+    while (candidate >= 0) {
+      const localEntry = local[candidate]!;
+      candidate -= 1;
+      if (isSameMessage(localEntry, server)) {
+        matched.add(localEntry);
         break;
       }
     }

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 
 import { AdminApi } from "src/admin/adminApi";
@@ -381,6 +382,29 @@ describe("the FEAT-001 knowledge base", () => {
           String(url).includes("/api/admin/knowledge/documents/") && init?.method === "DELETE"
       )
     ).toBe(false);
+  });
+
+  test("closing the delete dialog returns focus to the control that opened it", async () => {
+    // A real click focuses the invoking button before the dialog mounts, so
+    // the dialog has an opener to hand focus back to; capturing it after the
+    // dialog had taken focus yielded the detached dialog and dropped the
+    // keyboard operator at <body>.
+    const user = userEvent.setup();
+    stubKnowledgeBackend();
+    renderKnowledge();
+
+    await screen.findByRole("article", { name: /brochures/i });
+    const deleteButtons = screen.getAllByRole("button", { name: "Delete document" });
+    await user.click(deleteButtons[0]!);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const opener = screen.getAllByRole("button", { name: "Delete document" })[0]!;
+    expect(document.activeElement).toBe(opener);
   });
 
   test("a stale tenant's tree is dropped when it answers after the new tenant's", async () => {

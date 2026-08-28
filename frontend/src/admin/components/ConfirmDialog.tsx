@@ -30,10 +30,13 @@ export function ConfirmDialog({
   const titleId = useId();
 
   useEffect(() => {
-    dialogRef.current?.focus();
-    // The opener stays mounted behind the dialog; handing focus back to it on
-    // close returns the operator to exactly the row they were working on.
+    // The opener is whoever held focus before the dialog took it, so it must
+    // be captured first: reading activeElement after focus() yields the dialog
+    // itself, and restoring focus to that detached node drops the operator at
+    // <body>. The opener stays mounted behind the dialog; handing focus back
+    // to it on close returns them to exactly the row they were working on.
     const opener = dialogRef.current?.ownerDocument.activeElement;
+    dialogRef.current?.focus();
     return () => {
       if (opener instanceof HTMLElement) opener.focus();
     };
