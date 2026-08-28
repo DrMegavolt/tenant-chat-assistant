@@ -35,17 +35,31 @@ export interface TraceSearchRecord {
 
 export interface RoutingCandidate {
   intent?: string;
-  score?: number;
+  score?: number | null;
   matchedSignals?: string[];
   [key: string]: unknown;
 }
 
+/**
+ * The routing decision as the router persisted it (nodes.py
+ * `_routing_decision_dict`): the winner is `chosen` with its raw `confidence`
+ * score, compared against `directThreshold` or `clarifyThreshold` by `outcome`.
+ * The wire keys are `chosen/confidence/direct_threshold/clarify_threshold/
+ * conflict_gap` — the payload is unchanged across trace schema versions.
+ */
 export interface RoutingSection {
-  rule?: string;
-  intent?: string;
-  score?: number;
-  threshold?: number;
   policyVersion?: string;
+  /** What the router did with the turn: direct, clarify, or handoff. */
+  outcome?: string;
+  /** Why: matched, continuation, fallback, clarify, or bounded_clarify. */
+  rule?: string;
+  /** The winning intent; null when the router declined to pick one. */
+  chosen?: string | null;
+  /** The winner's score, in the same units as the thresholds. */
+  confidence?: number | null;
+  directThreshold?: number | null;
+  clarifyThreshold?: number | null;
+  conflictGap?: number | null;
   candidates?: RoutingCandidate[];
   [key: string]: unknown;
 }
@@ -114,7 +128,8 @@ export interface VerdictsSection {
   citations?: { sourceId?: string; title?: string }[];
   citationInvalid?: string[];
   refusedTools?: string[];
-  claimsInvalid?: { claim?: string; reason?: string }[];
+  /** One unsupported claim, as the validator records it: `{kind, value}`. */
+  claimsInvalid?: { kind?: string; value?: string }[];
   [key: string]: unknown;
 }
 
