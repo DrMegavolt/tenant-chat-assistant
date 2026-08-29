@@ -72,8 +72,10 @@ from tenantchat.core.ports import (
     EvidenceItem,
     EvidenceUnavailableError,
     IdempotencyKey,
+    RoutingRecord,
 )
 from tenantchat.core.routing import (
+    COLLECTING_INTENTS,
     IntentName,
     RoutingDecision,
     RoutingOutcome,
@@ -674,6 +676,87 @@ def _current_turn(transcript: Sequence[TranscriptEntry]) -> list[TranscriptEntry
     return list(transcript)
 
 
+def _slots_offered(tool_results: Sequence[ToolResult]) -> bool:
+    """Whether an availability result in the workflow record offered slots.
+
+    The offer is what makes the workflow a funnel the visitor is filling in:
+    the assistant listed times and asked for a pick, so the next message is
+    read as that pick plus the requested details, whatever words it uses.
+    """
+    for result in tool_results:
+        if result.name != ToolName.GET_AVAILABILITY.value:
+            continue
+        with suppress(json.JSONDecodeError, TypeError):
+            payload = json.loads(result.result)
+            if isinstance(payload, Mapping) and payload.get("slots"):
+                return True
+    return False
+
+
+def _slots_offered_in_transcript(transcript: Sequence[TranscriptEntry]) -> bool:
+    """Whether any availability tool result in the thread offered slots.
+
+    For the one collecting agent that holds no workflow row (`AVAILABILITY`
+    is single-turn, so there is no durable funnel state to read), the
+    transcript is the only record that the visitor was shown times to pick
+    from. Call names ride the assistant entries, so they are resolved through
+    the same call-id map :func:`_confirmed_service_areas` builds.
+    """
+    names: dict[str, str] = {}
+    for entry in transcript:
+        for call in entry["tool_calls"]:
+            names[call["call_id"]] = call["name"]
+    for entry in transcript:
+        if entry["role"] != "tool":
+            continue
+        if names.get(entry["tool_call_id"]) != ToolName.GET_AVAILABILITY.value:
+            continue
+        with suppress(json.JSONDecodeError, TypeError):
+            payload = json.loads(entry["content"])
+            if isinstance(payload, Mapping) and payload.get("slots"):
+                return True
+    return False
+
+
+def _funnel_intent(
+    current: WorkflowState | None,
+    last: RoutingRecord | None,
+    turn: int,
+    transcript: Sequence[TranscriptEntry],
+) -> IntentName | None:
+    """The intent whose collection funnel the conversation state holds open.
+
+    Three states keep one open (`N-02`): a workflow paused on a confirmation,
+    a collecting workflow that has already taken fields or offered slots, or
+    the previous turn having routed booking/availability and offered slots
+    (the availability agent keeps no workflow row, so its funnel lives only in
+    the routing record and the transcript). The recency bound on the last is
+    the over-capture guard: slots offered five turns ago under a finished
+    exchange must not pull a fresh message back into it.
+
+    ``None`` means cold: routing scores the message on its own words, exactly
+    as it did before the funnel override existed.
+    """
+    if (
+        current is not None
+        and current.intent in COLLECTING_INTENTS
+        and (
+            current.pending_confirmation is not None
+            or current.collected_fields
+            or _slots_offered(current.tool_results)
+        )
+    ):
+        return current.intent
+    if (
+        last is not None
+        and last.turn_index == turn - 1
+        and last.chosen_intent in (IntentName.BOOKING, IntentName.AVAILABILITY)
+        and _slots_offered_in_transcript(transcript)
+    ):
+        return last.chosen_intent
+    return None
+
+
 def unanswered_tool_calls(state: DispatchState) -> tuple[StoredToolCall, ...]:
     """Tool calls the model made that nothing has replied to yet.
 
@@ -878,6 +961,7 @@ class DispatchNodes:
             previous_intent=previous,
             clarification_pending=clarification_pending,
             disabled_intents=disabled_intents,
+            funnel_intent=_funnel_intent(current, last, turn, state["transcript"]),
         )
         self._observe(
             MetricName.ROUTING_DECISIONS,
@@ -2028,6 +2112,22 @@ class DispatchNodes:
                 break
             if entry["role"] == "assistant" and entry["content"].strip():
                 policy = await self._deps.policies.policy(state["tenant_id"])
+                if state["clarification_question"]:
+                    # The clarify path publishes the router's own template
+                    # question, written server-side by the route node (`N-01`
+                    # provenance marker lives there). It must skip the
+                    # sensitive-claim validator: asking "did you mean to check
+                    # whether we serve your area?" is not a service-area claim
+                    # to ground — it is the question itself — and validating
+                    # server-authored text against evidence the model never
+                    # saw would refuse the system's own words and hand the
+                    # visitor a canned refusal instead of the question
+                    # (review 2026-08-28, N-02).
+                    return {
+                        "answer": entry["content"],
+                        "citations": [],
+                        "citation_invalid": [],
+                    }
                 # Output-format validation runs before the content validators:
                 # raw tool-call syntax in the text means the model never actually
                 # called the tool it was writing, and publishing the text would
