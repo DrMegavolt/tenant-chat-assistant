@@ -79,6 +79,36 @@ describe("citation display", () => {
 
     expect(inWidget(".citation-list")).toBeNull();
   });
+
+  test("an unvalidated evidence tag disappears while the validated citation still chips", async () => {
+    // N-06, live-observed: the model cited a label that was not in the
+    // evidence context; the mismatch was recorded and the answer delivered
+    // with the raw marker still in the text. The visitor sees the answer and
+    // the one validated source chip — never the bracketed tag.
+    stubBackend((url, init) => {
+      if (url.endsWith("/api/tenants")) return jsonResponse({ tenants: TENANTS });
+      if (url.endsWith("/api/chat/session")) {
+        return jsonResponse({ session: { session_id: "session-1", messages: [] } });
+      }
+      if (url.endsWith("/api/chat") && init?.method === "POST") {
+        return jsonResponse({
+          ...CITED_REPLY,
+          citations: [CITED_REPLY.citations[0]],
+          reply: "Our Saturday hours are 9:00 AM - 2:00 PM [evidence: business facts]."
+        });
+      }
+      return null;
+    });
+    await renderDemo();
+
+    submitChat("What are your weekend hours?");
+    await waitFor(() => expect(inWidget("#messages")?.textContent).toContain("Saturday hours"));
+
+    const messages = inWidget("#messages")?.textContent ?? "";
+    expect(messages).toContain("9:00 AM - 2:00 PM.");
+    expect(messages).not.toContain("[evidence");
+    expect(allInWidget(".citation-button")).toHaveLength(1);
+  });
 });
 
 describe("source viewer", () => {

@@ -45,4 +45,39 @@ describe("displayCopy", () => {
   test("an empty string stays empty", () => {
     expect(displayCopy("")).toBe("");
   });
+
+  test("an evidence tag that failed validation never reaches the visitor", () => {
+    // The live failure (N-06): the model wrote a malformed marker — a space
+    // after the colon, spaces in the label — which matches neither the
+    // evidence catalog nor the server's narrow strip rule, so the raw tag
+    // shipped in the reply text. It is display-only markup and must not
+    // render.
+    expect(displayCopy("Our Saturday hours are 9:00 AM - 2:00 PM [evidence: business facts]")).toBe(
+      "Our Saturday hours are 9:00 AM - 2:00 PM"
+    );
+  });
+
+  test("a mid-sentence evidence tag is removed without leaving a double space", () => {
+    expect(displayCopy("We service furnaces [evidence: service list] on weekdays.")).toBe(
+      "We service furnaces on weekdays."
+    );
+  });
+
+  test("a well-formed evidence marker is dropped too; chips carry the citation", () => {
+    // The server normally strips these before publishing; removing any that
+    // survive costs nothing because the citation chips render from the turn's
+    // validated citation list, never from the text.
+    expect(displayCopy("Plans cover tune-ups [evidence:src-hvac-guide].")).toBe(
+      "Plans cover tune-ups."
+    );
+  });
+
+  test("text that only mentions evidence, or brackets of another kind, is untouched", () => {
+    expect(displayCopy("The word evidence on its own stays.")).toBe(
+      "The word evidence on its own stays."
+    );
+    expect(displayCopy("A [source: label] of another kind stays.")).toBe(
+      "A [source: label] of another kind stays."
+    );
+  });
 });
