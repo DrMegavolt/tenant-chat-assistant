@@ -251,25 +251,21 @@ spec:
         - name: postgres-exporter
           image: quay.io/prometheuscommunity/postgres-exporter@sha256:6999a7657e2f2fb0ca6ebf417213eebf6dc7d21b30708c622f6fcb11183a2bb0
           env:
-            # Kubernetes expands $(VAR) only against variables declared earlier
-            # in this list, so the refs come first and the DSN last.
-            - name: POSTGRES_USER
+            # DATA_SOURCE_URI carries no credentials, so the manifest stays
+            # free of anything the deployment-security gate must parse; the
+            # username and password come from the same Secret the app uses.
+            - name: DATA_SOURCE_URI
+              value: postgres.llm-chat.svc.cluster.local:5432/chat_app?sslmode=disable
+            - name: DATA_SOURCE_USER
               valueFrom:
                 secretKeyRef:
                   name: postgres-credentials
                   key: username
-            - name: POSTGRES_PASSWORD
+            - name: DATA_SOURCE_PASS
               valueFrom:
                 secretKeyRef:
                   name: postgres-credentials
                   key: password
-            - name: POSTGRES_DB
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-credentials
-                  key: database
-            - name: DATA_SOURCE_NAME
-              value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.llm-chat.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=disable
           ports:
             - name: http
               containerPort: 9187
