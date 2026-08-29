@@ -48,14 +48,14 @@ typecheck: ## Run mypy in strict mode
 test: ## Run the hermetic unit suite (no external services)
 	$(UV_RUN) pytest -m "not integration and not chart"
 
-eval: ## Run the golden offline evaluation harness (baseline + hybrid, hermetic)
-	$(UV_RUN) python -m evals.runner
-	$(UV_RUN) python -m evals.runner --retriever hybrid
+eval: ## Run the golden offline evaluation harness (baseline + hybrid, hermetic; MLflow opt-in via EVAL_MLFLOW_TRACKING_URI)
+	EVAL_MLFLOW_TRACKING_URI=$${EVAL_MLFLOW_TRACKING_URI:-} $(UV_RUN) python -m evals.runner
+	EVAL_MLFLOW_TRACKING_URI=$${EVAL_MLFLOW_TRACKING_URI:-} $(UV_RUN) python -m evals.runner --retriever hybrid
 
 eval-gate: ## Baseline-vs-candidate regression gate over every versioned dataset (RAG-008)
 	@for dataset in $$($(UV_RUN) python -c "from evals.dataset import known_datasets; print(' '.join(known_datasets()))"); do \
 		echo "eval-gate: $$dataset"; \
-		$(UV_RUN) python -m evals.gate --dataset $$dataset --verify-determinism || exit 1; \
+		EVAL_MLFLOW_TRACKING_URI=$${EVAL_MLFLOW_TRACKING_URI:-} $(UV_RUN) python -m evals.gate --dataset $$dataset --verify-determinism || exit 1; \
 	done
 
 dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated output

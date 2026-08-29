@@ -24,6 +24,15 @@ dev = [
     # calls out over HTTP with it.
     "httpx2==2.9.1",
 ]
+# ML-01: MLflow tracking of finished eval reports. A separate group, not dev:
+# the hermetic gate and CI never touch the network, and keeping mlflow out of
+# the default environment keeps the guarded import in evals.mlflow_tracking
+# exercised everywhere the default toolchain runs. Opt in with
+# `uv sync --group evals` (or `uv run --group evals`) before pointing
+# EVAL_MLFLOW_TRACKING_URI at a server.
+evals = [
+    "mlflow-skinny==3.15.2",
+]
 # The side-service entrypoints are intentionally not workspace packages. Their
 # complete transitive graphs still live in uv.lock, so every image consumes the
 # same reviewed lock as the production API instead of maintaining hand-written
@@ -154,3 +163,10 @@ exclude = ["architecture/"]
 mypy_path = ["packages/core/src", "packages/orchestration/src", "services/api/src"]
 explicit_package_bases = true
 namespace_packages = true
+
+[[tool.mypy.overrides]]
+# mlflow is an optional dependency (the `evals` group) and a guarded import in
+# evals.mlflow_tracking; the default toolchain environment does not install it,
+# so type checking must not require it either.
+module = ["mlflow", "mlflow.*"]
+ignore_missing_imports = true

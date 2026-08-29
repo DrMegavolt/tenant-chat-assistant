@@ -19,6 +19,7 @@ longer match.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -118,6 +119,20 @@ class ExceptionRegistry:
             for waiver in self.waivers
             if waiver.covers(case_id=case_id, metric=metric, baseline=baseline, candidate=candidate)
         )
+
+    def digest(self) -> str:
+        """A content fingerprint of the loaded waiver set, stable across runs.
+
+        The MLflow tracker records it as a run param (ML-01) so a tracked run
+        states which waiver set it was gated against — a tracked pass under a
+        registry that later gained a waiver is not evidence the regression was
+        reviewed. Like the manifest hash it covers only the waivers' own
+        fields, never case content.
+        """
+        canonical = json.dumps(
+            [waiver.to_json() for waiver in self.waivers], sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def mint_waiver(

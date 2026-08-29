@@ -37,7 +37,9 @@ from evals.judges import judges
 from evals.scorer import CaseResult, EvaluationReport
 from evals.versions import manifest_hash
 
-_SCHEMA_VERSION = 1
+# The report schema the scorer emits, public because the MLflow tracker records
+# it as the run's scorer version (ML-01).
+SCHEMA_VERSION = 1
 
 _SCORED_METRICS: tuple[str, ...] = (
     "recall_at_k",
@@ -147,7 +149,7 @@ class ComparisonReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": _SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "significance": self.significance,
             "dataset": dict(self.dataset),
             "baseline": dict(self.baseline),
@@ -181,7 +183,13 @@ class ComparisonReport:
         return "\n".join(lines)
 
 
-def _run_id(components: Mapping[str, object]) -> str:
+def run_id(components: Mapping[str, object]) -> str:
+    """The server-minted run id of one manifest, ``eval-<hash16>``.
+
+    This is the id the FEAT-008 review closure stamps on closed reviews and the
+    id the MLflow tracker records as ``gate_run_id``, so one id joins the
+    MLflow run, the review queue, and the report (ML-01).
+    """
     return f"eval-{manifest_hash(components)[:16]}"
 
 
@@ -430,14 +438,14 @@ def compare_reports(
     return ComparisonReport(
         dataset=dataset.as_dict(),
         baseline={
-            "run_id": _run_id(baseline_components),
+            "run_id": run_id(baseline_components),
             "components": baseline_components,
             "scores": dict(baseline.aggregate),
             "scored": dict(baseline.scored),
             "passed": baseline.passed,
         },
         candidate={
-            "run_id": _run_id(candidate_components),
+            "run_id": run_id(candidate_components),
             "components": candidate_components,
             "scores": dict(candidate.aggregate),
             "scored": dict(candidate.scored),

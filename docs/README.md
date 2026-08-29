@@ -32,6 +32,7 @@ documents here explain design decisions and operations in more depth.
 | Metrics | [Metrics walkthrough](runbooks/metrics-walkthrough.md) |
 | Grafana and other observability UIs | [Observability dashboards](runbooks/observability-dashboards.md) |
 | Content-bearing inference records | [Inference trace plane](runbooks/inference-trace-plane.md) |
+| Offline evals and MLflow run comparison | [Evals](runbooks/evals.md) |
 
 The demo walkthrough is a record of a specific local deployment and includes
 dated limitations. Run its readiness checks against the revision being shown
