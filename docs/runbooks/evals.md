@@ -60,7 +60,11 @@ metrics (`ADR-0010`): content lives in the inference trace store, governed by
 carries the comparison report JSON, which contains the case queries. The
 corpus is sample content (every dataset passes the PRIV-002 gate at load), so
 that is acceptable today; flip to a metrics-only summary if the corpus ever
-stops being sample content.
+stops being sample content. The artifact also needs an artifact root the
+client can write — an experiment whose location is `mlflow-artifacts:/` (the
+tracking server proxies it) or a filesystem shared with the client. An upload
+failure is logged, the run stays recorded and finished without it, and the
+params, metrics, and verdict are already on the server by then.
 
 Tracking failures are logged and skipped — never flipped into the gate's
 verdict — and the determinism verification stays byte-identical, because
