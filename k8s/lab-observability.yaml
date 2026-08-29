@@ -110,7 +110,7 @@ spec:
     spec:
       containers:
         - name: blackbox-exporter
-          image: prom/blackbox-exporter:v0.27.0
+          image: prom/blackbox-exporter@sha256:a50c4c0eda297baa1678cd4dc4712a67fdea713b832d43ce7fcc5f9bea05094d
           args:
             - --config.file=/etc/blackbox_exporter/blackbox.yaml
           ports:
@@ -249,7 +249,7 @@ spec:
     spec:
       containers:
         - name: postgres-exporter
-          image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+          image: quay.io/prometheuscommunity/postgres-exporter@sha256:6999a7657e2f2fb0ca6ebf417213eebf6dc7d21b30708c622f6fcb11183a2bb0
           env:
             # Kubernetes expands $(VAR) only against variables declared earlier
             # in this list, so the refs come first and the DSN last.
@@ -355,7 +355,7 @@ spec:
     spec:
       containers:
         - name: elasticsearch-exporter
-          image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0
+          image: quay.io/prometheuscommunity/elasticsearch-exporter@sha256:4786d49bef9ec045c155d5544abc420e6f58394170db7b6a05c5e7a5f15fb9ed
           args:
             # The cluster's ES serves plain HTTP on 9200 despite the docs'
             # HTTPS default — probed live before wiring this in.
