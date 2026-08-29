@@ -95,9 +95,15 @@ from tenantchat.orchestration.tools import TOOLS_VERSION
 # ``fallback_hops`` chain (model name + bounded failure reason). A ``4``
 # record's tools section is whole-thread and every invocation reads as fresh,
 # first-try; the added keys are provenance only and carry no content either way.
-TRACE_SCHEMA_VERSION: Final = "5"
+#
+# ``6`` added ``output.authored_by`` (`N-01`): who wrote the delivered answer —
+# the model, or the server on the paths where the model's output is replaced
+# (the clarify question, the abstention, the policy-block replies, and the
+# finalize refusals). Additive: a reader of an older record finds no key and
+# reads ``None`` as "not recorded", never as model-authored.
+TRACE_SCHEMA_VERSION: Final = "6"
 
-DETECTOR_VERSION: Final = "diagnosis@2"
+DETECTOR_VERSION: Final = "diagnosis@3"
 
 
 class DiagnosisCause(StrEnum):
@@ -111,6 +117,9 @@ class DiagnosisCause(StrEnum):
     happened, whatever the model meant by it. ``model_malformed_output`` is
     proven the same way: the model's text carried raw tool-call syntax
     (``verdicts.output_invalid``), which the record can show byte for byte.
+    ``model_behavior`` is emitted ``detected`` for the other output-policy
+    refusals (`N-01`): a promise the record shows was never committed, or
+    output over the budget — the model did write it, deterministically.
     """
 
     STALE_SOURCE = "stale_source"
@@ -250,6 +259,11 @@ def build_turn_trace(
             "answer": str(state.get("answer", "")),
             "raw": raw_output,
             "claims": list(claims),
+            # Who wrote the delivered answer (`N-01`): "server" wherever the
+            # model's own output was replaced, so a clarify question or a
+            # refusal never reads as generated text with no author. ``None``
+            # marks a record written before the field existed.
+            "authored_by": str(state.get("answer_authorship")) or None,
         },
         "verdicts": verdicts,
         "tools": _tools_section(state, history),
@@ -438,8 +452,15 @@ def diagnose(trace: Mapping[str, object]) -> tuple[DiagnosisRecord, ...]:
     # source code, in text that was about to be published as the answer. The
     # excerpt in the verdict is content and stays in the content plane; the
     # diagnosis carries the verdict kind only.
+    #
+    # The other output-invalid kinds (`N-01`: an uncommitted callback promise,
+    # prose over the output budget) are equally decidable — deterministic
+    # validators over the record — but the output was well-formed: what the
+    # model wrote violated policy, which is model behavior detected at the
+    # validation stage, not malformed output.
     output_invalid = _list_of_dicts(verdicts.get("output_invalid"))
-    if output_invalid:
+    malformed = [item for item in output_invalid if str(item.get("kind", "")) == "raw_tool_call"]
+    if malformed:
         records.append(
             DiagnosisRecord(
                 cause=DiagnosisCause.MODEL_MALFORMED_OUTPUT,
@@ -447,7 +468,23 @@ def diagnose(trace: Mapping[str, object]) -> tuple[DiagnosisRecord, ...]:
                 role=DiagnosisRole.PRIMARY,
                 status=DiagnosisStatus.DETECTED,
                 confidence=DiagnosisConfidence.HIGH,
-                evidence=tuple(f"output_invalid:{item.get('kind', '')}" for item in output_invalid),
+                evidence=tuple(f"output_invalid:{item.get('kind', '')}" for item in malformed),
+            )
+        )
+    policy_refusals = [
+        item for item in output_invalid if str(item.get("kind", "")) != "raw_tool_call"
+    ]
+    if policy_refusals:
+        records.append(
+            DiagnosisRecord(
+                cause=DiagnosisCause.MODEL_BEHAVIOR,
+                stage=DiagnosisStage.VALIDATION,
+                role=DiagnosisRole.PRIMARY,
+                status=DiagnosisStatus.DETECTED,
+                confidence=DiagnosisConfidence.HIGH,
+                evidence=tuple(
+                    f"output_invalid:{item.get('kind', '')}" for item in policy_refusals
+                ),
             )
         )
 

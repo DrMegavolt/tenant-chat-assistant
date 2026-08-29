@@ -79,6 +79,11 @@ CLAIM_REFUSAL_REPLY = (
 LEAK_REFUSAL_REPLY = (
     "I was not able to finish that reply. Please ask again, or call (555) 816-4420."
 )
+UNCOMMITTED_PROMISE_REFUSAL = (
+    "I am not able to promise a callback right now. The team can still help — "
+    "please call (555) 816-4420, or try again with your name and contact details "
+    "so I can submit your request."
+)
 ESCALATION_REPLY = (
     "I am not able to finish this myself, so I have passed it to the team. "
     "You can also reach them on (555) 816-4420."

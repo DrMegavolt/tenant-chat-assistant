@@ -48,6 +48,7 @@ from tenantchat.core.knowledge import (
     SourceKind,
 )
 from tenantchat.core.ports import EvidenceBundle, EvidenceUnavailableError
+from tenantchat.core.routing import ROUTING_POLICY_VERSION
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import ModelResponse
 from tenantchat.orchestration.trace import reconstruct_prompt
@@ -285,7 +286,7 @@ def test_the_turn_record_pins_every_component_and_a_content_free_hash() -> None:
     manifest = _section(content, "component_manifest")
     assert manifest["graph"] == "dispatch@4"
     assert manifest["prompt_template"] == {"ref": "dispatch-system@4"}
-    assert manifest["routing_policy"] == "intent-routing@1"
+    assert manifest["routing_policy"] == ROUTING_POLICY_VERSION
     assert manifest["tools"] == "tools@1"
     assert manifest["retriever"] == {
         "version": "v1",
@@ -302,7 +303,7 @@ def test_the_turn_record_pins_every_component_and_a_content_free_hash() -> None:
     assert record.component_manifest_hash == content["manifest_hash"]
     assert record.diagnosis_causes == ()
     assert record.turn_index == 1
-    assert record.trace_schema_version == "5"
+    assert record.trace_schema_version == "6"
     # A post-`OBS-006` turn records the executed graph that actually ran.
     executed = _section(content, "executed_graph")
     assert [node["name"] for node in _list(executed, "nodes")] == [

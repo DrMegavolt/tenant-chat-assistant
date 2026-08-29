@@ -46,8 +46,10 @@ from tenantchat.core.knowledge import (
     SourceKind,
 )
 from tenantchat.core.ports import EvidenceBundle, EvidenceUnavailableError
+from tenantchat.core.routing import ROUTING_POLICY_VERSION
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import ModelResponse, ToolCall
+from tenantchat.orchestration.trace import DETECTOR_VERSION
 
 HOURS_QUESTION = "What are your hours of operation?"
 HOURS_ANSWER = "We are open daily from 7 AM to 7 PM."
@@ -597,7 +599,7 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
     manifest = _section(content, "component_manifest")
     assert manifest["graph"] == "dispatch@4"
     assert manifest["prompt_template"] == {"ref": "dispatch-system@4"}
-    assert manifest["routing_policy"] == "intent-routing@1"
+    assert manifest["routing_policy"] == ROUTING_POLICY_VERSION
     assert _list(content, "diagnoses") == [
         {
             "cause": "grounding_or_citation_error",
@@ -606,7 +608,7 @@ def test_the_turn_record_carries_the_verified_citations_and_the_verdicts() -> No
             "status": "detected",
             "confidence": "high",
             "evidence": ["citation_invalid:clearview-hvac-999"],
-            "detector_version": "diagnosis@2",
+            "detector_version": DETECTOR_VERSION,
         }
     ]
 

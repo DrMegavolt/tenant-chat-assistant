@@ -96,6 +96,7 @@ from tenantchat.orchestration.prompts import (
     assemble_prompt,
 )
 from tenantchat.orchestration.state import (
+    AnswerAuthorship,
     CommittedAction,
     DispatchState,
     StoredToolCall,
@@ -431,6 +432,18 @@ def _callback_promise_uncommitted(content: str, committed: Sequence[CommittedAct
     if _CALLBACK_PROMISE_RE.search(content) is None:
         return False
     return all(action["action"] != ToolName.CREATE_LEAD.value for action in committed)
+
+
+def _promise_excerpt(content: str) -> str:
+    """The line carrying the uncommitted promise, bounded like a leak excerpt.
+
+    The verdict's ``value`` is the model's own sentence, so the record shows
+    what was promised and why it was withheld without quoting the whole answer.
+    """
+    for line in content.splitlines():
+        if _CALLBACK_PROMISE_RE.search(line) is not None:
+            return " ".join(line.split())[:_LEAK_EXCERPT_LIMIT]
+    return ""
 
 
 class DispatchNode(StrEnum):
@@ -814,9 +827,16 @@ class DispatchNodes:
             "transcript": [assistant_entry(self._blocked_reply(reason, policy), [])],
             "rounds": state["rounds"] + 1,
             "turn_outcome": TurnStatus.ANSWERED.value,
+            "answer_authorship": AnswerAuthorship.SERVER.value,
         }
         if model_attribution is not None:
             update.update(model_attribution)
+            # The one block that replaced real model output is an output-policy
+            # verdict too (`N-01`): the visitor got the server's words, and the
+            # record must say the model's were withheld for length. The value
+            # stays empty because a length has no excerpt to quote.
+            if reason is BlockReason.OUTPUT_TOO_LONG:
+                update["output_invalid"] = [{"kind": "output_too_long", "value": ""}]
         return update
 
     async def route(self, state: DispatchState) -> dict[str, Any]:
@@ -895,10 +915,14 @@ class DispatchNodes:
         }
         if decision.outcome is RoutingOutcome.CLARIFY:
             question = clarify_question(decision)
+            # The question is template text written here, by the server: the
+            # record must say so, or it shows generated output with no model
+            # call and no author — provenance nowhere (N-01).
             return base | {
                 "transcript": [assistant_entry(question, [])],
                 "clarification_question": question,
                 "turn_outcome": TurnStatus.CLARIFIED.value,
+                "answer_authorship": AnswerAuthorship.SERVER.value,
             }
         if decision.outcome is RoutingOutcome.HANDOFF:
             # The escalation node closes out an active workflow, so it must be
@@ -1166,6 +1190,7 @@ class DispatchNodes:
             "transcript": [assistant_entry(_abstention_reply(policy), [])],
             "rounds": state["rounds"] + 1,
             "turn_outcome": TurnStatus.ABSTAINED.value,
+            "answer_authorship": AnswerAuthorship.SERVER.value,
         }
         if bundle is not None:
             # The verdict that made the turn abstain must reach the trace even
@@ -1958,6 +1983,7 @@ class DispatchNodes:
             # from residual state reads a handed-off turn as answered.
             "turn_outcome": TurnStatus.ESCALATED.value,
             "failure": reason.value,
+            "answer_authorship": AnswerAuthorship.SERVER.value,
             # The turn stops here, but the conversation may not: a customer can
             # keep typing while they wait for someone. Closing out the calls this
             # node walked away from is what keeps the next turn's transcript
@@ -2019,6 +2045,7 @@ class DispatchNodes:
                         "citations": [],
                         "citation_invalid": [],
                         "output_invalid": [{"kind": "raw_tool_call", "value": leak}],
+                        "answer_authorship": AnswerAuthorship.SERVER.value,
                     }
                 validation = validate_sensitive_claims(
                     entry["content"],
@@ -2049,6 +2076,7 @@ class DispatchNodes:
                             {"kind": claim.kind.value, "value": claim.value}
                             for claim in validation.unsupported
                         ],
+                        "answer_authorship": AnswerAuthorship.SERVER.value,
                     }
                 if _callback_promise_uncommitted(entry["content"], state["committed"]):
                     self._observe(
@@ -2056,11 +2084,22 @@ class DispatchNodes:
                         1,
                         labels={"outcome": TurnOutcome.ANSWER_REFUSED.value},
                     )
+                    # This is an output-policy refusal like a leak, and the
+                    # record used to show it only as a raw-vs-answer diff
+                    # (`N-01`): the verdict and the authorship marker are what
+                    # let an operator answer "why was this refused?" directly.
                     return {
                         "answer": _uncommitted_promise_refusal(policy),
                         "turn_outcome": TurnStatus.REFUSED.value,
                         "citations": [],
                         "citation_invalid": [],
+                        "output_invalid": [
+                            {
+                                "kind": "uncommitted_callback_promise",
+                                "value": _promise_excerpt(entry["content"]),
+                            }
+                        ],
+                        "answer_authorship": AnswerAuthorship.SERVER.value,
                     }
                 found = citation_ids(entry["content"])
                 context = frozenset(state["evidence_ids"])
@@ -2083,6 +2122,11 @@ class DispatchNodes:
                     "citation_invalid": [
                         source_id for source_id in found if source_id not in context
                     ],
+                    # The model wrote this one — unless an earlier node already
+                    # marked the turn: a policy-blocked reply reaches here as
+                    # the transcript's last assistant entry, and the server
+                    # marker that node wrote must survive (`N-01`).
+                    "answer_authorship": state["answer_authorship"] or AnswerAuthorship.MODEL.value,
                 }
                 # A clarification question and the deterministic abstention
                 # reply are answers too, but their outcome classes were
@@ -2112,6 +2156,7 @@ class DispatchNodes:
         return {
             "answer": f"I can help with that — the team is on {policy.phone}.",
             "turn_outcome": TurnStatus.ANSWERED.value,
+            "answer_authorship": AnswerAuthorship.SERVER.value,
         }
 
     async def _run_one(

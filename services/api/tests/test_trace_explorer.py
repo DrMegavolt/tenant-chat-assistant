@@ -56,6 +56,7 @@ from tenantchat.api.store import (
     InMemoryTraceAccessStore,
     InMemoryTurnRecordStore,
 )
+from tenantchat.core.routing import ROUTING_POLICY_VERSION
 from tenantchat.orchestration.checkpoints import InMemorySaver
 from tenantchat.orchestration.model import AssembledPrompt, ModelResponse, ToolSpec
 from tenantchat.orchestration.prompts import DISPATCH_SYSTEM_REF
@@ -87,7 +88,7 @@ def _manifest(**overrides: object) -> dict[str, object]:
     return {
         "graph": "dispatch@4",
         "prompt_template": {"ref": DISPATCH_SYSTEM_REF},
-        "routing_policy": "intent-routing@1",
+        "routing_policy": ROUTING_POLICY_VERSION,
         "agents": "agents@1",
         "tools": "tools@1",
         "retriever": {
@@ -234,7 +235,7 @@ def _seeded_cases() -> tuple[SeededCase, ...]:
             "conflict_gap": 2.0,
             "direct_threshold": 4.0,
             "outcome": "direct",
-            "policy_version": "intent-routing@1",
+            "policy_version": ROUTING_POLICY_VERSION,
             "rule": "matched",
         },
         "retrieval": {
