@@ -1,0 +1,757 @@
+# Lab observability — "Datadog view" Phase 0 (grafana-datadog-view-tasklist).
+#
+# Makes the metrics exist for the five Lab dashboards: every service is either
+# scraped natively (ServiceMonitor/PodMonitor) or probed (blackbox exporter).
+# These are observability resources only — no application workload is touched
+# here except the read-only exporters below.
+#
+#   GD-01 traefik PodMonitor            (ingress, port "metrics")
+#   GD-02 blackbox exporter + Probe CRs (synthetic RED for metric-less services)
+#   GD-03 postgres exporter             (llm-chat, read-only creds from existing secret)
+#   GD-04 elasticsearch exporter        (llm-chat, creds from existing secret)
+#   GD-06 keycloak ServiceMonitor       (identity, management port 9000)
+#   GD-08 tempo/loki ServiceMonitors    (native /metrics both already serve)
+#
+# Every monitor resource carries label release=kube-prom-stack because the
+# Prometheus CR selects ServiceMonitors/PodMonitors/Probes/PrometheusRules by
+# that label, and it selects them in every namespace.
+#
+# NetworkPolicies: llm-chat and identity default-deny ingress, so each new
+# scrape/probe path gets an explicit allow rule using the same shape as the
+# existing allow-prometheus-*-metrics policies (namespaceSelector observability
+# + podSelector app.kubernetes.io/name=prometheus, or the blackbox pod).
+#
+# Apply: kubectl apply -f k8s/lab-observability.yaml
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: traefik
+  namespace: ingress
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  namespaceSelector:
+    matchNames:
+      - ingress
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+---
+# GD-02: blackbox exporter. Deployed standalone (not the kube-prom-stack
+# subchart) so enabling probes does not require a helm upgrade of the stack.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lab-blackbox-config
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: tenant-chat
+data:
+  blackbox.yaml: |
+    modules:
+      http_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          preferred_ip_protocol: ip4
+      # Some surfaces answer 3xx on their health path (argocd redirects);
+      # a redirect still proves the endpoint is alive.
+      http_2xx_or_3xx:
+        prober: http
+        timeout: 5s
+        http:
+          preferred_ip_protocol: ip4
+          valid_status_codes:
+            - 200
+            - 301
+            - 302
+            - 307
+            - 308
+      # Same, for surfaces that redirect http -> self-signed https (argocd):
+      # follow the redirect and skip TLS verification inside the probe only.
+      http_2xx_or_3xx_tls:
+        prober: http
+        timeout: 5s
+        http:
+          preferred_ip_protocol: ip4
+          tls_config:
+            insecure_skip_verify: true
+          valid_status_codes:
+            - 200
+            - 301
+            - 302
+            - 307
+            - 308
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-blackbox-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: blackbox-exporter
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blackbox-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: blackbox-exporter
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      containers:
+        - name: blackbox-exporter
+          image: prom/blackbox-exporter:v0.27.0
+          args:
+            - --config.file=/etc/blackbox_exporter/blackbox.yaml
+          ports:
+            - name: http
+              containerPort: 9115
+          readinessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # The image's USER is the non-numeric "nobody"; pin the UID so the
+            # kubelet can verify runAsNonRoot.
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /etc/blackbox_exporter
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: lab-blackbox-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lab-blackbox-exporter
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: blackbox-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: blackbox-exporter
+  ports:
+    - name: http
+      port: 9115
+      targetPort: http
+---
+# One Probe CR per class of surface, jobName distinct so the availability
+# strip and the LabProbeFailing monitor can separate them.
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: lab-http-probes
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  jobName: lab-http-probes
+  interval: 30s
+  module: http_2xx
+  prober:
+    url: lab-blackbox-exporter.observability.svc.cluster.local:9115
+  targets:
+    staticConfig:
+      static:
+        - http://web.llm-chat.svc.cluster.local/
+        - http://keycloak.identity.svc.cluster.local:9000/health/ready
+        - http://kube-prom-stack-grafana.observability.svc.cluster.local/
+        - http://tempo.observability.svc.cluster.local:3200/ready
+        - http://loki.observability.svc.cluster.local:3100/ready
+        - http://phoenix-svc.observability.svc.cluster.local:6006/
+        - http://mlflow.observability.svc.cluster.local:80/
+        - http://kibana.llm-chat.svc.cluster.local:5601/api/status
+        - http://kafka-ui.data-platform.svc.cluster.local/
+        - http://registry.container-registry.svc.cluster.local:5000/v2/
+        # canals-api has no root route; /health is its FastAPI health endpoint.
+        - http://canals-api-canals-api.canals.svc.cluster.local:80/health
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: lab-http-redirect-probes
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  jobName: lab-http-redirect-probes
+  interval: 30s
+  # argocd redirects plain http to its self-signed https listener, so the probe
+  # must follow redirects and skip certificate verification.
+  module: http_2xx_or_3xx_tls
+  prober:
+    url: lab-blackbox-exporter.observability.svc.cluster.local:9115
+  targets:
+    staticConfig:
+      # argocd's /api/healthz 404s on this version even after the redirect;
+      # the root document proves the same thing (server up and answering).
+      static:
+        - http://argo-cd-argocd-server.argocd.svc.cluster.local:80/
+---
+# GD-03: postgres exporter for the llm-chat application database. Read-only:
+# the DSN is assembled from the existing postgres-credentials secret, which the
+# platform provisions out of band (same doctrine as deploy.sh require_key).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+  namespace: llm-chat
+  labels:
+    app.kubernetes.io/name: postgres-exporter
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-exporter
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+          env:
+            # Kubernetes expands $(VAR) only against variables declared earlier
+            # in this list, so the refs come first and the DSN last.
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: database
+            - name: DATA_SOURCE_NAME
+              value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres.llm-chat.svc.cluster.local:5432/$(POSTGRES_DB)?sslmode=disable
+          ports:
+            - name: http
+              containerPort: 9187
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # Image USER is "nobody"; pin the UID for runAsNonRoot verification.
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+  namespace: llm-chat
+  labels:
+    app.kubernetes.io/name: postgres-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: postgres-exporter
+  ports:
+    - name: http
+      port: 9187
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres-exporter
+  namespace: llm-chat
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  namespaceSelector:
+    matchNames:
+      - llm-chat
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+# GD-04: elasticsearch exporter for the retrieval index. Basic auth comes from
+# the existing elastic-credentials secret; the endpoint is plain HTTP here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch-exporter
+  namespace: llm-chat
+  labels:
+    app.kubernetes.io/name: elasticsearch-exporter
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch-exporter
+        app.kubernetes.io/part-of: tenant-chat
+    spec:
+      containers:
+        - name: elasticsearch-exporter
+          image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.7.0
+          args:
+            # The cluster's ES serves plain HTTP on 9200 despite the docs'
+            # HTTPS default — probed live before wiring this in.
+            - --es.uri=http://$(ES_USERNAME):$(ES_PASSWORD)@elasticsearch.llm-chat.svc.cluster.local:9200
+            - --es.all
+            - --es.indices
+          env:
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: username
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elastic-credentials
+                  key: password
+          ports:
+            - name: http
+              containerPort: 9114
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 96Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # Image USER is "nobody"; pin the UID for runAsNonRoot verification.
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-exporter
+  namespace: llm-chat
+  labels:
+    app.kubernetes.io/name: elasticsearch-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: elasticsearch-exporter
+  ports:
+    - name: http
+      port: 9114
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: elasticsearch-exporter
+  namespace: llm-chat
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch-exporter
+  namespaceSelector:
+    matchNames:
+      - llm-chat
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+# GD-06: keycloak quarkus metrics on the management port (already declared by
+# the keycloak chart, KC_METRICS_ENABLED). Scraped here; reachability is opened
+# by the network policies below.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keycloak
+  namespace: identity
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: keycloak
+      app.kubernetes.io/name: keycloak
+  namespaceSelector:
+    matchNames:
+      - identity
+  endpoints:
+    - port: management
+      path: /metrics
+      interval: 30s
+---
+# GD-08: tempo native metrics (port tempo-prom-metrics on the existing service).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tempo
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: tempo
+      app.kubernetes.io/name: tempo
+  namespaceSelector:
+    matchNames:
+      - observability
+  endpoints:
+    - port: tempo-prom-metrics
+      path: /metrics
+      interval: 30s
+---
+# GD-08: loki native metrics (port http-metrics on the existing service).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: loki
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - loki
+      # The chart also ships a loki-headless service with the same app/release
+      # labels; without this exclusion the same /metrics endpoint is scraped
+      # twice and sums double-count.
+      - key: variant
+        operator: DoesNotExist
+  namespaceSelector:
+    matchNames:
+      - observability
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: 30s
+---
+# GD-05: Strimzi kafka exporter metrics. The exporter deployment is created by
+# the strimzi operator once spec.kafkaExporter is set on the Kafka CR (done
+# out of band: kubectl patch kafka kafka -n data-platform --type=merge -p
+# '{"spec":{"kafkaExporter":{"topicRegex":".*","groupRegex":".*"}}}'). This
+# Strimzi build serves the metrics over plain HTTP on 9404, so a plain
+# ServiceMonitor is enough.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-exporter
+  namespace: data-platform
+  labels:
+    app.kubernetes.io/name: kafka-exporter
+spec:
+  selector:
+    strimzi.io/name: kafka-kafka-exporter
+  ports:
+    - name: tcp-prometheus
+      port: 9404
+      targetPort: tcp-prometheus
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kafka-exporter
+  namespace: data-platform
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-exporter
+  namespaceSelector:
+    matchNames:
+      - data-platform
+  endpoints:
+    - port: tcp-prometheus
+      path: /metrics
+      interval: 30s
+---
+# The exporters also need egress: llm-chat default-deny-all is Ingress+Egress
+# (DNS egress is already covered by allow-dns-egress for all pods).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-exporter-egress-to-postgres
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elasticsearch-exporter-egress-to-elasticsearch
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch-exporter
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - port: 9200
+          protocol: TCP
+---
+# ─── NetworkPolicies ─────────────────────────────────────────────────────────
+# Prometheus scraping the postgres exporter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-postgres-exporter-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9187
+          protocol: TCP
+---
+# Prometheus scraping the elasticsearch exporter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-elasticsearch-exporter-metrics
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch-exporter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9114
+          protocol: TCP
+---
+# The postgres exporter itself must reach postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-exporter-to-postgres
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres-exporter
+      ports:
+        - port: 5432
+          protocol: TCP
+---
+# The elasticsearch exporter itself must reach elasticsearch.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elasticsearch-exporter-to-elasticsearch
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: elasticsearch
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch-exporter
+      ports:
+        - port: 9200
+          protocol: TCP
+---
+# Blackbox probes of the kibana status endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-blackbox-kibana-health
+  namespace: llm-chat
+spec:
+  podSelector:
+    matchLabels:
+      app: kibana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: blackbox-exporter
+      ports:
+        - port: 5601
+          protocol: TCP
+---
+# Prometheus scraping keycloak management metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-keycloak-metrics
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9000
+          protocol: TCP
+---
+# Blackbox probing the keycloak health endpoint on the same management port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-blackbox-keycloak-health
+  namespace: identity
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: blackbox-exporter
+      ports:
+        - port: 9000
+          protocol: TCP

@@ -1,0 +1,1065 @@
+{
+  "title": "Lab \u00b7 Services",
+  "uid": "lab-services",
+  "description": "The Datadog 'Service Catalog': one repeating tile block per deployment \u2014 status, requests/s, p95, error ratio, restarts, CPU, memory, probe \u2014 with a Monitors row at the bottom (GD-21/23/51). An outliers band above the catalog draws one line per service for traffic, p95, errors and restarts, so the odd one out is visible in a single panel. Tiles key off the lab:* recording rules, so a new deployment appears automatically.",
+  "tags": [
+    "lab",
+    "services",
+    "catalog",
+    "apm"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Data source"
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(lab:deployment:restarts:increase1h, namespace)",
+          "refId": "namespace-Variable-Query"
+        },
+        "definition": "label_values(lab:deployment:restarts:increase1h, namespace)",
+        "label": "namespace",
+        "hide": 0,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "sort": 1,
+        "current": {}
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(lab:deployment:restarts:increase1h{namespace=~\"$namespace\"}, workload)",
+          "refId": "service-Variable-Query"
+        },
+        "definition": "label_values(lab:deployment:restarts:increase1h{namespace=~\"$namespace\"}, workload)",
+        "label": "service",
+        "hide": 0,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "refresh": 1,
+        "sort": 1,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "title": "At a glance",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 1,
+      "title": "Deployments below spec",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(kube_deployment_status_replicas_available{namespace=~\"$namespace\"} < kube_deployment_spec_replicas{namespace=~\"$namespace\"}) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Monitors firing",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(ALERTS{alertname=~\"Lab.*\", alertstate=\"firing\"}) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Probes failing",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(probe_success{job=~\"lab-http(-redirect)?-probes\"} == 0) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Services in view",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(lab:deployment:cpu:rate5m{namespace=~\"$namespace\"})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Monitors (lab-monitors PrometheusRule \u2014 GD-51 parity)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "expr": "ALERTS{alertname=~\"Lab.*\"}",
+          "legendFormat": "{{alertname}} \u2014 {{alertstate}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "description": "Every Lab* monitor with its current state. An empty table means all monitors are OK; alerts route to the in-cluster Alertmanager."
+    },
+    {
+      "id": 102,
+      "title": "Outliers at a glance \u2014 one line per service",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 120,
+      "title": "Requests/s \u2014 all services",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "lab:service:http:rps:rate5m{namespace=~\"$namespace\", service=~\"$service\"} or lab:gateway:service:rps:rate5m{namespace=~\"$namespace\", service=~\"$service\"}",
+          "legendFormat": "{{namespace}}/{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Native OTel line where the service is instrumented, Traefik edge line otherwise; the `or` dedupes so each service draws once."
+    },
+    {
+      "id": 121,
+      "title": "p95 latency \u2014 all services",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "lab:service:http:p95:rate5m{namespace=~\"$namespace\", service=~\"$service\"} or lab:gateway:service:p95:rate5m{namespace=~\"$namespace\", service=~\"$service\"}",
+          "legendFormat": "{{namespace}}/{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 2.0
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Same 0.5 s / 2 s guide lines as the p95 tiles below \u2014 the outlier service and the offending spike show up without opening the drilldown."
+    },
+    {
+      "id": 122,
+      "title": "Error ratio (5xx) \u2014 all services",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "lab:gateway:service:error_ratio:rate5m{namespace=~\"$namespace\", service=~\"$service\"}",
+          "legendFormat": "{{namespace}}/{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "5xx share at the Traefik edge, one line per service; the 5 % monitor threshold is drawn."
+    },
+    {
+      "id": 123,
+      "title": "Restarts (1h) \u2014 all deployments",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "expr": "lab:deployment:restarts:increase1h{namespace=~\"$namespace\", workload=~\"$service\"}",
+          "legendFormat": "{{namespace}}/{{workload}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Restart spikes per deployment; same 1 / 4 thresholds as the tiles below."
+    },
+    {
+      "id": 101,
+      "title": "Service catalog \u2014 one tile block per service",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 110,
+      "title": "Status \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas_available{namespace=~\"$namespace\", deployment=~\"$service\"} / kube_deployment_spec_replicas{namespace=~\"$namespace\", deployment=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "available / spec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h",
+      "description": "Available / desired replicas. Grey 'No data' = not a Deployment (StatefulSet, DaemonSet, Job)."
+    },
+    {
+      "id": 111,
+      "title": "Requests/s \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "lab:service:http:rps:rate5m{namespace=~\"$namespace\", service=~\"$service\"} or lab:gateway:service:rps:rate5m{namespace=~\"$namespace\", service=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "req/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h",
+      "description": "Native OTel HTTP when the service is instrumented, Traefik gateway counts otherwise (GD-22)."
+    },
+    {
+      "id": 112,
+      "title": "p95 latency \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "lab:service:http:p95:rate5m{namespace=~\"$namespace\", service=~\"$service\"} or lab:gateway:service:p95:rate5m{namespace=~\"$namespace\", service=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 2.0
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h"
+    },
+    {
+      "id": 113,
+      "title": "Error ratio (5xx) \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "lab:gateway:service:error_ratio:rate5m{namespace=~\"$namespace\", service=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "5xx ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h",
+      "description": "5xx share measured at the Traefik edge; 0 until the service has gateway traffic."
+    },
+    {
+      "id": 114,
+      "title": "Restarts (1h) \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "lab:deployment:restarts:increase1h{namespace=~\"$namespace\", workload=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "restarts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h"
+    },
+    {
+      "id": 115,
+      "title": "CPU (cores) \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "lab:deployment:cpu:rate5m{namespace=~\"$namespace\", workload=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "cores"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h"
+    },
+    {
+      "id": 116,
+      "title": "Memory (working set) \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "lab:deployment:memory:workingset{namespace=~\"$namespace\", workload=~\"$service\"}",
+          "refId": "A",
+          "legendFormat": "working set"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h"
+    },
+    {
+      "id": 117,
+      "title": "HTTP probe \u2014 $service",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 67,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "probe_success{job=~\"lab-http(-redirect)?-probes\", instance=~\".*$service.*\"}",
+          "refId": "A",
+          "instant": true,
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "repeat": "service",
+      "repeatDirection": "h",
+      "description": "Blackbox probe whose target URL mentions the service. Grey 'No data' = no probe for this service (not internal HTTP)."
+    }
+  ]
+}

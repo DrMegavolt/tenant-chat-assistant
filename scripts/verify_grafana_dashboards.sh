@@ -2,7 +2,8 @@
 # Verify that the expected Grafana dashboards are present in the deployed cluster.
 #
 # Queries the Grafana API inside the cluster (via `kubectl exec`) for the five
-# Tenant Chat dashboard UIDs. Exits 0 when all are found, 1 otherwise.
+# Tenant Chat dashboard UIDs and the five Lab dashboard UIDs. Exits 0 when all
+# are found, 1 otherwise.
 #
 # Usage:
 #   ./scripts/verify_grafana_dashboards.sh
@@ -21,6 +22,11 @@ EXPECTED_UIDS=(
     tenantchat-llm-operations
     tenantchat-exemplar-drillthrough
     tenantchat-safety-governance
+    lab-infra-overview
+    lab-services
+    lab-service-drilldown
+    lab-datastores
+    lab-gateway
 )
 
 resolve_grafana_pod() {

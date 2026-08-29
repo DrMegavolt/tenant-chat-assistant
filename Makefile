@@ -215,7 +215,7 @@ clean: ## Remove caches and build artifacts
 	rm -rf frontend/dist frontend/node_modules/.tmp
 	find . -type d -name __pycache__ -not -path './.venv/*' -prune -exec rm -rf {} +
 
-grafana-smoke: ## Verify deployed Grafana contains all five Tenant Chat dashboard UIDs
+grafana-smoke: ## Verify deployed Grafana contains all ten Tenant Chat + Lab dashboard UIDs
 	./scripts/verify_grafana_dashboards.sh
 
 harness-a: ## Run the core Gate B harness against the real graph (hermetic, no LLM)

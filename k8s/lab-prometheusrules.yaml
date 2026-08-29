@@ -1,0 +1,236 @@
+# Lab PrometheusRules — the recording-rule service inventory (GD-20) and the
+# "monitors" that back the Services dashboard health dots (GD-50/GD-51).
+#
+# Both rules groups are selected by the Prometheus CR through the
+# release=kube-prom-stack label (the stack's own kubernetes-apps rules provide
+# namespace_workload_pod:kube_pod_owner:relabel, the pod→deployment mapping the
+# lab:deployment:* rules build on).
+#
+# Apply: kubectl apply -f k8s/lab-prometheusrules.yaml
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lab-recording-rules
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  groups:
+    # ── GD-20: pod→deployment→service inventory ─────────────────────────────
+    # The two-hop join (pod → ReplicaSet → Deployment) is the stack's
+    # namespace_workload_pod:kube_pod_owner:relabel rule; it emits
+    # (namespace, workload, pod) for ReplicaSet-, DaemonSet- and StatefulSet-
+    # owned pods alike. The lab rules aggregate cAdvisor/ksm series onto
+    # (namespace, workload) so the catalog tiles never repeat the join.
+    - name: lab.service-inventory
+      interval: 60s
+      rules:
+        - record: lab:deployment:cpu:rate5m
+          expr: |-
+            sum by (namespace, workload) (
+              rate(container_cpu_usage_seconds_total{container!="", image!=""}[5m])
+              * on (namespace, pod) group_left(workload)
+                namespace_workload_pod:kube_pod_owner:relabel
+            )
+        - record: lab:deployment:memory:workingset
+          expr: |-
+            sum by (namespace, workload) (
+              container_memory_working_set_bytes{container!="", image!=""}
+              * on (namespace, pod) group_left(workload)
+                namespace_workload_pod:kube_pod_owner:relabel
+            )
+        - record: lab:deployment:restarts:increase1h
+          expr: |-
+            sum by (namespace, workload) (
+              increase(kube_pod_container_status_restarts_total[1h])
+              * on (namespace, pod) group_left(workload)
+                namespace_workload_pod:kube_pod_owner:relabel
+            )
+    # ── Per-service HTTP signals from the OTel pipeline ─────────────────────
+    # http_server_* metrics arrive via the gateway collector's Prometheus
+    # exporter (job=otel-gateway-collector), where the source workload only
+    # survives as exported_job="namespace/service". These rules lift that into
+    # (namespace, service) labels. The old semconv histogram carries no status
+    # code, so errors come from the gateway rules below instead.
+    - name: lab.service-http
+      interval: 60s
+      rules:
+        - record: lab:service:http:rps:rate5m
+          expr: |-
+            sum by (namespace, service) (
+              label_replace(
+                label_replace(
+                  rate(http_server_duration_milliseconds_count{exported_job=~".+/.+"}[5m]),
+                  "namespace", "$1", "exported_job", "(.*)/(.*)"
+                ),
+                "service", "$2", "exported_job", "(.*)/(.*)"
+              )
+            )
+        - record: lab:service:http:p95:rate5m
+          expr: |-
+            histogram_quantile(
+              0.95,
+              sum by (namespace, service, le) (
+                label_replace(
+                  label_replace(
+                    rate(http_server_duration_milliseconds_bucket{exported_job=~".+/.+"}[5m]),
+                    "namespace", "$1", "exported_job", "(.*)/(.*)"
+                  ),
+                  "service", "$2", "exported_job", "(.*)/(.*)"
+                )
+              )
+            )
+    # ── Per-service signals from the Traefik gateway ─────────────────────────
+    # traefik_service_* labels name services "<ns>-<svc>-<port>@kubernetes".
+    # Only the namespaces that route traffic through traefik are lifted; other
+    # labels (providers, internal routers) are excluded up front.
+    - name: lab.gateway-service
+      interval: 60s
+      rules:
+        - record: lab:gateway:service:requests:rate5m
+          expr: |-
+            sum by (namespace, service, code) (
+              label_replace(
+                label_replace(
+                  rate(traefik_service_requests_total{service=~"^(llm-chat|identity|observability|canals|argocd|data-platform)-.+-[0-9]+@kubernetes$"}[5m]),
+                  "namespace", "$1", "service", "^(llm-chat|identity|observability|canals|argocd|data-platform)-(.*)-[0-9]+@kubernetes$"
+                ),
+                "service", "$2", "service", "^(llm-chat|identity|observability|canals|argocd|data-platform)-(.*)-[0-9]+@kubernetes$"
+              )
+            )
+        - record: lab:gateway:service:rps:rate5m
+          expr: |-
+            sum by (namespace, service) (lab:gateway:service:requests:rate5m)
+        - record: lab:gateway:service:error_ratio:rate5m
+          expr: |-
+            sum by (namespace, service) (lab:gateway:service:requests:rate5m{code=~"5.."})
+            / sum by (namespace, service) (lab:gateway:service:requests:rate5m)
+            # No 5xx series yet => the division drops the service entirely;
+            # pin it to 0 so healthy tiles render instead of "No data".
+            or (lab:gateway:service:rps:rate5m * 0)
+        - record: lab:gateway:service:p95:rate5m
+          expr: |-
+            histogram_quantile(
+              0.95,
+              sum by (namespace, service, le) (
+                label_replace(
+                  label_replace(
+                    rate(traefik_service_request_duration_seconds_bucket{service=~"^(llm-chat|identity|observability|canals|argocd|data-platform)-.+-[0-9]+@kubernetes$"}[5m]),
+                    "namespace", "$1", "service", "^(llm-chat|identity|observability|canals|argocd|data-platform)-(.*)-[0-9]+@kubernetes$"
+                  ),
+                  "service", "$2", "service", "^(llm-chat|identity|observability|canals|argocd|data-platform)-(.*)-[0-9]+@kubernetes$"
+                )
+              )
+            )
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lab-monitors
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+    app.kubernetes.io/part-of: tenant-chat
+spec:
+  # GD-50: the noisy-signal minimum. Everything routes to the in-cluster
+  # Alertmanager; no external receivers are wired for the lab, so alerts surface
+  # on the Services dashboard "Monitors" row (ALERTS parity, GD-51) instead of
+  # pages. Thresholds are deliberately loose — this is a demo LAN, not prod.
+  groups:
+    - name: lab.monitors
+      interval: 60s
+      rules:
+        - alert: LabDeploymentReplicasDown
+          expr: |-
+            kube_deployment_status_replicas_available{namespace!~"kube-system|kubernetes-dashboard"}
+            < kube_deployment_spec_replicas{namespace!~"kube-system|kubernetes-dashboard"}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has replicas down"
+            description: "Available replicas < desired for 5m. Check the Service Drilldown for this workload."
+        - alert: LabContainerRestartStorm
+          expr: |-
+            increase(kube_pod_container_status_restarts_total[30m]) > 3
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} restart-bombing ({{ $labels.container }})"
+            description: "More than 3 restarts in 30m — crash loop, OOM, or failed probes."
+        - alert: LabProbeFailing
+          expr: |-
+            probe_success{job=~"lab-http(-redirect)?-probes"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "HTTP probe failing for {{ $labels.instance }}"
+            description: "Blackbox probe has been down for 2m — the surface is unreachable from inside the cluster."
+        - alert: LabScrapeTargetDown
+          expr: |-
+            up{job!~"lab-http(-redirect)?-probes"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Scrape target down: job {{ $labels.job }} ({{ $labels.instance }})"
+            description: "Prometheus has failed to scrape this target for 5m."
+        - alert: LabNodeMemoryHigh
+          expr: |-
+            (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node memory above 90% for 10m"
+            description: "The single lab node is close to memory exhaustion."
+        - alert: LabPVCNearlyFull
+          expr: |-
+            kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} above 85% full"
+            description: "Fires only for storage classes that report volume stats — the microk8s hostpath provisioner does not, so treat absence of this alert as absence of signal."
+        - alert: LabPostgresConnectionsHigh
+          expr: |-
+            sum by (instance) (pg_stat_activity_count) / pg_settings_max_connections > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Postgres connections above 80% of max_connections"
+            description: "Connection pool pressure on the llm-chat application database."
+        - alert: LabElasticsearchNotGreen
+          expr: |-
+            elasticsearch_cluster_health_status{color!="green"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Elasticsearch cluster health is {{ $labels.color }}"
+            description: "The retrieval index cluster is not green — check the Datastores dashboard."
+        - alert: LabKafkaConsumerLag
+          expr: |-
+            max by (consumergroup) (kafka_consumergroup_lag) > 100
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Kafka consumer group {{ $labels.consumergroup }} lagging"
+            description: "Consumer lag above 100 messages for 10m. No series until topics exist (demo stack)."
+        - alert: LabServiceHighP95Latency
+          expr: |-
+            lab:service:http:p95:rate5m > 2
+            or lab:gateway:service:p95:rate5m > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Service {{ $labels.namespace }}/{{ $labels.service }} p95 latency above 2s"
+            description: "Either native OTel latency or Traefik gateway latency for the service breached 2s for 10m."

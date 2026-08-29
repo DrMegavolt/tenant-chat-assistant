@@ -32,12 +32,30 @@ EXPECTED_UIDS=(
     tenantchat-llm-operations
     tenantchat-exemplar-drillthrough
     tenantchat-safety-governance
+    lab-infra-overview
+    lab-services
+    lab-service-drilldown
+    lab-datastores
+    lab-gateway
+)
+
+# The "Lab *" dashboards land in a dedicated Grafana folder next to the
+# TenantChat ones. The dashboard sidecar reads the folder from this annotation
+# (kube-prom-stack sidecar.folderAnnotation default); the TenantChat
+# dashboards stay in General.
+LAB_UIDS=(
+    lab-infra-overview
+    lab-services
+    lab-service-drilldown
+    lab-datastores
+    lab-gateway
 )
 
 cd "$SCRIPT_DIR"
 
 for json_file in *.json; do
     name="${json_file%.json}"
+    uid="$name"
     configmap_name="grafana-dashboard-${name//_/-}"
 
     echo "Provisioning $configmap_name from $json_file ..."
@@ -53,6 +71,15 @@ for json_file in *.json; do
         grafana_dashboard="1" \
         app.kubernetes.io/part-of=tenant-chat \
         --overwrite
+
+    for lab_uid in "${LAB_UIDS[@]}"; do
+        if [[ "$uid" == "$lab_uid" ]]; then
+            kubectl annotate configmap "$configmap_name" \
+                --namespace "$NAMESPACE" \
+                grafana_folder="Lab" \
+                --overwrite
+        fi
+    done
 
     echo "  Done."
 done
