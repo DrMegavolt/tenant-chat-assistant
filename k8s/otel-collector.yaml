@@ -66,6 +66,15 @@ spec:
             - 'attributes["db.system"] != nil or attributes["db.system.name"] != nil'
             - 'IsMatch(name, "^(GET|POST|HEAD) /(healthz|readyz|ready|health|ping|metrics)( |$)") or attributes["http.route"] == "/healthz" or attributes["http.route"] == "/readyz" or attributes["http.route"] == "/ready" or attributes["http.route"] == "/health" or attributes["http.route"] == "/ping" or attributes["http.route"] == "/metrics"'
             - 'name == "POST"'
+            # The R-25 readiness contract probes the embedder and the search
+            # index on every probe tick; those probes are server-filtered
+            # above, but the outgoing httpx client spans survive as bare
+            # method names with no attributes after redaction. Same class as
+            # the exporter's self-POST spans: name-matched because the
+            # attributes that could discriminate are exactly what the
+            # allowlist strips.
+            - 'name == "GET"'
+            - 'IsMatch(name, " http (send|receive)$")'
       # PRIV-002/ADR-0010: the collector is the only fan-out point, and this
       # allowlist runs ahead of every exporter in every pipeline. Only the
       # operational-plane attributes below survive; anything content-bearing —
