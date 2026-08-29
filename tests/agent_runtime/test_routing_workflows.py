@@ -12,8 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 
-from tenantchat.core.routing import IntentName, RoutingOutcome, RoutingRule
+from tenantchat.core.routing import (
+    ROUTING_POLICY_VERSION,
+    IntentName,
+    RoutingOutcome,
+    RoutingRule,
+)
 from tenantchat.orchestration.model import ModelResponse
 from tenantchat.orchestration.nodes import DispatchNodes, _callback_promise_uncommitted
 from tenantchat.orchestration.state import CommittedAction, initial_state
@@ -82,7 +88,7 @@ def test_a_booking_turn_records_the_whole_routing_decision() -> None:
         assert record.outcome is RoutingOutcome.DIRECT
         assert record.rule is RoutingRule.MATCHED
         assert record.chosen_intent is IntentName.BOOKING
-        assert record.policy_version == "intent-routing@1"
+        assert record.policy_version == ROUTING_POLICY_VERSION
         assert record.direct_threshold == 4.0
         assert record.confidence > 0
         # Every intent is a scored candidate, so a loser is diagnosable: it
@@ -335,6 +341,50 @@ def test_an_ambiguous_message_asks_a_question_without_calling_the_model() -> Non
     asyncio.run(scenario())
 
 
+def test_a_clarify_question_is_delivered_even_when_it_names_a_service_area() -> None:
+    """`N-01`/`N-02`: the router's own question is neither refused nor anonymous.
+
+    The clarify question names intent labels — "check whether we serve your
+    area" among them — and the sensitive-claim validator used to read that as
+    an unsupported service-area claim, so the output policy refused the
+    system's own template text and the visitor saw the canned refusal. The
+    question is server-authored, so it is exempt from the model's validators;
+    and because no model call runs on this path, the record now says who wrote
+    the published answer instead of showing generated text with no provenance.
+    """
+    harness = build_harness(answering_model("should never run"))
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(BOOKING_TENANT, "s-clarify-record", "97205 or slots?")
+
+        assert harness.model.call_count == 0
+        assert "did you mean to check whether we serve your area" in result.answer
+
+        trace = result.trace
+        assert trace is not None
+        verdicts = trace["verdicts"]
+        assert isinstance(verdicts, Mapping)
+        assert verdicts["claims_invalid"] == []
+        assert verdicts["output_invalid"] == []
+        output = trace["output"]
+        assert isinstance(output, Mapping)
+        assert output["authored_by"] == "server"
+        assert output["answer"] == result.answer
+        invocations = trace["model_invocations"]
+        assert isinstance(invocations, list)
+        assert invocations == []
+        graph = trace.get("executed_graph")
+        assert isinstance(graph, Mapping)
+        nodes = graph["nodes"]
+        assert isinstance(nodes, list)
+        assert [node["name"] for node in nodes if isinstance(node, Mapping)] == [
+            "route",
+            "finalize",
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_a_second_consecutive_ambiguity_hands_off_safely() -> None:
     """One question is generous; two in a row is a loop that ends in a person."""
     harness = build_harness(answering_model("should never run"))
@@ -471,6 +521,113 @@ def test_a_weak_followup_continues_the_active_workflow_and_says_so_in_the_record
         workflows = await harness.workflows.workflows(BOOKING_TENANT, "s-continue")
         assert len(workflows) == 1
         assert workflows[0].status.value == "active"
+
+    asyncio.run(scenario())
+
+
+def test_an_open_booking_funnel_continues_through_a_details_message() -> None:
+    """`N-02` end to end: the reply to an open booking funnel keeps the funnel.
+
+    Turn 1 books and offers slots; turn 2 answers with a slot, a name, a
+    phone, and an address — the live message whose ZIP used to score
+    `service_area` 4.0 and whose "slot" used to score `availability` 3.0,
+    dead-ending the demo in a clarification that its own validator then
+    refused. With the funnel open the message routes to the booking agent, the
+    model collects the details, and the booking reaches its confirmation.
+    """
+    harness = build_harness(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=(tool_call("get_availability", service="HVAC"),),
+                model_name="scripted",
+            ),
+            ModelResponse(
+                content=(
+                    "Here are the openings — tell me the slot you want, plus your "
+                    "name, phone, and address."
+                ),
+                model_name="scripted",
+            ),
+            ModelResponse(
+                content="",
+                tool_calls=(
+                    tool_call(
+                        "book_appointment",
+                        service="HVAC",
+                        slot=OFFERED_SLOT,
+                        customer_name="Jane Tester",
+                        customer_phone_or_email="(555) 867-5309",
+                        address="742 Alder Street, Portland, OR 97205",
+                    ),
+                ),
+                model_name="scripted",
+            ),
+        ]
+    )
+
+    async def scenario() -> None:
+        await harness.runtime.send(BOOKING_TENANT, "s-funnel", "book HVAC")
+        result = await harness.runtime.send(
+            BOOKING_TENANT,
+            "s-funnel",
+            "Slot 2. Jane Tester, (555) 867-5309, 742 Alder Street, Portland, OR 97205",
+        )
+
+        decisions = await harness.workflows.routing_decisions(BOOKING_TENANT, "s-funnel")
+        continuation = decisions[1]
+        assert continuation.outcome is RoutingOutcome.DIRECT
+        assert continuation.rule is RoutingRule.CONTINUATION
+        assert continuation.chosen_intent is IntentName.BOOKING
+
+        # The funnel stayed intact: one workflow, never suspended, never
+        # replaced — and the model, not a clarification, answered the visitor.
+        workflows = await harness.workflows.workflows(BOOKING_TENANT, "s-funnel")
+        assert len(workflows) == 1
+        assert workflows[0].intent is IntentName.BOOKING
+        assert harness.model.call_count == 3
+
+        # The collected details reached the confirmation: the funnel is moving.
+        assert result.is_paused
+        assert result.pending is not None
+        assert result.pending["awaiting"] == "booking_confirmation"
+
+    asyncio.run(scenario())
+
+
+def test_an_availability_funnel_continues_after_slots_were_offered() -> None:
+    """The availability agent keeps no workflow row, so its funnel rides the
+    previous turn's routing record plus the transcript: slots were offered,
+    and the reply picking one continues the availability turn."""
+    harness = build_harness(
+        [
+            ModelResponse(
+                content="",
+                tool_calls=(tool_call("get_availability", service="HVAC"),),
+                model_name="scripted",
+            ),
+            ModelResponse(
+                content="Here are the openings — which slot works for you?",
+                model_name="scripted",
+            ),
+            ModelResponse(content="Slot 2 it is — see you then.", model_name="scripted"),
+        ]
+    )
+
+    async def scenario() -> None:
+        await harness.runtime.send(BOOKING_TENANT, "s-av-funnel", "when can you come out?")
+        result = await harness.runtime.send(
+            BOOKING_TENANT,
+            "s-av-funnel",
+            "Slot 2. Jane Tester, (555) 867-5309, 742 Alder Street, Portland, OR 97205",
+        )
+
+        decisions = await harness.workflows.routing_decisions(BOOKING_TENANT, "s-av-funnel")
+        assert decisions[1].rule is RoutingRule.CONTINUATION
+        assert decisions[1].chosen_intent is IntentName.AVAILABILITY
+        assert result.answer == "Slot 2 it is — see you then."
+        # A single-turn intent still holds no workflow row.
+        assert await harness.workflows.workflows(BOOKING_TENANT, "s-av-funnel") == ()
 
     asyncio.run(scenario())
 

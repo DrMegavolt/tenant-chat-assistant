@@ -55,6 +55,21 @@ def reduce_turn_committed(
     return [*current, *update]
 
 
+class AnswerAuthorship(StrEnum):
+    """Who wrote the answer a turn published (`N-01`).
+
+    The model writes most answers, but the server writes every one the model's
+    own output was replaced on: the clarify question, the abstention, the
+    policy-block replies, and the finalize refusals. Without this marker the
+    record shows a polished answer with no model call behind it — or a refusal
+    whose `output.raw` (the model's words) reads as if it was delivered. It is
+    provenance for the record's `output` section, never a metric dimension.
+    """
+
+    SERVER = "server"
+    MODEL = "model"
+
+
 class TurnOutcome(StrEnum):
     """How the turn ended, as the closed status vocabulary the graph records.
 
@@ -172,6 +187,10 @@ class DispatchState(TypedDict):
     # neither leaves a failure behind.
     turn_outcome: str
     model_name: str
+    # Who wrote the published answer (see :class:`AnswerAuthorship`), written
+    # by the node that published it. Empty only in records from before the
+    # field existed; the trace reads empty as unknown, never as model.
+    answer_authorship: str
     # The AGENT-001 routing outcome, mirrored from the durable routing record
     # so the model-facing prompt can bind the agent context. The durable record
     # in the workflow service is authoritative; these fields are the turn's
@@ -277,6 +296,7 @@ def initial_state(tenant_id: str, session_id: str, message: str) -> DispatchStat
         "failure": "",
         "turn_outcome": "",
         "model_name": "",
+        "answer_authorship": "",
         "routing_outcome": "",
         "routed_intent": "",
         "route_rule": "",
@@ -318,6 +338,9 @@ def next_turn(message: str) -> dict[str, object]:
         "lead_approved": False,
         "failure": "",
         "turn_outcome": "",
+        # The publishing node records authorship every turn; the previous
+        # turn's must not leak into this one.
+        "answer_authorship": "",
         # The route node re-decides every turn; the previous turn's decision
         # must not leak into the next one.
         "routing_outcome": "",

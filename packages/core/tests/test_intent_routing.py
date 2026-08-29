@@ -311,3 +311,150 @@ def test_financing_does_not_capture_a_real_availability_question() -> None:
 
     assert decision.chosen is IntentName.AVAILABILITY
     assert decision.outcome is RoutingOutcome.DIRECT
+
+
+# --- funnel continuation (review 2026-08-28, N-02) ---------------------------
+
+# The live dead-end message: the visitor replying to an open booking funnel
+# that had offered slots and asked for slot, name, phone, and address. The ZIP
+# in the address scores `service_area` 4.0 and the word "slot" scores
+# `availability` 3.0; no intent reached the direct threshold, and keyword
+# routing alone asked a clarification the funnel never recovered from.
+FUNNEL_DETAILS_MESSAGE = "Slot 2. Jane Tester, (555) 867-5309, 742 Alder Street, Portland, OR 97205"
+
+
+def test_an_open_funnel_continues_a_field_supplying_message() -> None:
+    """A message supplying what the funnel asked for continues the funnel.
+
+    The message names no booking word at all, so its keyword score for booking
+    is 0 and the continuation bonus — which only lifts a candidate the message
+    already scored on — cannot apply. The funnel override is what keeps the
+    conversation on the booking instead of clarifying, and the record says so:
+    rule=continuation, chosen=booking.
+    """
+    decision = route(
+        FUNNEL_DETAILS_MESSAGE,
+        previous_intent=IntentName.BOOKING,
+        funnel_intent=IntentName.BOOKING,
+    )
+
+    assert decision.outcome is RoutingOutcome.DIRECT
+    assert decision.rule is RoutingRule.CONTINUATION
+    assert decision.chosen is IntentName.BOOKING
+
+
+def test_the_same_message_without_a_funnel_still_clarifies() -> None:
+    """The over-capture guard: a cold conversation keeps the old decision.
+
+    Without an open funnel there is nothing to continue, and the message is
+    exactly the ambiguous keyword soup the clarify threshold exists for.
+    """
+    decision = route(FUNNEL_DETAILS_MESSAGE)
+
+    assert decision.outcome is RoutingOutcome.CLARIFY
+    assert decision.chosen is None
+    assert decision.rule is RoutingRule.CLARIFY
+
+
+def test_a_clear_topic_change_beats_an_open_funnel() -> None:
+    """Strong evidence for another intent routes directly, funnel or not."""
+    decision = route(
+        "do you serve 97205?",
+        previous_intent=IntentName.BOOKING,
+        funnel_intent=IntentName.BOOKING,
+    )
+
+    assert decision.chosen is IntentName.SERVICE_AREA
+    assert decision.outcome is RoutingOutcome.DIRECT
+    assert decision.rule is RoutingRule.MATCHED
+
+
+def test_a_direct_general_question_beats_an_open_funnel() -> None:
+    """A tangent the visitor clearly asked is answered, not captured."""
+    decision = route(
+        "what are your hours?",
+        previous_intent=IntentName.BOOKING,
+        funnel_intent=IntentName.BOOKING,
+    )
+
+    assert decision.chosen is IntentName.GENERAL
+    assert decision.rule is RoutingRule.MATCHED
+
+
+def test_cancel_beats_an_open_funnel() -> None:
+    """The explicit-cancel rule holds with a funnel open."""
+    decision = route(
+        "cancel the booking",
+        previous_intent=IntentName.BOOKING,
+        funnel_intent=IntentName.BOOKING,
+    )
+
+    assert decision.chosen is IntentName.CANCEL
+    assert decision.rule is RoutingRule.MATCHED
+
+
+def test_a_handoff_request_beats_an_open_funnel() -> None:
+    decision = route(
+        "let me talk to a person",
+        previous_intent=IntentName.BOOKING,
+        funnel_intent=IntentName.BOOKING,
+    )
+
+    assert decision.chosen is IntentName.HANDOFF
+    assert decision.outcome is RoutingOutcome.DIRECT
+
+
+def test_an_open_funnel_does_not_override_a_pending_clarification() -> None:
+    """A visitor answering the router's question is not continuing the funnel.
+
+    "97205" as the answer to "did you mean service area or booking?" means
+    service_area, so while a clarification is pending the bounded-clarify rule
+    governs and the funnel override stands down.
+    """
+    decision = route(
+        FUNNEL_DETAILS_MESSAGE,
+        previous_intent=IntentName.BOOKING,
+        clarification_pending=True,
+        funnel_intent=IntentName.BOOKING,
+    )
+
+    assert decision.outcome is RoutingOutcome.HANDOFF
+    assert decision.rule is RoutingRule.BOUNDED_CLARIFY
+
+
+def test_a_disabled_funnel_intent_is_never_continued() -> None:
+    """A capability the tenant lacks is not revived by its own funnel."""
+    disabled = (IntentName.BOOKING, IntentName.AVAILABILITY)
+
+    decision = route(
+        FUNNEL_DETAILS_MESSAGE,
+        previous_intent=IntentName.BOOKING,
+        funnel_intent=IntentName.BOOKING,
+        disabled_intents=disabled,
+    )
+
+    assert decision.chosen is not IntentName.BOOKING
+    assert all(candidate.intent not in disabled for candidate in decision.candidates)
+
+
+def test_an_availability_funnel_continues_without_a_workflow() -> None:
+    """The availability agent keeps no workflow row, so its funnel state is
+    carried by the caller — the previous turn's routing record."""
+    decision = route(FUNNEL_DETAILS_MESSAGE, funnel_intent=IntentName.AVAILABILITY)
+
+    assert decision.chosen is IntentName.AVAILABILITY
+    assert decision.outcome is RoutingOutcome.DIRECT
+    assert decision.rule is RoutingRule.CONTINUATION
+
+
+def test_a_lead_funnel_continues_a_contact_reply() -> None:
+    """Contact details alone score nothing anywhere; the funnel is what keeps
+    them on the lead instead of letting them fall back to general chat."""
+    decision = route(
+        "Jane Tester, (555) 867-5309",
+        previous_intent=IntentName.LEAD,
+        funnel_intent=IntentName.LEAD,
+    )
+
+    assert decision.chosen is IntentName.LEAD
+    assert decision.rule is RoutingRule.CONTINUATION

@@ -18,9 +18,11 @@ from collections.abc import Mapping
 import pytest
 
 from packages.orchestration.tests.dispatch_harness import (
+    CLAIM_REFUSAL_REPLY,
     ESCALATION_REPLY,
     LEAK_REFUSAL_REPLY,
     TENANT_ID,
+    UNCOMMITTED_PROMISE_REFUSAL,
     build_harness,
     overlong_budget_policy,
 )
@@ -158,6 +160,102 @@ def test_an_answer_without_leaked_call_syntax_still_publishes(answer: str) -> No
     asyncio.run(scenario())
 
 
+def test_an_answer_the_model_wrote_records_model_authorship() -> None:
+    """`N-01`'s marker has two values, and the common one must be recorded too.
+
+    A published model answer carries ``authored_by: "model"`` explicitly, so
+    the server-authored paths are distinguished by the same field rather than
+    by the absence of a verdict.
+    """
+    harness = build_harness(
+        [ModelResponse(content="We are open until 7pm.", model_name="scripted")]
+    )
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(TENANT_ID, "s-model-answer", "What are your hours?")
+
+        assert _outcome(result.trace)["status"] == "answered"
+        output = result.trace["output"] if result.trace else None
+        assert isinstance(output, Mapping)
+        assert output["authored_by"] == "model"
+
+    asyncio.run(scenario())
+
+
+def test_an_uncommitted_callback_promise_records_the_policy_verdict_and_diagnosis() -> None:
+    """The one refusal the record used to show only as a raw-vs-answer diff.
+
+    Live (`N-01`), the model promised "…a good time for a callback…" without a
+    committed lead; the output policy replaced the answer with the canned
+    refusal, and the record showed empty verdicts and no diagnosis — an
+    operator could not answer "why was this refused?" without diffing raw
+    against answer. The verdict now names the kind and the offending line, and
+    the detector attributes it: the validator's match is deterministic, so the
+    cause is detected model behavior, not the suspected kind an unresolved
+    escalation gets.
+    """
+    harness = build_harness(
+        [ModelResponse(content="Someone will reach out about your repair.", model_name="scripted")]
+    )
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(TENANT_ID, "s-promise", "What are your hours?")
+
+        assert result.answer == UNCOMMITTED_PROMISE_REFUSAL
+        assert result.answer != "Someone will reach out about your repair."
+        assert _outcome(result.trace) == {"status": "refused", "rounds": 1, "failure": None}
+        assert _verdicts(result.trace)["output_invalid"] == [
+            {
+                "kind": "uncommitted_callback_promise",
+                "value": "Someone will reach out about your repair.",
+            }
+        ]
+        output = result.trace["output"] if result.trace else None
+        assert isinstance(output, Mapping)
+        assert output["authored_by"] == "server"
+        diagnoses = _diagnoses(result.trace)
+        assert len(diagnoses) == 1
+        assert diagnoses[0]["cause"] == "model_behavior"
+        assert diagnoses[0]["stage"] == "validation"
+        assert diagnoses[0]["role"] == "primary"
+        assert diagnoses[0]["status"] == "detected"
+        assert diagnoses[0]["confidence"] == "high"
+        assert diagnoses[0]["evidence"] == ["output_invalid:uncommitted_callback_promise"]
+
+    asyncio.run(scenario())
+
+
+def test_an_ungrounded_sensitive_answer_is_still_refused_with_its_claims() -> None:
+    """The clarify exemption loosens nothing for model answers.
+
+    A model answer asserting a price no evidence and no approved price
+    supports fails exactly as before — refused whole, the failing claim
+    recorded by kind and value, diagnosed as a grounding error at validation —
+    even though the turn now also carries the authorship marker.
+    """
+    harness = build_harness(
+        [ModelResponse(content="The inspection costs $250.", model_name="scripted")]
+    )
+
+    async def scenario() -> None:
+        result = await harness.runtime.send(TENANT_ID, "s-price", "What are your hours?")
+
+        assert result.answer == CLAIM_REFUSAL_REPLY
+        assert _outcome(result.trace) == {"status": "refused", "rounds": 1, "failure": None}
+        assert _verdicts(result.trace)["claims_invalid"] == [{"kind": "price", "value": "$250"}]
+        output = result.trace["output"] if result.trace else None
+        assert isinstance(output, Mapping)
+        assert output["authored_by"] == "server"
+        diagnoses = _diagnoses(result.trace)
+        assert len(diagnoses) == 1
+        assert diagnoses[0]["cause"] == "grounding_or_citation_error"
+        assert diagnoses[0]["stage"] == "validation"
+        assert diagnoses[0]["status"] == "detected"
+        assert diagnoses[0]["evidence"] == ["claims_invalid:price"]
+
+    asyncio.run(scenario())
+
+
 def test_a_provider_failure_records_the_model_call_it_attempted() -> None:
     """A turn that reached the model is attributable even when the call raised.
 
@@ -265,6 +363,15 @@ def test_an_output_policy_block_records_the_model_call_it_refused() -> None:
             "I could not finish that answer. Please ask again, or call (555) 816-4420."
         )
         assert _outcome(result.trace) == {"status": "answered", "rounds": 1, "failure": None}
+        # The block replaced real model output, so it is an output-policy
+        # verdict too (`N-01`): the record says the model's prose was withheld
+        # for length, not merely that a block happened.
+        assert _verdicts(result.trace)["output_invalid"] == [
+            {"kind": "output_too_long", "value": ""}
+        ]
+        output = result.trace["output"] if result.trace else None
+        assert isinstance(output, Mapping)
+        assert output["authored_by"] == "server"
         model_section = _model_section(result.trace)
         assert isinstance(model_section, Mapping)
         assert dict(model_section)["name"] == "scripted"

@@ -79,6 +79,14 @@ class RoutingRule(StrEnum):
     BOUNDED_CLARIFY = "bounded_clarify"
 
 
+# The intents whose agents collect fields across turns. A funnel for one of
+# these is a conversation the visitor is mid-way through supplying, which is
+# what :meth:`RoutingPolicy.route`'s ``funnel_intent`` override continues.
+COLLECTING_INTENTS: frozenset[IntentName] = frozenset(
+    {IntentName.BOOKING, IntentName.AVAILABILITY, IntentName.LEAD}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class IntentSignal:
     """One pattern that contributes evidence for an intent.
@@ -218,29 +226,43 @@ class RoutingPolicy:
         previous_intent: IntentName | None = None,
         clarification_pending: bool = False,
         disabled_intents: Collection[IntentName] = (),
+        funnel_intent: IntentName | None = None,
     ) -> RoutingDecision:
         """Score the message against every intent and decide.
 
         The decision procedure, in order:
 
         1. The top candidate is strong and clearly ahead -> route to it.
-        2. A previous intent exists and either leads or nothing scored above
+        2. An open collection funnel is active and no candidate routed
+           directly -> continue it. The visitor is mid-way through supplying
+           what the funnel asked for, so a reply like "Slot 2, Jane, 555-867-
+           5309, 742 Alder Street" is workflow evidence even though it names no
+           booking word at all — keyword scoring alone would read the ZIP in
+           the address as a service-area question and dead-end the funnel
+           (review 2026-08-28, N-02).
+        3. A previous intent exists and either leads or nothing scored above
            the clarify floor -> continue it. Continuation is what makes "about
            Tuesday?" mid-booking keep the booking instead of handing the
            conversation off for a message that carries no evidence.
-        3. General chat is the clear topic (hours, pricing, phone, address)
+        4. General chat is the clear topic (hours, pricing, phone, address)
            -> route to general.
-        4. A workflow is active and the top candidate is general -> continue
+        5. A workflow is active and the top candidate is general -> continue
            the workflow. A greeting or a "thanks" must not suspend a booking
            the customer is mid-way through.
-        5. Something scored above the clarify floor but not clearly enough
+        6. Something scored above the clarify floor but not clearly enough
            -> ask which intent was meant.
-        6. Nothing matched at all -> general, answered by the assistant.
+        7. Nothing matched at all -> general, answered by the assistant.
 
         An active workflow receives a continuation bonus against its own
         intent's candidate so that a message supplying workflow fields (a
         ZIP code during a booking, an address during lead capture) does not
-        displace the workflow to a different agent.
+        displace the workflow to a different agent. The bonus only lifts a
+        candidate the message already scored on; the funnel override in step 2
+        is what keeps a field-supplying message with no matching vocabulary on
+        the workflow. Both sit *behind* step 1 on purpose: a message whose
+        evidence clearly routes elsewhere (a cancel, a handoff, an hours
+        question) still wins, so the override cannot capture a visitor who
+        changed the subject.
 
         ``disabled_intents`` names intents the tenant does not offer — booking
         (and its availability precursor) for a tenant with booking disabled.
@@ -254,7 +276,10 @@ class RoutingPolicy:
 
         ``clarification_pending`` records that the previous turn already asked;
         an answer that is still ambiguous becomes a handoff instead of a second
-        question, so a customer cannot be asked forever.
+        question, so a customer cannot be asked forever. It also suspends the
+        funnel override: the visitor is answering the clarification question,
+        and "97205" as that answer means service_area, not a continuation of
+        the funnel that was interrupted.
 
         Args:
             message: the visitor's latest message.
@@ -264,6 +289,10 @@ class RoutingPolicy:
             clarification_pending: whether the previous turn was a clarification.
             disabled_intents: intents the tenant's capability policy forbids;
                 these are never scored, chosen, or continued.
+            funnel_intent: the intent whose collection funnel the conversation
+                state holds open (a workflow waiting on fields, or the previous
+                turn's route having offered slots), if any. Deterministic in
+                the state, like every other input.
 
         Returns:
             The full decision: every candidate, the chosen intent, the
@@ -314,6 +343,18 @@ class RoutingPolicy:
                 if previous_intent is not None and top.intent is previous_intent
                 else RoutingRule.MATCHED
             )
+        elif (
+            funnel_intent is not None
+            and funnel_intent not in disabled_intents
+            and not clarification_pending
+        ):
+            # An open funnel outranks fresh keyword evidence that did not route
+            # directly: the message is most plausibly the fields the funnel
+            # asked for. It sits behind the direct branch, so a cancel, a
+            # handoff, or any other clear topic change still wins.
+            rule = RoutingRule.CONTINUATION
+            chosen = funnel_intent
+            outcome = RoutingOutcome.DIRECT
         elif (
             previous_intent is not None
             and previous_intent not in disabled_intents
@@ -407,7 +448,10 @@ _GENERIC_CLARIFICATION = (
 )
 
 
-ROUTING_POLICY_VERSION = "intent-routing@1"
+# N-02 (2026-08-28): the policy grew the funnel-continuation override, so the
+# same message against the same workflow state can now route differently than
+# @1 decided — a new version, never an edit to one stored records reference.
+ROUTING_POLICY_VERSION = "intent-routing@2"
 
 
 def _build_policy() -> RoutingPolicy:

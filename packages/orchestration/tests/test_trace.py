@@ -142,7 +142,7 @@ def _diagnosis(
         "status": status.value,
         "confidence": confidence.value,
         "evidence": list(evidence),
-        "detector_version": "diagnosis@2",
+        "detector_version": "diagnosis@3",
     }
 
 
@@ -170,7 +170,7 @@ def test_the_trace_carries_the_schema_version_and_turn_index() -> None:
     """The shape version is the reader's contract; the index the query key."""
     trace = build_turn_trace(_answered(), pending=None)
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "5"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "6"
     assert trace["turn_index"] == 1
 
 
@@ -213,6 +213,54 @@ def test_the_published_output_keeps_the_raw_markers_and_the_parsed_claims() -> N
 
     assert _section(trace, "output")["raw"] == "We are open daily. [evidence:doc-1]"
     assert _section(trace, "output")["claims"] == ["doc-1"]
+
+
+def test_output_authorship_reads_the_marker_and_none_without_one() -> None:
+    """`N-01`: the record says who wrote the delivered answer.
+
+    A state without the marker is a record written before the field existed:
+    it reads as unknown rather than being guessed to be the model's, and a
+    marked state carries the marker through verbatim.
+    """
+    unmarked = build_turn_trace(_answered(), pending=None)
+    assert _section(unmarked, "output")["authored_by"] is None
+
+    marked = build_turn_trace(_answered(answer_authorship="server"), pending=None)
+    assert _section(marked, "output")["authored_by"] == "server"
+
+
+def test_an_output_policy_refusal_is_detected_as_model_behavior() -> None:
+    """`N-01`: a refused callback promise names the model as the cause.
+
+    The verdict is deterministic — the validator matched the promise and the
+    record shows no committed lead — so the status is detected, unlike the
+    suspected `model_behavior` an unresolved escalation gets. Only the leaked
+    raw-tool-call kind reads as malformed output; a well-formed sentence that
+    violated policy is behavior, at the stage that caught it.
+    """
+    trace = build_turn_trace(
+        _answered(
+            turn_outcome=TurnOutcome.REFUSED.value,
+            answer="I am not able to promise a callback right now.",
+            citations=[],
+            citation_invalid=[],
+            output_invalid=[
+                {"kind": "uncommitted_callback_promise", "value": "Our team will call."}
+            ],
+        ),
+        pending=None,
+    )
+
+    assert _diagnoses(trace) == [
+        _diagnosis(
+            DiagnosisCause.MODEL_BEHAVIOR,
+            DiagnosisStage.VALIDATION,
+            DiagnosisRole.PRIMARY,
+            DiagnosisStatus.DETECTED,
+            DiagnosisConfidence.HIGH,
+            ("output_invalid:uncommitted_callback_promise",),
+        )
+    ]
 
 
 def test_the_manifest_pins_every_component_and_hashes_content_free() -> None:
@@ -1030,7 +1078,7 @@ def test_a_diagnosis_record_serializes_to_the_store_shape() -> None:
         "status": "detected",
         "confidence": "high",
         "evidence": ["retrieval.sufficient:false"],
-        "detector_version": "diagnosis@2",
+        "detector_version": "diagnosis@3",
     }
 
 
@@ -1072,14 +1120,14 @@ def _executed_section(**overrides: object) -> dict[str, object]:
     } | overrides
 
 
-def test_a_captured_executed_graph_section_is_recorded_under_schema_version_5() -> None:
+def test_a_captured_executed_graph_section_is_recorded_under_schema_version_6() -> None:
     """The `OBS-006` capture lands in the trace beside the derived content."""
     trace = build_turn_trace(
         _answered(executed_graph=_executed_section()),
         pending=None,
     )
 
-    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "5"
+    assert trace["schema_version"] == TRACE_SCHEMA_VERSION == "6"
     assert _section(trace, "executed_graph") == _executed_section()
 
 
