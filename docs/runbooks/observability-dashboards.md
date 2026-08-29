@@ -145,6 +145,11 @@ request's structure**. The **admin explorer** shows **one turn's content** — t
 prompt, evidence, and reasoning the operational plane deliberately excludes
 (ADR-0010).
 
+In Phoenix's default project the HTTP server spans outnumber the LLM spans by
+roughly a hundred to one, so LLM calls drown in the trace list; filter spans by
+name `chat dispatch-system@N` (N = the current prompt template version) to see
+only the LLM spans.
+
 ## L5 dependency notes
 
 The Router Confidence Distribution panel consumes

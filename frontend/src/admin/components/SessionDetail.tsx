@@ -28,6 +28,17 @@ function Empty({ children }: { children: ReactNode }) {
   return <p className="muted-copy">{children}</p>;
 }
 
+/**
+ * The lead line as the operator reads it. The domain files an urgency it could
+ * not parse under "unknown", so rendering it unconditionally made the card read
+ * "… · unknown" — as if the *service* had failed to resolve (N-07). The parsed
+ * service string is what the lead carries, so it is what the card shows; a
+ * known urgency is still reported alongside it.
+ */
+function leadServiceLine(lead: { service: string; urgency: string }): string {
+  return lead.urgency === "unknown" ? lead.service : `${lead.service} · ${lead.urgency}`;
+}
+
 function PendingCard({ pending }: { pending: PendingConfirmation }) {
   const awaitingBooking = pending.awaiting === "booking_confirmation";
   return (
@@ -198,9 +209,7 @@ export function SessionDetail({ session, isLoading, onSendStaffMessage }: Sessio
                 <div key={`${lead.customerName}-${index}`} className="record-item">
                   <strong>{lead.customerName}</strong>
                   <span>{lead.contact}</span>
-                  <span>
-                    {lead.service} · {lead.urgency}
-                  </span>
+                  <span>{leadServiceLine(lead)}</span>
                   <p>{lead.summary}</p>
                 </div>
               ))

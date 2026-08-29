@@ -281,9 +281,18 @@ def _recorded_outcome(tenant_id: str, turn_id: str) -> tuple[str, tuple[str, ...
         base=ADMIN_API_URL,
         headers_extra=_admin_headers(),
     )
+    # The trace-detail endpoint has served both an envelope ({"record": ...})
+    # and the record itself at the top level (turn_id/content/...). Accept
+    # either so a serializer change cannot fail every case at once.
     record = body.get("record")
     if not isinstance(record, dict):
-        raise RuntimeError(f"turn record {turn_id} carried no record: {body}")
+        record = body if "content" in body or "turn_id" in body else None
+    if record is None:
+        # Echo only the key names: the response body carries inference content
+        # that must not leak into harness output.
+        raise RuntimeError(
+            f"turn record {turn_id} carried no record (response top-level keys: {sorted(body)})"
+        )
     content = record.get("content")
     if not isinstance(content, dict):
         return "unknown", ()

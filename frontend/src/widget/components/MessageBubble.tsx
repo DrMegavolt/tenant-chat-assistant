@@ -20,8 +20,24 @@ export interface MessageBubbleProps {
 const STRAY_SPACE_BEFORE_PUNCTUATION = /\s+([.,!?;:])(?=\s|$|["'”’])/g;
 const DOUBLED_SPACES = / {2,}/g;
 
+/**
+ * A citation marker the server did not deliver as a citation. The backend
+ * strips well-formed ``[evidence:<source_id>]`` markers from every published
+ * answer, but a malformed one the model wrote (a space after the colon, spaces
+ * in the label — "[evidence: business facts]") matches neither the evidence
+ * catalog nor the strip rule and reaches the visitor as raw markup. The source
+ * chips render from the turn's validated citation list, never from the text, so
+ * removing the tag here cannot lose a reference; the transcript state keeps the
+ * raw text for the merge, the poll, and the server record.
+ */
+const UNDELIVERED_EVIDENCE_TAG = /\s*\[evidence:\s*[^\]]{0,200}\]/g;
+
 export function displayCopy(text: string): string {
-  return text.replace(STRAY_SPACE_BEFORE_PUNCTUATION, "$1").replace(DOUBLED_SPACES, " ");
+  return text
+    .replace(UNDELIVERED_EVIDENCE_TAG, "")
+    .replace(STRAY_SPACE_BEFORE_PUNCTUATION, "$1")
+    .replace(DOUBLED_SPACES, " ")
+    .trim();
 }
 
 /** The name a listener hears in place of the alignment a reader sees. */
