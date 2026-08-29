@@ -142,6 +142,66 @@ describe("the chat detail's side cards", () => {
     expect(screen.getByText("No booked appointments for this chat yet.")).toBeTruthy();
   });
 
+  test("a lead whose urgency was never parsed shows its service, not a dangling unknown", () => {
+    // N-07, live-observed: the domain files an urgency it could not parse
+    // under "unknown", and rendering it unconditionally made the card read
+    // "HVAC repair - AC not cooling · unknown" — as if the service had failed
+    // to resolve. The parsed service string is the information the lead
+    // carries, so that is what shows.
+    const session: SessionDetailData = {
+      ...QUEUE_ROW,
+      leads: [
+        {
+          customerName: "Jane Tester",
+          contact: "jane@example.com",
+          service: "HVAC repair - AC not cooling",
+          urgency: "unknown",
+          summary: "The AC is not cooling."
+        }
+      ],
+      bookings: [],
+      toolEvents: []
+    };
+    render(
+      <SessionDetail
+        session={session}
+        isLoading={false}
+        onSendStaffMessage={() => Promise.resolve()}
+      />
+    );
+
+    const card = screen.getByRole("heading", { name: "Lead info" }).parentElement!;
+    expect(card.textContent).toContain("HVAC repair - AC not cooling");
+    expect(card.textContent).not.toContain("unknown");
+  });
+
+  test("a lead with a parsed urgency still reports it beside the service", () => {
+    const session: SessionDetailData = {
+      ...QUEUE_ROW,
+      leads: [
+        {
+          customerName: "Dana Ruiz",
+          contact: "dana@example.com",
+          service: "HVAC",
+          urgency: "today",
+          summary: "Furnace is making a grinding noise."
+        }
+      ],
+      bookings: [],
+      toolEvents: []
+    };
+    render(
+      <SessionDetail
+        session={session}
+        isLoading={false}
+        onSendStaffMessage={() => Promise.resolve()}
+      />
+    );
+
+    const card = screen.getByRole("heading", { name: "Lead info" }).parentElement!;
+    expect(card.textContent).toContain("HVAC · today");
+  });
+
   test("a detail without the side fields shows the empty states, not fabricated cards", () => {
     render(
       <SessionDetail

@@ -41,7 +41,7 @@ from tenantchat.core.contact import Contact
 from tenantchat.core.ports import IdempotencyKey
 from tenantchat.core.routing import IntentName
 from tenantchat.core.workflows import ToolResult
-from tenantchat.orchestration.model import ModelResponse
+from tenantchat.orchestration.model import ModelResponse, ToolCall
 
 ADMIN_ROUTES: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("GET", "/api/admin/chats", {"tenant_id": BOOKING_TENANT}),
@@ -476,6 +476,63 @@ def test_the_session_detail_names_the_leads_a_conversation_captured(
     assert lead["service"] == "HVAC"
     assert lead["urgency"]
     assert lead["summary"] == "Furnace is making a grinding noise."
+
+
+def test_the_session_detail_carries_the_service_text_the_visitor_parsed(
+    client: TestClient,
+    operator_headers: Callable[..., dict[str, str]],
+    model: ScriptedModel,
+) -> None:
+    """N-07: the lead keeps the service string the visitor's request parsed to,
+    even when it is not an exact catalog member and no urgency was given —
+    the operator's callback card is where that free text is consumed. The
+    confirmation card showed "HVAC repair - AC not cooling"; the detail
+    payload must carry the same string, not an empty or resolved-away value.
+    """
+    model.script = [
+        ModelResponse(
+            content="",
+            tool_calls=(
+                ToolCall(
+                    call_id="call-lead-free-text",
+                    name="create_lead",
+                    arguments={
+                        "customer_name": "Jane Tester",
+                        "customer_phone_or_email": "jane@example.com",
+                        "service": "HVAC repair - AC not cooling",
+                        "summary": "The AC is not cooling.",
+                    },
+                ),
+            ),
+            model_name="scripted",
+        ),
+        ModelResponse(content="The team will call you back.", model_name="scripted"),
+    ]
+    opened = client.post("/api/chat/session", json={"tenant_id": LEAD_TENANT})
+    assert opened.status_code == 201
+    visitor = VisitorSession(
+        LEAD_TENANT,
+        opened.json()["session"]["session_id"],
+        opened.json()["credential"],
+    )
+    granted = client.post(
+        "/api/chat/consent",
+        json={"purposes": ["booking", "follow_up"]},
+        headers=visitor.headers,
+    )
+    assert granted.status_code == 200
+    client.post("/api/chat", json={"message": "Please call me"}, headers=visitor.headers)
+    client.post("/api/chat/confirmation", json={"decision": "approved"}, headers=visitor.headers)
+
+    body = client.get(
+        f"/api/admin/chats/{visitor.session_id}",
+        params={"tenant_id": LEAD_TENANT},
+        headers=operator_headers(),
+    ).json()
+
+    [lead] = body["leads"]
+    assert lead["service"] == "HVAC repair - AC not cooling"
+    assert lead["urgency"] == "unknown"
 
 
 def test_a_staff_reply_is_audited_with_the_reply(
