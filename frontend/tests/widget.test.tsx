@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
 import { mountWidget } from "src/widget/mount";
@@ -119,6 +119,40 @@ describe("widget initialization", () => {
     await renderDemo();
 
     expect(window.sessionStorage.length).toBe(0);
+    // An untouched page stores no tenant choice either; persistence is for a
+    // selection the visitor actually made.
+    expect(window.localStorage.getItem("tenant-chat-demo-tenant")).toBeNull();
+  });
+
+  test("a reload restores the tenant the visitor switched to", async () => {
+    // N-10: the demo page used to fall back to the declared tenant on reload,
+    // so a visitor mid-conversation with the other company found that
+    // company's widget instead of their own. The demo page remembers the
+    // switcher choice; the embeddable mount keeps its declared-tenant
+    // contract.
+    stubBackend(workingBackend());
+    await renderDemo({ companyId: "apex" });
+    selectTenant("Clearview Heating");
+    expect(inWidget("#chatCompany")?.textContent).toBe("Clearview Assistant");
+
+    cleanup();
+    document.body.innerHTML = "";
+    await renderDemo({ companyId: "apex" });
+
+    expect(inWidget("#chatCompany")?.textContent).toBe("Clearview Assistant");
+    expect(window.localStorage.getItem("tenant-chat-demo-tenant")).toBe("clearview");
+  });
+
+  test("a stored tenant the directory no longer serves falls back to the declared one", async () => {
+    // A directory can stop serving a tenant the page still remembers; the
+    // page must show the declared tenant again rather than "no chat is
+    // configured" — the choice is ignored, not clung to.
+    stubBackend(workingBackend());
+    window.localStorage.setItem("tenant-chat-demo-tenant", "retired-tenant");
+
+    await renderDemo({ companyId: "apex" });
+
+    await waitFor(() => expect(inWidget("#chatCompany")?.textContent).toBe("Apex Assistant"));
   });
 
   test("polling for staff replies does not issue a conversation id on its own", async () => {

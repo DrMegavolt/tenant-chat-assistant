@@ -1,12 +1,39 @@
 import { useMemo, useState } from "react";
 
 import { ChatApi, resolveApiBaseUrl } from "src/widget/api";
-import type { TenantConfig } from "src/widget/types";
+import type { TenantConfig, TenantDirectory } from "src/widget/types";
 import { useTenants } from "src/widget/useTenants";
 import { WidgetPortal } from "src/widget/WidgetPortal";
 import { WidgetSurface } from "src/widget/WidgetSurface";
 
 const DEFAULT_TENANT = "apex";
+
+/**
+ * The demo page's own switcher memory. This is a demo-page affordance only:
+ * the embeddable `mount.tsx` keeps its data-company-id contract untouched, so
+ * an embedding page always shows the tenant its integrator declared.
+ */
+const DEMO_TENANT_KEY = "tenant-chat-demo-tenant";
+
+/** The tenant the page itself declares, or the demo's default. */
+function declaredTenant(host: HTMLElement): string {
+  return host.dataset.companyId ?? DEFAULT_TENANT;
+}
+
+/**
+ * The tenant to show: the visitor's remembered choice while it is still a
+ * plausible tenant, the declared one otherwise. Deriving the fallback keeps
+ * the stale-choice case out of state entirely — a directory that stops
+ * serving a tenant cannot leave the page stuck on "no chat is configured".
+ */
+function selectedTenantId(
+  remembered: string | null,
+  tenants: TenantDirectory | null,
+  declared: string
+): string {
+  if (remembered === null) return declared;
+  return tenants === null || tenants[remembered] !== undefined ? remembered : declared;
+}
 
 /** One row of the policy panel: what the tenant configuration permits. */
 interface PolicyRow {
@@ -54,7 +81,20 @@ function policyRows(config: TenantConfig): PolicyRow[] {
 export function DemoPage({ host }: { host: HTMLElement }) {
   const api = useMemo(() => new ChatApi(resolveApiBaseUrl(host)), [host]);
   const { tenants, error } = useTenants(api);
-  const [tenantId, setTenantId] = useState(host.dataset.companyId ?? DEFAULT_TENANT);
+  const declared = declaredTenant(host);
+  // A demo user who reloads mid-conversation lands back on the declared
+  // tenant's widget otherwise — the page looks reset and the other company's
+  // greeting is showing (N-10). Only an explicit switch is stored, so an
+  // untouched page writes nothing.
+  const [remembered, setRemembered] = useState<string | null>(() =>
+    window.localStorage.getItem(DEMO_TENANT_KEY)
+  );
+  const tenantId = selectedTenantId(remembered, tenants, declared);
+
+  const selectTenant = (id: string) => {
+    setRemembered(id);
+    window.localStorage.setItem(DEMO_TENANT_KEY, id);
+  };
 
   const config = tenants?.[tenantId] ?? null;
   const unknownTenant =
@@ -84,7 +124,7 @@ export function DemoPage({ host }: { host: HTMLElement }) {
                   key={id}
                   type="button"
                   aria-pressed={id === tenantId}
-                  onClick={() => setTenantId(id)}
+                  onClick={() => selectTenant(id)}
                 >
                   {tenant.name}
                 </button>
