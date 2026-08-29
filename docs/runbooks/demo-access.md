@@ -65,7 +65,7 @@ file's absolute path before running either helper.
 | TenantChat admin | `identity/keycloak-bootstrap-user:username` | `identity/keycloak-bootstrap-user:password` | `TENANTCHAT_ADMIN_URL` |
 | Keycloak admin | `identity/keycloak-admin-credentials:username` | `identity/keycloak-admin-credentials:password` | `KEYCLOAK_URL` |
 | Grafana | Normally `admin` | `observability/kube-prom-stack-grafana:admin-password` | `GRAFANA_URL` |
-| Phoenix | `admin@localhost` | Initial value in `observability/phoenix-secret:PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD` | `PHOENIX_URL` |
+| Phoenix | None | No login wall in this deployment; open `PHOENIX_URL` in a fresh session — see the Phoenix note below | `PHOENIX_URL` |
 | MLflow | None | Authentication is not configured | `MLFLOW_URL` |
 | Prometheus | None | No UI login | `PROMETHEUS_URL` |
 | Tempo | None | API only by default; no standalone UI | `TEMPO_URL` |
@@ -92,6 +92,22 @@ console displays a role-assignment message.
 The namespace and Secret names in this table are the repository defaults. Use
 the override keys shown in `k8s/examples/demo-access.env.example` if a deployed
 release uses different names.
+
+## Phoenix access
+
+This deployment currently serves Phoenix **without a login wall**: opening
+`PHOENIX_URL` in a fresh browser session lands directly on Projects. That is
+the operative demo path — no username or password is needed. (The posture is
+intentional for the isolated demo LAN; a fresh session that is *not* admitted
+straight to Projects means the deployment has changed.)
+
+If a login wall appears after such a change, the
+`PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD` from `observability/phoenix-secret`
+is **not** a reliable way back in: it is consumed when the original
+`admin@localhost` account is first created, so it may already be spent, and
+recovering an existing Phoenix account is out of scope of this runbook. The
+Secret read below remains for auditing what was provisioned, not for login.
+See the note at the end of this runbook for the same caveat in place.
 
 ## Direct Secret reads
 
