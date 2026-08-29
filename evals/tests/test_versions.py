@@ -16,7 +16,7 @@ import subprocess
 import unittest
 from dataclasses import replace
 
-from evals.compare import _run_id
+from evals.compare import run_id
 from evals.corpus import FixtureCorpus, load_corpus
 from evals.retriever import baseline_config
 from evals.versions import component_manifest, corpus_digest
@@ -70,7 +70,7 @@ class TestCorpusDigestTamper(unittest.TestCase):
 
     def test_a_content_edit_moves_the_run_id_waivers_are_pinned_to(self) -> None:
         flipped = self._edited_first_chunk(active=not self.corpus.chunks[0].active)
-        self.assertNotEqual(_run_id(self._manifest(self.corpus)), _run_id(self._manifest(flipped)))
+        self.assertNotEqual(run_id(self._manifest(self.corpus)), run_id(self._manifest(flipped)))
 
     def test_chunk_order_does_not_change_the_digest(self) -> None:
         reordered = FixtureCorpus(self.corpus.documents, tuple(reversed(self.corpus.chunks)))

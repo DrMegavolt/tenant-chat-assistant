@@ -18,6 +18,10 @@ overriding the dataset manifest's own defaults. ``RAG-004`` plugs the hybrid
 retriever in here; its abstention boundary is the calibrated value, which the
 fixture's ``abstain_threshold`` documents. The release gate that compares two
 runs lives in ``evals.gate``.
+
+A final report is also recorded as one opt-in MLflow run (`ML-01`,
+``evals.mlflow_tracking``), strictly after the report is printed so the
+deterministic scoring path is never perturbed.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from pathlib import Path
 
 from evals.corpus import FixtureCorpus
 from evals.dataset import DatasetSpec, load_dataset
+from evals.mlflow_tracking import log_evaluation_run
 from evals.retriever import (
     HybridRetriever,
     LexicalOverlapRetriever,
@@ -371,6 +376,10 @@ def main() -> int:
     )
     sys.stdout.write(report.to_text() + "\n\n")
     sys.stdout.write(report.to_json() + "\n")
+    # ML-01: the report is final — its bytes above are fixed — so recording it
+    # cannot perturb the deterministic scoring path. The scoreboard run is the
+    # ad-hoc role; the release gate records its comparisons as the candidate.
+    log_evaluation_run(report, dataset=spec, role="adhoc")
     if not report.passed:
         sys.stderr.write("evaluation FAILED: a score is below its threshold\n")
         return 1

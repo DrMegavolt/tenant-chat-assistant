@@ -20,12 +20,19 @@ pipeline calls through is injected by the composition root, and
 :func:`close_passing_reviews` hands the report to ``apply_eval_report`` with
 a server-minted run id so every promoted case the run passes closes its
 ``awaiting_fix`` review exactly once.
+
+MLflow tracking (`ML-01`) rides the same boundary: :func:`log_evaluation_run`
+is called only after the comparison report is final, so recording a run can
+never perturb the deterministic path or the byte-identical reports above. The
+seeded determinism children never track at all — their environment drops the
+opt-in — so one verified comparison records exactly one run.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -35,8 +42,9 @@ from pathlib import Path
 
 from evals.compare import ComparisonReport, compare_reports
 from evals.corpus import FixtureCorpus
-from evals.dataset import DatasetError, DatasetSpec, validate_against_corpus
+from evals.dataset import DatasetError, DatasetSpec, load_dataset, validate_against_corpus
 from evals.exceptions import ExceptionRegistry
+from evals.mlflow_tracking import TRACKING_URI_ENV, log_evaluation_run
 from evals.runner import build_retriever_entry, dataset_thresholds, resolve_dataset, run_evaluation
 from evals.scorer import EvaluationReport
 from tenantchat.api.review import apply_eval_report
@@ -167,11 +175,16 @@ def _seeded_subprocess_run(args: argparse.Namespace, *, seed: str, out: Path) ->
     ]
     for entry in args.judge_regression:
         command.extend(["--judge-regression", entry])
+    # The seeded reruns are the determinism instrument, not releases, so they
+    # never touch the tracking server: dropping the opt-in here keeps one
+    # verified comparison at exactly one MLflow run, recorded by the parent
+    # after both seeded reports have proven byte-identical.
+    child_env = {key: value for key, value in os.environ.items() if key != TRACKING_URI_ENV}
     # Every element is a validated argparse constant; `uv run --frozen` is the
     # pinned toolchain the whole gate runs under, never user input.
     result = subprocess.run(  # noqa: S603
         command,
-        env={**os.environ, "PYTHONHASHSEED": seed},
+        env={**child_env, "PYTHONHASHSEED": seed},
         capture_output=True,
         text=True,
         check=False,
@@ -222,7 +235,7 @@ def main() -> int:
 
     exceptions = ExceptionRegistry.load(Path(args.exceptions))
     try:
-        comparison, _ = _run_pair(
+        comparison, spec = _run_pair(
             dataset=args.dataset,
             k=args.k,
             baseline=args.baseline_retriever,
@@ -238,6 +251,17 @@ def main() -> int:
     sys.stdout.write(comparison.to_json() + "\n")
     if args.out:
         Path(args.out).write_text(comparison.to_json() + "\n")
+    # ML-01: the report is final — its bytes above are fixed — so recording it
+    # cannot perturb the deterministic path it came from. The role is the
+    # candidate because the gate's run records the side under test; the
+    # baseline rides the baseline_* params and the delta_* metrics. A dataset
+    # blocked above never produced a report and records nothing.
+    log_evaluation_run(
+        comparison,
+        dataset=spec,
+        role="candidate",
+        exceptions_digest=exceptions.digest(),
+    )
     if not comparison.gate.passed:
         sys.stderr.write("gate BLOCKED: candidate regressions below thresholds\n")
         return 1
@@ -282,6 +306,17 @@ def _verify_main(args: argparse.Namespace) -> int:
     sys.stdout.write(reports["1"] + "\n")
     if args.out:
         Path(args.out).write_text(reports["1"] + "\n")
+    # ML-01: the verified report is final and its bytes are pinned, so the
+    # tracked run is recorded from exactly those bytes (parsed back — the
+    # round-trip is byte-exact), with the dataset and registry reloaded for
+    # their ids and digest. The seeded children above never track, so a
+    # verified comparison records exactly one run.
+    log_evaluation_run(
+        json.loads(reports["1"]),
+        dataset=load_dataset(args.dataset),
+        role="candidate",
+        exceptions_digest=ExceptionRegistry.load(Path(args.exceptions)).digest(),
+    )
     sys.stdout.write("gate passed\n")
     return 0
 
