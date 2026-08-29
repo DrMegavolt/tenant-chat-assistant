@@ -50,7 +50,11 @@ chunk text, no model output, no visitor content.
 - artifact: the comparison report JSON under ``reports/``. The report carries
   the case queries; the corpus is sample content (every dataset passes the
   PRIV-002 gate at load), so that is acceptable today — flip to a
-  metrics-only summary if the corpus ever stops being sample content.
+  metrics-only summary if the corpus ever stops being sample content. The
+  artifact is also the one part a client can fail to deliver: it needs an
+  artifact root the client can write (a proxied ``mlflow-artifacts:/``
+  location or a shared filesystem), and an upload failure leaves the run
+  recorded — params, metrics, tags, verdict — without it.
 
 **Convention (ML-01.4):** experiment ``tenantchat-evals``, run name
 ``<role>/<dataset>/<dataset-version>/<short-sha>``. Two runs that set the same
@@ -263,10 +267,22 @@ def _emit(client: TrackingClient, *, tracking_uri: str, payload: _RunPayload, ro
     with client.start_run(run_name=run_name, tags=tags) as logged_run_id:
         client.log_params(payload.params)
         client.log_metrics(payload.metrics)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / payload.artifact_name
-            path.write_text(payload.artifact_json + "\n", encoding="utf-8")
-            client.log_artifact(str(path), artifact_path=_ARTIFACT_PATH)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / payload.artifact_name
+                path.write_text(payload.artifact_json + "\n", encoding="utf-8")
+                client.log_artifact(str(path), artifact_path=_ARTIFACT_PATH)
+        except Exception as error:
+            # The artifact is supplementary, so its failure must not flip a run
+            # whose params, metrics, and verdict already recorded — a FAILED
+            # status would contradict the gate_pass metric on the same run.
+            # Most common cause: an experiment whose artifact root is a path on
+            # the server, not proxied (`mlflow-artifacts:/`) or shared.
+            _LOGGER.warning(
+                "mlflow artifact logging failed; the run is recorded without it: %s: %s",
+                type(error).__name__,
+                error,
+            )
         return logged_run_id
 
 

@@ -50,6 +50,7 @@ class StubRun:
 
     def __init__(self, run_id: str) -> None:
         self._run_id = run_id
+        self.exit_exc: BaseException | None = None
 
     def __enter__(self) -> str:
         return self._run_id
@@ -60,6 +61,7 @@ class StubRun:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        self.exit_exc = exc_value
         return None
 
 
@@ -74,6 +76,7 @@ class StubClient:
         self.params: list[dict[str, str]] = []
         self.metrics: list[dict[str, float]] = []
         self.artifacts: list[tuple[str, str, str]] = []
+        self.runs: list[StubRun] = []
         self.runs_started = 0
 
     def set_tracking_uri(self, tracking_uri: str) -> None:
@@ -89,7 +92,9 @@ class StubClient:
         self.runs_started += 1
         self.run_names.append(run_name or "")
         self.tags.append(dict(tags or {}))
-        return StubRun(f"stub-run-{self.runs_started}")
+        run = StubRun(f"stub-run-{self.runs_started}")
+        self.runs.append(run)
+        return run
 
     def log_params(self, params: Mapping[str, str]) -> None:
         self.params.append(dict(params))
@@ -520,6 +525,37 @@ class TestGateBehaviour:
         assert "gate passed" in stdout
         assert "RuntimeError" in caplog.text
         assert "mlflow tracking failed" in caplog.text
+
+    def test_an_artifact_upload_failure_leaves_the_run_recorded_and_finished(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An artifact the client cannot deliver must not fail a recorded run.
+
+        The real failure this pins: an experiment whose artifact root is a
+        server-local path, so the upload raises after params, metrics, and the
+        verdict already recorded. A run context that exits with that exception
+        is marked FAILED on the server, contradicting its own gate_pass
+        metric — the artifact is supplementary, so the run must finish without
+        it and the warning must say what is missing.
+        """
+
+        class ArtifactFailingClient(StubClient):
+            def log_artifact(self, local_path: str, *, artifact_path: str | None = None) -> None:
+                raise OSError(30, "Read-only file system: '/mlflow-data'")
+
+        failing = ArtifactFailingClient()
+        monkeypatch.setattr(mlflow_tracking, "_resolve_client", lambda: failing)
+        monkeypatch.setenv(TRACKING_URI_ENV, "http://mlflow.test")
+        comparison, spec, _corpus, _registry = _gate_fixtures()
+        with caplog.at_level(logging.WARNING, logger="evals.mlflow_tracking"):
+            result = log_evaluation_run(comparison, dataset=spec, role="candidate")
+
+        assert result == "stub-run-1"
+        assert failing.runs[0].exit_exc is None, "the run must finish, not end FAILED"
+        assert failing.params and failing.metrics, "the core record precedes the artifact"
+        assert failing.artifacts == []
+        assert "artifact logging failed" in caplog.text
+        assert "the run is recorded without it" in caplog.text
 
     def test_the_seeded_determinism_children_never_track(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
