@@ -12,13 +12,60 @@
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "lab"
+      ],
+      "targetBlank": false,
+      "title": "Lab dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d",
+      "30d"
+    ]
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
         "hide": 0,
         "label": "Data source"
       }
@@ -42,6 +89,10 @@
       "id": 1,
       "title": "Connections / max",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 1,
@@ -51,13 +102,15 @@
       "targets": [
         {
           "expr": "sum(pg_stat_activity_count) / max(pg_settings_max_connections)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -93,6 +146,10 @@
       "id": 2,
       "title": "Cache hit ratio",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 6,
         "y": 1,
@@ -102,13 +159,15 @@
       "targets": [
         {
           "expr": "sum(rate(pg_stat_database_blks_hit[5m])) / (sum(rate(pg_stat_database_blks_hit[5m])) + sum(rate(pg_stat_database_blks_read[5m])))",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "decimals": 3,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -140,6 +199,10 @@
       "id": 3,
       "title": "Instances (replication: single node)",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 1,
@@ -149,13 +212,15 @@
       "targets": [
         {
           "expr": "count(pg_settings_max_connections)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -184,6 +249,10 @@
       "id": 4,
       "title": "Longest running transaction",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 18,
         "y": 1,
@@ -193,13 +262,15 @@
       "targets": [
         {
           "expr": "max(pg_stat_activity_max_tx_duration)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -234,6 +305,10 @@
       "id": 5,
       "title": "Connections by state",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 5,
@@ -280,6 +355,10 @@
       "id": 6,
       "title": "Transactions \u2014 commit vs rollback",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 5,
@@ -363,6 +442,10 @@
       "id": 7,
       "title": "Database sizes",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 12,
@@ -409,6 +492,10 @@
       "id": 8,
       "title": "Longest transaction by database",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 12,
@@ -468,6 +555,10 @@
       "id": 9,
       "title": "Cluster health",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 20,
@@ -476,14 +567,16 @@
       },
       "targets": [
         {
-          "expr": "max(elasticsearch_cluster_health_status{color=\"green\"})",
-          "refId": "A"
+          "expr": "2 * max(elasticsearch_cluster_health_status{color=\"green\"}) + max(elasticsearch_cluster_health_status{color=\"yellow\"})",
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -492,11 +585,37 @@
                 "value": null
               },
               {
-                "color": "green",
+                "color": "yellow",
                 "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
               }
             ]
-          }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "RED",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "YELLOW \u00b7 single node",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "GREEN",
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            }
+          ]
         }
       },
       "options": {
@@ -510,12 +629,16 @@
           ]
         }
       },
-      "description": "1 = green. Yellow/red for 5m fires LabElasticsearchNotGreen."
+      "description": "RED = unavailable primary shards. YELLOW = primaries available but replicas unassigned, which is expected on this one-node lab. GREEN = fully replicated."
     },
     {
       "id": 10,
       "title": "JVM heap used",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 6,
         "y": 20,
@@ -525,13 +648,15 @@
       "targets": [
         {
           "expr": "elasticsearch_jvm_memory_used_bytes{area=\"heap\"}",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "bytes",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -559,6 +684,10 @@
       "id": 11,
       "title": "Segments memory",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 20,
@@ -568,13 +697,15 @@
       "targets": [
         {
           "expr": "elasticsearch_indices_segments_memory_bytes",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "bytes",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -603,6 +734,10 @@
       "id": 12,
       "title": "Segment count",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 18,
         "y": 20,
@@ -612,13 +747,15 @@
       "targets": [
         {
           "expr": "elasticsearch_indices_segments_count",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -646,6 +783,10 @@
       "id": 13,
       "title": "JVM heap used vs max",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 24,
@@ -697,6 +838,10 @@
       "id": 14,
       "title": "Search & indexing rates",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 24,
@@ -761,6 +906,10 @@
       "id": 15,
       "title": "Brokers",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 32,
@@ -770,13 +919,15 @@
       "targets": [
         {
           "expr": "kafka_brokers",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -804,6 +955,10 @@
       "id": 16,
       "title": "Topics",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 6,
         "y": 32,
@@ -813,13 +968,15 @@
       "targets": [
         {
           "expr": "count(kafka_topic_partitions) or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -848,6 +1005,10 @@
       "id": 17,
       "title": "Consumer group lag",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 32,
@@ -882,6 +1043,10 @@
       "id": 18,
       "title": "Partitions by topic",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 36,

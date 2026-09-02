@@ -33,8 +33,8 @@ change — follow-up, cosmetic).
 | Dashboard | UID | Datadog equivalent | Focus |
 |---|---|---|---|
 | **Lab · Infrastructure** | `lab-infra-overview` | Host map / Infrastructure list | Availability strip (`up` + blackbox probes), node USE row (CPU/memory/disk/load/network), k8s fleet (top pods, restarts, OOM kills, replica gaps, PVC usage). |
-| **Lab · Services** | `lab-services` | APM Service Catalog | Outliers band (requests/s, p95, error ratio, restarts — one line per service, all services in one panel), then one repeating tile block per deployment — status, requests/s, p95, error ratio, restarts, CPU, memory, HTTP probe — plus a Monitors row. |
-| **Lab · Service Drilldown** | `lab-service-drilldown` | APM service page | RED row, per-pod saturation, Kubernetes context (image, pod age, termination reasons), Tempo/Loki data links. |
+| **Lab · Services** | `lab-services` | APM Service Catalog | At-a-glance health, monitor state, four outlier trends, and a compact sortable workload table for replica health, requests/s, p95, 5xx, restarts, CPU, and memory. Service names drill into the selected workload without losing the time range. |
+| **Lab · Service Drilldown** | `lab-service-drilldown` | APM service page | RED row, per-pod saturation, Kubernetes context (image, pod age, termination reasons), live Loki logs, recent Tempo traces, and cross-plane links. |
 | **Lab · Datastores** | `lab-datastores` | Integrations | Postgres (connections, cache hit, transactions, sizes, single-instance note), Elasticsearch (health, JVM heap, segments, search/indexing rates), Kafka (brokers, topics, consumer lag). |
 | **Lab · Gateway** | `lab-gateway` | Integrations / edge | Traefik entrypoint RPS/latency/status codes, per-service traffic and error tables, blackbox probe duration overlay. |
 
@@ -54,6 +54,7 @@ change — follow-up, cosmetic).
 - **Keycloak** ServiceMonitor on the management port (9000) — quarkus
   `base_*` / `vendor_*` metrics.
 - **Tempo / Loki** ServiceMonitors — both already served native `/metrics`.
+- **Grafana data-source correlations** live in the `k8s-infra` kube-prometheus-stack values: stable `prometheus`, `loki`, `tempo`, and `pyroscope` UIDs; Prometheus exemplar → Tempo links; Loki trace-ID derived fields; and Tempo trace → logs/metrics links.
 - **Strimzi kafka exporter**: enabled on the Kafka CR
   (`spec.kafkaExporter`) with a ServiceMonitor; `kafka_topic_partitions` /
   `kafka_consumergroup_lag` appear once topics exist (the demo cluster has
@@ -84,7 +85,9 @@ There is no custom tagging system — Kubernetes labels only:
 The `lab-monitors` PrometheusRule (GD-50) defines the noisy-signal minimum:
 deployments below spec, restart storms (>3/30m), failing probes, down scrape
 targets, node memory >90%, PVC >85%, postgres connections >80% of max,
-Elasticsearch health not green, Kafka consumer lag, service p95 >2s. Alerts
+Elasticsearch red health, Kafka consumer lag, service p95 >2s. Yellow
+Elasticsearch health is expected on this one-node lab because replica shards
+cannot be allocated; unavailable primaries (red) are the actionable state. Alerts
 route to the in-cluster Alertmanager; nothing pages anyone. The **Monitors**
 row on Lab · Services renders exactly these rules from `ALERTS` (GD-51
 parity), so health dots and monitors cannot drift apart. The PVC alert has a
@@ -114,7 +117,7 @@ experimentation but are not part of the supported operator workflow.
 | Backend | Status | Expected view |
 |---|---|---|
 | **Grafana** | Supported | Custom chat metrics via Prometheus (turn outcomes, LLM ops, routing, safety). Tenant Chat dashboards provisioned from `k8s/grafana/`. Metrics use a closed label set — no per-tenant breakdown. |
-| **Tempo** | Supported | Trace search by trace ID, service name, or attribute. Every turn is one trace; drill from an exemplar in Grafana or a trace ID in the admin explorer. |
+| **Tempo** | Supported | Trace search by trace ID, service name, or attribute. Every turn is one trace; drill from a Prometheus exemplar or the service drilldown, then pivot from the span to matching Loki logs and Prometheus metrics. |
 | **Phoenix** | Supported | GenAI trace grouping (LLM spans only — database/health spans form the bulk of trace count). Sessions group by `session.id`. LLM spans carry `gen_ai.*` semantic attributes and `openinference.span.kind = "LLM"` for categorization. Token counts and model identity appear on LLM spans; cost is computed by Phoenix from model pricing. |
 | **Admin Explorer** | Supported | Turn record with prompt, evidence, output, verdicts, diagnosis. The inference plane is the authoritative content view per ADR-0010. |
 | **MLflow** | Experimental | Experiment tracking over evaluation datasets. The current release sends metrics to MLflow through the OTLP HTTP exporter but does not configure a dedicated experiment — the `Default` experiment collects raw trace data. |
@@ -179,9 +182,10 @@ matching `DiagnosisCause` values (`stale_source`, `ingestion_or_index_error`,
 
 Provisioning runs automatically as the final step of `make deploy-local`. The
 deployment calls `k8s/grafana/provision.sh --verify`, which creates ConfigMaps
-and stages the JSON in Grafana's shared provisioning volume. It then requests a
-reload and polls Grafana's localhost API until all ten dashboard UIDs (five
-TenantChat, five Lab) are confirmed present. The API calls use credentials
+and reconciles the Lab PrometheusRules before staging the JSON in Grafana's
+shared provisioning volume. It then requests a reload and polls Grafana's
+localhost API until all ten dashboard UIDs (five TenantChat, five Lab) and the
+stable Loki, Tempo, and Pyroscope data-source contracts are confirmed. The API calls use credentials
 already injected into the dashboard sidecar; the script does not decode
 credentials locally or weaken Kubernetes TLS verification.
 
@@ -215,6 +219,7 @@ Edit `k8s/grafana/_generate_dashboards.py` — the canonical source — and re-r
 
 ```bash
 uv run python k8s/grafana/_generate_dashboards.py
+make dashboard-check
 ```
 
 The JSON files are the build artifact. They are checked in so that dashboard
@@ -255,6 +260,10 @@ All panels in dashboards 1–5 resolve against these metrics:
 
 - `make check` asserts the generator script and generated JSON are syntactically
   valid.
+- `make grafana-query-check` expands dashboard variables to representative live
+  values and executes every unique PromQL target against the local Prometheus
+  API. Valid queries with no current series are reported separately from query
+  failures.
 - Cluster acceptance: provision the dashboards, open Grafana, and verify each
   panel resolves. The `exemplar-drillthrough` dashboard's text panel documents the
   end-to-end drill-through workflow; verify an exemplar → trace → explorer round

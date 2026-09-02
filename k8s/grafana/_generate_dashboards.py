@@ -20,6 +20,27 @@ from typing import Any
 
 OUT_DIR = Path(__file__).resolve().parent
 
+PROMETHEUS = {"type": "prometheus", "uid": "$datasource"}
+LOKI = {"type": "loki", "uid": "loki"}
+TEMPO = {"type": "tempo", "uid": "tempo"}
+
+
+def dashboard_link(tags: Sequence[str]) -> dict[str, Any]:
+    """Grafana-native navigation that preserves time range and variables."""
+    scope = "lab" if "lab" in tags else "tenantchat"
+    return {
+        "asDropdown": True,
+        "icon": "external link",
+        "includeVars": True,
+        "keepTime": True,
+        "tags": [scope],
+        "targetBlank": False,
+        "title": "Lab dashboards" if scope == "lab" else "TenantChat dashboards",
+        "tooltip": "",
+        "type": "dashboards",
+        "url": "",
+    }
+
 
 def dash(
     title: str,
@@ -38,13 +59,20 @@ def dash(
         "timezone": "browser",
         "schemaVersion": 39,
         "refresh": "30s",
+        "graphTooltip": 1,
+        "links": [dashboard_link(tags)],
+        "time": {"from": "now-6h", "to": "now"},
+        "timepicker": {
+            "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h"],
+            "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"],
+        },
         "templating": {
             "list": [
                 {
                     "name": "datasource",
                     "type": "datasource",
                     "query": "prometheus",
-                    "current": {},
+                    "current": {"selected": True, "text": "Prometheus", "value": "prometheus"},
                     "hide": 0,
                     "label": "Data source",
                 },
@@ -95,6 +123,7 @@ def ts_panel(
         "id": id_,
         "title": title,
         "type": "timeseries",
+        "datasource": PROMETHEUS,
         "gridPos": {"x": x, "y": y, "w": w, "h": h},
         "targets": targets,
         "fieldConfig": fc,
@@ -136,12 +165,14 @@ def stat_panel(
         "id": id_,
         "title": title,
         "type": "stat",
+        "datasource": PROMETHEUS,
         "gridPos": {"x": x, "y": y, "w": w, "h": h},
-        "targets": [{"expr": expr, "refId": "A"}],
+        "targets": [{"expr": expr, "refId": "A", "instant": True}],
         "fieldConfig": {
             "defaults": {
                 "unit": unit,
                 "decimals": decimals,
+                "noValue": "N/A",
                 "thresholds": {"mode": "absolute", "steps": thresholds},
             }
         },
@@ -205,17 +236,15 @@ UPDOWN_MAPPINGS = [
     }
 ]
 
-# "No data" must read as grey (no signal), never as the base threshold colour
-# (red for most tiles) — grey = not applicable, red = actually degraded.
-NO_DATA_GREY = [
-    {
-        "type": "special",
-        "options": {"match": "null", "result": {"color": "text", "index": 0}},
-    }
-]
 
-
-def template_var(name: str, query: str, *, multi: bool = False) -> dict[str, Any]:
+def template_var(
+    name: str,
+    query: str,
+    *,
+    multi: bool = False,
+    include_all: bool = True,
+    default_all: bool = True,
+) -> dict[str, Any]:
     """Query variable over the Prometheus datasource (uid pinned by the
     kube-prom-stack sidecar; verified in the runbook)."""
     return {
@@ -227,16 +256,20 @@ def template_var(name: str, query: str, *, multi: bool = False) -> dict[str, Any
         "label": name,
         "hide": 0,
         "multi": multi,
-        "includeAll": True,
+        "includeAll": include_all,
         "allValue": ".*",
         "refresh": 1,
         "sort": 1,
-        "current": {},
+        "current": (
+            {"selected": True, "text": "All", "value": "$__all"}
+            if include_all and default_all
+            else {}
+        ),
     }
 
 
-def row_panel(id_: int, title: str, y: int, *, repeat: str | None = None) -> dict[str, Any]:
-    p: dict[str, Any] = {
+def row_panel(id_: int, title: str, y: int) -> dict[str, Any]:
+    return {
         "id": id_,
         "title": title,
         "type": "row",
@@ -244,9 +277,6 @@ def row_panel(id_: int, title: str, y: int, *, repeat: str | None = None) -> dic
         "gridPos": {"x": 0, "y": y, "w": 24, "h": 1},
         "panels": [],
     }
-    if repeat:
-        p["repeat"] = repeat
-    return p
 
 
 def updown_history(
@@ -269,6 +299,7 @@ def updown_history(
         "id": id_,
         "title": title,
         "type": "status-history",
+        "datasource": PROMETHEUS,
         "gridPos": {"x": x, "y": y, "w": w, "h": h},
         "targets": [{"expr": expr, "legendFormat": legend, "refId": "A"}],
         "fieldConfig": {
@@ -296,83 +327,6 @@ def updown_history(
     return p
 
 
-def updown_tile(
-    id_: int,
-    title: str,
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    expr: str,
-    *,
-    legend: str = "{{job}}",
-    desc: str = "",
-    repeat: str | None = None,
-) -> dict[str, Any]:
-    """Single-target UP/DOWN stat tile (catalog tiles): instant query so the
-    tile shows the current state, not the last sample of a dead series."""
-    p = stat_panel(
-        id_,
-        title,
-        x,
-        y,
-        w,
-        h,
-        expr,
-        unit="none",
-        decimals=0,
-        thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 1}],
-        color_mode="background",
-        graph_mode="none",
-    )
-    p["fieldConfig"]["defaults"]["mappings"] = UPDOWN_MAPPINGS + NO_DATA_GREY
-    p["targets"][0]["instant"] = True
-    p["targets"][0]["legendFormat"] = legend
-    if repeat:
-        p["repeat"] = repeat
-        p["repeatDirection"] = "h"
-    if desc:
-        p["description"] = desc
-    return p
-
-
-def service_stat(
-    id_: int,
-    title: str,
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    expr: str,
-    *,
-    unit: str = "none",
-    decimals: int = 1,
-    thresholds: Sequence[dict[str, Any]] | None = None,
-    desc: str = "",
-    legend: str | None = None,
-    repeat: str | None = None,
-) -> dict[str, Any]:
-    """One catalog tile: a stat scoped to the repeated $namespace/$service.
-    The legend names the value — without it Grafana renders the raw label set
-    of the series as the tile caption. Repeat is per panel (Grafana ignores
-    row.repeat on provisioned open rows) and repeats horizontally so the
-    catalog reads as a Datadog-style tile grid."""
-    if thresholds is None:
-        thresholds = [{"color": "green", "value": None}]
-    p = stat_panel(
-        id_, title, x, y, w, h, expr, unit=unit, decimals=decimals, thresholds=thresholds
-    )
-    p["fieldConfig"]["defaults"]["mappings"] = NO_DATA_GREY
-    if legend is not None:
-        p["targets"][0]["legendFormat"] = legend
-    if repeat:
-        p["repeat"] = repeat
-        p["repeatDirection"] = "h"
-    if desc:
-        p["description"] = desc
-    return p
-
-
 def table_panel(
     id_: int,
     title: str,
@@ -389,6 +343,7 @@ def table_panel(
         "id": id_,
         "title": title,
         "type": "table",
+        "datasource": PROMETHEUS,
         "gridPos": {"x": x, "y": y, "w": w, "h": h},
         "targets": targets,
         "fieldConfig": {"defaults": {"unit": unit, "custom": {"align": "auto"}}, "overrides": []},
@@ -411,6 +366,84 @@ def text_panel(
     }
 
 
+def logs_panel(
+    id_: int,
+    title: str,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    expr: str,
+    *,
+    desc: str = "",
+) -> dict[str, Any]:
+    panel: dict[str, Any] = {
+        "id": id_,
+        "title": title,
+        "type": "logs",
+        "datasource": LOKI,
+        "gridPos": {"x": x, "y": y, "w": w, "h": h},
+        "targets": [
+            {
+                "datasource": LOKI,
+                "editorMode": "code",
+                "expr": expr,
+                "queryType": "range",
+                "refId": "A",
+            }
+        ],
+        "options": {
+            "dedupStrategy": "none",
+            "enableInfiniteScrolling": False,
+            "enableLogDetails": True,
+            "prettifyLogMessage": True,
+            "showCommonLabels": False,
+            "showLabels": False,
+            "showTime": True,
+            "sortOrder": "Descending",
+            "wrapLogMessage": True,
+        },
+    }
+    if desc:
+        panel["description"] = desc
+    return panel
+
+
+def traces_panel(
+    id_: int,
+    title: str,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    query: str,
+    *,
+    desc: str = "",
+) -> dict[str, Any]:
+    panel: dict[str, Any] = {
+        "id": id_,
+        "title": title,
+        "type": "table",
+        "datasource": TEMPO,
+        "gridPos": {"x": x, "y": y, "w": w, "h": h},
+        "targets": [
+            {
+                "datasource": TEMPO,
+                "limit": 50,
+                "query": query,
+                "queryType": "traceql",
+                "refId": "A",
+                "tableType": "traces",
+            }
+        ],
+        "fieldConfig": {"defaults": {}, "overrides": []},
+        "options": {"cellHeight": "sm", "showHeader": True},
+    }
+    if desc:
+        panel["description"] = desc
+    return panel
+
+
 def instant(expr: str, legend: str, ref_id: str) -> dict[str, Any]:
     """Instant-vector query for tables (current state, not a time range)."""
     return {
@@ -420,6 +453,199 @@ def instant(expr: str, legend: str, ref_id: str) -> dict[str, Any]:
         "instant": True,
         "format": "table",
     }
+
+
+def service_catalog_table(id_: int, y: int) -> dict[str, Any]:
+    """A compact, sortable service catalog instead of hundreds of repeated tiles."""
+    workload_filter = 'namespace=~"$namespace", workload=~"$service"'
+    targets = [
+        instant(
+            'label_replace(kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"$service"}'
+            ' / kube_deployment_spec_replicas{namespace=~"$namespace", deployment=~"$service"},'
+            ' "service", "$1", "deployment", "(.*)")',
+            "replica health",
+            "A",
+        ),
+        instant(f"{CATALOG_RPS}", "requests/s", "B"),
+        instant(f"{CATALOG_P95}", "p95", "C"),
+        instant(f"{CATALOG_ERR}", "5xx ratio", "D"),
+        instant(
+            f"label_replace(lab:deployment:restarts:increase1h{{{workload_filter}}},"
+            ' "service", "$1", "workload", "(.*)")',
+            "restarts 1h",
+            "E",
+        ),
+        instant(
+            f"label_replace(lab:deployment:cpu:rate5m{{{workload_filter}}},"
+            ' "service", "$1", "workload", "(.*)")',
+            "cpu cores",
+            "F",
+        ),
+        instant(
+            f"label_replace(lab:deployment:memory:workingset{{{workload_filter}}},"
+            ' "service", "$1", "workload", "(.*)")',
+            "memory",
+            "G",
+        ),
+    ]
+    panel = table_panel(
+        id_,
+        "Service catalog — health, traffic and saturation",
+        0,
+        y,
+        24,
+        17,
+        targets,
+        desc=(
+            "One row per workload. Click the service name to open its drilldown with the "
+            "same time range. N/A means that signal is not emitted for that workload; it "
+            "does not mean zero."
+        ),
+    )
+    panel["transformations"] = [
+        {"id": "merge", "options": {}},
+        {
+            "id": "organize",
+            "options": {
+                "excludeByName": {
+                    "Time": True,
+                    "__name__": True,
+                    "deployment": True,
+                    "workload": True,
+                },
+                "indexByName": {
+                    "namespace": 0,
+                    "service": 1,
+                    "Value #A": 2,
+                    "Value #B": 3,
+                    "Value #C": 4,
+                    "Value #D": 5,
+                    "Value #E": 6,
+                    "Value #F": 7,
+                    "Value #G": 8,
+                },
+                "renameByName": {
+                    "Value #A": "Replicas",
+                    "Value #B": "Requests/s",
+                    "Value #C": "p95",
+                    "Value #D": "5xx",
+                    "Value #E": "Restarts 1h",
+                    "Value #F": "CPU cores",
+                    "Value #G": "Memory",
+                },
+            },
+        },
+    ]
+    panel["fieldConfig"]["overrides"] = [
+        {
+            "matcher": {"id": "byName", "options": "service"},
+            "properties": [
+                {
+                    "id": "links",
+                    "value": [
+                        {
+                            "title": "Open service drilldown",
+                            "url": "/d/lab-service-drilldown?var-namespace=${__data.fields.namespace}&var-service=${__value.raw}&from=${__from}&to=${__to}",
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            "matcher": {"id": "byName", "options": "Replicas"},
+            "properties": [
+                {"id": "unit", "value": "percentunit"},
+                {
+                    "id": "thresholds",
+                    "value": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "red", "value": None},
+                            {"color": "green", "value": 1},
+                        ],
+                    },
+                },
+                {"id": "custom.cellOptions", "value": {"type": "color-background"}},
+            ],
+        },
+        {
+            "matcher": {"id": "byName", "options": "p95"},
+            "properties": [
+                {"id": "unit", "value": "s"},
+                {
+                    "id": "thresholds",
+                    "value": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": None},
+                            {"color": "orange", "value": 0.5},
+                            {"color": "red", "value": 2},
+                        ],
+                    },
+                },
+                {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+            ],
+        },
+        {
+            "matcher": {"id": "byName", "options": "5xx"},
+            "properties": [
+                {"id": "unit", "value": "percentunit"},
+                {
+                    "id": "thresholds",
+                    "value": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": None},
+                            {"color": "orange", "value": 0.01},
+                            {"color": "red", "value": 0.05},
+                        ],
+                    },
+                },
+                {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+            ],
+        },
+        {
+            "matcher": {"id": "byName", "options": "Memory"},
+            "properties": [{"id": "unit", "value": "bytes"}],
+        },
+    ]
+    return panel
+
+
+def elasticsearch_health_panel(id_: int, x: int, y: int, w: int, h: int) -> dict[str, Any]:
+    """Render single-node Elasticsearch yellow as expected redundancy state."""
+    panel = stat_panel(
+        id_,
+        "Cluster health",
+        x,
+        y,
+        w,
+        h,
+        '2 * max(elasticsearch_cluster_health_status{color="green"})'
+        ' + max(elasticsearch_cluster_health_status{color="yellow"})',
+        unit="none",
+        decimals=0,
+        thresholds=[
+            {"color": "red", "value": None},
+            {"color": "yellow", "value": 1},
+            {"color": "green", "value": 2},
+        ],
+        desc=(
+            "RED = unavailable primary shards. YELLOW = primaries available but replicas "
+            "unassigned, which is expected on this one-node lab. GREEN = fully replicated."
+        ),
+    )
+    panel["fieldConfig"]["defaults"]["mappings"] = [
+        {
+            "type": "value",
+            "options": {
+                "0": {"text": "RED", "color": "red", "index": 0},
+                "1": {"text": "YELLOW · single node", "color": "yellow", "index": 1},
+                "2": {"text": "GREEN", "color": "green", "index": 2},
+            },
+        }
+    ]
+    return panel
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1610,19 +1836,24 @@ SERVICES = dash(
     title="Lab · Services",
     uid="lab-services",
     description=(
-        "The Datadog 'Service Catalog': one repeating tile block per deployment — "
-        "status, requests/s, p95, error ratio, restarts, CPU, memory, probe — with "
-        "a Monitors row at the bottom (GD-21/23/51). An outliers band above the "
+        "The Datadog 'Service Catalog': one sortable row per workload — replica health, "
+        "requests/s, p95, error ratio, restarts, CPU and memory — with "
+        "a Monitors row at the top (GD-21/23/51). An outliers band above the "
         "catalog draws one line per service for traffic, p95, errors and restarts, "
-        "so the odd one out is visible in a single panel. Tiles key off the lab:* "
+        "so the odd one out is visible in a single panel. Rows key off the lab:* "
         "recording rules, so a new deployment appears automatically."
     ),
     tags=["lab", "services", "catalog", "apm"],
     variables=[
-        template_var("namespace", "label_values(lab:deployment:restarts:increase1h, namespace)"),
+        template_var(
+            "namespace",
+            "label_values(lab:deployment:restarts:increase1h, namespace)",
+            multi=True,
+        ),
         template_var(
             "service",
             'label_values(lab:deployment:restarts:increase1h{namespace=~"$namespace"}, workload)',
+            multi=True,
         ),
     ],
     panels=[
@@ -1752,129 +1983,8 @@ SERVICES = dash(
             ],
             desc="Restart spikes per deployment; same 1 / 4 thresholds as the tiles below.",
         ),
-        row_panel(101, "Service catalog — one tile block per service", 31),
-        # --- GD-21: repeated tiles. Each metric is one repeating panel so the
-        # grid reads: status for everyone, then traffic for everyone, ... ---
-        service_stat(
-            110,
-            "Status — $service",
-            0,
-            32,
-            6,
-            4,
-            'kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"$service"}'
-            ' / kube_deployment_spec_replicas{namespace=~"$namespace", deployment=~"$service"}',
-            unit="percentunit",
-            decimals=0,
-            thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 1}],
-            legend="available / spec",
-            repeat="service",
-            desc="Available / desired replicas. Grey 'No data' = not a Deployment (StatefulSet, DaemonSet, Job).",
-        ),
-        service_stat(
-            111,
-            "Requests/s — $service",
-            0,
-            37,
-            6,
-            4,
-            CATALOG_RPS,
-            unit="reqps",
-            decimals=2,
-            thresholds=[{"color": "blue", "value": None}],
-            legend="req/s",
-            repeat="service",
-            desc="Native OTel HTTP when the service is instrumented, Traefik gateway counts otherwise (GD-22).",
-        ),
-        service_stat(
-            112,
-            "p95 latency — $service",
-            0,
-            42,
-            6,
-            4,
-            CATALOG_P95,
-            unit="s",
-            decimals=2,
-            thresholds=[
-                {"color": "green"},
-                {"color": "orange", "value": 0.5},
-                {"color": "red", "value": 2.0},
-            ],
-            legend="p95",
-            repeat="service",
-        ),
-        service_stat(
-            113,
-            "Error ratio (5xx) — $service",
-            0,
-            47,
-            6,
-            4,
-            CATALOG_ERR,
-            unit="percentunit",
-            decimals=2,
-            thresholds=[{"color": "green"}, {"color": "red", "value": 0.05}],
-            legend="5xx ratio",
-            repeat="service",
-            desc="5xx share measured at the Traefik edge; 0 until the service has gateway traffic.",
-        ),
-        service_stat(
-            114,
-            "Restarts (1h) — $service",
-            0,
-            52,
-            6,
-            4,
-            'lab:deployment:restarts:increase1h{namespace=~"$namespace", workload=~"$service"}',
-            unit="none",
-            decimals=0,
-            thresholds=[
-                {"color": "green"},
-                {"color": "orange", "value": 1},
-                {"color": "red", "value": 4},
-            ],
-            legend="restarts",
-            repeat="service",
-        ),
-        service_stat(
-            115,
-            "CPU (cores) — $service",
-            0,
-            57,
-            6,
-            4,
-            'lab:deployment:cpu:rate5m{namespace=~"$namespace", workload=~"$service"}',
-            unit="none",
-            decimals=3,
-            legend="cores",
-            repeat="service",
-        ),
-        service_stat(
-            116,
-            "Memory (working set) — $service",
-            0,
-            62,
-            6,
-            4,
-            'lab:deployment:memory:workingset{namespace=~"$namespace", workload=~"$service"}',
-            unit="bytes",
-            decimals=1,
-            legend="working set",
-            repeat="service",
-        ),
-        updown_tile(
-            117,
-            "HTTP probe — $service",
-            0,
-            67,
-            6,
-            4,
-            'probe_success{job=~"lab-http(-redirect)?-probes", instance=~".*$service.*"}',
-            legend="{{instance}}",
-            repeat="service",
-            desc="Blackbox probe whose target URL mentions the service. Grey 'No data' = no probe for this service (not internal HTTP).",
-        ),
+        row_panel(101, "Service catalog", 31),
+        service_catalog_table(110, 32),
     ],
 )
 
@@ -1893,10 +2003,17 @@ DRILLDOWN = dash(
     ),
     tags=["lab", "services", "drilldown", "apm"],
     variables=[
-        template_var("namespace", "label_values(lab:deployment:restarts:increase1h, namespace)"),
+        template_var(
+            "namespace",
+            "label_values(lab:deployment:restarts:increase1h, namespace)",
+            include_all=False,
+            default_all=False,
+        ),
         template_var(
             "service",
             'label_values(lab:deployment:restarts:increase1h{namespace=~"$namespace"}, workload)',
+            include_all=False,
+            default_all=False,
         ),
     ],
     panels=[
@@ -1948,17 +2065,17 @@ DRILLDOWN = dash(
             8,
             [
                 {
-                    "expr": 'histogram_quantile(0.50, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~"$namespace/$service"}[$__rate_interval])))',
+                    "expr": 'histogram_quantile(0.50, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~"$namespace/$service"}[$__rate_interval]))) / 1000',
                     "legendFormat": "p50 (OTel)",
                     "refId": "A",
                 },
                 {
-                    "expr": 'histogram_quantile(0.95, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~"$namespace/$service"}[$__rate_interval])))',
+                    "expr": 'histogram_quantile(0.95, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~"$namespace/$service"}[$__rate_interval]))) / 1000',
                     "legendFormat": "p95 (OTel)",
                     "refId": "B",
                 },
                 {
-                    "expr": 'histogram_quantile(0.99, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~"$namespace/$service"}[$__rate_interval])))',
+                    "expr": 'histogram_quantile(0.99, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~"$namespace/$service"}[$__rate_interval]))) / 1000',
                     "legendFormat": "p99 (OTel)",
                     "refId": "C",
                 },
@@ -1975,8 +2092,8 @@ DRILLDOWN = dash(
                     "url": '/explore?left={"datasource":"tempo","queries":[{"refId":"A","queryType":"search","serviceName":"$service","limit":20}],"range":"now-1h/now"}',
                 },
                 {
-                    "title": "Logs in Loki (pod)",
-                    "url": '/explore?left={"datasource":"loki","queries":[{"refId":"A","expr":"{namespace=\\"$namespace\\", pod=~\\"$pod\\"}","queryType":"range"}],"range":"now-1h/now"}',
+                    "title": "Logs in Loki (service)",
+                    "url": '/explore?left={"datasource":"loki","queries":[{"refId":"A","expr":"{namespace=\\"$namespace\\", service_name=~\\"$service\\"}","queryType":"range"}],"range":"now-1h/now"}',
                 },
             ],
             desc="p50/p95/p99 from the native OTel histogram; the gateway p95 line appears for non-instrumented services. Data links: Tempo trace search and Loki pod logs (GD-33).",
@@ -2039,9 +2156,10 @@ DRILLDOWN = dash(
             19,
             6,
             4,
-            'kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"$service"}',
-            unit="none",
-            decimals=0,
+            'kube_deployment_status_replicas_available{namespace=~"$namespace", deployment=~"$service"}'
+            ' / kube_deployment_spec_replicas{namespace=~"$namespace", deployment=~"$service"}',
+            unit="percentunit",
+            decimals=1,
             thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 1}],
         ),
         stat_panel(
@@ -2111,17 +2229,39 @@ DRILLDOWN = dash(
                 )
             ],
         ),
-        text_panel(
+        row_panel(103, "Correlated telemetry — logs and traces (GD-33)", 30),
+        logs_panel(
             13,
-            "Cross-plane links (GD-33)",
+            "Live service logs",
             0,
-            30,
+            31,
+            12,
+            10,
+            '{namespace="$namespace", service_name=~"$service"}',
+            desc="The same namespace/service selection as the RED panels. Structured chat-backend lines carry trace_id for direct correlation.",
+        ),
+        traces_panel(
+            14,
+            "Recent traces",
+            12,
+            31,
+            12,
+            10,
+            '{ resource.k8s.namespace.name = "$namespace" && resource.service.name = "$service" }',
+            desc="TraceQL search in Tempo. Click a trace row for its span waterfall, then follow trace-to-logs or trace-to-metrics links.",
+        ),
+        text_panel(
+            15,
+            "Cross-plane workflow",
+            0,
+            41,
             24,
-            5,
+            6,
             (
-                "# Where to next\n\n"
-                "- **Traces**: latency panel data links → Tempo search scoped to `service.name=$service`.\n"
-                '- **Logs**: latency panel data links → Loki `{namespace="$namespace", pod=~"$service.*"}`.\n'
+                "# One incident, one time range\n\n"
+                "1. Start with **RED**: rate, errors, duration.\n"
+                "2. Check **per-pod saturation** and termination reasons.\n"
+                "3. Inspect the matching **logs and traces** below without losing the selected service or time range.\n\n"
                 "- **TenantChat app dashboards** (keep the generic layer generic; tenant detail lives here):\n"
                 "  - [Chat Turn Outcomes](/d/tenantchat-turn-outcomes?from=${__from}&to=${__to})\n"
                 "  - [Retrieval & Routing Quality](/d/tenantchat-retrieval-routing?from=${__from}&to=${__to})\n"
@@ -2292,19 +2432,7 @@ DATASTORES = dash(
             unit="s",
         ),
         row_panel(101, "Elasticsearch — retrieval index (GD-41)", 19),
-        stat_panel(
-            9,
-            "Cluster health",
-            0,
-            20,
-            6,
-            4,
-            'max(elasticsearch_cluster_health_status{color="green"})',
-            unit="none",
-            decimals=0,
-            thresholds=[{"color": "red", "value": None}, {"color": "green", "value": 1}],
-            desc="1 = green. Yellow/red for 5m fires LabElasticsearchNotGreen.",
-        ),
+        elasticsearch_health_panel(9, 0, 20, 6, 4),
         stat_panel(
             10,
             "JVM heap used",
@@ -2454,11 +2582,68 @@ GATEWAY = dash(
     tags=["lab", "gateway", "traefik", "edge"],
     panels=[
         row_panel(100, "Entrypoints", 0),
+        stat_panel(
+            10,
+            "Edge requests/s",
+            0,
+            1,
+            6,
+            4,
+            'sum(rate(traefik_entrypoint_requests_total{entrypoint=~"web|websecure"}[5m])) or vector(0)',
+            unit="reqps",
+            decimals=2,
+            thresholds=[{"color": "blue", "value": None}],
+        ),
+        stat_panel(
+            11,
+            "5xx ratio",
+            6,
+            1,
+            6,
+            4,
+            'sum(rate(traefik_entrypoint_requests_total{entrypoint=~"web|websecure",code=~"5.."}[5m]))'
+            ' / sum(rate(traefik_entrypoint_requests_total{entrypoint=~"web|websecure"}[5m])) or vector(0)',
+            unit="percentunit",
+            decimals=2,
+            thresholds=[
+                {"color": "green", "value": None},
+                {"color": "orange", "value": 0.01},
+                {"color": "red", "value": 0.05},
+            ],
+        ),
+        stat_panel(
+            12,
+            "Edge p95",
+            12,
+            1,
+            6,
+            4,
+            'histogram_quantile(0.95, sum by (le) (rate(traefik_entrypoint_request_duration_seconds_bucket{entrypoint=~"web|websecure"}[5m])))',
+            unit="s",
+            decimals=3,
+            thresholds=[
+                {"color": "green", "value": None},
+                {"color": "orange", "value": 0.5},
+                {"color": "red", "value": 2},
+            ],
+        ),
+        stat_panel(
+            13,
+            "Surfaces failing",
+            18,
+            1,
+            6,
+            4,
+            'count(probe_success{job=~"lab-http(-redirect)?-probes"} == 0) or vector(0)',
+            unit="none",
+            decimals=0,
+            thresholds=[{"color": "green", "value": None}, {"color": "red", "value": 1}],
+        ),
         ts_panel(
             1,
             "Requests/s by entrypoint",
             0,
-            1,
+            5,
             12,
             8,
             [
@@ -2473,7 +2658,7 @@ GATEWAY = dash(
             2,
             "p95 latency by entrypoint",
             12,
-            1,
+            5,
             12,
             8,
             [
@@ -2489,7 +2674,7 @@ GATEWAY = dash(
             3,
             "Status codes",
             0,
-            9,
+            13,
             12,
             8,
             [
@@ -2506,7 +2691,7 @@ GATEWAY = dash(
             4,
             "Probe duration per target",
             12,
-            9,
+            13,
             12,
             8,
             [
@@ -2519,12 +2704,12 @@ GATEWAY = dash(
             unit="s",
             desc="Blackbox overlay: how long each probed surface takes to answer. Spikes here with flat entrypoint latency mean the path, not the gateway.",
         ),
-        row_panel(101, "Services behind the gateway", 17),
+        row_panel(101, "Services behind the gateway", 21),
         table_panel(
             5,
             "Per-service traffic (requests/s by code)",
             0,
-            18,
+            22,
             12,
             8,
             [
@@ -2541,7 +2726,7 @@ GATEWAY = dash(
             6,
             "Per-service error ratio",
             12,
-            18,
+            22,
             12,
             8,
             [instant("lab:gateway:service:error_ratio:rate5m", "{{namespace}}/{{service}}", "A")],
@@ -2551,7 +2736,7 @@ GATEWAY = dash(
             7,
             "Host breakdown — design note",
             0,
-            26,
+            30,
             24,
             5,
             (

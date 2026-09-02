@@ -11,13 +11,60 @@
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "lab"
+      ],
+      "targetBlank": false,
+      "title": "Lab dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d",
+      "30d"
+    ]
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
         "hide": 0,
         "label": "Data source"
       },
@@ -36,7 +83,7 @@
         "label": "namespace",
         "hide": 0,
         "multi": false,
-        "includeAll": true,
+        "includeAll": false,
         "allValue": ".*",
         "refresh": 1,
         "sort": 1,
@@ -57,7 +104,7 @@
         "label": "service",
         "hide": 0,
         "multi": false,
-        "includeAll": true,
+        "includeAll": false,
         "allValue": ".*",
         "refresh": 1,
         "sort": 1,
@@ -83,6 +130,10 @@
       "id": 1,
       "title": "Request rate",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 1,
@@ -135,6 +186,10 @@
       "id": 2,
       "title": "Error ratio (5xx at the edge)",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 8,
         "y": 1,
@@ -182,6 +237,10 @@
       "id": 3,
       "title": "Latency percentiles",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 16,
         "y": 1,
@@ -190,17 +249,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~\"$namespace/$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~\"$namespace/$service\"}[$__rate_interval]))) / 1000",
           "legendFormat": "p50 (OTel)",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~\"$namespace/$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~\"$namespace/$service\"}[$__rate_interval]))) / 1000",
           "legendFormat": "p95 (OTel)",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~\"$namespace/$service\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_duration_milliseconds_bucket{exported_job=~\"$namespace/$service\"}[$__rate_interval]))) / 1000",
           "legendFormat": "p99 (OTel)",
           "refId": "C"
         },
@@ -228,8 +287,8 @@
               "url": "/explore?left={\"datasource\":\"tempo\",\"queries\":[{\"refId\":\"A\",\"queryType\":\"search\",\"serviceName\":\"$service\",\"limit\":20}],\"range\":\"now-1h/now\"}"
             },
             {
-              "title": "Logs in Loki (pod)",
-              "url": "/explore?left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{namespace=\\\"$namespace\\\", pod=~\\\"$pod\\\"}\",\"queryType\":\"range\"}],\"range\":\"now-1h/now\"}"
+              "title": "Logs in Loki (service)",
+              "url": "/explore?left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{namespace=\\\"$namespace\\\", service_name=~\\\"$service\\\"}\",\"queryType\":\"range\"}],\"range\":\"now-1h/now\"}"
             }
           ]
         }
@@ -267,6 +326,10 @@
       "id": 4,
       "title": "CPU per pod",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 10,
@@ -313,6 +376,10 @@
       "id": 5,
       "title": "Memory (working set) per pod",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 8,
         "y": 10,
@@ -359,6 +426,10 @@
       "id": 6,
       "title": "Restarts per pod (1h)",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 16,
         "y": 10,
@@ -419,6 +490,10 @@
       "id": 7,
       "title": "Replicas (available / spec)",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 19,
@@ -427,14 +502,16 @@
       },
       "targets": [
         {
-          "expr": "kube_deployment_status_replicas_available{namespace=~\"$namespace\", deployment=~\"$service\"}",
-          "refId": "A"
+          "expr": "kube_deployment_status_replicas_available{namespace=~\"$namespace\", deployment=~\"$service\"} / kube_deployment_spec_replicas{namespace=~\"$namespace\", deployment=~\"$service\"}",
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 0,
+          "unit": "percentunit",
+          "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -466,6 +543,10 @@
       "id": 8,
       "title": "Pods running",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 6,
         "y": 19,
@@ -475,13 +556,15 @@
       "targets": [
         {
           "expr": "sum(kube_pod_status_phase{namespace=\"$namespace\", pod=~\"$service.*\", phase=\"Running\"}) or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -509,6 +592,10 @@
       "id": 9,
       "title": "Oldest pod age",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 19,
@@ -518,13 +605,15 @@
       "targets": [
         {
           "expr": "time() - min(kube_pod_start_time{namespace=\"$namespace\", pod=~\"$service.*\"})",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -553,6 +642,10 @@
       "id": 10,
       "title": "Probe latency",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 18,
         "y": 19,
@@ -562,13 +655,15 @@
       "targets": [
         {
           "expr": "max(probe_duration_seconds{instance=~\".*$service.*\"})",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "decimals": 3,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -597,6 +692,10 @@
       "id": 11,
       "title": "Containers & images",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 23,
@@ -630,6 +729,10 @@
       "id": 12,
       "title": "Last termination reasons",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 23,
@@ -660,17 +763,106 @@
       }
     },
     {
-      "id": 13,
-      "title": "Cross-plane links (GD-33)",
-      "type": "text",
+      "id": 103,
+      "title": "Correlated telemetry \u2014 logs and traces (GD-33)",
+      "type": "row",
+      "collapsed": false,
       "gridPos": {
         "x": 0,
         "y": 30,
         "w": 24,
-        "h": 5
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 13,
+      "title": "Live service logs",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{namespace=\"$namespace\", service_name=~\"$service\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": false,
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "description": "The same namespace/service selection as the RED panels. Structured chat-backend lines carry trace_id for direct correlation."
+    },
+    {
+      "id": 14,
+      "title": "Recent traces",
+      "type": "table",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "limit": 50,
+          "query": "{ resource.k8s.namespace.name = \"$namespace\" && resource.service.name = \"$service\" }",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
       },
       "options": {
-        "content": "# Where to next\n\n- **Traces**: latency panel data links \u2192 Tempo search scoped to `service.name=$service`.\n- **Logs**: latency panel data links \u2192 Loki `{namespace=\"$namespace\", pod=~\"$service.*\"}`.\n- **TenantChat app dashboards** (keep the generic layer generic; tenant detail lives here):\n  - [Chat Turn Outcomes](/d/tenantchat-turn-outcomes?from=${__from}&to=${__to})\n  - [Retrieval & Routing Quality](/d/tenantchat-retrieval-routing?from=${__from}&to=${__to})\n  - [LLM Operations & Token Cost](/d/tenantchat-llm-operations?from=${__from}&to=${__to})\n  - [Safety & Governance](/d/tenantchat-safety-governance?from=${__from}&to=${__to})\n",
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "description": "TraceQL search in Tempo. Click a trace row for its span waterfall, then follow trace-to-logs or trace-to-metrics links."
+    },
+    {
+      "id": 15,
+      "title": "Cross-plane workflow",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "content": "# One incident, one time range\n\n1. Start with **RED**: rate, errors, duration.\n2. Check **per-pod saturation** and termination reasons.\n3. Inspect the matching **logs and traces** below without losing the selected service or time range.\n\n- **TenantChat app dashboards** (keep the generic layer generic; tenant detail lives here):\n  - [Chat Turn Outcomes](/d/tenantchat-turn-outcomes?from=${__from}&to=${__to})\n  - [Retrieval & Routing Quality](/d/tenantchat-retrieval-routing?from=${__from}&to=${__to})\n  - [LLM Operations & Token Cost](/d/tenantchat-llm-operations?from=${__from}&to=${__to})\n  - [Safety & Governance](/d/tenantchat-safety-governance?from=${__from}&to=${__to})\n",
         "mode": "markdown"
       }
     }

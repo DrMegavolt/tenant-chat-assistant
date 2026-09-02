@@ -16,7 +16,7 @@ NPM := npm --prefix frontend
 	js-format-check js-typecheck js-build js-test js-test-cov 	deployment-security check api up up-all web down \
 	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
 	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate \
-	seed-knowledge dashboard-check docs-check grafana-smoke harness-a harness-b harness-live
+	seed-knowledge dashboard-check docs-check grafana-smoke grafana-query-check harness-a harness-b harness-live
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -217,6 +217,9 @@ clean: ## Remove caches and build artifacts
 
 grafana-smoke: ## Verify deployed Grafana contains all ten Tenant Chat + Lab dashboard UIDs
 	./scripts/verify_grafana_dashboards.sh
+
+grafana-query-check: ## Execute every generated PromQL panel query against local Prometheus
+	$(UV_RUN) python scripts/validate_grafana_dashboard_queries.py
 
 harness-a: ## Run the core Gate B harness against the real graph (hermetic, no LLM)
 	$(UV_RUN) pytest services/api/tests/test_harness_cases.py -v -m "not integration"

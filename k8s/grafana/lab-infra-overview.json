@@ -11,13 +11,60 @@
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "lab"
+      ],
+      "targetBlank": false,
+      "title": "Lab dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d",
+      "30d"
+    ]
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
         "hide": 0,
         "label": "Data source"
       }
@@ -41,6 +88,10 @@
       "id": 1,
       "title": "Scraped targets",
       "type": "status-history",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 1,
@@ -113,6 +164,10 @@
       "id": 2,
       "title": "HTTP probes (blackbox)",
       "type": "status-history",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 12,
@@ -198,6 +253,10 @@
       "id": 3,
       "title": "CPU used",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 20,
@@ -207,13 +266,15 @@
       "targets": [
         {
           "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -248,6 +309,10 @@
       "id": 4,
       "title": "Memory used",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 6,
         "y": 20,
@@ -257,13 +322,15 @@
       "targets": [
         {
           "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -298,6 +365,10 @@
       "id": 5,
       "title": "Disk used (/)",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 20,
@@ -307,13 +378,15 @@
       "targets": [
         {
           "expr": "100 * (1 - node_filesystem_avail_bytes{mountpoint=\"/\", fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\", fstype!~\"tmpfs|overlay\"})",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -348,6 +421,10 @@
       "id": 6,
       "title": "Load (1m)",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 18,
         "y": 20,
@@ -357,13 +434,15 @@
       "targets": [
         {
           "expr": "node_load1",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 2,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -398,6 +477,10 @@
       "id": 7,
       "title": "Node CPU & memory",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 24,
@@ -449,6 +532,10 @@
       "id": 8,
       "title": "Network throughput",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 24,
@@ -500,6 +587,10 @@
       "id": 9,
       "title": "Disk I/O",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 32,
@@ -551,6 +642,10 @@
       "id": 10,
       "title": "Load average",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 32,
@@ -615,6 +710,10 @@
       "id": 11,
       "title": "Top pods by CPU",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 41,
@@ -662,6 +761,10 @@
       "id": 12,
       "title": "Top pods by memory (working set)",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 41,
@@ -708,6 +811,10 @@
       "id": 13,
       "title": "Restarts (24h) \u2014 top offenders",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 49,
@@ -742,6 +849,10 @@
       "id": 14,
       "title": "Waiting containers (by reason)",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 49,
@@ -776,6 +887,10 @@
       "id": 15,
       "title": "OOM kills (24h)",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 57,
@@ -785,13 +900,15 @@
       "targets": [
         {
           "expr": "sum(increase(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"}[24h])) or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
           "decimals": 0,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -822,6 +939,10 @@
       "id": 16,
       "title": "Deployments below desired replicas",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 6,
         "y": 57,
@@ -856,6 +977,10 @@
       "id": 17,
       "title": "PVC usage",
       "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 65,

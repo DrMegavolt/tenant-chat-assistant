@@ -11,13 +11,60 @@
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "tenantchat"
+      ],
+      "targetBlank": false,
+      "title": "TenantChat dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d",
+      "30d"
+    ]
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
         "hide": 0,
         "label": "Data source"
       }
@@ -28,6 +75,10 @@
       "id": 1,
       "title": "Routing Decisions \u2014 Rate by Intent",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -102,6 +153,10 @@
       "id": 3,
       "title": "Clarification Rate \u2014 Router Declining to Guess",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 8,
         "y": 10,
@@ -111,13 +166,15 @@
       "targets": [
         {
           "expr": "sum(rate(tenantchat_routing_decisions_total{outcome=\"clarify\"}[$__rate_interval])) / sum(rate(tenantchat_routing_decisions_total[$__rate_interval])) * 100 or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -152,6 +209,10 @@
       "id": 4,
       "title": "Router Confidence Distribution",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 10,
@@ -204,6 +265,10 @@
       "id": 5,
       "title": "Retrieval Runs \u2014 by Verdict",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 17,
@@ -287,6 +352,10 @@
       "id": 6,
       "title": "Citation Validation Rate",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 17,
@@ -365,6 +434,10 @@
       "id": 7,
       "title": "Citation Invalid Rate",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 18,
         "y": 17,
@@ -374,13 +447,15 @@
       "targets": [
         {
           "expr": "sum(rate(tenantchat_citation_validation_total{verdict=\"invalid\"}[$__rate_interval])) / sum(rate(tenantchat_citation_validation_total[$__rate_interval])) * 100 or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -415,6 +490,10 @@
       "id": 8,
       "title": "Retrieval \u2014 Candidates Total Rate",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 25,
@@ -461,6 +540,10 @@
       "id": 9,
       "title": "p95 Retrieval Latency by Status",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 25,

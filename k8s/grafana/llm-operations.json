@@ -11,13 +11,60 @@
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "tenantchat"
+      ],
+      "targetBlank": false,
+      "title": "TenantChat dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d",
+      "30d"
+    ]
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
         "hide": 0,
         "label": "Data source"
       }
@@ -28,6 +75,10 @@
       "id": 1,
       "title": "LLM Calls \u2014 Rate by Template & Status",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 0,
@@ -75,6 +126,10 @@
       "id": 2,
       "title": "LLM Error Rate",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 10,
@@ -84,13 +139,15 @@
       "targets": [
         {
           "expr": "sum(rate(tenantchat_llm_calls_total{status=\"error\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100 or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -125,6 +182,10 @@
       "id": 3,
       "title": "LLM Timeout Rate",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 4,
         "y": 10,
@@ -134,13 +195,15 @@
       "targets": [
         {
           "expr": "sum(rate(tenantchat_llm_calls_total{status=\"timeout\"}[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100 or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -175,6 +238,10 @@
       "id": 4,
       "title": "Model Fallback Rate",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 8,
         "y": 10,
@@ -184,13 +251,15 @@
       "targets": [
         {
           "expr": "sum(rate(tenantchat_model_fallbacks_total[$__rate_interval])) / sum(rate(tenantchat_llm_calls_total[$__rate_interval])) * 100 or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -225,6 +294,10 @@
       "id": 5,
       "title": "Response Cache Hit Rate",
       "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 10,
@@ -234,13 +307,15 @@
       "targets": [
         {
           "expr": "sum(rate(tenantchat_response_cache_total{result=\"hit\"}[$__rate_interval])) / sum(rate(tenantchat_response_cache_total[$__rate_interval])) * 100 or vector(0)",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "decimals": 1,
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -275,6 +350,10 @@
       "id": 6,
       "title": "Token Rate \u2014 by Kind",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 14,
@@ -322,6 +401,10 @@
       "id": 7,
       "title": "Token Rate \u2014 by Template",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 12,
         "y": 14,
@@ -369,6 +452,10 @@
       "id": 8,
       "title": "p95 LLM Latency by Template",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
       "gridPos": {
         "x": 0,
         "y": 22,

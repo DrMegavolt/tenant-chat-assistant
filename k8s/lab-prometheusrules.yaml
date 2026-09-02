@@ -81,7 +81,11 @@ spec:
                   "service", "$2", "exported_job", "(.*)/(.*)"
                 )
               )
-            )
+            ) / 1000
+          # The legacy OTel Python histogram is named *_milliseconds and its
+          # bucket boundaries are 5, 10, 25, ... milliseconds. Normalize the
+          # recording rule to seconds so it can be compared and unioned with
+          # Traefik's *_seconds histogram without lying by a factor of 1000.
     # ── Per-service signals from the Traefik gateway ─────────────────────────
     # traefik_service_* labels name services "<ns>-<svc>-<port>@kubernetes".
     # Only the namespaces that route traffic through traefik are lifted; other
@@ -206,15 +210,15 @@ spec:
           annotations:
             summary: "Postgres connections above 80% of max_connections"
             description: "Connection pool pressure on the llm-chat application database."
-        - alert: LabElasticsearchNotGreen
+        - alert: LabElasticsearchRed
           expr: |-
-            elasticsearch_cluster_health_status{color!="green"} == 1
+            elasticsearch_cluster_health_status{color="red"} == 1
           for: 5m
           labels:
-            severity: warning
+            severity: critical
           annotations:
             summary: "Elasticsearch cluster health is {{ $labels.color }}"
-            description: "The retrieval index cluster is not green — check the Datastores dashboard."
+            description: "The retrieval index has unavailable primary shards. Yellow is expected on this single-node lab because replicas cannot be allocated."
         - alert: LabKafkaConsumerLag
           expr: |-
             max by (consumergroup) (kafka_consumergroup_lag) > 100

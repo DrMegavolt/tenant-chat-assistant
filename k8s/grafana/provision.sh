@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Provision Grafana dashboards from k8s/grafana/*.json as ConfigMaps.
+# Provision Grafana dashboards and the recording/alert rules that back the Lab
+# dashboards. Correlated data sources are owned by k8s-infra Helm values and
+# verified here before a dashboard rollout is accepted.
 #
 # The kube-prometheus-stack Grafana sidecar normally discovers ConfigMaps
 # labelled grafana_dashboard: "1" in the Grafana namespace. Some local
@@ -52,6 +54,9 @@ LAB_UIDS=(
 )
 
 cd "$SCRIPT_DIR"
+
+echo "Provisioning Lab PrometheusRules ..."
+kubectl apply -f "$SCRIPT_DIR/../lab-prometheusrules.yaml"
 
 for json_file in *.json; do
     name="${json_file%.json}"
@@ -114,6 +119,7 @@ stage_dashboards_in_grafana() {
     # decode them in the deployment process.
     kubectl -n "$NAMESPACE" exec "$grafana_pod" -c grafana-sc-dashboard -- \
         python -c 'import base64, os, urllib.request; token = base64.b64encode((os.environ["REQ_USERNAME"] + ":" + os.environ["REQ_PASSWORD"]).encode()).decode(); request = urllib.request.Request(os.environ["REQ_URL"], data=b"", headers={"Authorization": "Basic " + token}, method="POST"); urllib.request.urlopen(request).read()'
+
 }
 
 stage_dashboards_in_grafana
@@ -138,6 +144,24 @@ query_dashboard_uids() {
         | python3 -c "import json,sys; [print(d['uid']) for d in json.load(sys.stdin)]" 2>/dev/null
 }
 
+verify_datasources() {
+    local grafana_pod
+    grafana_pod="$(resolve_grafana_pod)"
+    if [[ -z "$grafana_pod" ]]; then
+        echo "ERROR: could not find Grafana pod to verify data sources." >&2
+        return 1
+    fi
+    kubectl -n "$NAMESPACE" exec "$grafana_pod" -c grafana-sc-dashboard -- \
+        python -c 'import base64, json, os, urllib.request; token = base64.b64encode((os.environ["REQ_USERNAME"] + ":" + os.environ["REQ_PASSWORD"]).encode()).decode(); headers = {"Authorization": "Basic " + token}; expected = {"prometheus": ("prometheus", ":9090"), "loki": ("loki", ":3100"), "tempo": ("tempo", ":3200"), "pyroscope": ("grafana-pyroscope-datasource", ":4040")}; failures = [];
+for uid, (type_, port) in expected.items():
+ request = urllib.request.Request("http://localhost:3000/api/datasources/uid/" + uid, headers=headers)
+ try: data = json.load(urllib.request.urlopen(request))
+ except Exception as exc: failures.append(f"{uid}: missing ({exc})"); continue
+ if data.get("type") != type_ or port not in data.get("url", ""): failures.append("{}: type={} url={}".format(uid, data.get("type"), data.get("url")))
+ if uid == "prometheus" and not any(item.get("datasourceUid") == "tempo" for item in data.get("jsonData", {}).get("exemplarTraceIdDestinations", [])): failures.append("prometheus: missing Tempo exemplar destination")
+print("Grafana data sources verified: prometheus, loki, tempo, pyroscope" if not failures else "\n".join(failures)); raise SystemExit(bool(failures))'
+}
+
 verify_dashboards() {
     local elapsed=0
     while [[ $elapsed -lt $VERIFY_TIMEOUT_SECONDS ]]; do
@@ -159,6 +183,7 @@ verify_dashboards() {
         if [[ ${#missing[@]} -eq 0 ]]; then
             echo ""
             echo "All ${#EXPECTED_UIDS[@]} dashboards verified in Grafana."
+            verify_datasources
             return 0
         fi
 
