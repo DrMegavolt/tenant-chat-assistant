@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
 ARG NODE_IMAGE="node:24.18.1-alpine3.23@sha256:c2cc26d8f991c2db236ad51a61efee843c482372d6d22570787309d511694110"
-ARG NGINX_IMAGE="nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de"
+ARG NGINX_IMAGE="nginx:1.30.4-alpine3.24@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
 
 # The bundles are built here rather than on a developer's laptop, so what nginx
 # serves comes from package-lock.json and nothing else. `npm ci` fails outright
@@ -19,6 +19,12 @@ ARG SOURCE_DATE_EPOCH="0"
 ARG VCS_REF="unknown"
 LABEL org.opencontainers.image.created="${SOURCE_DATE_EPOCH}" \
       org.opencontainers.image.revision="${VCS_REF}"
+
+# The pinned base is built before Alpine publishes some security fixes (the
+# util-linux CVE-2026-53612 family is fixed in 3.24's repos but was not in this
+# image). Upgrading at build time applies those packages without giving up the
+# digest pin, so the vulnerability gate passes on a reproducible base.
+RUN apk upgrade --no-cache
 
 # uid 10001 matches every other image in this repository. The rendered site
 # configuration is the only file the running container writes, so conf.d is the
