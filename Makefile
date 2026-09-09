@@ -2,8 +2,8 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Every recipe runs through `uv run --frozen` so a stale or hand-edited
-# environment cannot silently change what is being verified. `--frozen` fails if
-# uv.lock does not match pyproject.toml rather than resolving something new.
+# environment cannot silently change what is being verified. `--frozen` uses
+# the existing lock without checking freshness; lock-check verifies freshness.
 UV_RUN := uv run --frozen
 
 # The frontend is a self-contained npm project; nothing at the repository root
