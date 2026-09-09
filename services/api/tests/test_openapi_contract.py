@@ -1,18 +1,19 @@
 """The published contract, pinned.
 
-The schema is generated, which is exactly why it needs a test: nobody reviews a
-generated document, so a route added without a second thought appears in it
-without one either. The inventory below is the list a reviewer agreed to, and
-changing the API means changing it deliberately.
+The route inventory and full schema baseline make API changes explicit in the
+diff. Review the intended behavior before refreshing the generated baseline;
+matching a snapshot proves agreement, not that the contract is well designed.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from scripts.openapi_contract import CONTRACT
 from tenantchat.api import schemas
 from tenantchat.api.app import create_app
 from tenantchat.api.settings import Settings
@@ -143,6 +144,11 @@ def test_the_published_surface_is_the_reviewed_one(client: TestClient) -> None:
         (method, path) for path, methods in document.json()["paths"].items() for method in methods
     }
     assert operations == PUBLISHED_OPERATIONS
+
+
+def test_full_http_schema_matches_reviewed_contract(client: TestClient) -> None:
+    """Field types, requiredness, errors and parameters need review too."""
+    assert client.get("/openapi.json").json() == json.loads(CONTRACT.read_text(encoding="utf-8"))
 
 
 def test_the_schema_is_withheld_when_docs_are_disabled(settings: Settings) -> None:
