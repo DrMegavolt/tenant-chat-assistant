@@ -183,8 +183,10 @@ Important defaults and boundaries:
 - `CHAT_RAG_REQUIRED=true` makes startup fail when the retrieval path cannot be
   composed. The Kubernetes deployment enables it.
 
-Normal application state is never stored in process memory. In-memory adapters
-exist only for explicitly composed tests.
+Business records and request rate limits are durable in PostgreSQL. Model token
+and action budgets currently use a process-local ledger: restarts reset it and
+replicas do not share it. In-memory persistence adapters are used in explicitly
+composed tests.
 
 ## API surface
 

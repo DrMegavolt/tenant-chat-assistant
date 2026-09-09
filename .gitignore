@@ -43,3 +43,4 @@ architecture/likec4/dist/
 .DS_Store
 .idea/
 .vscode/
+.v2c/plugin_root
