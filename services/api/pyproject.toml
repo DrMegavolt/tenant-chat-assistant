@@ -26,7 +26,7 @@ dependencies = [
     "pydantic==2.10.5",
     # FastAPI multipart forms need the parser at runtime; declared explicitly
     # rather than relying on the framework's optional extra.
-    "python-multipart==0.0.20",
+    "python-multipart==0.0.30",
     # RAG-003 format adapters: the smallest maintained pure-Python parsers
     # for PDF and DOCX.
     "pypdf==6.14.2",
