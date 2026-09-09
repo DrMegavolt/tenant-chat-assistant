@@ -15,12 +15,18 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
+from tenantchat.api.ingestion import ingestion_key, submit_ingestion
+from tenantchat.api.jobs import JobRecord
 from tenantchat.api.persistence import (
     Database,
     DatabasePoolSettings,
     PostgresKnowledgeStore,
 )
+from tenantchat.api.persistence import knowledge as knowledge_persistence
+from tenantchat.api.persistence.jobs import PostgresJobStore, enqueue_job
 from tenantchat.api.registry import TenantRegistry
 from tenantchat.core.errors import ConflictError, InvalidVersionTransitionError, NotFoundError
 from tenantchat.core.knowledge import (
@@ -117,6 +123,87 @@ def visitor(moment: datetime = NOW, *, tenant_id: str = TENANT) -> RetrievalCont
     return RetrievalContext(
         tenant_id=tenant_id, domain=FINANCING, audience=RetrievalAudience.VISITOR, moment=moment
     )
+
+
+@pytest.mark.integration
+def test_publication_commits_delivery_before_route_enqueue(repository_database_url: str) -> None:
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            store = PostgresKnowledgeStore(database.engine)
+            _, version = await stage(store)
+            await store.approve(TENANT, version.version_id, approved_by="operator", at=NOW)
+            await store.publish(TENANT, version.version_id, at=NOW)
+            # No route enqueue has run. Read committed intent through a fresh store.
+            jobs = PostgresJobStore(database.engine)
+            committed = await jobs.for_tenant(TENANT)
+            assert len(committed) == 1
+            assert committed[0].idempotency_key == ingestion_key(TENANT, version.version_id)
+            repeated = await submit_ingestion(jobs, tenant_id=TENANT, version_id=version.version_id)
+            assert repeated.job_id == committed[0].job_id
+            assert len(await jobs.events(TENANT, repeated.job_id)) == 1
+            assert await jobs.for_tenant(OTHER_TENANT) == ()
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_publication_rolls_back_version_swap_and_delivery_on_failure(
+    repository_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_after_enqueue(
+        connection: AsyncConnection, tenant_id: str, **kwargs: object
+    ) -> JobRecord:
+        await enqueue_job(connection, tenant_id, **kwargs)  # type: ignore[arg-type]
+        raise RuntimeError("simulated failure after job insertion")
+
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            store = PostgresKnowledgeStore(database.engine)
+            _, first = await stage(store)
+            await make_current(store, first)
+            document, replacement = await stage(store, content=b"replacement")
+            await store.approve(TENANT, replacement.version_id, approved_by="operator", at=NOW)
+            monkeypatch.setattr(knowledge_persistence, "enqueue_job", fail_after_enqueue)
+            with pytest.raises(RuntimeError, match="simulated failure"):
+                await store.publish(TENANT, replacement.version_id, at=NOW)
+            restored = await store.document_for_version(TENANT, replacement.version_id)
+            assert restored.document_id == document.document_id
+            assert restored.version(first.version_id).state is VersionState.PUBLISHED
+            assert restored.version(replacement.version_id).state is VersionState.APPROVED
+            jobs = await PostgresJobStore(database.engine).for_tenant(TENANT)
+            assert len(jobs) == 1
+            assert jobs[0].idempotency_key == ingestion_key(TENANT, first.version_id)
+            async with database.engine.connect() as connection:
+                assert (
+                    await connection.execute(text("SELECT count(*) FROM background_job_events"))
+                ).scalar_one() == 1
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_publication_rejects_other_tenant_without_delivery(repository_database_url: str) -> None:
+    async def scenario() -> None:
+        database = await _database(repository_database_url)
+        try:
+            store = PostgresKnowledgeStore(database.engine)
+            _, version = await stage(store)
+            await store.approve(TENANT, version.version_id, approved_by="operator", at=NOW)
+            with pytest.raises(NotFoundError):
+                await store.publish(OTHER_TENANT, version.version_id, at=NOW)
+            jobs = PostgresJobStore(database.engine)
+            assert await jobs.for_tenant(TENANT) == ()
+            assert await jobs.for_tenant(OTHER_TENANT) == ()
+        finally:
+            await database.dispose()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.integration

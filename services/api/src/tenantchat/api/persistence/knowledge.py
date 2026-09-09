@@ -26,6 +26,9 @@ from datetime import datetime
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from tenantchat.api.ingestion import ingestion_key, ingestion_payload
+from tenantchat.api.jobs import JobKind
+from tenantchat.api.persistence.jobs import enqueue_job
 from tenantchat.api.persistence.tenancy import require_active_tenant
 from tenantchat.core.errors import ConflictError, NotFoundError
 from tenantchat.core.knowledge import (
@@ -478,6 +481,15 @@ class PostgresKnowledgeStore:
                 },
             )
             _expect_one(promoted.rowcount, "publish")
+            # Publication and delivery intent must survive or roll back together.
+            # The route's repeat enqueue resolves to this same tenant/version key.
+            await enqueue_job(
+                connection,
+                tenant_id,
+                kind=JobKind.INGESTION,
+                payload=ingestion_payload(version_id),
+                idempotency_key=ingestion_key(tenant_id, version_id),
+            )
             return await _load(connection, tenant_id, document_id, lock=False)
 
     async def expire(

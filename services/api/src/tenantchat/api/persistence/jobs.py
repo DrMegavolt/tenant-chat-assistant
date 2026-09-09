@@ -114,6 +114,76 @@ async def _record_event(
     )
 
 
+async def enqueue_job(
+    connection: AsyncConnection,
+    tenant_id: str,
+    *,
+    kind: JobKind,
+    payload: Mapping[str, object],
+    idempotency_key: str,
+    max_attempts: int = 5,
+    available_at: datetime | None = None,
+) -> JobRecord:
+    """Insert delivery intent in the caller's transaction; never commit independently."""
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise ValueError("job idempotency key must be between 1 and 200 characters")
+    if not 1 <= max_attempts <= 100:
+        raise ValueError("job max attempts must be between 1 and 100")
+    job_id = uuid.uuid4()
+    fingerprint = payload_fingerprint(payload)
+    statement = text(
+        f"""
+        INSERT INTO background_jobs
+            (id, tenant_id, kind, payload, payload_hash, idempotency_key,
+             max_attempts, available_at)
+        VALUES
+            (:id, :tenant_id, :kind, :payload, :payload_hash,
+             :idempotency_key, :max_attempts, COALESCE(:available_at, now()))
+        ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING
+        RETURNING {_JOB_COLUMNS}
+        """
+    ).bindparams(bindparam("payload", type_=JSONB))
+    await require_active_tenant(connection, tenant_id)
+    result = await connection.execute(
+        statement,
+        {
+            "id": job_id,
+            "tenant_id": tenant_id,
+            "kind": kind.value,
+            "payload": dict(payload),
+            "payload_hash": fingerprint,
+            "idempotency_key": idempotency_key,
+            "max_attempts": max_attempts,
+            "available_at": available_at,
+        },
+    )
+    row = result.one_or_none()
+    if row is not None:
+        job = _job(row)
+        await _record_event(connection, job, JobEventType.ENQUEUED, actor_type="service")
+        return job
+
+    duplicate = await connection.execute(
+        text(
+            f"""
+            SELECT {_JOB_COLUMNS}, payload_hash
+            FROM background_jobs
+            WHERE tenant_id = :tenant_id AND kind = :kind
+              AND idempotency_key = :idempotency_key
+            """  # noqa: S608 - _JOB_COLUMNS is a module constant
+        ),
+        {
+            "tenant_id": tenant_id,
+            "kind": kind.value,
+            "idempotency_key": idempotency_key,
+        },
+    )
+    existing = duplicate.one()
+    if existing.payload_hash != fingerprint:
+        raise ConflictError(detail="job idempotency key was reused for different work")
+    return _job(existing)
+
+
 class PostgresJobStore:
     """At-least-once delivery over leases; effects dedupe by idempotency key."""
 
@@ -130,64 +200,16 @@ class PostgresJobStore:
         max_attempts: int = 5,
         available_at: datetime | None = None,
     ) -> JobRecord:
-        if not idempotency_key or len(idempotency_key) > 200:
-            raise ValueError("job idempotency key must be between 1 and 200 characters")
-        if not 1 <= max_attempts <= 100:
-            raise ValueError("job max attempts must be between 1 and 100")
-        job_id = uuid.uuid4()
-        fingerprint = payload_fingerprint(payload)
-        statement = text(
-            f"""
-            INSERT INTO background_jobs
-                (id, tenant_id, kind, payload, payload_hash, idempotency_key,
-                 max_attempts, available_at)
-            VALUES
-                (:id, :tenant_id, :kind, :payload, :payload_hash,
-                 :idempotency_key, :max_attempts, COALESCE(:available_at, now()))
-            ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING
-            RETURNING {_JOB_COLUMNS}
-            """
-        ).bindparams(bindparam("payload", type_=JSONB))
         async with self._engine.begin() as connection:
-            await require_active_tenant(connection, tenant_id)
-            result = await connection.execute(
-                statement,
-                {
-                    "id": job_id,
-                    "tenant_id": tenant_id,
-                    "kind": kind.value,
-                    "payload": dict(payload),
-                    "payload_hash": fingerprint,
-                    "idempotency_key": idempotency_key,
-                    "max_attempts": max_attempts,
-                    "available_at": available_at,
-                },
+            return await enqueue_job(
+                connection,
+                tenant_id,
+                kind=kind,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                max_attempts=max_attempts,
+                available_at=available_at,
             )
-            row = result.one_or_none()
-            if row is not None:
-                job = _job(row)
-                await _record_event(connection, job, JobEventType.ENQUEUED, actor_type="service")
-                return job
-
-            duplicate = await connection.execute(
-                text(
-                    f"""
-                    SELECT {_JOB_COLUMNS}, payload_hash
-                    FROM background_jobs
-                    WHERE tenant_id = :tenant_id AND kind = :kind
-                      AND idempotency_key = :idempotency_key
-                    """  # noqa: S608 - _JOB_COLUMNS is a module constant
-                ),
-                {
-                    "tenant_id": tenant_id,
-                    "kind": kind.value,
-                    "idempotency_key": idempotency_key,
-                },
-            )
-            existing = duplicate.one()
-            if existing.payload_hash != fingerprint:
-                raise ConflictError(detail="job idempotency key was reused for different work")
-            return _job(existing)
 
     async def lease(
         self, *, worker_id: str, limit: int, lease_for: timedelta
