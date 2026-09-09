@@ -57,7 +57,10 @@ def query(base_url: str, expression: str) -> dict[str, Any]:
     query_string = urllib.parse.urlencode({"query": expression})
     url = f"{base_url.rstrip('/')}/api/v1/query?{query_string}"
     with urllib.request.urlopen(url, timeout=20) as response:  # noqa: S310
-        return json.load(response)
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise ValueError("Prometheus response must be a JSON object")
+    return payload
 
 
 def main() -> None:

@@ -123,6 +123,13 @@ for image in "${IMAGES[@]}"; do
         --entrypoint sh "$tag" -eu -c \
         'alembic upgrade head && python /app/scripts/setup_checkpoints.py'
       run_args+=(--network "$network" --env "DATABASE_URL=$database_url")
+      # Startup fails closed without the admin/visitor secrets: create_app
+      # raises rather than serve admin routes that are missing credentials.
+      # Throwaway values exercise the image the way the production chart
+      # composes it instead of asserting on a boot mode production never runs.
+      run_args+=(--env "ADMIN_GATEWAY_TOKEN=smoke-only-gateway-token-1234567890"
+                 --env "ADMIN_CSRF_SECRET=smoke-only-csrf-secret-0123456789abcdef"
+                 --env "CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY=smoke-only-signing-key-0123456789abcdef")
       ;;
     embedding)
       docker run --rm --entrypoint python "$tag" -c \
