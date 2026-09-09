@@ -108,7 +108,6 @@ specification {
   deploymentNode workload {
     style {
       color sky
-      multiple true
     }
   }
 
@@ -287,6 +286,7 @@ model {
   platform.api.visitorRoutes -[request]-> platform.api.identity 'Validates signed visitor identity'
   platform.api.adminRoutes -[request]-> platform.api.identity 'Checks operator and tenant access'
   platform.api.visitorRoutes -[request]-> platform.api.orchestration 'Runs a turn'
+  platform.api.visitorRoutes -[query]-> platform.api.knowledge 'Serves citation source views'
   platform.api.adminRoutes -[command]-> platform.api.knowledge 'Manages knowledge versions'
   platform.api.adminRoutes -[query]-> platform.api.provenance 'Reads and replays turn records'
   platform.api.adminRoutes -[command]-> platform.api.domain 'Operates handoffs, reviews, privacy, and access'
@@ -304,6 +304,7 @@ model {
   platform.api.knowledge -[request]-> platform.embedding 'Embeds visitor queries'
   platform.api.knowledge -[query]-> platform.api.persistence 'Checks published versions and indexing state'
   platform.api.provenance -[command]-> platform.api.persistence 'Appends content-bearing turn records'
+  platform.api.orchestration -[command]-> platform.postgres 'Persists resumable LangGraph checkpoints'
   platform.api.persistence -[command]-> platform.postgres 'Reads and writes application data'
 
   platform.jobWorker.leases -[query]-> platform.postgres 'Claims due work'
@@ -401,6 +402,7 @@ deployment {
     microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.appNamespace.uploadsPvc.uploads 'Stores source files'
     microk8s.appNamespace.kibanaPod.kibana -[deploymentFlow]-> microk8s.appNamespace.elasticsearchPod.elasticsearch 'Inspects the index'
     microk8s.appNamespace.releasePod.releases -[deploymentFlow]-> microk8s.appNamespace.postgresPod.postgres 'Applies schema changes'
+    microk8s.appNamespace.releasePod.releases -[deploymentFlow]-> microk8s.appNamespace.apiPod.api 'Seeds knowledge through the admin API'
     microk8s.appNamespace.apiPod.api -[deploymentFlow]-> microk8s.observabilityNamespace.telemetryPods.telemetry 'Exports telemetry'
     microk8s.appNamespace.workerPod.worker -[deploymentFlow]-> microk8s.observabilityNamespace.telemetryPods.telemetry 'Exports telemetry'
     microk8s.appNamespace.embeddingPod.embedding -[deploymentFlow]-> microk8s.observabilityNamespace.telemetryPods.telemetry 'Exports metrics'
