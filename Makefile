@@ -67,6 +67,13 @@ dashboard-check: ## Validate Grafana dashboard JSON syntax and sync generated ou
 docs-check: ## Verify local links and images in repository Markdown
 	$(UV_RUN) python scripts/check_docs.py
 
+.PHONY: contract-check contract-update
+contract-check: ## Fail on any unreviewed OpenAPI schema drift
+	$(UV_RUN) python -m scripts.openapi_contract --check
+
+contract-update: ## Export the current API contract for explicit diff review
+	$(UV_RUN) python -m scripts.openapi_contract --write
+
 # test-cov depends on js-build because the public route allowlist is derived
 # from the build output, so an unbuilt frontend makes that specification
 # vacuous; the edge keeps the order correct under `make -j`.
@@ -171,7 +178,7 @@ deploy-local: ## Build, migrate, and deploy all images to the local MicroK8s clu
 # specification vacuous. eval-gate runs the baseline-vs-candidate comparison
 # over every versioned dataset with determinism verification; it is hermetic
 # and takes ~2s.
-check: lock-check lint format-check typecheck js-lint js-typecheck js-format-check js-build \
+check: lock-check lint format-check typecheck contract-check js-lint js-typecheck js-format-check js-build \
 	eval-gate test-cov js-test-cov deployment-security image-contracts dashboard-check docs-check ## Full local and CI quality gate
 	@echo ""
 	@echo "quality gate passed"
