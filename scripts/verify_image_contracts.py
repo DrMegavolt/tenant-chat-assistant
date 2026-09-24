@@ -31,7 +31,11 @@ POSTGRES_FIXTURES = (
 )
 K8S_FILES = tuple(sorted((ROOT / "k8s").glob("*.yaml")))
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
-POSTGRES_IMAGE = re.compile(r"postgres:\d[\w.\-]*(?:@sha256:[0-9a-f]{64})?")
+# The trailing boundary matters now that Compose contains service-DNS database
+# URLs such as `@postgres:5432/database`: a slash means this is a host and port,
+# not an image reference. Quotes, whitespace, and shell-expansion delimiters are
+# the endings used by the actual image fixtures.
+POSTGRES_IMAGE = re.compile(r"postgres:\d[\w.\-]*(?:@sha256:[0-9a-f]{64})?(?=[\"'\s}\],)]|$)")
 RELEASE_CONTRACT = re.compile(
     r"registry\.example\.invalid/tenantchat/(?:api|embedding|web)"
     r"@sha256:REPLACE_WITH_[A-Z]+_DIGEST$"

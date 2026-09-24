@@ -25,8 +25,11 @@ ARG VCS_REF="unknown"
 LABEL org.opencontainers.image.created="${SOURCE_DATE_EPOCH}" \
       org.opencontainers.image.revision="${VCS_REF}"
 
+# Docker copies this ownership into a new named volume mounted here. The API
+# and worker can then create tenant directories without running as root.
 RUN groupadd --gid 10001 tenantchat \
-    && useradd --uid 10001 --gid tenantchat --create-home --shell /usr/sbin/nologin tenantchat
+    && useradd --uid 10001 --gid tenantchat --create-home --shell /usr/sbin/nologin tenantchat \
+    && install -d -o 10001 -g 10001 /data/knowledge
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \

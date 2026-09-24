@@ -87,7 +87,7 @@ reasoning is recorded in [ADR-0001](docs/adr/0001-agent-runtime.md).
 The embedding container downloads the pinned model on its first start and is
 memory-intensive. Its model cache is kept in a Docker volume.
 
-## Run the local visitor demo
+## Run the local visitor demo with Docker Compose
 
 Install the locked Python and frontend dependencies and create `.env` from the
 safe example:
@@ -96,18 +96,53 @@ safe example:
 make setup
 ```
 
-Replace every `REPLACE_WITH_*` value in `.env`. Set `LLM_MODEL` to a model that
-your OpenAI-compatible server actually provides. For loopback development you
-may also enable the API's restricted development-auth mode:
+Replace every `REPLACE_WITH_*` value in `.env`. Set the external
+OpenAI-compatible model that containers can reach:
 
 ```dotenv
-CHAT_API_DEV_AUTH=true
-LLM_BASE_URL=http://localhost:1234/v1
 LLM_MODEL=your-loaded-model
+COMPOSE_LLM_BASE_URL=http://host.docker.internal:1234/v1
 ```
 
-The Make recipes do not load `.env` into the shell. In every terminal used for
-the API, worker, migrations, or seed command, load it first:
+Build and start the complete visitor runtime, verify it, and load governed demo
+knowledge:
+
+```bash
+make compose-up
+make compose-smoke
+make compose-seed
+```
+
+Open `http://127.0.0.1:8080`. `compose-up` runs PostgreSQL, Elasticsearch,
+embedding, both migration systems, the API, durable worker, and the deployed
+nginx frontend. The first start may take several minutes while the pinned
+embedding model downloads; its cache and application data persist in Docker
+volumes.
+
+Compose is the local visitor-demo runtime. It does not reproduce Keycloak and
+oauth2-proxy, so browser OIDC and the operator console use the full Kubernetes
+deployment. See the [Docker Compose runbook](docs/runbooks/docker-compose.md)
+for operation and troubleshooting, and the [Kubernetes guide](k8s/README.md)
+for the authenticated deployment.
+
+To stop the application while keeping its data:
+
+```bash
+make compose-down
+```
+
+`make down-clean` also deletes the Docker volumes.
+
+## Develop from source
+
+For hot reload, start the infrastructure and embedding container:
+
+```bash
+make up-all
+```
+
+The Make recipes do not load `.env` into host processes. In each terminal used
+for migrations, the API, worker, or seed task, load it first:
 
 ```bash
 set -a
@@ -115,51 +150,26 @@ source .env
 set +a
 ```
 
-Start PostgreSQL, Elasticsearch, and the embedding service, then apply both
-application and LangGraph checkpoint migrations:
+Apply migrations, then run the application processes in separate sourced
+terminals:
 
 ```bash
-make up-all
 make migrate
 make migrate-checkpoints
-```
-
-Run the worker, API, and frontend in separate sourced terminals:
-
-```bash
 make worker
-```
-
-```bash
 make api
-```
-
-```bash
 make dev
 ```
 
-Once the API and worker are ready, load the two demo tenants' governed
-documents:
-
-```bash
-API_BASE_URL=http://127.0.0.1:8080 make seed-knowledge
-```
-
-Open `http://127.0.0.1:5173` for the visitor demo.
+After the API and worker are ready, seed with
+`API_BASE_URL=http://127.0.0.1:8080 make seed-knowledge` and open
+`http://127.0.0.1:5173`.
 
 The Vite server also serves the operator-console bundle at `/admin/`, but it
 does not impersonate an operator or add identity headers. Use the full nginx,
 `oauth2-proxy`, and Keycloak deployment for the browser-based admin workflow.
-The [Kubernetes guide](k8s/README.md) and
-[demo-access runbook](docs/runbooks/demo-access.md) cover that path.
-
-To stop the local dependencies while keeping their data:
-
-```bash
-make down
-```
-
-`make down-clean` also deletes the Docker volumes.
+The [demo-access runbook](docs/runbooks/demo-access.md) covers the authenticated
+Kubernetes path.
 
 ## Configuration notes
 
@@ -260,6 +270,7 @@ committed secrets.
 - [Architecture model and diagrams](architecture/likec4/README.md)
 - [Architecture decisions](docs/adr/README.md)
 - [Kubernetes deployment](k8s/README.md)
+- [Docker Compose runtime](docs/runbooks/docker-compose.md)
 - [Database migrations](docs/runbooks/database-migrations.md)
 - [Privacy model](docs/privacy.md)
 - [Accessibility checks](docs/accessibility.md)

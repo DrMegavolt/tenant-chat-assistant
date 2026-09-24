@@ -1,14 +1,44 @@
-# Local development dependencies.
+# Local development and single-host application runtime.
 #
-#     make up        # Postgres + Elasticsearch (fast)
-#     make up-all    # also the embedding service
-#     make web       # the frontend behind nginx, as deployed
+#     make up             # Postgres + Elasticsearch for host development
+#     make up-all         # also the embedding service
+#     make compose-up     # complete containerized visitor demo
+#     make compose-smoke  # health and gateway verification
+#     make compose-seed   # governed demo knowledge
 #
 # Every credential is required from the environment with `:?`, so a missing value
 # fails immediately with a named variable instead of starting a service on a
 # well-known default password (SEC-005).
 
 name: tenantchat
+
+x-api-build: &api-build
+  context: .
+  dockerfile: services/api/Dockerfile
+
+x-api-environment: &api-environment
+  APP_ENV: local
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+  LLM_BASE_URL: ${COMPOSE_LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+  LLM_MODEL: ${LLM_MODEL:?set LLM_MODEL in .env}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-120}
+  ADMIN_CSRF_SECRET: ${ADMIN_CSRF_SECRET:?set ADMIN_CSRF_SECRET in .env}
+  ADMIN_GATEWAY_TOKEN: ${ADMIN_GATEWAY_TOKEN:?set ADMIN_GATEWAY_TOKEN in .env}
+  CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY: ${CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY:?set CHAT_API_VISITOR_CREDENTIAL_SIGNING_KEY in .env}
+  CHAT_API_ALLOWED_ORIGINS: ${CHAT_API_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
+  CHAT_API_DOCS_ENABLED: ${CHAT_API_DOCS_ENABLED:-true}
+  CHAT_API_LOG_JSON: ${CHAT_API_LOG_JSON:-true}
+  CHAT_API_LOG_LEVEL: ${CHAT_API_LOG_LEVEL:-INFO}
+  CHAT_API_LOG_PSEUDONYM_KEY: ${CHAT_API_LOG_PSEUDONYM_KEY:-}
+  ELASTICSEARCH_URL: http://elasticsearch:9200
+  ES_USERNAME: ${ES_USERNAME:?set ES_USERNAME in .env}
+  ES_PASSWORD: ${ES_PASSWORD:?set ES_PASSWORD in .env}
+  KNOWLEDGE_INDEX: ${KNOWLEDGE_INDEX:-tenant-knowledge-chunks}
+  EMBEDDING_URL: http://embedding:8001
+  CHAT_TO_EMBEDDING_TOKEN: ${CHAT_TO_EMBEDDING_TOKEN:?set CHAT_TO_EMBEDDING_TOKEN in .env}
+  INGESTION_STORAGE_ROOT: /data/knowledge
+  CHAT_RAG_REQUIRED: "true"
 
 services:
   postgres:
@@ -66,13 +96,15 @@ services:
   # Optional: `make up-all`. Excluded from the default set because the first run
   # downloads model weights and the container is memory-hungry on a laptop.
   embedding:
-    profiles: ["embedding"]
+    profiles: ["embedding", "app"]
     build:
       context: .
       dockerfile: services/embedding/Dockerfile
     restart: unless-stopped
     environment:
+      APP_ENV: local
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:?set EMBEDDING_MODEL_REVISION in .env}
       EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
       INGESTION_TO_EMBEDDING_TOKEN: ${INGESTION_TO_EMBEDDING_TOKEN:?set INGESTION_TO_EMBEDDING_TOKEN in .env}
@@ -91,34 +123,115 @@ services:
       retries: 20
       start_period: 120s
 
+  # One-shot release phase. API and worker use service_completed_successfully
+  # so a schema failure cannot leave an apparently running partial stack.
+  migrate:
+    profiles: ["app"]
+    build: *api-build
+    restart: "no"
+    entrypoint: ["/bin/sh", "-eu", "-c"]
+    command:
+      - |
+        alembic upgrade head
+        python /app/scripts/setup_checkpoints.py
+    environment:
+      DATABASE_MIGRATION_URL: postgresql+psycopg://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    profiles: ["app"]
+    build: *api-build
+    restart: unless-stopped
+    environment: *api-environment
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_PORT:-8004}:8004"
+    volumes:
+      - knowledge-storage:/data/knowledge
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request as r;
+          r.urlopen('http://127.0.0.1:8004/readyz', timeout=10)"
+      interval: 10s
+      timeout: 15s
+      retries: 18
+      start_period: 20s
+
+  worker:
+    profiles: ["app"]
+    build: *api-build
+    restart: unless-stopped
+    command: ["python", "-m", "tenantchat.api.job_worker"]
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      PRIVACY_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ES_USERNAME: ${ES_USERNAME:?set ES_USERNAME in .env}
+      ES_PASSWORD: ${ES_PASSWORD:?set ES_PASSWORD in .env}
+      KNOWLEDGE_INDEX: ${KNOWLEDGE_INDEX:-tenant-knowledge-chunks}
+      EMBEDDING_URL: http://embedding:8001
+      INGESTION_TO_EMBEDDING_TOKEN: ${INGESTION_TO_EMBEDDING_TOKEN:?set INGESTION_TO_EMBEDDING_TOKEN in .env}
+      INGESTION_STORAGE_ROOT: /data/knowledge
+      CHAT_API_LOG_JSON: ${CHAT_API_LOG_JSON:-true}
+      CHAT_API_LOG_LEVEL: ${CHAT_API_LOG_LEVEL:-INFO}
+      CHAT_API_LOG_PSEUDONYM_KEY: ${CHAT_API_LOG_PSEUDONYM_KEY:-}
+    volumes:
+      - knowledge-storage:/data/knowledge
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "tenantchat.api.job_worker", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   # Optional: `make web`. The same image Kubernetes serves the site from, so a
   # broken proxy rule, cache header, or CSP shows up locally rather than after a
   # deploy. Hot-reload development is `make dev` instead; this is the deployed
   # shape, and its assets are baked into the image at build time.
   web:
-    profiles: ["web"]
+    profiles: ["web", "app"]
     build:
       context: .
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
     environment:
-      # The API runs on the host, not in compose: `make api` serves services/api
-      # on 127.0.0.1:8080.  The API image serves visitor and admin routes on the
-      # same port, so both origins point at the same place here; Kubernetes
-      # routes them through the gateway's public and admin listeners.
-      CHAT_BACKEND_ORIGIN: ${CHAT_BACKEND_ORIGIN:-http://host.docker.internal:8080}
-      CHAT_ADMIN_ORIGIN: ${CHAT_ADMIN_ORIGIN:-http://host.docker.internal:8080}
-      # Local compose has no oauth2-proxy sidecar. The browser-based admin
-      # console therefore needs a local auth proxy; CHAT_API_DEV_AUTH alone
-      # does not supply operator identity headers. The visitor surface does not
-      # use this origin. nginx -t requires it to be a valid URL.
-      AUTH_PROXY_ORIGIN: ${AUTH_PROXY_ORIGIN:-http://host.docker.internal:8080}
+      CHAT_BACKEND_ORIGIN: http://api:8004
+      CHAT_ADMIN_ORIGIN: http://api:8004
+      # Local Compose has no oauth2-proxy sidecar, so browser admin routes are
+      # intentionally unavailable. nginx still requires a valid internal
+      # origin while rendering the shared Kubernetes/Compose configuration.
+      AUTH_PROXY_ORIGIN: http://api:8004
       ADMIN_GATEWAY_TOKEN: ${ADMIN_GATEWAY_TOKEN:?set ADMIN_GATEWAY_TOKEN in .env}
       WIDGET_ALLOWED_ORIGINS: ${WIDGET_ALLOWED_ORIGINS:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
     healthcheck:
       # 127.0.0.1, not localhost: the listener is IPv4 and localhost resolves to
       # ::1 first inside the container.
@@ -127,6 +240,23 @@ services:
       timeout: 5s
       retries: 6
       start_period: 5s
+
+  # Explicit one-shot task rather than part of compose-up: a developer may
+  # want an empty application, and first-run embedding downloads can be slow.
+  seed-knowledge:
+    profiles: ["seed"]
+    build: *api-build
+    restart: "no"
+    command: ["python", "/app/scripts/seed_knowledge.py"]
+    environment:
+      API_BASE_URL: http://api:8004
+      ADMIN_GATEWAY_TOKEN: ${ADMIN_GATEWAY_TOKEN:?set ADMIN_GATEWAY_TOKEN in .env}
+      ADMIN_CSRF_SECRET: ${ADMIN_CSRF_SECRET:?set ADMIN_CSRF_SECRET in .env}
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
 
 # Kibana is deliberately absent. Kibana 8 refuses to start when configured with
 # the `elastic` superuser, so a local instance needs the `kibana_system` account
@@ -139,3 +269,4 @@ volumes:
   postgres-data:
   elasticsearch-data:
   huggingface-cache:
+  knowledge-storage:

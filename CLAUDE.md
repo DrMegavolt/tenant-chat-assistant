@@ -10,6 +10,8 @@ leads, and escalates to a human.
 make setup     # sync Python and frontend dependencies, seed .env
 make check     # full quality gate: Python + JavaScript lint, format, types, tests, coverage
 make up        # Postgres + Elasticsearch via docker compose
+make compose-up     # complete containerized visitor demo
+make compose-smoke  # verify Compose migrations, readiness, and gateway
 make test      # tests only
 make help      # everything else
 ```

@@ -14,7 +14,7 @@ NPM := npm --prefix frontend
 	test-migrations test-repositories test-agent-runtime test-privacy test-database migrate migrate-checkpoints \
 	dev worker js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov 	deployment-security check api up up-all web down \
-	down-clean logs ps network-policy-smoke image-contracts images-build images-smoke \
+	down-clean logs ps compose-up compose-smoke compose-seed compose-down network-policy-smoke image-contracts images-build images-smoke \
 	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate \
 	seed-knowledge dashboard-check docs-check grafana-smoke grafana-query-check harness-a harness-b harness-live
 
@@ -196,8 +196,20 @@ up: ## Start local dependencies (Postgres, Elasticsearch)
 up-all: ## Start dependencies plus the optional embedding service
 	docker compose --profile embedding up -d --wait
 
-web: ## Serve the frontend from the deployed nginx image on http://127.0.0.1:8080
-	docker compose --profile web up -d --build --wait web
+web: ## Serve the deployed frontend with its containerized application dependencies
+	docker compose --profile app up -d --build --wait web
+
+compose-up: ## Build and start the complete local visitor demo
+	docker compose --profile app up -d --build --wait
+
+compose-smoke: ## Verify the running Compose application
+	./scripts/smoke_compose.sh
+
+compose-seed: ## Load governed demo knowledge into the Compose application
+	docker compose --profile app --profile seed run --rm seed-knowledge
+
+compose-down: ## Stop the complete Compose application, preserving volumes
+	docker compose --profile app down
 
 down: ## Stop local dependencies, preserving volumes
 	docker compose down

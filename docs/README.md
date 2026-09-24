@@ -21,6 +21,7 @@ documents here explain design decisions and operations in more depth.
 
 | Topic | Document |
 | --- | --- |
+| Docker Compose single-host runtime | [Docker Compose](runbooks/docker-compose.md) |
 | Kubernetes deployment and required secrets | [`k8s/README.md`](../k8s/README.md) |
 | Container builds and release manifests | [Container images](runbooks/container-images.md) |
 | Database roles, migrations, and rollback | [Database migrations](runbooks/database-migrations.md) |

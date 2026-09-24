@@ -139,6 +139,25 @@ wait for the complete rollout with one command:
 make deploy-local
 ```
 
+Verify the application workloads and the public visitor gateway after the
+release:
+
+```bash
+kubectl -n llm-chat rollout status statefulset/postgres --timeout=300s
+kubectl -n llm-chat rollout status statefulset/elasticsearch --timeout=300s
+kubectl -n llm-chat rollout status deployment/embedding-service --timeout=900s
+kubectl -n llm-chat rollout status deployment/chat-backend --timeout=180s
+kubectl -n llm-chat rollout status deployment/job-worker --timeout=180s
+kubectl -n llm-chat rollout status deployment/web --timeout=180s
+curl --fail --show-error http://192.168.1.180/healthz
+curl --fail --show-error http://192.168.1.180/api/tenants
+```
+
+The rollout checks prove Kubernetes readiness; the two gateway requests prove
+the public nginx route and visitor API. Browser OIDC and role mapping still need
+the interactive checks in the
+[demo-access runbook](../docs/runbooks/demo-access.md).
+
 The generated manifests and Buildx metadata stay below the gitignored
 `.local/k8s/` directory. The target attempts a binary-safe, verified custom-
 format database backup under `.local/k8s/backups/`, but a backup failure warns

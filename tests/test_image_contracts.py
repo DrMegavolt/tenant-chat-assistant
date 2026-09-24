@@ -156,6 +156,23 @@ def test_every_disposable_postgres_is_the_same_pinned_server() -> None:
     assert ROOT / "tests/repositories/conftest.py" in POSTGRES_FIXTURES
 
 
+def test_postgres_service_dns_url_is_not_treated_as_an_image(tmp_path: Path) -> None:
+    fixture = tmp_path / "compose.yml"
+    pinned = "postgres:16.11-alpine3.23@sha256:" + "a" * 64
+    fixture.write_text(
+        f"image: {pinned}\nDATABASE_URL: postgresql://user:password@postgres:5432/database\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+    with (
+        patch.object(verify_image_contracts, "ROOT", tmp_path),
+        patch.object(verify_image_contracts, "POSTGRES_FIXTURES", (fixture,)),
+    ):
+        verify_pinned_postgres_images(errors)
+
+    assert errors == []
+
+
 def test_model_cache_mounts_match_the_image_hf_home() -> None:
     errors: list[str] = []
     verify_model_cache(errors)
