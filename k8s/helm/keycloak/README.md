@@ -9,7 +9,7 @@ default-deny shape of `llm-chat`, and a post-install Job that applies the two
 credential-bearing parts of the realm from Secrets plus the `groups` client
 scope.
 
-## Why the Job creates the `groups` scope
+## Groups client scope
 
 A realm representation that carries a `clientScopes` array is authoritative:
 Keycloak assigns exactly that list and skips the built-in scopes it would
@@ -20,12 +20,11 @@ was unreachable for every user. Realm import has no additive mode for that key,
 so the realm JSON omits it and the Job, which already holds admin credentials
 for the client secret, creates the scope and attaches it to the client.
 
-It is deliberately a first-party chart rather than a wrapper around an upstream
-one: the digest pinning, default-deny policies, and out-of-band Secret contract
-are the same rules the tracked manifests follow, and expressing them through
-someone else's values schema costs more than the ~400 lines here.
+The first-party chart applies the same digest pinning, default-deny policies,
+and out-of-band Secret contract as the tracked manifests without translating
+them through another chart's values schema.
 
-## Why the URLs are split
+## Public and backchannel URLs
 
 Keycloak has to mint tokens whose `iss` a browser could also have reached, and
 oauth2-proxy has to redeem codes and fetch JWKS without leaving the cluster.
@@ -105,7 +104,7 @@ the `oidc-endpoints` ConfigMap and the `oidc-credentials` Secret; see
 `k8s/README.md` for the commands. `k8s/deploy.sh` refuses to deploy without
 them.
 
-## What the bootstrap Job does
+## Bootstrap job
 
 Realm import runs from a ConfigMap, which is readable by anything with
 namespace read access, so it carries no credential. The post-install Job fills
@@ -142,23 +141,22 @@ denies them everything.
 A user in no recognized group is authenticated but has no role, and every admin
 route fails closed. That is the intended behavior, not a misconfiguration.
 
-## What is checked, and where
+## Validation
 
 ```bash
 make keycloak-check
 ```
 
-Lints the chart and runs `tests/test_keycloak_realm_chart.py`, which renders
-against `values.local.example.yaml` and asserts what the section above is about:
-the realm declares no `clientScopes`, its client names no scope that import
-cannot resolve, the bootstrap Job creates `groups` with its group-membership
-mapper and attaches it, and every scope in the gateway's `OAUTH2_PROXY_SCOPE`
-is reachable one of those two ways.
+This command lints the chart and runs `tests/test_keycloak_realm_chart.py`
+against `values.local.example.yaml`. The checks verify that the realm declares
+no `clientScopes`, the client names no scope that import cannot resolve, the
+bootstrap Job creates and attaches `groups` with its group-membership mapper,
+and every scope in the gateway's `OAUTH2_PROXY_SCOPE` remains reachable.
 
 Rendering needs helm, which `make check` deliberately does without, so those
 tests carry pytest's `chart` marker and run in CI's `Helm charts` job.
 
-## Not covered by the static gates
+## Static gate scope
 
 `make deployment-security` and `make image-contracts` scan `k8s/*.yaml`, which
 is a flat glob and does not reach this chart — those checks parse plain YAML and

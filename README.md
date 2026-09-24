@@ -2,30 +2,29 @@
 
 [![CI](https://github.com/DrMegavolt/tenant-chat-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/DrMegavolt/tenant-chat-assistant/actions/workflows/ci.yml)
 
-Tenant Chat Assistant is a production-oriented demo of a multi-tenant support
-chat for home-service companies. It combines retrieval-augmented generation
-(RAG), appointment and lead workflows, human handoff, and an operator console.
+Tenant Chat Assistant is a multi-tenant AI support platform for home-service
+companies. It combines retrieval-augmented generation (RAG), appointment and
+lead workflows, human handoff, and an operator console.
 
-The project focuses on the parts of an AI assistant that are easy to overlook:
+## Features
 
-- Answers use approved, tenant-scoped documents and carry validated citations.
-- Bookings, leads, and handoffs pass through deterministic policy checks and
-  idempotent domain services.
-- Each turn records its route, retrieved evidence, assembled prompt, model
-  rounds, validation results, and executed graph so an operator can investigate
-  a poor answer.
-- Logs, metrics, and operational traces exclude message and document content.
-  Content-bearing inference records have separate access controls and retention.
+- Tenant-scoped RAG answers use approved documents and validated citations.
+- Deterministic policy checks and idempotent domain services govern bookings,
+  leads, and handoffs.
+- Turn-level provenance captures routing, retrieved evidence, prompt assembly,
+  model rounds, validation results, and the executed graph for operator review.
+- Separate telemetry planes keep message and document content out of logs,
+  metrics, and operational traces while protecting inference records with
+  dedicated access controls and retention.
+- Docker Compose and Kubernetes provide complete local and cluster deployment
+  paths.
 
-This repository is a demonstration, not a hosted service or a claim of full
-production readiness. The current release has a complete local and Kubernetes
-demo path, but real calendar, CRM, and notification integrations, high
-availability, disaster recovery, and load testing remain out of scope. See the
-[backlog](BACKLOG.md) for the current boundary.
+Calendar, CRM, and notification integrations, high availability, disaster
+recovery, and load testing are tracked in the [backlog](BACKLOG.md).
 
 ![Tenant Chat system context](architecture/likec4/diagrams/index.png)
 
-## What is implemented
+## Visitor and operator workflows
 
 The visitor widget can:
 
@@ -37,11 +36,11 @@ The visitor widget can:
 - request a human handoff; and
 - collect per-answer feedback.
 
-The operator console includes chat and handoff queues, knowledge lifecycle
+The operator console provides chat and handoff queues, knowledge lifecycle
 management, answer reviews, an AI turn explorer, tenant memberships, audit
-events, and index-integrity findings. The admin API also exposes jobs, leads,
-bookings, and privacy requests. Access is enforced again in the API even when
-the nginx gateway and `oauth2-proxy` have already authenticated the operator.
+events, and index-integrity findings. The admin API exposes jobs, leads,
+bookings, and privacy requests. The API enforces access independently of the
+nginx gateway and `oauth2-proxy` authentication layer.
 
 The main runtime is split into three deployable images:
 
@@ -49,7 +48,7 @@ The main runtime is split into three deployable images:
 | --- | --- |
 | `api` | FastAPI, the LangGraph runtime, domain adapters, admin and visitor APIs, and the durable job-worker command |
 | `embedding` | The pinned local embedding model and HTTP service |
-| `web` | The React builds and nginx gateway for the demo site, widget, and operator console |
+| `web` | The React builds and nginx gateway for the visitor site, widget, and operator console |
 
 PostgreSQL is authoritative for application state, LangGraph checkpoints, jobs,
 and inference turn records. Elasticsearch contains rebuildable search data.
@@ -63,7 +62,7 @@ packages/core/              framework-free domain rules and ports
 packages/orchestration/     LangGraph state, nodes, prompts, agents, and tools
 services/api/               FastAPI app, persistence, workers, and migrations
 services/embedding/         local embedding service
-frontend/                   React widget, demo page, operator console, and nginx
+frontend/                   React widget, visitor page, operator console, and nginx
 evals/                      versioned offline retrieval and grounding evaluations
 architecture/likec4/        architecture source and generated diagrams
 docs/                       ADRs, policies, and operational runbooks
@@ -87,7 +86,7 @@ reasoning is recorded in [ADR-0001](docs/adr/0001-agent-runtime.md).
 The embedding container downloads the pinned model on its first start and is
 memory-intensive. Its model cache is kept in a Docker volume.
 
-## Run the local visitor demo with Docker Compose
+## Run locally with Docker Compose
 
 Install the locked Python and frontend dependencies and create `.env` from the
 safe example:
@@ -104,8 +103,8 @@ LLM_MODEL=your-loaded-model
 COMPOSE_LLM_BASE_URL=http://host.docker.internal:1234/v1
 ```
 
-Build and start the complete visitor runtime, verify it, and load governed demo
-knowledge:
+Build and start the complete visitor runtime, verify it, and load governed
+sample knowledge:
 
 ```bash
 make compose-up
@@ -119,11 +118,11 @@ nginx frontend. The first start may take several minutes while the pinned
 embedding model downloads; its cache and application data persist in Docker
 volumes.
 
-Compose is the local visitor-demo runtime. It does not reproduce Keycloak and
-oauth2-proxy, so browser OIDC and the operator console use the full Kubernetes
-deployment. See the [Docker Compose runbook](docs/runbooks/docker-compose.md)
-for operation and troubleshooting, and the [Kubernetes guide](k8s/README.md)
-for the authenticated deployment.
+Compose provides the local visitor runtime. Browser OIDC and the operator
+console use the Kubernetes deployment with Keycloak and `oauth2-proxy`. See the
+[Docker Compose runbook](docs/runbooks/docker-compose.md) for operation and
+troubleshooting, and the [Kubernetes guide](k8s/README.md) for the authenticated
+deployment.
 
 To stop the application while keeping its data:
 
@@ -168,8 +167,8 @@ After the API and worker are ready, seed with
 The Vite server also serves the operator-console bundle at `/admin/`, but it
 does not impersonate an operator or add identity headers. Use the full nginx,
 `oauth2-proxy`, and Keycloak deployment for the browser-based admin workflow.
-The [demo-access runbook](docs/runbooks/demo-access.md) covers the authenticated
-Kubernetes path.
+The [operator-access runbook](docs/runbooks/demo-access.md) covers the
+authenticated Kubernetes path.
 
 ## Configuration notes
 
@@ -194,9 +193,8 @@ Important defaults and boundaries:
   composed. The Kubernetes deployment enables it.
 
 Business records and request rate limits are durable in PostgreSQL. Model token
-and action budgets currently use a process-local ledger: restarts reset it and
-replicas do not share it. In-memory persistence adapters are used in explicitly
-composed tests.
+and action budgets use a process-local ledger: restarts reset it and replicas do
+not share it. Explicitly composed tests use in-memory persistence adapters.
 
 ## API surface
 
