@@ -25,6 +25,13 @@ ARG VCS_REF="unknown"
 LABEL org.opencontainers.image.created="${SOURCE_DATE_EPOCH}" \
       org.opencontainers.image.revision="${VCS_REF}"
 
+# The base digest fixes the starting filesystem, while Debian security packages
+# can be published after that digest. Refresh the final stage so the CI image
+# scan sees fixed OS libraries without copying build tooling into the runtime.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # Docker copies this ownership into a new named volume mounted here. The API
 # and worker can then create tenant directories without running as root.
 RUN groupadd --gid 10001 tenantchat \

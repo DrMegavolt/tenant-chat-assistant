@@ -98,6 +98,28 @@ def test_an_unquoted_digest_pinned_base_image_arg_passes(tmp_path: Path) -> None
     assert errors == []
 
 
+def test_python_runtime_without_os_security_refresh_is_rejected(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# syntax=docker/dockerfile:1.7@sha256:" + "a" * 64 + "\n"
+        'ARG PYTHON_IMAGE="python:3.12-slim@sha256:' + "b" * 64 + '"\n'
+        "FROM ${PYTHON_IMAGE} AS builder\n"
+        "RUN uv sync --frozen\n"
+        "FROM ${PYTHON_IMAGE} AS runtime\n"
+        "USER 10001:10001\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+    with (
+        patch.object(verify_image_contracts, "ROOT", tmp_path),
+        patch.object(verify_image_contracts, "DOCKERFILES", (dockerfile,)),
+        patch.object(verify_image_contracts, "PYTHON_DOCKERFILES", (dockerfile,)),
+    ):
+        verify_dockerfiles(errors)
+
+    assert any("OS security updates" in error for error in errors)
+
+
 def test_kubernetes_uses_images_as_immutable_artifacts() -> None:
     errors: list[str] = []
     verify_manifests(errors)

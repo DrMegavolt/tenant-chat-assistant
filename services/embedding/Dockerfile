@@ -20,6 +20,12 @@ ARG SOURCE_DATE_EPOCH="0"
 ARG VCS_REF="unknown"
 LABEL org.opencontainers.image.created="${SOURCE_DATE_EPOCH}" \
       org.opencontainers.image.revision="${VCS_REF}"
+# The pinned base can predate a Debian security publication. Apply current
+# fixes only in the final stage, then remove package indexes from the image.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 10001 tenantchat \
     && useradd --uid 10001 --gid tenantchat --create-home --shell /usr/sbin/nologin tenantchat \
     && install -d -o 10001 -g 10001 /home/tenantchat/.cache/huggingface

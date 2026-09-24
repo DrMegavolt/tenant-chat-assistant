@@ -100,6 +100,18 @@ def verify_dockerfiles(errors: list[str]) -> None:
             errors.append(f"{label}: dependency installation must consume uv.lock with --frozen")
         if re.search(r"\bpip(?:3)?\s+install\b", text):
             errors.append(f"{label}: runtime/build pip install is forbidden")
+        final_stage = re.split(r"^FROM .*$", text, flags=re.MULTILINE)[-1]
+        if path in PYTHON_DOCKERFILES and not all(
+            command in final_stage
+            for command in (
+                "apt-get update",
+                "apt-get upgrade -y --no-install-recommends",
+                "rm -rf /var/lib/apt/lists/*",
+            )
+        ):
+            errors.append(
+                f"{label}: final Python runtime must apply OS security updates and remove indexes"
+            )
         if "USER 10001:10001" not in text:
             errors.append(f"{label}: final runtime must select numeric non-root uid/gid 10001")
 
