@@ -154,10 +154,35 @@ describe("the trace explorer filters", () => {
     await screen.findByText(/tool error/i, { selector: ".session-preview" });
 
     expect(screen.queryByText(/open daily from 7 AM/)).toBeNull();
-    const row = screen.getByRole("button", { name: /Turn 8/i });
-    expect(within(row).getByText(/tool error/i)).toBeTruthy();
-    expect(within(row).queryByText(/uncertain/i)).toBeNull();
-    expect(row.textContent).toContain("Open turn");
+    const open = screen.getByRole("button", { name: /Open turn 8/i });
+    expect(open.textContent).toBe("Open turn 8 →");
+    const row = open.closest("article");
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText(/tool error/i)).toBeTruthy();
+    expect(within(row!).queryByText(/uncertain/i)).toBeNull();
+  });
+
+  test("search results are grouped into independently expandable chats", async () => {
+    const otherChat = {
+      ...V3_RECORD_WIRE,
+      turn_id: "turn-other-chat",
+      session_id: "session-2",
+      trace_id: "trace-other-chat"
+    };
+    stubTraceBackend({ records: [RECORD_WIRE, FABRICATED_RECORD_WIRE, otherChat] });
+    renderExplorer();
+
+    fireEvent.click(screen.getByRole("button", { name: "Search turns" }));
+    const firstChat = await screen.findByRole("button", { name: /Chat session-1, 2 turns/i });
+    const secondChat = screen.getByRole("button", { name: /Chat session-2, 1 turn/i });
+
+    expect(firstChat.getAttribute("aria-expanded")).toBe("true");
+    expect(secondChat.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: /Open turn 4/i })).toBeNull();
+
+    fireEvent.click(secondChat);
+    expect(secondChat.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: /Open turn 4/i })).toBeTruthy();
   });
 
   test("a chat id resolves to explicit, clickable turn results", async () => {
@@ -193,7 +218,9 @@ describe("the trace explorer filters", () => {
 
     const open = await screen.findByRole("button", { name: /Open turn 2/i });
     expect(open.textContent).toContain("Open turn");
-    expect(screen.getByText(/Chat ID/).textContent).toContain(chatId);
+    expect(screen.getByRole("button", { name: /Chat a069d537.*1 turn/i }).textContent).toContain(
+      chatId
+    );
     expect(screen.getByText(/Trace ID/).textContent).toContain("48f7563b");
 
     fireEvent.click(open);
@@ -263,6 +290,8 @@ describe("the trace explorer filters", () => {
     await screen.findByText(/tool error/i, { selector: ".session-preview" });
     fireEvent.click(screen.getByRole("button", { name: /Turn 8/i }));
     await screen.findByRole("heading", { name: /Turn 8/ });
+    const selectedPanel = screen.getByRole("complementary", { name: "Selected turn" });
+    expect(within(selectedPanel).getByRole("heading", { name: /Turn 8/ })).toBeTruthy();
 
     // R-19: the drill-in must not pre-fetch the record to harvest its trace id;
     // TraceDetail's read is the only audited trace.read for this click.

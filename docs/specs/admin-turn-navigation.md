@@ -21,6 +21,13 @@ an explicit action, making its drill-down easy to miss or misread as inert.
 - The explorer lookup accepts a turn ID, trace ID, or chat ID. A chat ID produces
   the content-free turns for that chat; those results have explicit **Open turn**
   buttons with ordinary keyboard focus and activation behavior.
+- Search results are grouped by chat instead of presented as one flat turn list.
+  Each chat group shows its complete chat ID and loaded turn count, and can be
+  expanded or collapsed independently.
+- **Open turn** is a real, visually distinct button rather than text inside a
+  card-sized button. Activating it puts the audited turn detail in an adjacent
+  selected-turn panel, so opening a result never hides the response below a
+  long result list.
 - The explorer labels each identifier by kind instead of showing an unlabeled
   hash, and a queue-originated drill-down offers a clear return to Chat queue.
 
@@ -63,6 +70,8 @@ responses are unchanged.
 - Transport failures retain the current queue and show a retryable panel error.
 - A chat with no retained turn records shows an explicit empty state; retention
   may remove turn records before the conversation itself.
+- When no search result is selected, the adjacent detail panel explicitly asks
+  the operator to open a turn; it never resembles an unresponsive empty area.
 
 ## Exclusions
 

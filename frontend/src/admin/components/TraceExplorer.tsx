@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { AdminApi } from "src/admin/adminApi";
 import { TraceDetail } from "src/admin/components/TraceDetail";
@@ -67,6 +67,21 @@ function recordFromTrace(trace: TraceRead): TraceSearchRecord {
   };
 }
 
+interface ChatTurnGroup {
+  sessionId: string;
+  records: TraceSearchRecord[];
+}
+
+function groupByChat(records: TraceSearchRecord[]): ChatTurnGroup[] {
+  const groups = new Map<string, TraceSearchRecord[]>();
+  for (const record of records) {
+    const group = groups.get(record.sessionId);
+    if (group) group.push(record);
+    else groups.set(record.sessionId, [record]);
+  }
+  return [...groups].map(([sessionId, grouped]) => ({ sessionId, records: grouped }));
+}
+
 export interface TraceExplorerProps {
   api: AdminApi;
   tenants: { tenantId: string; name: string }[];
@@ -105,6 +120,7 @@ export function TraceExplorer({
   const [error, setError] = useState<string | null>(null);
   const [lookupId, setLookupId] = useState("");
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   /** The record an id lookup already read, handed to the detail so the id
    * path costs one audited read like every other path. */
   const [lookupTrace, setLookupTrace] = useState<TraceRead | null>(null);
@@ -160,6 +176,9 @@ export function TraceExplorer({
       setRecords(page.records);
       setTotal(page.total);
       setHasSearched(true);
+      setExpandedSessions(
+        page.records[0] ? new Set([page.records[0].sessionId]) : new Set<string>()
+      );
     } catch {
       if (!isCurrent()) return;
       setError("Could not reach the trace surface. Try the search again.");
@@ -195,6 +214,7 @@ export function TraceExplorer({
     const isCurrent = () => generation === generationRef.current;
     setLookupTrace(null);
     setSelected(record);
+    setExpandedSessions((expanded) => new Set(expanded).add(record.sessionId));
     // No trace read here: TraceDetail performs the one audited read for this
     // click, so a drill-in costs a single trace.read (review R-19).
     void (async () => {
@@ -239,6 +259,7 @@ export function TraceExplorer({
         setHasSearched(true);
         setLookupTrace(null);
         setSelected(null);
+        setExpandedSessions(new Set([page.records[0]!.sessionId]));
         return;
       }
       if (!detail) {
@@ -266,7 +287,30 @@ export function TraceExplorer({
     setHasSearched(false);
     setLookupTrace(null);
     setSelected(null);
+    setExpandedSessions(new Set());
   };
+
+  const groupedRecords = useMemo(() => groupByChat(records), [records]);
+
+  const toggleSession = (sessionId: string) => {
+    setExpandedSessions((expanded) => {
+      const next = new Set(expanded);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const selectedDetail = selected ? (
+    <TraceDetail
+      key={selected.turnId}
+      api={api}
+      tenantId={tenantId}
+      record={selected}
+      gold={gold}
+      preloadedTrace={lookupTrace?.turnId === selected.turnId ? lookupTrace : undefined}
+    />
+  ) : null;
 
   return (
     <section className="trace-explorer" aria-labelledby="traceTitle">
@@ -343,70 +387,120 @@ export function TraceExplorer({
       )}
 
       {records.length > 0 && (
-        <>
-          <p className="muted-copy" role="status">
-            Showing {records.length} of {total} turn{total === 1 ? "" : "s"}
-          </p>
-          <div className="trace-results" role="group" aria-label="Turn search results">
-            {records.map((record) => (
+        <div className="trace-workspace">
+          <aside className="trace-result-detail" aria-label="Selected turn">
+            {selectedDetail ?? (
+              <div className="admin-card trace-detail-placeholder">
+                <h2>Select a turn</h2>
+                <p className="muted-copy">
+                  Open a turn from a chat to inspect its audited inference record here.
+                </p>
+              </div>
+            )}
+          </aside>
+
+          <div className="trace-result-pane">
+            <p className="muted-copy" role="status">
+              <span>
+                Showing {records.length} of {total} turn{total === 1 ? "" : "s"}
+              </span>
+              <span>
+                {" "}
+                · {groupedRecords.length} loaded chat
+                {groupedRecords.length === 1 ? "" : "s"}
+              </span>
+            </p>
+            <div className="trace-chat-groups" role="group" aria-label="Turn search results">
+              {groupedRecords.map((group) => {
+                const expanded = expandedSessions.has(group.sessionId);
+                return (
+                  <section className="trace-chat-group" key={group.sessionId}>
+                    <button
+                      type="button"
+                      className="trace-chat-summary"
+                      aria-expanded={expanded}
+                      aria-label={`Chat ${group.sessionId}, ${group.records.length} ${
+                        group.records.length === 1 ? "turn" : "turns"
+                      }`}
+                      onClick={() => toggleSession(group.sessionId)}
+                    >
+                      <span>
+                        <span className="identifier-label">Chat ID</span>
+                        <strong className="mono">{group.sessionId}</strong>
+                      </span>
+                      <span className="trace-chat-count">
+                        {group.records.length} loaded{" "}
+                        {group.records.length === 1 ? "turn" : "turns"}
+                        <span aria-hidden="true">{expanded ? "−" : "+"}</span>
+                      </span>
+                    </button>
+
+                    {expanded && (
+                      <div className="trace-results">
+                        {group.records.map((record) => (
+                          <article
+                            key={record.turnId}
+                            className={`trace-result-card${
+                              selected?.turnId === record.turnId ? " selected" : ""
+                            }`}
+                          >
+                            <div className="session-row">
+                              <strong>
+                                Turn {record.turnIndex} ·{" "}
+                                {OUTCOME_LABELS[record.outcome] ?? record.outcome}
+                              </strong>
+                              <span className="session-meta">
+                                {relativeTraceTime(record.recordedAt)}
+                              </span>
+                            </div>
+                            <p className="session-preview">
+                              {record.diagnosisCauses.length
+                                ? record.diagnosisCauses
+                                    .map((cause) => DIAGNOSIS_CAUSE_LABELS[cause] ?? cause)
+                                    .join(" · ")
+                                : "No diagnosis"}
+                              {record.diagnosisStatuses.some(isUncertainStatus) && (
+                                <span className="uncertain-chip">uncertain</span>
+                              )}
+                            </p>
+                            <span className="session-meta mono">Turn ID {record.turnId}</span>
+                            <span className="session-meta mono">
+                              Trace ID {record.traceId || "Not recorded"}
+                            </span>
+                            <span className="session-meta mono">
+                              Manifest {record.componentManifestHash.slice(0, 12)}
+                            </span>
+                            <button
+                              type="button"
+                              className="ghost-button trace-result-action"
+                              aria-current={selected?.turnId === record.turnId ? "true" : undefined}
+                              onClick={() => open(record)}
+                            >
+                              Open turn {record.turnIndex} <span aria-hidden="true">→</span>
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+            {records.length < total && (
               <button
-                key={record.turnId}
                 type="button"
-                className={`session-item${selected?.turnId === record.turnId ? " selected" : ""}`}
-                aria-current={selected?.turnId === record.turnId ? "true" : undefined}
-                onClick={() => open(record)}
+                className="ghost-button"
+                disabled={isLoading}
+                onClick={() => void loadMore()}
               >
-                <span className="session-row">
-                  <strong>
-                    Turn {record.turnIndex} · {OUTCOME_LABELS[record.outcome] ?? record.outcome}
-                  </strong>
-                  <span className="session-meta">{relativeTraceTime(record.recordedAt)}</span>
-                </span>
-                <span className="session-preview">
-                  {record.diagnosisCauses.length
-                    ? record.diagnosisCauses
-                        .map((cause) => DIAGNOSIS_CAUSE_LABELS[cause] ?? cause)
-                        .join(" · ")
-                    : "No diagnosis"}
-                  {record.diagnosisStatuses.some(isUncertainStatus) && (
-                    <span className="uncertain-chip">uncertain</span>
-                  )}
-                </span>
-                <span className="session-meta mono">Chat ID {record.sessionId}</span>
-                <span className="session-meta mono">Turn ID {record.turnId}</span>
-                <span className="session-meta mono">
-                  Trace ID {record.traceId || "Not recorded"}
-                </span>
-                <span className="session-meta mono">
-                  Manifest {record.componentManifestHash.slice(0, 12)}
-                </span>
-                <span className="trace-result-action">Open turn {record.turnIndex} →</span>
+                {isLoading ? "Loading…" : `Load ${total - records.length} more`}
               </button>
-            ))}
+            )}
           </div>
-          {records.length < total && (
-            <button
-              type="button"
-              className="ghost-button"
-              disabled={isLoading}
-              onClick={() => void loadMore()}
-            >
-              {isLoading ? "Loading…" : `Load ${total - records.length} more`}
-            </button>
-          )}
-        </>
+        </div>
       )}
 
-      {selected && (
-        <TraceDetail
-          key={selected.turnId}
-          api={api}
-          tenantId={tenantId}
-          record={selected}
-          gold={gold}
-          preloadedTrace={lookupTrace?.turnId === selected.turnId ? lookupTrace : undefined}
-        />
-      )}
+      {records.length === 0 && selectedDetail}
     </section>
   );
 }
