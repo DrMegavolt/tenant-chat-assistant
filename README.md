@@ -6,6 +6,9 @@ Tenant Chat Assistant is a multi-tenant AI support platform for home-service
 companies. It combines retrieval-augmented generation (RAG), appointment and
 lead workflows, human handoff, and an operator console.
 
+Demo:
+https://github.com/DrMegavolt/tenant-chat-assistant/blob/main/docs/tenant-chat-demo1.mp4
+
 ## Features
 
 - Tenant-scoped RAG answers use approved documents and validated citations.
