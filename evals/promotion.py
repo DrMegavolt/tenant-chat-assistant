@@ -18,10 +18,11 @@ that projection to a scoreable dataset case (`RAG-008`):
 
 The knowledge-base lookup is injected as a mapping so the hermetic tests can
 feed the fixture corpus while the release tooling feeds the tenant's indexed
-chunks. ``RAG-006`` is not built, so a promoted case is materialized as the
-single resolved query the current runner scores; if a future payload carries
-a corrected answer (``answer``/``expect_grounded``), it is passed through to
-the grounding scorer unchanged.
+chunks. A promoted case is materialized as the single query the current
+runner scores — the query recorded in the turn's retrieval section, which in
+the live path is the `RAG-006` planner's resolved form; if a future payload
+carries a corrected answer (``answer``/``expect_grounded``), it is passed
+through to the grounding scorer unchanged.
 """
 
 from __future__ import annotations

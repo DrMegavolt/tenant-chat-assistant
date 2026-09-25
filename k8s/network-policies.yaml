@@ -31,9 +31,9 @@ spec:
 ---
 # The web gateway is the only public application pod. Traefik remains the TLS
 # ingress, and the dedicated MetalLB Service is an additional local-LAN entry
-# point. There is intentionally no LoadBalancer service for Kibana, financing,
-# ingestion, embedding, or data stores. Port 8080 is the single public listener;
-# the separate admin port (8081) is gone.
+# point. There is intentionally no LoadBalancer service for Kibana, embedding,
+# or data stores. Port 8080 is the single public listener; the separate admin
+# port (8081) is gone.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

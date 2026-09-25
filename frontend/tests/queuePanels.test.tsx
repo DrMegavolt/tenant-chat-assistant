@@ -1,9 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, test, vi } from "vitest";
 
+import type { AdminApi } from "src/admin/adminApi";
 import { SessionDetail } from "src/admin/components/SessionDetail";
 import { SessionList } from "src/admin/components/SessionList";
+import { SessionTurns } from "src/admin/components/SessionTurns";
 import { StatBar } from "src/admin/components/StatBar";
+import type { TraceSearchRecord } from "src/admin/traceTypes";
 import type { SessionDetail as SessionDetailData, SessionSummary } from "src/admin/types";
 
 const QUEUE_ROW: SessionSummary = {
@@ -37,6 +40,7 @@ describe("the chat queue's honest numbers", () => {
     expect(row.textContent).toContain("Someone will call you within the hour.");
     expect(row.textContent).toContain("21 messages");
     expect(row.textContent).toContain("1 leads");
+    expect(row.textContent).toContain("Chat ID session-1");
   });
 
   test("a row without those fields degrades to its placeholders instead of invented zeros", () => {
@@ -57,6 +61,54 @@ describe("the chat queue's honest numbers", () => {
     const strip = within(container.querySelector("#adminStats")!);
     expect(strip.getByText("Messages").nextElementSibling?.textContent).toBe("42");
     expect(strip.getByText("Leads").nextElementSibling?.textContent).toBe("1");
+  });
+});
+
+describe("the selected chat's AI turns", () => {
+  test("labels the complete chat, turn, and trace ids and offers an explicit open action", async () => {
+    const record: TraceSearchRecord = {
+      turnId: "ab301c99-7c58-4878-a2ed-91560ae1c52d",
+      sessionId: "a069d537-8850-415f-8d29-dd7ad8fb7721",
+      traceId: "48f7563b2186a742240b1a2bf789368c",
+      recordedAt: "2026-09-24T20:00:00Z",
+      outcome: "answered",
+      componentManifestHash: "manifest-1",
+      diagnosisCauses: [],
+      diagnosisStatuses: [],
+      turnIndex: 2,
+      traceSchemaVersion: "3",
+      sourceGenerationIds: []
+    };
+    const onOpen = vi.fn();
+    const tracesForSession = vi.fn().mockResolvedValue({
+      records: [record],
+      total: 1,
+      offset: 0,
+      limit: 200
+    });
+    const api = {
+      tracesForSession
+    } as unknown as AdminApi;
+
+    render(<SessionTurns api={api} tenantId="apex" sessionId={record.sessionId} onOpen={onOpen} />);
+
+    const open = await screen.findByRole("button", { name: "Open in AI turn explorer" });
+    const card = open.closest("article")!;
+    expect(card.textContent).toContain(`Turn ID${record.turnId}`);
+    expect(card.textContent).toContain(`Trace ID${record.traceId}`);
+    fireEvent.click(open);
+    expect(onOpen).toHaveBeenCalledWith(record);
+    expect(tracesForSession).toHaveBeenCalledWith(record.sessionId, "apex");
+  });
+
+  test("explains when the transcript role does not include trace access", async () => {
+    const api = {
+      tracesForSession: vi.fn().mockResolvedValue(null)
+    } as unknown as AdminApi;
+
+    render(<SessionTurns api={api} tenantId="apex" sessionId="session-1" onOpen={() => {}} />);
+
+    expect(await screen.findByText(/trace-read grant is required/i)).toBeTruthy();
   });
 });
 

@@ -68,6 +68,7 @@ _AUTHORIZING_PERMISSION: Final[dict[str, str]] = {
     "trace_access.granted": "platform_admin — directory role",
     "trace_access.revoked": "platform_admin — directory role",
     "trace.read": "trace_viewer — PRIV-002 grant, or platform_admin",
+    "trace.session_search": "trace_viewer — PRIV-002 grant, or platform_admin",
     "trace.search": "trace_viewer — PRIV-002 grant, or platform_admin",
     "trace.replay": "trace_viewer — PRIV-002 grant, or platform_admin",
     "trace.gold_read": "trace_viewer — PRIV-002 grant, or platform_admin",

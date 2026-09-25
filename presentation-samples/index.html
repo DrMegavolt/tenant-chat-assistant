@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTML Presentation Samples — three styles, one deck</title>
+<style>
+  :root{
+    --paper:#f6f3ec; --ink:#17150f; --red:#c73a12;
+    --line:rgba(23,21,15,.22); --faint:rgba(23,21,15,.58);
+    --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);
+       max-width:980px;margin:0 auto;padding:8vh 6vw 12vh}
+  .kick{font-family:var(--mono);font-size:12px;letter-spacing:.25em;text-transform:uppercase;color:var(--red);margin-bottom:18px}
+  h1{font-family:var(--serif);font-size:clamp(38px,5.5vw,64px);line-height:1.05;font-weight:700;max-width:20ch}
+  h1 em{font-style:italic;color:var(--red)}
+  .lede{font-size:18px;line-height:1.6;color:var(--faint);max-width:60ch;margin-top:20px}
+  h2{font-family:var(--serif);font-size:26px;margin:60px 0 22px;border-bottom:1px solid var(--line);padding-bottom:12px}
+  a.deck{display:block;text-decoration:none;color:inherit;border:1px solid var(--line);
+         padding:26px 28px;margin-bottom:16px;transition:border-color .15s}
+  a.deck:hover{border-color:var(--red)}
+  a.deck .name{font-family:var(--serif);font-size:24px;font-weight:700;margin-bottom:6px}
+  a.deck .name span{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.15em;margin-left:14px;vertical-align:middle}
+  a.deck p{color:var(--faint);font-size:15px;line-height:1.55;max-width:70ch}
+  .swatches{display:flex;gap:8px;margin-top:14px}
+  .sw{width:26px;height:26px;border-radius:50%;border:1px solid var(--line)}
+  ol.rules{margin:0 0 60px;max-width:72ch}
+  ol.rules li{padding:14px 0 14px 4px;border-bottom:1px solid var(--line);line-height:1.6;font-size:16px}
+  ol.rules li b{font-weight:700}
+  .foot{font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.1em}
+</style>
+</head>
+<body>
+  <div class="kick">Presentation samples</div>
+  <h1>Three styles, <em>one deck.</em></h1>
+  <p class="lede">The same six slides — title, agenda, cards, big stat, two-column, closing — rendered in three distinct visual styles, so you can compare treatments rather than topics. Each file is a single self-contained HTML file: no dependencies, no build step.</p>
+
+  <h2>The decks</h2>
+
+  <a class="deck" href="01-dark-tech.html">
+    <div class="name">Dark Tech<span>style 01</span></div>
+    <p>Near-black canvas with a faint grid, one violet accent, mono kickers, terminal-style figure. Best for engineering, infrastructure and LLM/agent topics — reads well on a projector or screen-share in a dim room.</p>
+    <div class="swatches">
+      <span class="sw" style="background:#0a0d14"></span><span class="sw" style="background:#7c6cff"></span><span class="sw" style="background:#e8eaf2"></span><span class="sw" style="background:#98a1b3"></span>
+    </div>
+  </a>
+
+  <a class="deck" href="02-editorial-light.html">
+    <div class="name">Editorial Light<span>style 02</span></div>
+    <p>Warm paper, serif display type, hairline rules, one signal-red accent. Best for talks that are read as much as watched — reviews, write-ups, anything that will also be printed or exported to PDF.</p>
+    <div class="swatches">
+      <span class="sw" style="background:#f6f3ec"></span><span class="sw" style="background:#17150f"></span><span class="sw" style="background:#c73a12"></span><span class="sw" style="background:#efe9dd"></span>
+    </div>
+  </a>
+
+  <a class="deck" href="03-gradient-keynote.html">
+    <div class="name">Gradient Keynote<span>style 03</span></div>
+    <p>Indigo-to-cyan gradient field, frosted-glass cards, gradient display type. Best for product and vision keynotes where energy matters more than information density.</p>
+    <div class="swatches">
+      <span class="sw" style="background:#0b0d22"></span><span class="sw" style="background:#6366f1"></span><span class="sw" style="background:#22d3ee"></span><span class="sw" style="background:#eef0ff"></span>
+    </div>
+  </a>
+
+  <h2>Good presentation style, in seven rules</h2>
+  <ol class="rules">
+    <li><b>One idea per slide.</b> The headline states it; everything else on the slide only proves or measures it.</li>
+    <li><b>Type does the work.</b> Three roles, three faces: a display face for headlines, a workhorse sans for prose, a mono for data. Headlines ≥ 40&nbsp;px at 16:9.</li>
+    <li><b>One accent color.</b> Everything else is neutral. The accent marks exactly the thing you want eyes on — numbers, keywords, the total row.</li>
+    <li><b>Margins and air.</b> ≥ 7&nbsp;vw padding, generous line spacing. A crowded slide reads as unfinished; whitespace reads as confidence.</li>
+    <li><b>Data gets structure.</b> Numbers in mono, columns aligned, units on every figure — the same discipline as a log line.</li>
+    <li><b>Consistent chrome.</b> Kicker, folio, footer and rules sit in the same place on every slide, so the audience never re-orients.</li>
+    <li><b>Dark for the stage, light for the page.</b> Dark decks flatter screens and dim rooms; light decks survive printing, PDFs and bright rooms. Pick by venue, not by mood.</li>
+  </ol>
+
+  <p class="foot">Keyboard: ← → navigate · F fullscreen · click to advance · printable via browser → PDF</p>
+</body>
+</html>

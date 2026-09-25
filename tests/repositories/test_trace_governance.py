@@ -311,6 +311,8 @@ def test_for_session_returns_oldest_first_and_bounded(
     records = asyncio.run(store.for_session("tenant-a", session_id, limit=2))
 
     assert [record.content["sequence"] for record in records] == [0, 1]
+    assert asyncio.run(store.count_for_session("tenant-a", session_id)) == 3
+    assert asyncio.run(store.count_for_session("tenant-b", session_id)) == 0
 
 
 def test_record_refuses_a_session_outside_the_tenant(

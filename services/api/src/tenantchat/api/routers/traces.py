@@ -62,6 +62,7 @@ from tenantchat.api.schemas import (
     TraceReplayRetrievalResponse,
     TraceReplayTemplateResponse,
     TraceReplayTrialsResponse,
+    TraceSearchResponse,
     TraceSearchResponsePage,
 )
 from tenantchat.api.store import AuditActorType, AuditEvent
@@ -387,6 +388,54 @@ async def read_turn_record(
         )
     )
     return TraceReadResponse.of(record, projections)
+
+
+@router.get(
+    "/api/admin/traces/by-session/{session_id}",
+    response_model=TraceSearchResponsePage,
+)
+async def turns_for_chat_session(
+    identity: TraceReader,
+    session_id: uuid.UUID,
+    tenant_id: TenantIdQuery,
+    reason: TurnRecordReadReason,
+    registry: Registry,
+    turns: TurnRecords,
+    audit: Audit,
+    request_id: RequestId,
+    limit: TraceLimitQuery = 200,
+) -> TraceSearchResponsePage:
+    """Content-free turn identifiers for one chat, for queue-to-trace navigation.
+
+    This is a direct lookup, not another Gate B filter dimension. It remains
+    behind the dedicated trace-read grant and returns the same content-free
+    projection as trace search. An absent or cross-tenant session is an empty
+    result, so the route cannot enumerate session ownership.
+
+    Raises:
+        ForbiddenError: the operator holds no trace-read grant for the tenant.
+    """
+    registry.get(tenant_id)
+    records = await turns.for_session(tenant_id, session_id, limit=limit)
+    total = await turns.count_for_session(tenant_id, session_id)
+    await audit.record(
+        AuditEvent(
+            tenant_id=tenant_id,
+            actor_type=AuditActorType.STAFF,
+            principal_id=identity.subject,
+            action="trace.session_search",
+            resource_type="chat_session",
+            resource_id=session_id,
+            request_id=request_id,
+            details={"reason": reason.value, "limit": limit, "matches": total},
+        )
+    )
+    return TraceSearchResponsePage(
+        records=[TraceSearchResponse.of(record) for record in records],
+        total=total,
+        offset=0,
+        limit=limit,
+    )
 
 
 @router.get("/api/admin/traces", response_model=TraceSearchResponsePage)

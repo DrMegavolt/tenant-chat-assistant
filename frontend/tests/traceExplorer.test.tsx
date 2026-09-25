@@ -4,6 +4,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { AdminApi } from "src/admin/adminApi";
 import { TraceExplorer } from "src/admin/components/TraceExplorer";
+import type { TraceSearchRecord } from "src/admin/traceTypes";
 import { jsonResponse } from "tests/support/backend";
 import {
   BOUNDED_CLARIFY_READ_WIRE_CONTENT,
@@ -156,6 +157,89 @@ describe("the trace explorer filters", () => {
     const row = screen.getByRole("button", { name: /Turn 8/i });
     expect(within(row).getByText(/tool error/i)).toBeTruthy();
     expect(within(row).queryByText(/uncertain/i)).toBeNull();
+    expect(row.textContent).toContain("Open turn");
+  });
+
+  test("a chat id resolves to explicit, clickable turn results", async () => {
+    const chatId = "a069d537-8850-415f-8d29-dd7ad8fb7721";
+    const turnId = "ab301c99-7c58-4878-a2ed-91560ae1c52d";
+    const sessionRecord = {
+      ...RECORD_WIRE,
+      turn_id: turnId,
+      session_id: chatId,
+      trace_id: "48f7563b2186a742240b1a2bf789368c",
+      turn_index: 2
+    };
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes(`/api/admin/traces/${chatId}?`)) {
+        return jsonResponse({ code: "not_found" }, { ok: false, status: 404 });
+      }
+      if (url.includes(`/api/admin/traces/by-session/${chatId}?`)) {
+        return jsonResponse({ records: [sessionRecord], total: 1, offset: 0, limit: 200 });
+      }
+      if (url.includes(`/api/admin/traces/${turnId}?`)) {
+        return jsonResponse(wireTraceContent(turnId, TRACE_READ_WIRE_CONTENT));
+      }
+      if (url.includes("/gold-cases")) return jsonResponse(GOLD_WIRE);
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderExplorer("apex");
+
+    fireEvent.change(screen.getByLabelText("Turn, trace, or chat ID"), {
+      target: { value: chatId }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+
+    const open = await screen.findByRole("button", { name: /Open turn 2/i });
+    expect(open.textContent).toContain("Open turn");
+    expect(screen.getByText(/Chat ID/).textContent).toContain(chatId);
+    expect(screen.getByText(/Trace ID/).textContent).toContain("48f7563b");
+
+    fireEvent.click(open);
+    await screen.findByRole("heading", { name: /Turn 8/ });
+    const reads = fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes(`/api/admin/traces/${turnId}?`));
+    expect(reads).toHaveLength(1);
+  });
+
+  test("a queue turn opens directly with one audited read and a route back", async () => {
+    const fetchMock = stubTraceBackend();
+    const onBack = vi.fn();
+    const record: TraceSearchRecord = {
+      turnId: RECORD_WIRE.turn_id,
+      sessionId: RECORD_WIRE.session_id,
+      traceId: RECORD_WIRE.trace_id,
+      recordedAt: RECORD_WIRE.recorded_at,
+      outcome: RECORD_WIRE.outcome,
+      componentManifestHash: RECORD_WIRE.component_manifest_hash,
+      diagnosisCauses: RECORD_WIRE.diagnosis_causes,
+      diagnosisStatuses: RECORD_WIRE.diagnosis_statuses,
+      turnIndex: RECORD_WIRE.turn_index,
+      traceSchemaVersion: RECORD_WIRE.trace_schema_version,
+      sourceGenerationIds: []
+    };
+
+    render(
+      <TraceExplorer
+        api={new AdminApi("")}
+        tenants={TENANTS}
+        initialTenantId="clearview"
+        initialRecord={record}
+        sourceSessionId={record.sessionId}
+        onBackToQueue={onBack}
+      />
+    );
+
+    await screen.findByRole("heading", { name: /Turn 8/ });
+    expect(screen.getByText(`Opened from chat ${record.sessionId}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat queue" }));
+    expect(onBack).toHaveBeenCalledOnce();
+    const reads = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes(`/api/admin/traces/${record.turnId}?`)
+    );
+    expect(reads).toHaveLength(1);
   });
 
   test("a search for suspected turns surfaces the uncertainty chip", async () => {
@@ -195,10 +279,10 @@ describe("the trace explorer filters", () => {
     const fetchMock = stubTraceBackend();
     renderExplorer();
 
-    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+    fireEvent.change(screen.getByLabelText("Turn, trace, or chat ID"), {
       target: { value: "trace-gateb-8" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
     await screen.findByRole("heading", { name: /Turn 8/ });
 
     // The lookup's read is handed to the detail: a second read of the same
@@ -296,10 +380,10 @@ describe("the id lookup", () => {
     stubTraceBackend();
     renderExplorer();
 
-    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+    fireEvent.change(screen.getByLabelText("Turn, trace, or chat ID"), {
       target: { value: "trace-gateb-8" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
 
     await screen.findByRole("heading", { name: /Turn 8/ });
   });
@@ -308,10 +392,10 @@ describe("the id lookup", () => {
     const fetchMock = stubTraceBackend();
     renderExplorer();
 
-    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+    fireEvent.change(screen.getByLabelText("Turn, trace, or chat ID"), {
       target: { value: "1b2adde7-9c0d-4f6a-8a10-2b3c4d5e6f70" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
 
     await screen.findByRole("heading", { name: /Turn 8/ });
     const reads = fetchMock.mock.calls.filter(([url]) => String(url).includes("/traces/1b2adde7"));
@@ -322,12 +406,12 @@ describe("the id lookup", () => {
     stubTraceBackend();
     renderExplorer();
 
-    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+    fireEvent.change(screen.getByLabelText("Turn, trace, or chat ID"), {
       target: { value: "trace-does-not-exist" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
 
-    await screen.findByText("No turn record found for that id.");
+    await screen.findByText("No turn record found for that trace id.");
     expect(screen.queryByRole("heading", { name: /Turn/ })).toBeNull();
   });
 });
@@ -846,11 +930,11 @@ describe("stale responses cannot clobber fresh state (R-20)", () => {
     await screen.findByText(/tool error/i, { selector: ".session-preview" });
 
     // A lookup in flight owns the loading flag: both buttons disable.
-    fireEvent.change(screen.getByLabelText("Turn id or trace id"), {
+    fireEvent.change(screen.getByLabelText("Turn, trace, or chat ID"), {
       target: { value: "trace-gateb-8" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open turn" }));
-    expect(screen.getByRole("button", { name: "Opening…" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(screen.getByRole("button", { name: "Finding…" })).toBeTruthy();
 
     // A result click supersedes the lookup — the newer generation must not
     // inherit the busy state once the lookup settles.
@@ -863,7 +947,7 @@ describe("stale responses cannot clobber fresh state (R-20)", () => {
         false
       )
     );
-    expect(screen.getByRole("button", { name: "Open turn" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Find" })).toBeTruthy();
   });
 });
 

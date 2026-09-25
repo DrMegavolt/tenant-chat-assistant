@@ -196,6 +196,17 @@ class PostgresTurnRecordStore:
             )
             return tuple(_turn_record(row) for row in result.all())
 
+    async def count_for_session(self, tenant_id: str, session_id: uuid.UUID) -> int:
+        async with self._engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT count(*) FROM turn_records "
+                    "WHERE tenant_id = :tenant_id AND chat_session_id = :session_id"
+                ),
+                {"tenant_id": tenant_id, "session_id": session_id},
+            )
+            return int(result.scalar_one())
+
     async def for_turn_ids(
         self, tenant_id: str, turn_ids: Collection[uuid.UUID]
     ) -> dict[uuid.UUID, TurnRecord]:

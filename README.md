@@ -160,8 +160,7 @@ make api
 make dev
 ```
 
-After the API and worker are ready, seed with
-`API_BASE_URL=http://127.0.0.1:8080 make seed-knowledge` and open
+After the API and worker are ready, seed with `make seed-knowledge` and open
 `http://127.0.0.1:5173`.
 
 The Vite server also serves the operator-console bundle at `/admin/`, but it

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observability for LLM Applications — Style 01 · Dark Tech</title>
+<style>
+  :root{
+    --bg:#0a0d14; --text:#e8eaf2; --muted:#98a1b3;
+    --accent:#7c6cff; --line:rgba(255,255,255,.10);
+    --panel:rgba(255,255,255,.035);
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hidden}
+  body::before{
+    content:"";position:fixed;inset:0;z-index:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);
+    background-size:72px 72px;
+  }
+  body::after{
+    content:"";position:fixed;top:-25vh;right:-15vw;width:70vw;height:70vh;z-index:0;
+    background:radial-gradient(closest-side,rgba(124,108,255,.16),transparent 70%);
+    filter:blur(60px);
+  }
+  main{position:relative;z-index:1;height:100%}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;
+    padding:clamp(40px,9vh,90px) clamp(32px,8vw,130px);
+  }
+  .slide.active{display:flex}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:var(--accent);margin-bottom:22px}
+  h1{font-size:clamp(42px,6.6vw,92px);line-height:1.03;letter-spacing:-.025em;font-weight:800;max-width:14ch}
+  h2{font-size:clamp(30px,4.2vw,54px);line-height:1.06;letter-spacing:-.02em;font-weight:750;margin-bottom:6px}
+  .sub{color:var(--muted);font-size:clamp(16px,1.7vw,21px);line-height:1.55;max-width:56ch;margin-top:22px}
+  .meta{font-family:var(--mono);color:var(--muted);font-size:13px;margin-top:6vh}
+  .meta b{color:var(--text);font-weight:600}
+
+  .toc{list-style:none;margin-top:5vh;max-width:780px}
+  .toc li{display:flex;gap:28px;align-items:baseline;padding:16px 4px;border-bottom:1px solid var(--line);
+          font-size:clamp(17px,1.9vw,22px);letter-spacing:-.01em}
+  .toc li:first-child{border-top:1px solid var(--line)}
+  .toc .n{font-family:var(--mono);font-size:13px;color:var(--accent)}
+
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:5vh}
+  .card{border:1px solid var(--line);background:var(--panel);border-radius:16px;padding:26px 24px}
+  .card .num{font-family:var(--mono);color:var(--accent);font-size:13px;margin-bottom:14px}
+  .card h3{font-size:19px;margin-bottom:10px;letter-spacing:-.01em}
+  .card p{color:var(--muted);font-size:14.5px;line-height:1.55}
+
+  .stat{font-size:clamp(120px,20vw,260px);font-weight:800;letter-spacing:-.045em;line-height:.95;
+        color:var(--accent);text-shadow:0 0 90px rgba(124,108,255,.5)}
+  .stat-cap{color:var(--muted);font-size:clamp(16px,1.8vw,22px);line-height:1.5;max-width:52ch;margin-top:3vh}
+  .stat-cap b{color:var(--text)}
+
+  .cols{display:grid;grid-template-columns:1fr 1.05fr;gap:5vw;align-items:center;margin-top:4vh}
+  ul.list{list-style:none}
+  ul.list li{color:var(--muted);font-size:clamp(15px,1.45vw,17.5px);line-height:1.5;
+             padding:12px 0 12px 28px;border-bottom:1px solid var(--line);position:relative}
+  ul.list li:first-child{border-top:1px solid var(--line)}
+  ul.list li::before{content:"▸";position:absolute;left:2px;color:var(--accent);font-size:14px}
+  ul.list li b{color:var(--text);font-weight:600}
+
+  .term{background:#05070c;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+        box-shadow:0 24px 80px rgba(0,0,0,.5)}
+  .term-bar{display:flex;gap:7px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .dot{width:11px;height:11px;border-radius:50%;background:#2a2f3d}
+  .dot:nth-child(1){background:#ff5f57}.dot:nth-child(2){background:#febc2e}.dot:nth-child(3){background:#28c840}
+  .term-title{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-left:8px}
+  .term pre{font-family:var(--mono);font-size:clamp(12px,1.15vw,14.5px);line-height:1.8;padding:22px 24px;color:#c8cede}
+  .t-dim{color:#6b7280}.t-acc{color:#9d92ff}.t-ok{color:#7ee2a8}.t-warn{color:#f5c96b}
+
+  .closing{align-items:center;text-align:center}
+  .closing .big{font-size:clamp(48px,6.8vw,100px);font-weight:800;letter-spacing:-.03em;line-height:1.04}
+  .closing .big em{font-style:normal;color:var(--accent)}
+  .closing .sub{margin:3vh auto 0}
+
+  #bar{position:fixed;top:0;left:0;height:3px;width:0;z-index:5;
+       background:linear-gradient(90deg,#7c6cff,#a78bfa);transition:width .25s ease}
+  #hud{position:fixed;left:0;right:0;bottom:0;z-index:4;display:flex;justify-content:space-between;align-items:center;
+       padding:18px 8vw;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase}
+  #hud .hint{opacity:.55}
+
+  @media print{
+    body{overflow:visible}
+    .slide{display:flex !important;position:relative;height:100vh;page-break-after:always}
+    #hud,#bar{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<main>
+
+  <section class="slide">
+    <div class="kicker">Sample deck · Style 01 — Dark Tech</div>
+    <h1>Observability for LLM&nbsp;Applications</h1>
+    <p class="sub">What to measure when your system writes its own answers — traces, evals and cost on one wire.</p>
+    <p class="meta"><b>Platform Engineering</b> · September 2026</p>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">Agenda</div>
+    <h2>Five minutes, three instruments</h2>
+    <ul class="toc">
+      <li><span class="n">01</span>Why LLM apps break differently</li>
+      <li><span class="n">02</span>Three instruments: traces, evals, cost</li>
+      <li><span class="n">03</span>One request, one trace</li>
+      <li><span class="n">04</span>What the dashboards should show</li>
+      <li><span class="n">05</span>Takeaways</li>
+    </ul>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">Instruments</div>
+    <h2>Traces, evals, cost — pick all three</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="num">01 / TRACES</div>
+        <h3>Follow one request</h3>
+        <p>Across retrieval, prompt assembly, the model call and every tool — one span each, stitched by a single trace id.</p>
+      </div>
+      <div class="card">
+        <div class="num">02 / EVALS</div>
+        <h3>Score quality continuously</h3>
+        <p>Golden sets, graders and regression gates run on every change — so quality drift shows up in CI, not in Slack.</p>
+      </div>
+      <div class="card">
+        <div class="num">03 / COST</div>
+        <h3>Tokens are money</h3>
+        <p>Attribute spend per tenant, per feature, per release. A prompt tweak is a pricing decision.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">Why it matters</div>
+    <div class="stat">6+</div>
+    <p class="stat-cap"><b>spans in a single chat turn</b> — gateway, retrieval, prompt assembly, model call, reranker, tools. If you can't see each one, you can't debug the whole.</p>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">Instrumentation</div>
+    <h2>One request, one trace</h2>
+    <div class="cols">
+      <ul class="list">
+        <li><b>Prompt hash + template version</b> — not raw text alone</li>
+        <li><b>Retrieved chunks</b> with ids and scores, so hallucination is traceable</li>
+        <li><b>Model and params</b> — temperature, max tokens, provider</li>
+        <li><b>Tool calls</b> with inputs, outputs and retries</li>
+        <li><b>Tokens and latency per hop</b> — the raw material of every cost view</li>
+      </ul>
+      <div class="term">
+        <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-title">trace — req_8f42</span></div>
+        <pre>$ trace show <span class="t-acc">req_8f42</span>
+gateway   <span class="t-dim">▏</span>    3ms
+retrieve  <span class="t-dim">▏</span>  142ms  <span class="t-dim">k=8</span>
+prompt    <span class="t-dim">▏</span>    1ms  <span class="t-dim">2,140 tok</span>
+llm       <span class="t-dim">▏</span>  830ms  <span class="t-dim">412 tok out</span>
+tools     <span class="t-dim">▏</span>   97ms  <span class="t-dim">rerank</span>
+<span class="t-dim">──────────────────────────────</span>
+total     <span class="t-dim">▏</span> <span class="t-ok">1,073ms · $0.0041</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide closing">
+    <div class="kicker">Takeaway</div>
+    <p class="big">Ship with your <em>eyes open.</em></p>
+    <p class="sub">Every LLM incident is visible first in traces, evals or cost. Instrument all three before the next prompt change.</p>
+    <p class="meta">Sample deck · dark tech style</p>
+  </section>
+
+</main>
+<div id="hud">
+  <span>Observability for LLM Applications</span>
+  <span class="hint">← → navigate · f fullscreen · click to advance</span>
+  <span id="cnt">1 / 6</span>
+</div>
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  const bar=document.getElementById('bar');
+  const cnt=document.getElementById('cnt');
+  let i=-1;
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,x)=>s.classList.toggle('active',x===i));
+    bar.style.width=((i+1)/slides.length*100)+'%';
+    cnt.textContent=(i+1)+' / '+slides.length;
+    history.replaceState(null,'','#'+(i+1));
+  }
+  addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){e.preventDefault();show(i+1)}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();show(i-1)}
+    else if(e.key==='Home')show(0);
+    else if(e.key==='End')show(slides.length-1);
+    else if(e.key==='f'||e.key==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen()}
+  });
+  addEventListener('click',e=>{if(e.target.closest('a,button'))return;show(i+1)});
+  show((parseInt(location.hash.slice(1))||1)-1);
+</script>
+</body>
+</html>

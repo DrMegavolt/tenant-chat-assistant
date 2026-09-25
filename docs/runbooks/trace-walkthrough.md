@@ -127,5 +127,5 @@ make test   # or: uv run pytest -m "not integration"
 - `services/api/tests/test_worker_correlation.py` — the worker binds the
   enqueuing request's trace, and the payload fingerprint treats the trace as
   attribution rather than work.
-- `tests/security/test_privacy_redaction.py` and `tests/test_side_service_contracts.py` —
-  the redaction primitives and the side services' header forwarding.
+- `tests/security/test_privacy_redaction.py` — the redaction primitives and
+  the log-record scrubbing that keeps PII off the log plane.

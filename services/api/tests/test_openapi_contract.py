@@ -67,9 +67,11 @@ PUBLISHED_OPERATIONS = {
     ("get", "/api/admin/traces/{turn_id}"),
     # OBS-004: the attribution surface. Search filters on the content-free
     # projection (manifest hash, cause, outcome); by-trace-id is the correlation
-    # lookup, audited like the direct read.
+    # lookup, audited like the direct read. The by-session route bridges a chat
+    # queue row to its content-free turn identifiers without widening access.
     ("get", "/api/admin/traces"),
     ("get", "/api/admin/traces/by-trace-id/{trace_id}"),
+    ("get", "/api/admin/traces/by-session/{session_id}"),
     # FEAT-015: the explorer's replay surface (stored prompt through the current
     # model, no tools) and the gold-evidence overlay, both under the same
     # dedicated role and audit rules as the reads.

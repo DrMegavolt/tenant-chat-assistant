@@ -1,7 +1,10 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { OutcomeBadge } from "src/admin/components/StatBar";
+import { SessionTurns } from "src/admin/components/SessionTurns";
+import type { AdminApi } from "src/admin/adminApi";
 import { clockTime, isoTime, relativeTime } from "src/admin/time";
+import type { TraceSearchRecord } from "src/admin/traceTypes";
 import {
   outcomeOf,
   type AdminMessage,
@@ -138,9 +141,19 @@ export interface SessionDetailProps {
   session: Session | null;
   isLoading: boolean;
   onSendStaffMessage: (content: string) => Promise<void>;
+  api?: AdminApi;
+  tenantId?: string | null;
+  onOpenTrace?: (record: TraceSearchRecord) => void;
 }
 
-export function SessionDetail({ session, isLoading, onSendStaffMessage }: SessionDetailProps) {
+export function SessionDetail({
+  session,
+  isLoading,
+  onSendStaffMessage,
+  api,
+  tenantId,
+  onOpenTrace
+}: SessionDetailProps) {
   if (!session) {
     return (
       <section className="admin-detail" aria-label="Selected chat">
@@ -159,6 +172,7 @@ export function SessionDetail({ session, isLoading, onSendStaffMessage }: Sessio
       <div className="session-detail-header">
         <div>
           <p className="eyebrow">{session.tenantName}</p>
+          <span className="identifier-label">Chat ID</span>
           <h2>{session.sessionId}</h2>
         </div>
         <div className="detail-status">
@@ -185,6 +199,15 @@ export function SessionDetail({ session, isLoading, onSendStaffMessage }: Sessio
 
         <aside className="admin-side-stack">
           {session.pending && <PendingCard pending={session.pending} />}
+
+          {api && tenantId && onOpenTrace && (
+            <SessionTurns
+              api={api}
+              tenantId={tenantId}
+              sessionId={session.sessionId}
+              onOpen={onOpenTrace}
+            />
+          )}
 
           <Card title="Bookings">
             {session.bookings?.length ? (

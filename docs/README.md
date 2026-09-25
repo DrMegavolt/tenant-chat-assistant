@@ -16,6 +16,15 @@ documents here explain design decisions and operations in more depth.
 - [Accessibility](accessibility.md) separates automated checks from the manual
   keyboard and screen-reader pass.
 
+## Specifications
+
+Change records that pair acceptance criteria with verification evidence:
+
+- [Docker Compose and Kubernetes runtime parity](specs/deployment-portability.md)
+- [Python runtime operating-system security refresh](specs/container-security-refresh.md)
+- [SDD-001: atomic knowledge publication](specs/knowledge-publication.md)
+- [Admin chat-to-turn navigation](specs/admin-turn-navigation.md)
+
 ## Operations
 
 | Topic | Document |

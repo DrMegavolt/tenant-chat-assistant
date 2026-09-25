@@ -617,9 +617,9 @@ def test_the_session_detail_surfaces_the_durable_tool_results(
     """The tool-events card reads the AGENT-001 workflow record's model-facing
     payloads (`OBS-004`): a JSON result parses back into its object shape so
     the console renders it verbatim, and a non-JSON payload passes through as
-    the string it was. (The booking and lead flows do not yet feed this record
-    — that write lives in the orchestration package — so this seeds the store
-    the route reads, exactly as a deployment's record would look.)"""
+    the string it was. (A route-level test does not drive the orchestration
+    graph that writes this record, so the test seeds the store directly with
+    the shape a deployment's record has.)"""
     visitor = visitor_session()
     workflows = cast(InMemoryWorkflowStore, cast(FastAPI, client.app).state.workflow_store)
     started = asyncio.run(

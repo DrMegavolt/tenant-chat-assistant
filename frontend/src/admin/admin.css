@@ -147,6 +147,7 @@ body {
 
 .admin-panel-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -160,6 +161,10 @@ body {
   font-size: 0.92rem;
   font-weight: 700;
   letter-spacing: 0.01em;
+}
+
+.admin-panel-header p {
+  margin: var(--space-1) 0 0;
 }
 
 /* --- Queue ---------------------------------------------------------------- */
@@ -286,6 +291,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.identifier-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 /* --- Outcome badges ------------------------------------------------------- */
 
 .outcome-badge {
@@ -408,6 +423,43 @@ body {
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   background: var(--surface);
+}
+
+.session-turn {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--hairline);
+}
+
+.identifier-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.identifier-list div {
+  display: grid;
+  gap: 2px;
+}
+
+.identifier-list dt {
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.identifier-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.session-turn .ghost-button {
+  justify-self: start;
 }
 
 .transcript-card {
@@ -666,6 +718,14 @@ body {
 
 .trace-results .session-item {
   grid-template-columns: 1fr;
+}
+
+.trace-result-action {
+  justify-self: start;
+  margin-top: var(--space-1);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 .mono {

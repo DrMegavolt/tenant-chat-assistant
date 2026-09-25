@@ -7,7 +7,9 @@ Idempotent: source registrations, uploads, and ingestion jobs deduplicate, so
 re-running against an already-seeded cluster is a no-op.
 
 Environment:
-    API_BASE_URL          admin API root (default http://chat-admin:8004)
+    API_BASE_URL          admin API root (default http://127.0.0.1:8080, the
+                          local API; the Compose service and the k8s Job set it
+                          to their in-cluster endpoints explicitly)
     ADMIN_GATEWAY_TOKEN   shared gateway-to-API token for auth
     ADMIN_CSRF_SECRET     CSRF signing secret
     SEED_API_TIMEOUT      per-request HTTP timeout in seconds (default 30)
@@ -66,7 +68,7 @@ def _require(name: str) -> str:
     return value
 
 
-BASE_URL = _env("API_BASE_URL", "http://chat-admin:8004")
+BASE_URL = _env("API_BASE_URL", "http://127.0.0.1:8080")
 TIMEOUT = int(_env("SEED_API_TIMEOUT", "30"))
 POLL_INTERVAL = float(_env("SEED_POLL_INTERVAL", "2"))
 POLL_ATTEMPTS = int(_env("SEED_POLL_ATTEMPTS", "60"))

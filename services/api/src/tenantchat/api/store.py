@@ -232,6 +232,7 @@ AUDIT_ACTIONS: Final = frozenset(
         "trace.replay_retrieval",
         "trace.replay_template",
         "trace.replay_trials",
+        "trace.session_search",
         "trace.search",
         "trace_access.granted",
         "trace_access.revoked",
@@ -1580,6 +1581,9 @@ class TurnRecordStore(Protocol):
     ) -> tuple[TurnRecord, ...]:
         """The session's turn records, oldest first, bounded to *limit*."""
 
+    async def count_for_session(self, tenant_id: str, session_id: uuid.UUID) -> int:
+        """How many retained turn records belong to one tenant-qualified session."""
+
     async def for_turn_ids(
         self, tenant_id: str, turn_ids: Collection[uuid.UUID]
     ) -> dict[uuid.UUID, TurnRecord]:
@@ -1910,6 +1914,14 @@ class InMemoryTurnRecordStore:
             ]
         records.sort(key=lambda record: record.recorded_at)
         return tuple(records[:limit])
+
+    async def count_for_session(self, tenant_id: str, session_id: uuid.UUID) -> int:
+        async with self._lock:
+            return sum(
+                1
+                for record in self._records.values()
+                if record.tenant_id == tenant_id and record.session_id == session_id
+            )
 
     async def for_turn_ids(
         self, tenant_id: str, turn_ids: Collection[uuid.UUID]

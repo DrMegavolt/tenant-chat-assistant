@@ -225,6 +225,34 @@ export class AdminApi {
   }
 
   /**
+   * Content-free turn identifiers for one chat session. The route is gated by
+   * the same dedicated trace-read grant as the explorer; null means the signed-
+   * in operator may read the transcript but not the inference plane.
+   */
+  async tracesForSession(sessionId: string, tenantId: string): Promise<TraceSearchPage | null> {
+    const params = new URLSearchParams({
+      tenant_id: tenantId,
+      reason: "quality_review",
+      limit: "200"
+    });
+    const response = await this.request(
+      `/api/admin/traces/by-session/${encodeURIComponent(sessionId)}?${params}`
+    );
+    if (response.status === 403) return null;
+    if (!response.ok) throw new Error(`Chat turn lookup failed with ${response.status}`);
+    const payload = (await response.json()) as Record<string, unknown>;
+    const records = (Array.isArray(payload.records) ? payload.records : []).map((wire) =>
+      searchRecordFromWire(wire as Record<string, unknown>)
+    );
+    return {
+      records,
+      total: typeof payload.total === "number" ? payload.total : records.length,
+      offset: 0,
+      limit: typeof payload.limit === "number" ? payload.limit : records.length
+    };
+  }
+
+  /**
    * One full content-bearing turn record. Every call is RBAC-gated and
    * audited server-side with this read's reason.
    *

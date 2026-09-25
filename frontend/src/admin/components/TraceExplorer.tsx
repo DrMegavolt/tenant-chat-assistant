@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { AdminApi } from "src/admin/adminApi";
 import { TraceDetail } from "src/admin/components/TraceDetail";
@@ -71,6 +71,9 @@ export interface TraceExplorerProps {
   api: AdminApi;
   tenants: { tenantId: string; name: string }[];
   initialTenantId: string | null;
+  initialRecord?: TraceSearchRecord | undefined;
+  sourceSessionId?: string | undefined;
+  onBackToQueue?: (() => void) | undefined;
 }
 
 /**
@@ -80,7 +83,14 @@ export interface TraceExplorerProps {
  * (outcome, manifest hash, causes, statuses, time). Content is fetched only
  * when an operator drills into one turn, through the audited single-read.
  */
-export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerProps) {
+export function TraceExplorer({
+  api,
+  tenants,
+  initialTenantId,
+  initialRecord,
+  sourceSessionId,
+  onBackToQueue
+}: TraceExplorerProps) {
   const [tenantId, setTenantId] = useState(initialTenantId ?? tenants[0]?.tenantId ?? "");
   const [filters, setFilters] = useState<TraceSearchFilters>(EMPTY_FILTERS);
   const [records, setRecords] = useState<TraceSearchRecord[]>([]);
@@ -88,7 +98,7 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   // explorer can say "showing N of M" and offer more without pretending a
   // truncated page was everything (R-36).
   const [total, setTotal] = useState(0);
-  const [selected, setSelected] = useState<TraceSearchRecord | null>(null);
+  const [selected, setSelected] = useState<TraceSearchRecord | null>(initialRecord ?? null);
   const [gold, setGold] = useState<GoldCase[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [isLoading, setLoading] = useState(false);
@@ -120,6 +130,22 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   const settleLoading = (generation: number) => {
     if (loadingOwnerRef.current === generation) setLoading(false);
   };
+
+  useEffect(() => {
+    if (!initialRecord) return;
+    let current = true;
+    void api
+      .goldCases(tenantId)
+      .then((cases) => {
+        if (current) setGold(cases);
+      })
+      .catch(() => {
+        if (current) setError("Could not load the gold cases for this tenant.");
+      });
+    return () => {
+      current = false;
+    };
+  }, [api, initialRecord, tenantId]);
 
   const runSearch = async (overrides?: TraceSearchFilters) => {
     const wired = wiredFilters({ ...filters, ...overrides });
@@ -196,8 +222,27 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
         ? await api.trace(value, tenantId)
         : await api.traceByTraceId(value, tenantId);
       if (!isCurrent()) return;
+      if (!detail && TURN_UUID_RE.test(value)) {
+        const page = await api.tracesForSession(value, tenantId);
+        if (!isCurrent()) return;
+        if (page === null) {
+          setLookupError("A trace-read grant is required to look up this chat.");
+          return;
+        }
+        if (page.records.length === 0) {
+          setLookupError("No retained turns were found for that turn or chat id.");
+          return;
+        }
+        setLookupId("");
+        setRecords(page.records);
+        setTotal(page.total);
+        setHasSearched(true);
+        setLookupTrace(null);
+        setSelected(null);
+        return;
+      }
       if (!detail) {
-        setLookupError("No turn record found for that id.");
+        setLookupError("No turn record found for that trace id.");
         return;
       }
       setLookupId("");
@@ -226,7 +271,15 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
   return (
     <section className="trace-explorer" aria-labelledby="traceTitle">
       <div className="admin-panel-header">
-        <h2 id="traceTitle">AI turn explorer</h2>
+        <div>
+          <h2 id="traceTitle">AI turn explorer</h2>
+          {sourceSessionId && <p className="muted-copy mono">Opened from chat {sourceSessionId}</p>}
+        </div>
+        {onBackToQueue && (
+          <button type="button" className="ghost-button" onClick={onBackToQueue}>
+            Back to chat queue
+          </button>
+        )}
         {tenants.length > 1 && (
           <label className="tenant-picker">
             <span className="visually-hidden">Tenant</span>
@@ -254,23 +307,23 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
 
       <form
         className="trace-filters"
-        aria-label="Open a turn by id"
+        aria-label="Find a turn by identifier"
         onSubmit={(event) => {
           event.preventDefault();
           void openById();
         }}
       >
         <label className="trace-filter trace-filter-wide">
-          <span className="trace-filter-label">Turn id or trace id</span>
+          <span className="trace-filter-label">Turn, trace, or chat ID</span>
           <input
             type="text"
-            placeholder="Turn UUID or trace id"
+            placeholder="Paste a turn, trace, or chat ID"
             value={lookupId}
             onChange={(event) => setLookupId(event.target.value)}
           />
         </label>
         <button type="submit" className="ghost-button" disabled={isLoading}>
-          {isLoading ? "Opening…" : "Open turn"}
+          {isLoading ? "Finding…" : "Find"}
         </button>
       </form>
 
@@ -319,9 +372,15 @@ export function TraceExplorer({ api, tenants, initialTenantId }: TraceExplorerPr
                     <span className="uncertain-chip">uncertain</span>
                   )}
                 </span>
+                <span className="session-meta mono">Chat ID {record.sessionId}</span>
+                <span className="session-meta mono">Turn ID {record.turnId}</span>
                 <span className="session-meta mono">
-                  {record.componentManifestHash.slice(0, 12)}
+                  Trace ID {record.traceId || "Not recorded"}
                 </span>
+                <span className="session-meta mono">
+                  Manifest {record.componentManifestHash.slice(0, 12)}
+                </span>
+                <span className="trace-result-action">Open turn {record.turnIndex} →</span>
               </button>
             ))}
           </div>

@@ -10,6 +10,7 @@ import { SessionList } from "src/admin/components/SessionList";
 import { StatBar } from "src/admin/components/StatBar";
 import { TraceExplorer } from "src/admin/components/TraceExplorer";
 import { relativeTime } from "src/admin/time";
+import type { TraceSearchRecord } from "src/admin/traceTypes";
 import { useAdminConsole } from "src/admin/useAdminConsole";
 
 type AdminView = "queue" | "reviews" | "traces" | "knowledge" | "access" | "handoffs";
@@ -35,6 +36,15 @@ export function AdminPage() {
   const api = useMemo(() => new AdminApi(), []);
   const console_ = useAdminConsole(api);
   const [view, setView] = useState<AdminView>("queue");
+  const [traceOrigin, setTraceOrigin] = useState<{
+    record: TraceSearchRecord;
+    sessionId: string;
+  } | null>(null);
+
+  const selectView = (next: AdminView) => {
+    setTraceOrigin(null);
+    setView(next);
+  };
 
   return (
     <>
@@ -71,7 +81,7 @@ export function AdminPage() {
                   type="button"
                   className={tab === view ? "admin-tab active" : "admin-tab"}
                   aria-current={tab === view ? "page" : undefined}
-                  onClick={() => setView(tab)}
+                  onClick={() => selectView(tab)}
                 >
                   {VIEW_LABELS[tab]}
                 </button>
@@ -130,6 +140,12 @@ export function AdminPage() {
                   session={console_.selected}
                   isLoading={console_.isLoading}
                   onSendStaffMessage={console_.sendStaffMessage}
+                  api={api}
+                  tenantId={console_.tenantId}
+                  onOpenTrace={(record) => {
+                    setTraceOrigin({ record, sessionId: record.sessionId });
+                    setView("traces");
+                  }}
                 />
               </div>
             </>
@@ -143,6 +159,16 @@ export function AdminPage() {
                 name: tenant.name
               }))}
               initialTenantId={console_.tenantId}
+              initialRecord={traceOrigin?.record}
+              sourceSessionId={traceOrigin?.sessionId}
+              onBackToQueue={
+                traceOrigin
+                  ? () => {
+                      setTraceOrigin(null);
+                      setView("queue");
+                    }
+                  : undefined
+              }
             />
           )}
 

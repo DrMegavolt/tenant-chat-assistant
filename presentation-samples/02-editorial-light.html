@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observability for LLM Applications — Style 02 · Editorial Light</title>
+<style>
+  :root{
+    --paper:#f6f3ec; --ink:#17150f; --red:#c73a12;
+    --line:rgba(23,21,15,.22); --faint:rgba(23,21,15,.58);
+    --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;justify-content:space-between;
+    padding:5vh 6vw;
+  }
+  .slide.active{display:flex}
+  header,footer{display:flex;justify-content:space-between;align-items:baseline;
+    font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint)}
+  header{border-bottom:1px solid var(--line);padding-bottom:14px}
+  header .kick{color:var(--red)}
+  footer{border-top:1px solid var(--line);padding-top:14px}
+  .mid{margin:auto 0;max-width:1250px}
+
+  h1{font-family:var(--serif);font-size:clamp(46px,6.8vw,100px);line-height:1.02;letter-spacing:-.015em;font-weight:700;max-width:13ch}
+  h1 em{font-style:italic;color:var(--red)}
+  h2{font-family:var(--serif);font-size:clamp(32px,4.2vw,58px);line-height:1.05;font-weight:700;letter-spacing:-.01em;margin-bottom:5vh}
+  h2 em{font-style:italic;color:var(--red)}
+  .lede{font-size:clamp(17px,1.8vw,22px);line-height:1.55;color:var(--faint);max-width:46ch;margin-top:3vh}
+  .lede b{color:var(--ink)}
+
+  .toc{list-style:none;max-width:860px}
+  .toc li{display:flex;gap:32px;align-items:baseline;padding:15px 4px;border-bottom:1px solid var(--line);
+          font-family:var(--serif);font-size:clamp(19px,2vw,25px)}
+  .toc li:first-child{border-top:1px solid var(--line)}
+  .toc .n{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.15em}
+
+  .cols3{display:grid;grid-template-columns:repeat(3,1fr)}
+  .col{padding:6px 30px;border-left:1px solid var(--line)}
+  .col:first-child{border-left:0;padding-left:0}
+  .col .n{font-family:var(--mono);font-size:12px;color:var(--red);letter-spacing:.2em;margin-bottom:16px}
+  .col h3{font-family:var(--serif);font-size:clamp(20px,2vw,26px);margin-bottom:12px}
+  .col p{font-size:15px;line-height:1.6;color:var(--faint)}
+
+  .statrow{display:flex;align-items:baseline;gap:4.5vw;flex-wrap:wrap}
+  .stat{font-family:var(--serif);font-style:italic;color:var(--red);font-size:clamp(130px,20vw,280px);line-height:.85;letter-spacing:-.02em}
+  .statcap{font-size:clamp(17px,1.8vw,23px);line-height:1.55;max-width:38ch}
+  .statcap b{color:var(--red)}
+
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:5vw;align-items:center}
+  ul.list{list-style:none}
+  ul.list li{color:var(--faint);font-size:clamp(15px,1.4vw,17.5px);line-height:1.5;
+             padding:12px 0 12px 26px;border-bottom:1px solid var(--line);position:relative}
+  ul.list li:first-child{border-top:1px solid var(--line)}
+  ul.list li::before{content:"—";position:absolute;left:0;color:var(--red)}
+  ul.list li b{color:var(--ink);font-weight:600}
+
+  .fig{border:1px solid var(--ink);background:#efe9dd}
+  .figbar{border-bottom:1px solid var(--ink);padding:10px 16px;font-family:var(--mono);font-size:10.5px;
+          letter-spacing:.15em;text-transform:uppercase;color:var(--faint);display:flex;justify-content:space-between}
+  .fig pre{font-family:var(--mono);font-size:clamp(12.5px,1.15vw,14.5px);line-height:1.85;padding:20px 24px;color:var(--ink)}
+  .fig .dim{color:var(--faint)} .fig .red{color:var(--red)}
+
+  blockquote{font-family:var(--serif);font-size:clamp(36px,4.8vw,68px);line-height:1.14;letter-spacing:-.01em;max-width:19ch;font-weight:700}
+  blockquote em{font-style:italic;color:var(--red)}
+
+  @media print{
+    body{overflow:visible}
+    .slide{display:flex !important;position:relative;height:100vh;page-break-after:always}
+  }
+</style>
+</head>
+<body>
+
+  <section class="slide">
+    <header><span class="kick">Sample deck — Style 02 · Editorial</span><span>01 / 06</span></header>
+    <div class="mid">
+      <h1>Observability for <em>LLM</em> Applications</h1>
+      <p class="lede">What to measure when your system writes its own answers. <b>Traces, evals and cost</b> — on one wire.</p>
+    </div>
+    <footer><span>Platform Engineering</span><span>September 2026</span></footer>
+  </section>
+
+  <section class="slide">
+    <header><span class="kick">Agenda</span><span>02 / 06</span></header>
+    <div class="mid">
+      <h2>Five minutes, <em>three</em> instruments</h2>
+      <ul class="toc">
+        <li><span class="n">01</span>Why LLM apps break differently</li>
+        <li><span class="n">02</span>Three instruments: traces, evals, cost</li>
+        <li><span class="n">03</span>One request, one trace</li>
+        <li><span class="n">04</span>What the dashboards should show</li>
+        <li><span class="n">05</span>Takeaways</li>
+      </ul>
+    </div>
+    <footer><span>Observability for LLM Applications</span><span>Editorial light</span></footer>
+  </section>
+
+  <section class="slide">
+    <header><span class="kick">Instruments</span><span>03 / 06</span></header>
+    <div class="mid">
+      <h2>Traces, evals, cost — <em>pick all three</em></h2>
+      <div class="cols3">
+        <div class="col">
+          <div class="n">01 — TRACES</div>
+          <h3>Follow one request</h3>
+          <p>Across retrieval, prompt assembly, the model call and every tool — one span each, stitched by a single trace id.</p>
+        </div>
+        <div class="col">
+          <div class="n">02 — EVALS</div>
+          <h3>Score quality continuously</h3>
+          <p>Golden sets, graders and regression gates run on every change — so quality drift shows up in CI, not in Slack.</p>
+        </div>
+        <div class="col">
+          <div class="n">03 — COST</div>
+          <h3>Tokens are money</h3>
+          <p>Attribute spend per tenant, per feature, per release. A prompt tweak is a pricing decision.</p>
+        </div>
+      </div>
+    </div>
+    <footer><span>Observability for LLM Applications</span><span>Editorial light</span></footer>
+  </section>
+
+  <section class="slide">
+    <header><span class="kick">Why it matters</span><span>04 / 06</span></header>
+    <div class="mid">
+      <div class="statrow">
+        <div class="stat">6+</div>
+        <p class="statcap"><b>spans in a single chat turn</b> — gateway, retrieval, prompt assembly, model call, reranker, tools. If you can't see each one, you can't debug the whole.</p>
+      </div>
+    </div>
+    <footer><span>Observability for LLM Applications</span><span>Editorial light</span></footer>
+  </section>
+
+  <section class="slide">
+    <header><span class="kick">Instrumentation</span><span>05 / 06</span></header>
+    <div class="mid">
+      <h2>One request, <em>one trace</em></h2>
+      <div class="cols">
+        <ul class="list">
+          <li><b>Prompt hash + template version</b> — not raw text alone</li>
+          <li><b>Retrieved chunks</b> with ids and scores, so hallucination is traceable</li>
+          <li><b>Model and params</b> — temperature, max tokens, provider</li>
+          <li><b>Tool calls</b> with inputs, outputs and retries</li>
+          <li><b>Tokens and latency per hop</b> — the raw material of every cost view</li>
+        </ul>
+        <div class="fig">
+          <div class="figbar"><span>Figure 1 — Trace req_8f42</span><span>1,073 ms</span></div>
+          <pre>gateway   ▏    3ms
+retrieve  ▏  142ms  <span class="dim">k=8</span>
+prompt    ▏    1ms  <span class="dim">2,140 tok</span>
+llm       ▏  830ms  <span class="dim">412 tok out</span>
+tools     ▏   97ms  <span class="dim">rerank</span>
+<span class="dim">────────────────────────────</span>
+total     ▏  <span class="red">1,073ms · $0.0041</span></pre>
+        </div>
+      </div>
+    </div>
+    <footer><span>Observability for LLM Applications</span><span>Editorial light</span></footer>
+  </section>
+
+  <section class="slide">
+    <header><span class="kick">Takeaway</span><span>06 / 06</span></header>
+    <div class="mid">
+      <blockquote>“Ship with your <em>eyes open.</em>”</blockquote>
+      <p class="lede">Every LLM incident is visible first in traces, evals or cost. Instrument all three before the next prompt change.</p>
+    </div>
+    <footer><span>Thank you — questions welcome</span><span>Sample deck · editorial style</span></footer>
+  </section>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  let i=-1;
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,x)=>s.classList.toggle('active',x===i));
+    history.replaceState(null,'','#'+(i+1));
+  }
+  addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){e.preventDefault();show(i+1)}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();show(i-1)}
+    else if(e.key==='Home')show(0);
+    else if(e.key==='End')show(slides.length-1);
+    else if(e.key==='f'||e.key==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen()}
+  });
+  addEventListener('click',e=>{if(e.target.closest('a,button'))return;show(i+1)});
+  show((parseInt(location.hash.slice(1))||1)-1);
+</script>
+</body>
+</html>

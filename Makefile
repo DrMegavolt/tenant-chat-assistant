@@ -15,7 +15,8 @@ NPM := npm --prefix frontend
 	dev worker js-install js-lint js-format \
 	js-format-check js-typecheck js-build js-test js-test-cov 	deployment-security check api up up-all web down \
 	down-clean logs ps compose-up compose-smoke compose-seed compose-down network-policy-smoke image-contracts images-build images-smoke \
-	images-check deploy-local keycloak-render keycloak-lint arch-validate arch-build clean eval eval-gate \
+	images-check deploy-local keycloak-render keycloak-lint keycloak-test keycloak-check \
+	arch-validate arch-build clean eval eval-gate \
 	seed-knowledge dashboard-check docs-check grafana-smoke grafana-query-check harness-a harness-b harness-live
 
 help: ## Show available targets

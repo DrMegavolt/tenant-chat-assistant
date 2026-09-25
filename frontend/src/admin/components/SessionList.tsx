@@ -24,6 +24,10 @@ function matches(session: SessionSummary, query: string): boolean {
   return haystack.includes(query.toLowerCase());
 }
 
+function compactId(value: string): string {
+  return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value;
+}
+
 /**
  * The queue.
  *
@@ -120,6 +124,7 @@ export function SessionList({ sessions, selectedId, onSelect }: SessionListProps
                   .filter(Boolean)
                   .join(" · ")}
               </span>
+              <span className="session-meta mono">Chat ID {compactId(session.sessionId)}</span>
             </button>
           );
         })}

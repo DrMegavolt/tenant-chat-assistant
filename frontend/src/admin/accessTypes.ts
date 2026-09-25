@@ -82,6 +82,7 @@ export const AUDIT_ACTIONS = [
   "trace_access.granted",
   "trace_access.revoked",
   "trace.read",
+  "trace.session_search",
   "trace.search",
   "trace.replay",
   "trace.replay_trials",

@@ -7517,6 +7517,82 @@
         ]
       }
     },
+    "/api/admin/traces/by-session/{session_id}": {
+      "get": {
+        "description": "Content-free turn identifiers for one chat, for queue-to-trace navigation.\n\nThis is a direct lookup, not another Gate B filter dimension. It remains\nbehind the dedicated trace-read grant and returns the same content-free\nprojection as trace search. An absent or cross-tenant session is an empty\nresult, so the route cannot enumerate session ownership.\n\nRaises:\n    ForbiddenError: the operator holds no trace-read grant for the tenant.",
+        "operationId": "turns_for_chat_session_api_admin_traces_by_session__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]*$",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TurnRecordReadReason"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceSearchResponsePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Turns For Chat Session",
+        "tags": [
+          "admin-traces"
+        ]
+      }
+    },
     "/api/admin/traces/by-trace-id/{trace_id}": {
       "get": {
         "description": "The record the `OBS-001` correlation id names, under the same gates.\n\nThis is the lookup a distributed trace answers with: given the request's\ntrace id, the full inference record of the turn it produced — audited like\nany other read.\n\nRaises:\n    ForbiddenError: the operator holds no trace-read grant for the tenant.\n    NotFoundError: no such record, or it belongs to another tenant.",

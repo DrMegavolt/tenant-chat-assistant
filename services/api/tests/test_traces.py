@@ -463,6 +463,73 @@ def test_search_is_gated_by_the_dedicated_role_and_audited_with_its_filters(
     }
 
 
+def test_session_lookup_maps_a_chat_to_content_free_turns_under_the_trace_role(
+    trace_app: TraceApp,
+) -> None:
+    """A queue chat id becomes useful without weakening the inference-plane grant."""
+    client, turns, grants, audit = trace_app
+    session_id = uuid.uuid4()
+    other_session = uuid.uuid4()
+    for index, trace_id in enumerate(("trace-chat-1", "trace-chat-2"), start=1):
+        asyncio.run(
+            turns.record(
+                TRACE_TENANT,
+                session_id,
+                trace_id=trace_id,
+                content={"prompt": "private", "output": "private"},
+                outcome="answered",
+                turn_index=index,
+                recorded_at=BASE + timedelta(minutes=index),
+            )
+        )
+    asyncio.run(
+        turns.record(
+            TRACE_TENANT,
+            other_session,
+            trace_id="trace-other-chat",
+            content={"prompt": "other"},
+            turn_index=1,
+        )
+    )
+
+    path = f"/api/admin/traces/by-session/{session_id}"
+    refused = client.get(
+        path,
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+    assert refused.status_code == 403
+
+    asyncio.run(grants.grant(TRACE_TENANT, "operator-7", granted_by="platform-admin-1"))
+    response = client.get(
+        path,
+        params={"tenant_id": TRACE_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 2
+    assert [row["trace_id"] for row in body["records"]] == ["trace-chat-1", "trace-chat-2"]
+    assert all("content" not in row and "prompt" not in row for row in body["records"])
+
+    searches = [event for event in audit._events if event.action == "trace.session_search"]
+    assert len(searches) == 1
+    assert searches[0].resource_type == "chat_session"
+    assert searches[0].resource_id == session_id
+    assert searches[0].details == {"reason": READ_REASON, "limit": 200, "matches": 2}
+
+    asyncio.run(grants.grant(OTHER_TENANT, "operator-7", granted_by="platform-admin-1"))
+    hidden = client.get(
+        path,
+        params={"tenant_id": OTHER_TENANT, "reason": READ_REASON},
+        headers=_operator(),
+    )
+    assert hidden.status_code == 200
+    assert hidden.json()["records"] == []
+    assert hidden.json()["total"] == 0
+
+
 def test_search_filters_by_manifest_hash_and_cause(trace_app: TraceApp) -> None:
     """The attribution query surface: component-version and cause filtering."""
     client, turns, grants, _audit = trace_app
